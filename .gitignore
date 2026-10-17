@@ -1,0 +1,25 @@
+# Local build and dependency output directories
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/dist/
+/package/
+/packages/
+/vcpkg_installed/
+
+# Local IDE state
+/.vs/
+/.vscode/
+
+# Local runtime data
+/cache/
+/logs/
+/temp/
+
+# Planning and review material belongs outside this repository
+/planning/
+/development/
+/design/
+/reports/
+/artifacts/
