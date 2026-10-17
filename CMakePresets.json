@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "v143,version=14.44.35207",
+      "binaryDir": "${sourceDir}/out/msvc",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
+        "CMAKE_PREFIX_PATH": "$env{FORMAVIEW_QT_ROOT}",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "windows-asan",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/out/asan",
+      "cacheVariables": { "FORMAVIEW_BUILD_HOST": "OFF", "FORMAVIEW_ASAN": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "asan", "configurePreset": "windows-asan", "configuration": "RelWithDebInfo" }
+  ],
+  "testPresets": [
+    { "name": "release", "configurePreset": "windows-msvc", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "asan", "configurePreset": "windows-asan", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "qt": {
+    "version": "6.8.3",
+    "architecture": "win64_msvc2022_64",
+    "runtime_linkage": "shared",
+    "repository": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_683/qt6_683/qt.qt6.683.win64_msvc2022_64/",
+    "archive_prefix": "6.8.3-0-202503201308",
+    "archives_sha256": {
+      "qtbase-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "41688269fac0565db956c66d9eecae777d16197e0c02cd81b88640c1f5d73d3f",
+      "qtdeclarative-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "c2f9f481bf6e8fb004530f20b820fbc77d4ee6dcca24d1ea1d1863d99c5dabf1",
+      "qtsvg-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "48d1d798894cbf8696a0010fcfdeafea652b35159c56ea2060ee85ce3d0048f7",
+      "qttools-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "76ac7b8c86ca72b6608f1d41ee848aeab19663536990b4968ce52db8ec980bc3",
+      "qttranslations-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "c78fef2eff30b880e1aa9b049eff8a283431bc2d7e03132143279b5480d95418",
+      "d3dcompiler_47-x64.7z": "f886f3255600d46b3e651ab5cb8084b42df5e59f78993ad43d8b0cb3b70552c3"
+    }
+  },
+  "acquisition_tool": { "name": "aqtinstall", "version": "3.3.0" }
+}
