@@ -41,5 +41,176 @@
       "libxml2-md.lib": "849f947def74e1a9e8b10575e7e6c4fee0a85b9559271718d87d3026891f32c0",
       "zlib-md.lib": "ffe090f1dfa86d010b3bada6963a4ed8a9116d0b363589356a24fbdb714e0001"
     }
+  },
+  "professional": {
+    "optional": true,
+    "qt": "6.8.3 EXACT; Qt Quick + GuiPrivate; D3D11 QQuickRhiItem; build-time ShaderTools/qsb",
+    "render_runtime": "No Quick3D dependency; QRhi private ABI requires matching Qt patch version",
+    "directxtex": {
+      "version": "2.1.1",
+      "tag": "may2026",
+      "source": "https://github.com/microsoft/DirectXTex/archive/refs/tags/may2026.zip",
+      "archive_sha256": "7bc5591f0faec970e71019775bb3ae1dd525e26895f022f39088c0eacf819436",
+      "linkage": "static",
+      "license": "MIT",
+      "cmake_options": {
+        "BUILD_TOOLS": "OFF",
+        "BUILD_SAMPLE": "OFF",
+        "BUILD_DX11": "OFF",
+        "BUILD_DX12": "OFF",
+        "BC_USE_OPENMP": "OFF"
+      }
+    },
+    "alembic": {
+      "version": "1.8.12",
+      "source": "https://github.com/alembic/alembic/archive/refs/tags/1.8.12.zip",
+      "archive_sha256": "87f84c0c44300ba9affe013d62c79d30466046aa23fa04a6dfc246240f58effd",
+      "linkage": "static",
+      "license": "BSD-3-Clause",
+      "cmake_options": {
+        "USE_TESTS": "OFF",
+        "USE_BINARIES": "ON (Release validation CLI only; OFF for ASan/library-only)",
+        "USE_HDF5": "OFF",
+        "ALEMBIC_SHARED_LIBS": "OFF"
+      }
+    },
+    "shared_dependencies": {
+      "openexr": {
+        "version": "3.5.2",
+        "source": "https://github.com/AcademySoftwareFoundation/openexr",
+        "license": "BSD-3-Clause",
+        "license_sha256": "84853c91d4c2e0310741d4773469d98bb93e61029608e0ba0882a3fffdf330bd",
+        "source_resources": [
+          {
+            "SPDXID": "SPDXRef-resource-0",
+            "checksums": [
+              {
+                "algorithm": "SHA512",
+                "checksumValue": "4dba9cfb65a6bb98c10d9019b3b1e007c6ad751c8faac3df5e8b08e02c8a0ba6355fe35c25d0b175a91a7bdeb125d138cc87ab621f21cbf4050aad9b5391feab"
+              }
+            ],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "git+https://github.com/AcademySoftwareFoundation/openexr@v3.5.2",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "name": "AcademySoftwareFoundation/openexr"
+          }
+        ],
+        "vcpkg_abi_info_sha256": "9ac55caa6d834fd3b45e3251d06d507eee657e78b7c171bad171d1735f44797c"
+      },
+      "imath": {
+        "version": "3.2.3",
+        "source": "https://github.com/AcademySoftwareFoundation/Imath",
+        "license": "BSD-3-Clause",
+        "license_sha256": "c20236d3b39fd20eba8e3d1fb3b892a5483df2e7d8d61bf43f165d3fac22f601",
+        "source_resources": [
+          {
+            "SPDXID": "SPDXRef-resource-0",
+            "checksums": [
+              {
+                "algorithm": "SHA512",
+                "checksumValue": "a89556f178de90e4b3d62b4d3b34f3d3eb6d511c24f70e2c066e15dac1bf0e89908c486d195b0bc2da00292aee800376f8a241b83253c33688dfd85a048a252f"
+              }
+            ],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "git+https://github.com/AcademySoftwareFoundation/Imath@v3.2.3",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "name": "AcademySoftwareFoundation/Imath"
+          }
+        ],
+        "vcpkg_abi_info_sha256": "e19a3d1793bcea67ff5969fbe8e154a87aa236d4b8fb1ae6a2b704fed2e14a73"
+      },
+      "libdeflate": {
+        "version": "1.26",
+        "source": "https://github.com/ebiggers/libdeflate",
+        "license": "MIT",
+        "license_sha256": "4ad69099cb4374836fd27583d9991e2838cd86b6e4666ab26b2d32582c91e73a",
+        "source_resources": [
+          {
+            "SPDXID": "SPDXRef-resource-0",
+            "checksums": [
+              {
+                "algorithm": "SHA512",
+                "checksumValue": "06605eabce8635b82e03863c87b515696d08b8a1fc36b746b44b660989613d2ebd6ca1bb13dd0f88244846894dbf5a15169dd443c34dcda64e960fdbd08a8d3b"
+              }
+            ],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "git+https://github.com/ebiggers/libdeflate@v1.26",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "name": "ebiggers/libdeflate"
+          }
+        ],
+        "vcpkg_abi_info_sha256": "cfc4f61891c07e35bd6d2c9848f393b6e66b23681bee80e5aabd5f4fa0e67e9b"
+      },
+      "openjph": {
+        "version": "0.32.0",
+        "source": "https://github.com/aous72/OpenJPH",
+        "license": "BSD-2-Clause",
+        "license_sha256": "5ddf5177863dfc9ab65fa129d587db651241f00e21ed2427b218bea997591f98",
+        "source_resources": [
+          {
+            "SPDXID": "SPDXRef-resource-0",
+            "checksums": [
+              {
+                "algorithm": "SHA512",
+                "checksumValue": "4207570b05deef8e46ca6d8b2dba0d5fd4a02e3bed8ddcc5d950b4404368505d918a6047c716143a56cd38e8e778f62c046b6472d7ff8bc0a71a2ab694bfdd07"
+              }
+            ],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "git+https://github.com/aous72/OpenJPH@0.32.0",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "name": "aous72/OpenJPH"
+          }
+        ],
+        "vcpkg_abi_info_sha256": "48a8f0bbfea267eb2e5289240716fae82d8ac6f8bc953dcf8fd1848c3947c8f8"
+      },
+      "zstd": {
+        "version": "1.5.7",
+        "source": "https://github.com/facebook/zstd",
+        "license": "BSD-3-Clause OR GPL-2.0-only",
+        "license_sha256": "434dca949c6da7c500413aef694539fe37f867dd1a94d83d4ed1d260194e2660",
+        "source_resources": [
+          {
+            "SPDXID": "SPDXRef-resource-0",
+            "checksums": [
+              {
+                "algorithm": "SHA512",
+                "checksumValue": "26e441267305f6e58080460f96ab98645219a90d290a533410b1b0b1d2f870721c95f8384e342ee647c5e968385a5b7e30c2d04340c37f59b3e6d86762c3260c"
+              }
+            ],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "git+https://github.com/facebook/zstd@v1.5.7",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "name": "facebook/zstd"
+          }
+        ],
+        "vcpkg_abi_info_sha256": "b0af093819c48969c68b8ae938c2efb057b5f6a14aa6232e1e1889914d952e2b"
+      }
+    },
+    "asan": "Rebuild DirectXTex and Alembic with /fsanitize=address /Zi using the same v143 toolchain; do not disable container annotations. Map imported RelWithDebInfo to Release explicitly. OpenEXR and its DLL dependencies are not instrumented.",
+    "validated_dlls_sha256": {
+      "deflate.dll": "1e6c455a0393f9e94fd358b2122bf2564c8f1216db422628086324132c6a301a",
+      "Iex-3_5.dll": "b6c7f6d3669f402014d76ffaa439c611ba957576008107e4930835ddfe10c749",
+      "IlmThread-3_5.dll": "95e1282a090ae4640b1295da23eea964a19049322fbab5f701a1ce47231ad3e3",
+      "Imath-3_2.dll": "60a2a9ba14ba1f33fa6c2975a798cbe3e4c1e60cefdbbb22f22eb12c899d74d0",
+      "OpenEXR-3_5.dll": "95b867ac88ddf552c046e11782e166bcc07d5ccf456a735e52ec33dae5281e33",
+      "OpenEXRCore-3_5.dll": "0b0310175bf98dee784ffc6d23f49c1d91e0b8a3a3ac4bd56c83f7e4f8305b5a",
+      "OpenEXRUtil-3_5.dll": "5b30b81b8df5bd78f4ba9c3678c9e2d14cd1de1a540437736d9ae2c48be7cc0a",
+      "openjph.0.32.dll": "4a75da7c1337fdd74378ce262bec8d832ce2ebb5a7e3a0cec44564053c21a331",
+      "zstd.dll": "1cb8635e2188cd6330f41fba0b581d36c75332cc733dbbd1d1df0f5f75f2615b"
+    },
+    "qt_build_tools_sha256": {
+      "qsb.exe": "d433dc06891c82ad0ee3e84f00c019c67f3a188cdd9fcc3902403892d362ff86",
+      "Qt6ShaderTools.dll": "d95bee7e9ca3795ca8724efeab0b4ad98b6a1b44971aa925112b0dd7e00d16e2"
+    },
+    "qt_sbom_sha256": {
+      "qtbase-6.8.3.spdx.json": "73b4dee169c8f3a1c0c2e2f904d0679cc156ce7e9320f7c866bb723dd4faac68",
+      "qtdeclarative-6.8.3.spdx.json": "a8ecaf2320ea7dde15ec8f1914e7edd0522a3d087cf8fcdafed1debd7e7d9441",
+      "qtshadertools-6.8.3.spdx.json": "dbbd8fd69316a2f9768d51add8eeb3333a49b9516d03146fc5f6222091347e5f"
+    }
   }
 }

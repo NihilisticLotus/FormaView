@@ -1,0 +1,31 @@
+Professional validation dependencies (product license is not selected here)
+
+DirectXTex 2.1.1 / may2026: MIT, static linkage. See DirectXTex-LICENSE.txt.
+Alembic 1.8.12: BSD-3-Clause, static linkage, Ogawa only. See Alembic-LICENSE.txt.
+OpenEXR 3.5.2 and Imath 3.2.3: BSD-3-Clause, shared linkage.
+libdeflate 1.26: MIT; OpenJPH 0.32.0: BSD-2-Clause; zstd 1.5.7:
+BSD-3-Clause or GPL-2.0. Their unmodified notices are included alongside this file.
+Binary redistribution must carry the applicable upstream copyright notices.
+Exact validation DLL and archive hashes are in cmake/dependencies.lock.json.
+
+Qt 6.8.3 Quick and Gui are dynamically linked. Upstream offers commercial
+and LGPL/GPL licensing alternatives; no commercial entitlement is assumed.
+The selected rendering target uses QQuickRhiItem and Qt GuiPrivate, not Quick3D.
+Qt Quick3D is a separately tested external candidate (commercial or GPLv3)
+and is not linked into these targets. Qt ShaderTools qsb is a build tool;
+the application does not link the shader compiler runtime or ship qsb.
+Distributing Qt requires the applicable Qt license texts, third-party notices,
+corresponding source/relinking provisions, and permitting library replacement
+under the chosen applicable terms. A portable distribution is not supplied here.
+Module-specific attributions must accompany any future Qt binary package.
+
+Upstream references:
+https://doc.qt.io/qt-6.8/licensing.html
+https://doc.qt.io/qt-6.8/qtshadertools-index.html
+https://doc.qt.io/qt-6.8/qtquick3d-index.html
+https://github.com/microsoft/DirectXTex
+https://github.com/alembic/alembic
+https://github.com/AcademySoftwareFoundation/openexr
+
+No validation assets, third-party SDK binaries, or public redistribution rights
+for user-supplied assets are granted or included by this repository.

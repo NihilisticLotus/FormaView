@@ -77,7 +77,8 @@ struct Buffer {
 enum class AlphaMode { Unknown, Absent, Straight, Premultiplied };
 enum class ImageMeaning { Unknown, Colour, Data };
 struct ImageWindow { std::int64_t x{}, y{}; std::uint64_t width{}, height{}; };
-struct ImageChannel { std::string name; Buffer samples; };
+enum class SampleEncoding { Numeric, UNorm, SNorm };
+struct ImageChannel { std::string name; Buffer samples; SampleEncoding encoding{SampleEncoding::Numeric}; };
 struct ImageSubresource {
     std::uint32_t part{}, mip{}, array_layer{}, cube_face{}, depth_slice{};
     std::string part_name;

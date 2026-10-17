@@ -41,3 +41,9 @@ FBX 写出使用静态参考预旋转，并按世界矩阵误差细分超差的�
 Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_import.py` 适配器，使关键帧位置使用 `fps/fps_base`；默认 FBX 导入尚未取得相同验收结论。在 Blender Python 控制台将该目录加入 `sys.path`，然后调用 `from formaview_import import import_verified_fbx; import_verified_fbx(r'C:\path\clip.fbx')`，或执行 `blender --python tools/blender/formaview_import.py -- C:\path\clip.fbx`。脚本检查 Blender 版本、导入器签名和显式来源元数据，临时修正仅在本次导入内生效；不改安装文件、不重新定时。独立契约测试：`py -3 tests/blender_import_tests.py`。
 
 当前写出边界：名称只接受非空可打印 ASCII（读取保留原始名字字节，文件路径支持 Unicode）；负权重、morph 和未经解释的非均匀 key delta 拒绝写出。缩放键保留并求值，层级溢出／FBX 时间或曲线精度溢出会拒绝。读写预算与取消属于协作准入，FBX SDK 内部分配没有硬上限，ufbx 单次场景求值只能在调用前后检查取消。输出曲线的有限时刻误差检查不构成连续时间的数学误差上界。
+
+专业数据验证目标可用 `-DFORMAVIEW_BUILD_PROFESSIONAL=ON` 启用。将锁定版本 OpenEXR、Imath、DirectXTex、Alembic 的外置安装前缀加入 `CMAKE_PREFIX_PATH`，并将 OpenEXR 及传递依赖 DLL 目录加入运行时 `PATH`。设置 `FORMAVIEW_PRO_TEST_ROOT` 为仓库外测试目录后运行 CTest。ASan 构建须使用同样启用 ASan 的 DirectXTex／Alembic 静态库，明确指定各自包目录及 `-DCMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO=Release`；已编译 OpenEXR DLL 内部不在 ASan 覆盖范围。
+
+`formaview_professional_probe image|image-summary|abc|mesh 输入 外部输出目录` 输出数值核验材料；`image-summary` 仅输出通道哈希。启用 Qt 宿主时需要同版本 ShaderTools，另生成 `formaview_render_probe 外部输出目录 precision|image|mesh|abc [输入]` 技术窗口（ABC 渲染入口仅接收三角面）。渲染使用 Qt 6.8.3 QQuickRhiItem／D3D11／RGBA32F，与 Qt 私有 QRhi ABI 锁定；升级 Qt 必须重新验证。未接入产品能力注册。
+
+图片与 ABC 打开／解码接口是阻塞工作线程 API，须经有界调度器调用。保留源样本与独立显示缓冲；DDS 的 sRGB 数值保持编码域，`apply_srgb` 只对线性显示输入编码，不能重复应用。EXR 暂限普通非子采样通道和 tiled level 0，ABC 暂限 Ogawa 变换／多边形及主 UV／法线；Deep EXR、HDF5 和其他 schema 明确拒绝。预算限制已知载荷，第三方解码器内部临时分配与不可中断调用不构成硬实时上界。渲染目标目前是技术验证组件，设备丢失／分配失败的产品级恢复仍需后续接入。
