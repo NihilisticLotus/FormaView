@@ -1,5 +1,6 @@
 #include "formaview/skeletal.hpp"
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -190,6 +191,36 @@ void reading() {
     const auto a = sk::read_actor(animation());
     check(!a.mesh && a.sequences.size() == 2, "PSA independent contract");
     check(!a.bones[0].bind_world, "PSA falsely reported verified bind");
+    // Some real PSA files carry zero placeholders in BONENAMES rather than a
+    // reference pose; their actual animation keys are valid and must be retained.
+    auto placeholder_bytes = animation();
+    const auto placeholders = offset(placeholder_bytes, "BONENAMES");
+    for (std::size_t j = 0; j < 7; ++j)
+        for (std::size_t c = 0; c < 4; ++c)
+            set32(placeholder_bytes, placeholders + j * 120 + 76 + c * 4, 0);
+    const auto placeholder = sk::read_actor(placeholder_bytes);
+    check(placeholder.source_bytes == placeholder_bytes, "PSA placeholder source bytes changed");
+    reject([&] { (void)sk::default_pose(placeholder); }, formaview::ErrorCode::Unsupported);
+    const auto reference = sk::read_actor(mesh());
+    check(!sk::pair(placeholder, reference).compatible, "Missing PSA reference was certified");
+    const auto reference_pair = sk::pair(placeholder, reference, 1e-4, sk::PairingPolicy::ReferenceSkeleton);
+    check(reference_pair.compatible && !reference_pair.reference_verified,
+          "Valid PSA keys with placeholder records must accept an explicit PSK reference");
+    near(sk::evaluate_paired(placeholder, reference_pair, 0, 0).world[1][3], 12);
+    auto invalid_key = placeholder_bytes;
+    const auto key = offset(invalid_key, "ANIMKEYS");
+    for (std::size_t c = 0; c < 4; ++c)
+        set32(invalid_key, key + 12 + c * 4, 0);
+    reject([&] { (void)sk::read_actor(invalid_key); });
+    auto invalid_bind = mesh();
+    const auto bind = offset(invalid_bind, "REFSKELT");
+    for (std::size_t c = 0; c < 4; ++c)
+        set32(invalid_bind, bind + 76 + c * 4, 0);
+    reject([&] { (void)sk::read_actor(invalid_bind); });
+    auto cyclic_placeholder = placeholder_bytes;
+    set32(cyclic_placeholder, placeholders + 120 + 72, 2);
+    set32(cyclic_placeholder, placeholders + 240 + 72, 1);
+    reject([&] { (void)sk::read_actor(cyclic_placeholder); });
     const auto fps = *a.sequences[0].time.frame_rate;
     near(static_cast<double>(fps.numerator) / static_cast<double>(fps.denominator), a.sequences[0].fps, 0);
     near(a.sequences[1].time.source_start_seconds, 0);
@@ -372,18 +403,77 @@ void limits() {
     reject([&] { (void)sk::evaluate(a, 0, 0, stop.get_token()); }, formaview::ErrorCode::Cancelled);
 }
 #ifdef FORMAVIEW_TEST_FBX
+// Keep per-operation timings in CTest output so an I/O wait cannot look like a
+// numerical or cancellation hang. Expected rejection tests also record exceptions.
+template <class Fn> auto fbx_step(const std::filesystem::path &path, const char *operation, Fn fn) {
+    const auto name = path.filename().u8string();
+    const std::string label(reinterpret_cast<const char *>(name.data()), name.size());
+    const auto begin = std::chrono::steady_clock::now();
+    std::cerr << "FBX_BEGIN " << operation << " " << label << std::endl;
+    try {
+        auto result = fn();
+        std::cerr << "FBX_END " << operation << " " << label << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count()
+                  << std::endl;
+        return result;
+    } catch (...) {
+        std::cerr << "FBX_EXCEPTION " << operation << " " << label << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count()
+                  << std::endl;
+        throw;
+    }
+}
+sk::FbxWriteResult write_fbx_traced(const sk::ActorAsset &asset, std::size_t clip,
+                                    const std::filesystem::path &path, const sk::ActorAsset *mesh = nullptr,
+                                    const sk::FbxWriteOptions &options = {}) {
+    return fbx_step(path, "write", [&] { return sk::write_fbx_clip(asset, clip, path, mesh, options); });
+}
+sk::FbxDocument read_fbx_traced(const std::filesystem::path &path, const sk::ReadOptions &options = {}) {
+    return fbx_step(path, "read", [&] { return sk::FbxDocument::read(path, options); });
+}
 void fbx(const std::filesystem::path &directory) {
     std::filesystem::create_directories(directory);
     sk::ReadOptions o;
     o.coordinates = {formaview::Axis::PositiveZ, formaview::Axis::PositiveX, formaview::Handedness::Right,
                      0.01, "Synthetic numeric fixture"};
     const auto a = sk::read_actor(animation(), o), m = sk::read_actor(mesh(), o);
+    auto placeholder_bytes = animation();
+    const auto records = offset(placeholder_bytes, "BONENAMES");
+    for (std::size_t j = 0; j < 7; ++j)
+        for (std::size_t c = 0; c < 4; ++c)
+            set32(placeholder_bytes, records + j * 120 + 76 + c * 4, 0);
+    const auto placeholder = sk::read_actor(placeholder_bytes, o);
+    const auto placeholder_path = directory / "placeholder.fbx";
+    std::filesystem::remove(placeholder_path);
+    reject([&] { write_fbx_traced(placeholder, 0, placeholder_path); }, formaview::ErrorCode::Unsupported);
+    check(!std::filesystem::exists(placeholder_path), "Rejected placeholder export created a file");
+    sk::FbxWriteOptions reference_options;
+    reference_options.pairing_policy = sk::PairingPolicy::ReferenceSkeleton;
+    write_fbx_traced(placeholder, 0, placeholder_path, &m, reference_options);
+    const auto placeholder_back = read_fbx_traced(placeholder_path);
+    const auto placeholder_pair = sk::pair(placeholder, m, 1e-4, sk::PairingPolicy::ReferenceSkeleton);
+    for (const double seconds :
+         {0.0, 0.5 / placeholder.sequences[0].fps, placeholder.sequences[0].time.source_end_seconds}) {
+        const auto expected = sk::evaluate_paired(placeholder, placeholder_pair, 0, seconds);
+        const auto actual =
+            placeholder_back.evaluate(0, std::min(seconds, placeholder_back.data().clips[0].end));
+        for (std::size_t j = 0; j < placeholder.bones.size(); ++j) {
+            const auto &nodes = placeholder_back.data().nodes;
+            const auto it = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) {
+                return node.bone && node.source.original_name == placeholder.bones[j].source.original_name;
+            });
+            check(it != nodes.end(), "Placeholder export lost a bone");
+            for (std::size_t k = 0; k < 16; ++k)
+                near(actual.world[static_cast<std::size_t>(it - nodes.begin())][k], expected.world[j][k],
+                     1e-3);
+        }
+    }
     for (std::size_t clip = 0; clip < a.sequences.size(); ++clip) {
         const auto path = clip == 0 ? directory / std::filesystem::path(u8"骨骼动画-0.fbx")
                                     : directory / ("synthetic-" + std::to_string(clip) + ".fbx");
         std::filesystem::remove(path);
-        sk::write_fbx_clip(a, clip, path, &m);
-        const auto f = sk::FbxDocument::read(path);
+        write_fbx_traced(a, clip, path, &m);
+        const auto f = read_fbx_traced(path);
         const auto &d = f.data();
         check(d.clips.size() == 1 && d.meshes.size() == 1, "FBX scene counts");
         check(d.source.coordinates.up == formaview::Axis::PositiveZ &&
@@ -419,22 +509,22 @@ void fbx(const std::filesystem::path &directory) {
             }
         }
         check(weights == 6, "Six influences truncated on export");
-        reject([&] { sk::write_fbx_clip(a, clip, path, &m); }, formaview::ErrorCode::Conflict);
+        reject([&] { write_fbx_traced(a, clip, path, &m); }, formaview::ErrorCode::Conflict);
         sk::ReadOptions tiny;
         tiny.limits.decoded_bytes = 1;
-        reject([&] { (void)sk::FbxDocument::read(path, tiny); }, formaview::ErrorCode::ResourceLimit);
+        reject([&] { (void)read_fbx_traced(path, tiny); }, formaview::ErrorCode::ResourceLimit);
         std::stop_source stop;
         stop.request_stop();
         sk::ReadOptions cancelled;
         cancelled.stop = stop.get_token();
-        reject([&] { (void)sk::FbxDocument::read(path, cancelled); }, formaview::ErrorCode::Cancelled);
+        reject([&] { (void)read_fbx_traced(path, cancelled); }, formaview::ErrorCode::Cancelled);
         sk::FbxWriteOptions small;
         small.limits.decoded_bytes = 1;
-        reject([&] { sk::write_fbx_clip(a, clip, directory / "must-not-exist.fbx", nullptr, small); },
+        reject([&] { write_fbx_traced(a, clip, directory / "must-not-exist.fbx", nullptr, small); },
                formaview::ErrorCode::ResourceLimit);
         sk::FbxWriteOptions stopped;
         stopped.stop = stop.get_token();
-        reject([&] { sk::write_fbx_clip(a, clip, directory / "must-not-exist.fbx", nullptr, stopped); },
+        reject([&] { write_fbx_traced(a, clip, directory / "must-not-exist.fbx", nullptr, stopped); },
                formaview::ErrorCode::Cancelled);
         check(!std::filesystem::exists(directory / "must-not-exist.fbx"), "Rejected export left output");
     }
@@ -467,8 +557,8 @@ void fbx(const std::filesystem::path &directory) {
             std::filesystem::remove(path);
             sk::FbxWriteOptions write;
             write.include_mesh = mesh_mode;
-            sk::write_fbx_clip(crossing, 0, path, &reference, write);
-            const auto f = sk::FbxDocument::read(path);
+            write_fbx_traced(crossing, 0, path, &reference, write);
+            const auto f = read_fbx_traced(path);
             const auto &nodes = f.data().nodes;
             for (double fraction : {0.137, 0.3819660112501051, 0.731}) {
                 const auto seconds = fraction / crossing.sequences[0].fps;
@@ -498,32 +588,32 @@ void fbx(const std::filesystem::path &directory) {
     unrefined.max_sample_subdivisions = 1;
     const auto too_coarse = directory / "coupled-coarse.fbx";
     std::filesystem::remove(too_coarse);
-    reject([&] { sk::write_fbx_clip(coupled, 0, too_coarse, &m, unrefined); },
+    reject([&] { write_fbx_traced(coupled, 0, too_coarse, &m, unrefined); },
            formaview::ErrorCode::Unsupported);
     check(!std::filesystem::exists(too_coarse), "Rejected coarse bake left output");
     const auto refined = directory / "coupled-refined.fbx";
     std::filesystem::remove(refined);
-    const auto bake = sk::write_fbx_clip(coupled, 0, refined, &m);
+    const auto bake = write_fbx_traced(coupled, 0, refined, &m);
     check(bake.sample_subdivisions > 1 && bake.audited_world_matrix_error <= 0.0005,
           "Coupled rotation was not refined");
-    const auto coupled_back = sk::FbxDocument::read(refined);
+    const auto coupled_back = read_fbx_traced(refined);
     near(bake.source_fps, coupled.sequences[0].fps);
     near(coupled_back.data().fps, bake.bake_fps);
     near(coupled_back.data().clips[0].end, coupled.sequences[0].time.source_end_seconds);
     auto collapsed = coupled;
     collapsed.sequences[0].fps = 1e30;
     collapsed.sequences[0].time.source_end_seconds = 2e-30;
-    reject([&] { sk::write_fbx_clip(collapsed, 0, directory / "time-collision.fbx", &m); },
+    reject([&] { write_fbx_traced(collapsed, 0, directory / "time-collision.fbx", &m); },
            formaview::ErrorCode::Unsupported);
     auto excessive_duration = coupled;
     excessive_duration.sequences[0].fps = 1e-30;
     excessive_duration.sequences[0].time.source_end_seconds = 2e30;
-    reject([&] { sk::write_fbx_clip(excessive_duration, 0, directory / "time-overflow.fbx", &m); },
+    reject([&] { write_fbx_traced(excessive_duration, 0, directory / "time-overflow.fbx", &m); },
            formaview::ErrorCode::Unsupported);
     auto excessive_value = coupled;
     for (auto &animation_key : excessive_value.keys)
         animation_key.translation.x = 1e100;
-    reject([&] { sk::write_fbx_clip(excessive_value, 0, directory / "curve-overflow.fbx"); },
+    reject([&] { write_fbx_traced(excessive_value, 0, directory / "curve-overflow.fbx"); },
            formaview::ErrorCode::Unsupported);
     auto non_ascii = animation();
     const auto sequence_name = offset(non_ascii, "ANIMINFO");
@@ -534,11 +624,11 @@ void fbx(const std::filesystem::path &directory) {
     const auto preserved_name = sk::read_actor(non_ascii, o);
     check(preserved_name.sequences[0].source.original_name == "\xE8\xB5\xB0",
           "Non-ASCII source name bytes changed");
-    reject([&] { sk::write_fbx_clip(preserved_name, 0, directory / "unsupported-name.fbx", &m); },
+    reject([&] { write_fbx_traced(preserved_name, 0, directory / "unsupported-name.fbx", &m); },
            formaview::ErrorCode::Unsupported);
     sk::FbxWriteOptions bad_subdivisions;
     bad_subdivisions.max_sample_subdivisions = 3;
-    reject([&] { sk::write_fbx_clip(coupled, 0, directory / "bad-bake-options.fbx", &m, bad_subdivisions); },
+    reject([&] { write_fbx_traced(coupled, 0, directory / "bad-bake-options.fbx", &m, bad_subdivisions); },
            formaview::ErrorCode::InvalidArgument);
     for (double fraction : {0.137, 0.3819660112501051, 0.731}) {
         const auto seconds = fraction / coupled.sequences[0].fps;
@@ -560,13 +650,13 @@ void fbx(const std::filesystem::path &directory) {
         std::ofstream file(invalid, std::ios::binary);
         file << "Kaydara FBX Binary invalid";
     }
-    reject([&] { (void)sk::FbxDocument::read(invalid); });
+    reject([&] { (void)read_fbx_traced(invalid); });
     auto negative = m;
     negative.mesh->weights[0].value = -0.25;
-    reject([&] { sk::write_fbx_clip(a, 0, directory / "negative.fbx", &negative); },
+    reject([&] { write_fbx_traced(a, 0, directory / "negative.fbx", &negative); },
            formaview::ErrorCode::Unsupported);
     const auto unknown = sk::read_actor(animation());
-    reject([&] { sk::write_fbx_clip(unknown, 0, directory / "unknown-axes.fbx"); },
+    reject([&] { write_fbx_traced(unknown, 0, directory / "unknown-axes.fbx"); },
            formaview::ErrorCode::Unsupported);
     auto long_clip = a;
     long_clip.sequences.resize(1);
@@ -580,7 +670,7 @@ void fbx(const std::filesystem::path &directory) {
     cancel_options.stop = source.get_token();
     auto result = std::async(std::launch::async, [&] {
         try {
-            sk::write_fbx_clip(long_clip, 0, cancelled_path, nullptr, cancel_options);
+            write_fbx_traced(long_clip, 0, cancelled_path, nullptr, cancel_options);
             return false;
         } catch (const sk::Failure &e) {
             return e.error.code == formaview::ErrorCode::Cancelled;

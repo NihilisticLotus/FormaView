@@ -32,6 +32,10 @@ ctest --preset asan
 
 对于使用 PSK 层级与参考姿势的 PSA，工具可追加两个参数：显式提供的 `.config` 路径（无配套文件时为 `-`）和 `reference`。此模式按唯一骨骼名称配对，纯骨架导出也使用 PSK 参考；保留 PSA 原始层级、姿势和键，不把记录差异当作文件损坏。`[RemoveTracks]` 的 `all`／`trans`／`rot` 使用 PSK 对应参考通道，配置内容与来源哈希保留。核心不自动扫描或访问相邻文件；默认严格记录检查仍可用于诊断。
 
+PSA `BONENAMES` 中的全零四元数可作为缺失参考记录保留，`Bone::default_local_valid` 标记其不可用；动画键仍可读取和求值。默认姿势查询及无参考 PSK 的导出会明确拒绝，不能把占位记录当单位旋转或已验证绑定。PSK 绑定和实际动画键中的零四元数仍拒绝。测试工具可在 `reference` 后追加显式 FBX 读写预算字节数（默认 1 GiB，工具上限 16 GiB），同一预算传给写出及回读，预算调整不改变误差门槛。
+
+`formaview_skeletal_inventory` 接受 UTF-8 TSV 清单、新 JSONL 报告路径和可选停止文件路径。清单每行是 `输入路径<TAB>参考PSK或-<TAB>config或-`；逐项记录哈希、结构、姿势、预算拒绝与错误，创建停止文件可取消批次。报告拒绝覆盖；每文件失败保留在报告内，调用方须检查 `accepted` 字段，不能只看进程退出码。
+
 FBX 写出使用静态参考预旋转，并按世界矩阵误差细分超差的源帧区间；保留源关键时刻、真实秒和末尾保持。每个输出区间的三个内部时刻接受数值检查，超过精度、细分或预算限制时拒绝写出。文件帧率声明最细输出采样网格，原始帧率／帧数及实际输出采样率单独保存在 `FormaViewSourceFPS`／`FormaViewSourceFrames`／`FormaViewBakeFPS` 元数据中；不能把输出采样数当作原始 PSA 帧数。`FbxWriteResult` 返回细分、输出采样数和检查误差。验证工具还在独立的非网格时刻回读检查；这些实验性接口尚未接入正式导入流程。
 
 Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_import.py` 适配器，使关键帧位置使用 `fps/fps_base`；默认 FBX 导入尚未取得相同验收结论。在 Blender Python 控制台将该目录加入 `sys.path`，然后调用 `from formaview_import import import_verified_fbx; import_verified_fbx(r'C:\path\clip.fbx')`，或执行 `blender --python tools/blender/formaview_import.py -- C:\path\clip.fbx`。脚本检查 Blender 版本、导入器签名和显式来源元数据，临时修正仅在本次导入内生效；不改安装文件、不重新定时。独立契约测试：`py -3 tests/blender_import_tests.py`。

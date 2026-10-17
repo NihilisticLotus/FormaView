@@ -48,6 +48,27 @@ Transform decoded(Vec3 t, Quat q, bool root, Vec3 scale = {1, 1, 1}) {
         q = {-q.x, -q.y, -q.z, q.w};
     return {t, normalized(q), scale};
 }
+void validate_hierarchy(const ActorAsset &a, std::stop_token stop) {
+    std::vector<std::uint8_t> state(a.bones.size());
+    std::vector<std::size_t> chain;
+    for (std::size_t i = 0; i < a.bones.size(); ++i) {
+        check_stop(stop);
+        chain.clear();
+        auto at = i;
+        while (state[at] == 0) {
+            state[at] = 1;
+            chain.push_back(at);
+            if (!a.bones[at].parent)
+                break;
+            at = *a.bones[at].parent;
+            require(at < a.bones.size(), "Bone parent out of bounds");
+        }
+        if (!chain.empty() && a.bones[chain.back()].parent)
+            require(state[at] == 2, "Bone hierarchy cycle");
+        for (auto j : chain)
+            state[j] = 2;
+    }
+}
 void worlds(const ActorAsset &a, Pose &p, std::stop_token stop,
             std::span<const std::optional<std::uint32_t>> parents = {}) {
     const auto parent = [&](std::size_t j) { return parents.empty() ? a.bones[j].parent : parents[j]; };
@@ -112,8 +133,10 @@ class Reader {
         return v;
     }
     Vec3 vec(std::size_t off) const { return {f32(off), f32(off + 4), f32(off + 8)}; }
-    Quat quat(std::size_t off) const {
+    Quat quat(std::size_t off, bool allow_reference_placeholder = false) const {
         Quat q{f32(off), f32(off + 4), f32(off + 8), f32(off + 12)};
+        if (allow_reference_placeholder && q.x == 0 && q.y == 0 && q.z == 0 && q.w == 0)
+            return q;
         (void)normalized(q);
         return q;
     }
@@ -270,14 +293,24 @@ ActorAsset read_actor(std::span<const std::byte> bytes, const ReadOptions &optio
                     "Invalid bone parent");
             b.parent = static_cast<std::uint32_t>(b.source_parent);
         }
-        b.raw_rotation = r.quat(o + 76);
+        b.raw_rotation = r.quat(o + 76, a.animation);
         b.raw_translation = r.vec(o + 92);
         b.raw_length = r.f32(o + 104);
         b.raw_size = r.vec(o + 108);
-        b.default_local = decoded(b.raw_translation, b.raw_rotation, !b.parent);
+        const auto &q = b.raw_rotation;
+        b.default_local_valid = q.x != 0 || q.y != 0 || q.z != 0 || q.w != 0;
+        b.default_local = b.default_local_valid ? decoded(b.raw_translation, q, !b.parent)
+                                                : Transform{b.raw_translation, q};
         a.bones.push_back(std::move(b));
     });
-    const auto defaults = default_pose(a, options.stop); // Also checks cycles without recursion.
+    validate_hierarchy(a, options.stop); // PSA placeholders cannot be used to validate default matrices.
+    const bool missing_defaults =
+        std::any_of(a.bones.begin(), a.bones.end(), [](const auto &b) { return !b.default_local_valid; });
+    if (missing_defaults)
+        a.warnings.push_back("PSA BONENAMES has zero reference placeholders; keys retained, no default pose. "
+                             "Supply an explicit reference PSK for reference-dependent operations");
+    else if (a.animation)
+        (void)default_pose(a, options.stop);
     std::vector<std::uint32_t> child_counts(a.bones.size());
     for (const auto &b : a.bones)
         if (b.parent)
@@ -289,6 +322,7 @@ ActorAsset read_actor(std::span<const std::byte> bytes, const ReadOptions &optio
             break;
         }
     if (!a.animation) {
+        const auto defaults = default_pose(a, options.stop);
         for (std::size_t i = 0; i < a.bones.size(); ++i)
             a.bones[i].bind_world = defaults.world[i];
         a.mesh.emplace();
@@ -459,8 +493,12 @@ ActorAsset read_actor(const std::filesystem::path &path, const ReadOptions &opti
 Pose default_pose(const ActorAsset &a, std::stop_token stop) {
     Pose p;
     p.local.reserve(a.bones.size());
-    for (const auto &b : a.bones)
+    for (const auto &b : a.bones) {
+        if (!b.default_local_valid)
+            throw Failure(ErrorCode::Unsupported,
+                          "PSA reference records are placeholders; an explicit PSK reference is required");
         p.local.push_back(b.default_local);
+    }
     worlds(a, p, stop);
     return p;
 }
@@ -564,10 +602,14 @@ Pairing pair(const ActorAsset &a, const ActorAsset &m, double tolerance, Pairing
             hierarchy = false;
         result.parents.push_back(y.parent ? std::optional{mesh_to_animation[*y.parent]} : std::nullopt);
         result.reference_local.push_back(y.default_local);
-        const auto u = matrix(x.default_local), v = matrix(y.default_local);
-        for (std::size_t k = 0; k < 16; ++k)
-            if (std::abs(u[k] - v[k]) > tolerance)
-                reference = false;
+        if (!x.default_local_valid || !y.default_local_valid)
+            reference = false;
+        else {
+            const auto u = matrix(x.default_local), v = matrix(y.default_local);
+            for (std::size_t k = 0; k < 16; ++k)
+                if (std::abs(u[k] - v[k]) > tolerance)
+                    reference = false;
+        }
     }
     result.reference_verified = reference;
     result.hierarchy_verified = hierarchy;

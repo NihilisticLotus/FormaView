@@ -78,7 +78,10 @@ bool roundtrip(const sk::ActorAsset &a, const sk::ActorAsset *m, std::size_t cli
         return m ? sk::evaluate_paired(a, binding, clip, seconds, options.psa_config)
                  : sk::evaluate(a, clip, seconds);
     };
-    const auto f = sk::FbxDocument::read(output);
+    sk::ReadOptions read_options;
+    read_options.limits = options.limits;
+    read_options.stop = options.stop;
+    const auto f = sk::FbxDocument::read(output, read_options);
     const auto &d = f.data();
     const auto &s = a.sequences[clip];
     std::map<std::string, std::uint32_t> names;
@@ -283,9 +286,9 @@ int wmain(int argc, wchar_t **argv) {
 int main(int argc, char **argv) {
 #endif
     try {
-        if (argc != 5 && argc != 7)
+        if (argc != 5 && argc != 7 && argc != 8)
             throw std::runtime_error("Usage: skeletal_probe input.psa|input.fbx pair.psk|- output-directory "
-                                     "report.json [companion.config|- reference]");
+                                     "report.json [companion.config|- reference [fbx-budget-bytes]]");
         const std::filesystem::path input = argv[1], paired = argv[2], directory = argv[3], report = argv[4];
         std::ofstream out(report);
         if (!out)
@@ -333,8 +336,17 @@ int main(int argc, char **argv) {
         if (paired != "-")
             m = sk::read_actor(paired, options());
         sk::FbxWriteOptions write_options;
+        if (argc == 8) {
+            const auto value = std::filesystem::path(argv[7]).string();
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("FBX budget must be a positive byte count");
+            write_options.limits.decoded_bytes = std::stoull(value);
+            if (!write_options.limits.decoded_bytes ||
+                write_options.limits.decoded_bytes > 16ULL * 1024 * 1024 * 1024)
+                throw std::runtime_error("Probe FBX budget must be at most 16 GiB");
+        }
         std::optional<sk::PsaConfig> config;
-        if (argc == 7) {
+        if (argc >= 7) {
             if (std::filesystem::path(argv[6]) != "reference" || !m)
                 throw std::runtime_error("Explicit reference mode requires a PSK reference");
             write_options.pairing_policy = sk::PairingPolicy::ReferenceSkeleton;
@@ -352,6 +364,7 @@ int main(int argc, char **argv) {
             }
         }
         out << "{\"sha256\":" << quoted(a.source.identity.sha256)
+            << ",\"fbx_budget_bytes\":" << write_options.limits.decoded_bytes
             << ",\"writer\":" << quoted(sk::fbx_writer_version()) << ",\"clip_count\":" << a.sequences.size();
         if (m) {
             const auto p = sk::pair(a, *m, 1e-4, write_options.pairing_policy);

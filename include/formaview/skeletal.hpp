@@ -56,6 +56,7 @@ struct Bone {
     Vec3 raw_translation, raw_size;
     double raw_length{};
     Transform default_local;           // Source bone record, never substituted with frame zero.
+    bool default_local_valid{true};    // PSA may contain zero reference placeholders, preserved verbatim.
     std::optional<Matrix4> bind_world; // PSK reference only; PSA record is not a verified bind.
 };
 struct Wedge {

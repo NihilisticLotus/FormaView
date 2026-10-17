@@ -77,6 +77,10 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         throw Failure(ErrorCode::Unsupported,
                       "ActorX writer currently requires ASCII names; source bytes are retained by reader");
     const auto pairing = paired ? pair(a, *paired, 1e-4, options.pairing_policy) : Pairing{};
+    if (!paired && std::any_of(a.bones.begin(), a.bones.end(),
+                               [](const auto &bone) { return !bone.default_local_valid; }))
+        throw Failure(ErrorCode::Unsupported,
+                      "PSA reference records are placeholders; supply an explicit reference PSK");
     if (options.psa_config && !paired)
         throw Failure(ErrorCode::InvalidArgument, "PSA companion requires a paired reference PSK");
     if (paired) {
