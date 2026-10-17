@@ -1,4 +1,4 @@
-add_library(formaview_core STATIC contracts.cpp capabilities.cpp scheduler.cpp telemetry.cpp)
+add_library(formaview_core STATIC contracts.cpp capabilities.cpp scheduler.cpp telemetry.cpp skeletal.cpp sha256.cpp)
 add_library(FormaView::Core ALIAS formaview_core)
 target_include_directories(formaview_core PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(formaview_core PUBLIC cxx_std_20)

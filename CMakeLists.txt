@@ -33,6 +33,7 @@ endif()
 
 find_package(Threads REQUIRED)
 add_subdirectory(src/core)
+include(cmake/SkeletalDependencies.cmake)
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)

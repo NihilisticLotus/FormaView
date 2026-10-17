@@ -23,3 +23,6 @@
 /design/
 /reports/
 /artifacts/
+
+# Local Python import caches (Blender adapter and contract tests)
+__pycache__/

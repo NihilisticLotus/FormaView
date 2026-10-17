@@ -15,5 +15,31 @@
       "d3dcompiler_47-x64.7z": "f886f3255600d46b3e651ab5cb8084b42df5e59f78993ad43d8b0cb3b70552c3"
     }
   },
-  "acquisition_tool": { "name": "aqtinstall", "version": "3.3.0" }
+  "acquisition_tool": {
+    "name": "aqtinstall",
+    "version": "3.3.0"
+  },
+  "ufbx": {
+    "version": "0.23.1",
+    "revision": "5955c5c0b042ac2dc6f32955ab206aaec0620cfc",
+    "repository": "https://github.com/ufbx/ufbx",
+    "license": "MIT (dependency only; does not set the product license)",
+    "sources_sha256": {
+      "ufbx.c": "45cfd8896acc5d52191b5d157de2cc18ea3059fc9d703115dca067b44b4cc170",
+      "ufbx.h": "41181b69facbd48995d29f105656dd2fbf4357122c651fd7e2014c2c170cb136",
+      "LICENSE": "e52669716973273fb77033552cf6d8dbb88d3dad8600fa4d78088a5f92b3fd65"
+    }
+  },
+  "fbx_sdk": {
+    "version": "2020.2.0",
+    "target_fbx": "FBX201400 / binary 7400",
+    "optional": true,
+    "distribution": "Not bundled; local SDK candidate only. Distribution obligations require verification before packaging.",
+    "source": "https://aps.autodesk.com/developer/overview/fbx-sdk",
+    "validation_library_sha256": {
+      "libfbxsdk-md.lib": "86f07d96861f6aac9cb6df8ba6e0b68eb53cafaaaf6b2c1ee442092a1412374e",
+      "libxml2-md.lib": "849f947def74e1a9e8b10575e7e6c4fee0a85b9559271718d87d3026891f32c0",
+      "zlib-md.lib": "ffe090f1dfa86d010b3bada6963a4ed8a9116d0b363589356a24fbdb714e0001"
+    }
+  }
 }

@@ -25,3 +25,15 @@ cmake --preset windows-asan
 cmake --build --preset asan
 ctest --preset asan
 ```
+
+可选骨骼验证目标：原生 ActorX 核心无需 Qt 或 SDK。设置 `FORMAVIEW_UFBX_ROOT` 为锁定版本的外置 ufbx 源码目录，可构建 FBX 读取库；设置 `FORMAVIEW_BUILD_FBX_WRITER=ON` 与 `FORMAVIEW_FBXSDK_ROOT` 可构建本机 FBX SDK 写出验证库。SDK 由使用者自行取得合法安装，不随源码提供。版本和校验值见 `cmake/dependencies.lock.json`；第三方通知在 `third_party/`。
+
+同时启用读写库后生成 `formaview_skeletal_probe` 测试工具，参数为输入、配对 PSK 或 `-`、已存在输出目录、报告路径。每片段分别生成纯骨架与配对网格 FBX，拒绝覆盖。`FORMAVIEW_TEST_ARTIFACT_ROOT` 指定外部测试输出目录后启用 FBX 数值测试。验证库尚未接入正式宿主或能力注册；不构成格式兼容性承诺。
+
+对于使用 PSK 层级与参考姿势的 PSA，工具可追加两个参数：显式提供的 `.config` 路径（无配套文件时为 `-`）和 `reference`。此模式按唯一骨骼名称配对，纯骨架导出也使用 PSK 参考；保留 PSA 原始层级、姿势和键，不把记录差异当作文件损坏。`[RemoveTracks]` 的 `all`／`trans`／`rot` 使用 PSK 对应参考通道，配置内容与来源哈希保留。核心不自动扫描或访问相邻文件；默认严格记录检查仍可用于诊断。
+
+FBX 写出使用静态参考预旋转，并按世界矩阵误差细分超差的源帧区间；保留源关键时刻、真实秒和末尾保持。每个输出区间的三个内部时刻接受数值检查，超过精度、细分或预算限制时拒绝写出。文件帧率声明最细输出采样网格，原始帧率／帧数及实际输出采样率单独保存在 `FormaViewSourceFPS`／`FormaViewSourceFrames`／`FormaViewBakeFPS` 元数据中；不能把输出采样数当作原始 PSA 帧数。`FbxWriteResult` 返回细分、输出采样数和检查误差。验证工具还在独立的非网格时刻回读检查；这些实验性接口尚未接入正式导入流程。
+
+Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_import.py` 适配器，使关键帧位置使用 `fps/fps_base`；默认 FBX 导入尚未取得相同验收结论。在 Blender Python 控制台将该目录加入 `sys.path`，然后调用 `from formaview_import import import_verified_fbx; import_verified_fbx(r'C:\path\clip.fbx')`，或执行 `blender --python tools/blender/formaview_import.py -- C:\path\clip.fbx`。脚本检查 Blender 版本、导入器签名和显式来源元数据，临时修正仅在本次导入内生效；不改安装文件、不重新定时。独立契约测试：`py -3 tests/blender_import_tests.py`。
+
+当前写出边界：名称只接受非空可打印 ASCII（读取保留原始名字字节，文件路径支持 Unicode）；负权重、morph 和未经解释的非均匀 key delta 拒绝写出。缩放键保留并求值，层级溢出／FBX 时间或曲线精度溢出会拒绝。读写预算与取消属于协作准入，FBX SDK 内部分配没有硬上限，ufbx 单次场景求值只能在调用前后检查取消。输出曲线的有限时刻误差检查不构成连续时间的数学误差上界。
