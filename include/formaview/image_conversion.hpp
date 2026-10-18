@@ -5,11 +5,20 @@
 #include <variant>
 
 namespace formaview::imaging {
+struct ImageSemantics {
+  AlphaMode alpha{AlphaMode::Unknown};
+  ImageMeaning meaning{ImageMeaning::Unknown};
+  std::optional<std::string> colour_space;
+  std::string icc_profile_sha256;
+};
 class ImageDocument {
 public:
   static ImageDocument open(const std::filesystem::path &, Limits = {},
                             std::stop_token = {});
   [[nodiscard]] const ImageData &description() const;
+  // Effective source tags for this resource; description() retains the
+  // container summary. Shared by viewport, conversion preparation and MCP.
+  [[nodiscard]] ImageSemantics semantics(std::size_t) const;
   [[nodiscard]] ImageSubresource decode(std::size_t,
                                         std::stop_token = {}) const;
   [[nodiscard]] std::size_t resident_bytes() const;

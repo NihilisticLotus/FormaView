@@ -184,13 +184,36 @@ void run(const std::filesystem::path &root) {
               "Skip modified destination");
     }
     {
-      OutputTransaction t(scope, output / "existing.bin", snapshot,
+      const auto allocated = allocate_output(scope, output / "existing.bin",
+                                             snapshot, ConflictPolicy::Rename);
+      require(!allocated.exists && !std::filesystem::exists(allocated.path),
+              "Rename allocation wrote a destination");
+      OutputTransaction t(scope, allocated.path, snapshot,
                           ConflictPolicy::Rename);
       t.write(bytes("renamed"));
       auto result = t.commit();
       require(result.path.filename() == "existing (1).bin" &&
                   read(result.path) == "renamed",
               "Conflict rename failed");
+    }
+    {
+      const auto allocated = allocate_output(scope, output / "existing.bin",
+                                             snapshot, ConflictPolicy::Rename);
+      OutputTransaction t(scope, allocated.path, snapshot,
+                          ConflictPolicy::Rename);
+      t.write(bytes("must-not-reallocate"));
+      // Claim the exact approved path after the last validation, immediately
+      // before atomic rename. The kernel must reject without rolling suffixes.
+      rejects(
+          [&] {
+            (void)t.commit({}, [&](const OutputIntent &intent) {
+              write(intent.destination, "external-owner");
+            });
+          },
+          ErrorCode::Conflict);
+      require(read(allocated.path) == "external-owner" &&
+                  !std::filesystem::exists(output / "existing (3).bin"),
+              "Atomic rename overwrote a claimant or chose an unapproved name");
     }
     scope.allow_overwrite = true;
     {

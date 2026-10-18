@@ -193,7 +193,8 @@ class DesktopTests final : public QObject {
   }
 private slots:
   void initTestCase() {
-    root_ = qEnvironmentVariable("FORMAVIEW_UI_TEST_ROOT");
+    root_ = QDir::fromNativeSeparators(
+        qEnvironmentVariable("FORMAVIEW_UI_TEST_ROOT"));
     QVERIFY(!root_.isEmpty());
     QVERIFY(QDir().mkpath(root_));
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root_ + "/image-journal").toUtf8());
@@ -1238,6 +1239,95 @@ private slots:
       save("image-exr-layers-" + language);
     }
     desktop_->setLanguage("zh-CN");
+    desktop_->clearAsset();
+  }
+  void imageApprovedOutputsAndSelectedSemantics() {
+    const auto fixtures =
+        qEnvironmentVariable("FORMAVIEW_TEST_BOUNDARY_FIXTURES");
+    if (fixtures.isEmpty())
+      QSKIP("Set external independently generated boundary fixtures to run "
+            "this regression");
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    ImageJobs service;
+    const auto output = root_ + "/gui-boundary-output";
+    QVERIFY(QDir().mkpath(output));
+    const QVariantMap scope{{"input_roots", QStringList{fixtures}},
+                            {"output_roots", QStringList{output}},
+                            {"allow_overwrite", false}};
+    QJsonArray pixels, records;
+    for (const auto &format : {QString("tiff"), QString("ico")}) {
+      const auto source = fixtures + "/mixed." + format;
+      desktop_->openPath(source);
+      QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() &&
+                                   session->path() == source,
+                               10000);
+      for (int page = 0; page < 2; ++page) {
+        session->selectSubresource(page);
+        QTRY_VERIFY(!session->busy() && session->selected() == page);
+        const auto alpha = page == 0          ? "straight"
+                           : format == "tiff" ? "premultiplied"
+                                              : "absent";
+        QCOMPARE(session->info()["alpha"].toInt(), page == 0          ? 2
+                                                   : format == "tiff" ? 3
+                                                                      : 1);
+        QCOMPARE(session->info()["containerAlpha"].toInt(), 0);
+        QCOMPARE(!session->info()["iccProfileSha256"].toString().isEmpty(),
+                 page == 0);
+        const auto target = format == "tiff" ? "tiff" : "png";
+        const auto filename = format + QString::number(page) + "." + target;
+        QFile occupied(output + '/' + filename);
+        QVERIFY(occupied.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+        QCOMPARE(occupied.write("external-owner"), 14LL);
+        occupied.close();
+        service.preflight({source}, scope,
+                          {{"target", target}, {"subresource", page}}, filename,
+                          "rename");
+        QTRY_VERIFY_WITH_TIMEOUT(!service.busy() && !service.plan().isEmpty() &&
+                                     service.plan().value("state") !=
+                                         "planning",
+                                 15000);
+        QVERIFY2(service.plan().value("state") == "ready",
+                 qPrintable(service.error()));
+        const auto entry = service.plan()["items"].toList()[0].toMap();
+        QCOMPARE(entry["request"]
+                     .toMap()["options"]
+                     .toMap()["source_alpha"]
+                     .toString(),
+                 QString(alpha));
+        const auto selected = entry["preflight"].toMap()["output"].toString();
+        QCOMPARE(QFileInfo(selected).fileName(),
+                 format + QString::number(page) + " (1)." + target);
+        QVERIFY(!QFile::exists(selected));
+        records.append(QJsonObject::fromVariantMap(service.plan()));
+        service.submit(true);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !service.busy() && service.job()["state"] == "succeeded", 15000);
+        const auto result =
+            service.job()["items"].toList()[0].toMap()["result"].toMap();
+        QCOMPARE(result["committed_output"].toString(), selected);
+        QVERIFY(occupied.open(QIODevice::ReadOnly));
+        QCOMPARE(occupied.readAll(), QByteArray("external-owner"));
+        QJsonObject check{{"path", selected},
+                          {"sha256", result["output_sha256"].toString()},
+                          {"icc", page == 0}};
+        if (format == "tiff") {
+          check["alpha_tag"] = page == 0 ? 2 : 1;
+          check["value"] = page == 0 ? 128 : 64;
+        } else {
+          check["pixel"] =
+              page == 0 ? QJsonArray{120, 30, 20, 128} : QJsonArray{4, 6, 8};
+        }
+        pixels.append(check);
+        save("image-boundary-" + format + QString::number(page));
+      }
+    }
+    QFile manifest(root_ + "/gui-boundary-pixels.json");
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(QJsonDocument(pixels).toJson());
+    QFile plans(root_ + "/gui-boundary-plans.json");
+    QVERIFY(plans.open(QIODevice::WriteOnly));
+    plans.write(QJsonDocument(records).toJson());
     desktop_->clearAsset();
   }
   void imageConversionGuiLifecycle() {

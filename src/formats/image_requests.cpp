@@ -359,7 +359,9 @@ QJsonObject image_capabilities() {
 QJsonObject execute_image_request(
     const QJsonObject &request, const AccessScope &scope, Limits limits,
     std::stop_token stop, std::span<const InputSnapshot> protected_inputs,
-    const std::function<void(const QJsonObject &)> &commit_observer) {
+    const std::function<void(const QJsonObject &)> &commit_observer,
+    std::span<const std::filesystem::path> reserved_outputs,
+    const std::filesystem::path &approved_output) {
   keys(request, {"version", "operation", "input", "output", "options",
                  "conflict", "approval_digest", "acknowledge_losses",
                  "subresource", "offset", "limit"});
@@ -384,6 +386,7 @@ QJsonObject execute_image_request(
   if (operation == "inspect") {
     const auto selected = integer(request, "subresource", 0);
     auto image = document.decode(selected, stop);
+    const auto semantics = document.semantics(selected);
     QJsonArray channels;
     for (const auto &c : image.channels)
       channels.append(QJsonObject{
@@ -424,7 +427,14 @@ QJsonObject execute_image_request(
          QString::fromStdString(description.source.identity.adapter)},
         {"adapter_version",
          QString::fromStdString(description.source.identity.adapter_version)},
-        {"alpha", alpha(description.alpha)},
+        {"alpha", alpha(semantics.alpha)},
+        {"container_alpha", alpha(description.alpha)},
+        {"colour_space",
+         semantics.colour_space
+             ? QJsonValue(QString::fromStdString(*semantics.colour_space))
+             : QJsonValue(QJsonValue::Null)},
+        {"icc_profile_sha256",
+         QString::fromStdString(semantics.icc_profile_sha256)},
         {"selected_channels", channels},
         {"metadata", props},
         {"subresources", resources},
@@ -442,7 +452,14 @@ QJsonObject execute_image_request(
                               {"rename", ConflictPolicy::Rename},
                               {"overwrite", ConflictPolicy::Overwrite}});
   const auto output =
-      inspect_output(scope, path(string(request, "output")), input, conflict);
+      approved_output.empty()
+          ? allocate_output(scope, path(string(request, "output")), input,
+                            conflict, reserved_outputs, stop)
+          : inspect_output(scope, approved_output, input, conflict);
+  if (conflict == ConflictPolicy::Rename && output.exists)
+    throw skeletal::Failure(
+        ErrorCode::Conflict,
+        "Approved output name is occupied; run a new preflight");
   for (const auto &other : protected_inputs)
     (void)inspect_output(scope, output.path, other, conflict);
   auto product = prepare_image_conversion(document, options, limits, stop);
@@ -464,11 +481,10 @@ QJsonObject execute_image_request(
       {"inputs", in_roots},
       {"outputs", out_roots},
       {"overwrite", scope.allow_overwrite}};
-  const QJsonObject approval{{"request", canonical},
-                             {"input", snapshot(input)},
-                             {"losses", losses},
-                             {"scope", policy},
-                             {"implementation", "M05-image-request-v1"}};
+  const QJsonObject approval{
+      {"request", canonical},     {"resolved_output", qpath(output.path)},
+      {"input", snapshot(input)}, {"losses", losses},
+      {"scope", policy},          {"implementation", "M05-image-request-v2"}};
   const auto approval_digest = digest(approval);
   QJsonObject result{
       {"version", 1},

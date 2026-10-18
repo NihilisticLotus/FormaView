@@ -14,6 +14,8 @@ namespace formaview::imaging {
 [[nodiscard]] QJsonObject execute_image_request(
     const QJsonObject &, const AccessScope &, Limits = {}, std::stop_token = {},
     std::span<const InputSnapshot> protected_inputs = {},
-    const std::function<void(const QJsonObject &)> &commit_observer = {});
+    const std::function<void(const QJsonObject &)> &commit_observer = {},
+    std::span<const std::filesystem::path> reserved_outputs = {},
+    const std::filesystem::path &approved_output = {});
 [[nodiscard]] QJsonObject image_error_json(const skeletal::Failure &);
 } // namespace formaview::imaging

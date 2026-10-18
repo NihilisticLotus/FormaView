@@ -68,6 +68,33 @@ const ImageData &ImageDocument::description() const {
       [](const auto &file) -> const ImageData & { return file.description(); },
       file_);
 }
+ImageSemantics ImageDocument::semantics(std::size_t entry) const {
+  const auto &d = description();
+  if (entry >= d.subresources.size())
+    invalid("Image semantics subresource out of range");
+  ImageSemantics result{d.alpha, d.meaning, d.colour_space, {}};
+  const auto &props = d.source.properties;
+  for (const auto &prefix : {"entry." + std::to_string(entry) + ".",
+                             "page." + std::to_string(entry) + "."}) {
+    if (const auto it = props.find(prefix + "alpha"); it != props.end()) {
+      const auto &value = it->second;
+      if (value == "straight" || value == "2")
+        result.alpha = AlphaMode::Straight;
+      else if (value == "premultiplied" || value == "3")
+        result.alpha = AlphaMode::Premultiplied;
+      else if (value == "absent" || value == "1")
+        result.alpha = AlphaMode::Absent;
+      else
+        result.alpha = AlphaMode::Unknown;
+    }
+    if (const auto it = props.find(prefix + "colour_space"); it != props.end())
+      result.colour_space = it->second;
+  }
+  const auto icc = profile(d, entry);
+  if (!icc.empty())
+    result.icc_profile_sha256 = skeletal::sha256(icc);
+  return result;
+}
 ImageSubresource ImageDocument::decode(std::size_t entry,
                                        std::stop_token stop) const {
   return std::visit([&](const auto &file) { return file.decode(entry, stop); },

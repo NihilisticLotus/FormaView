@@ -404,6 +404,33 @@ OutputInspection inspect_output(const AccessScope &scope,
   }
   return {full, true, identity(info(h, false))};
 }
+OutputInspection allocate_output(
+    const AccessScope &scope, const std::filesystem::path &requested,
+    const InputSnapshot &input, ConflictPolicy conflict,
+    std::span<const std::filesystem::path> reserved, std::stop_token stop) {
+  const auto full = normal(requested);
+  for (std::uint32_t attempt = 0; attempt < 10000; ++attempt) {
+    cancel(stop);
+    auto target = full;
+    if (attempt)
+      target = full.parent_path() /
+               (full.stem().wstring() + L" (" + std::to_wstring(attempt) +
+                L")" + full.extension().wstring());
+    const bool claimed =
+        std::any_of(reserved.begin(), reserved.end(), [&](const auto &other) {
+          return equal(target.wstring(), other.lexically_normal().wstring());
+        });
+    if (claimed) {
+      if (conflict == ConflictPolicy::Rename)
+        continue;
+      fail(ErrorCode::Conflict, "Output is reserved by another batch item");
+    }
+    const auto candidate = inspect_output(scope, target, input, conflict);
+    if (conflict != ConflictPolicy::Rename || !candidate.exists)
+      return candidate;
+  }
+  fail(ErrorCode::Conflict, "Output rename candidates exhausted");
+}
 void InputLease::require_unchanged(const InputSnapshot &expected) const {
   const auto &s = snapshot();
   if (!equal(s.resolved_path.wstring(),
@@ -525,13 +552,9 @@ FileCommit OutputTransaction::commit(
   auto &p = *impl_;
   if (p.committed || !p.written)
     fail(ErrorCode::InvalidArgument, "Output transaction is not ready");
-  for (std::uint32_t attempt = 0; attempt < 10000; ++attempt) {
+  {
     cancel(stop);
-    auto target = p.requested;
-    if (attempt)
-      target = target.parent_path() /
-               (target.stem().wstring() + L" (" + std::to_wstring(attempt) +
-                L")" + target.extension().wstring());
+    const auto &target = p.requested;
     (void)normal(target);
     check_target(target, p.input);
     for (const auto &other : p.protected_inputs)
@@ -574,9 +597,8 @@ FileCommit OutputTransaction::commit(
       fail(ErrorCode::Io, "Atomic output commit failed", error);
     if (p.conflict == ConflictPolicy::Skip)
       return {true, {}};
-    if (p.conflict != ConflictPolicy::Rename)
-      fail(ErrorCode::Conflict, "Output conflict", error);
+    fail(ErrorCode::Conflict,
+         "Approved output name is occupied; run a new preflight", error);
   }
-  fail(ErrorCode::Conflict, "Output rename candidates exhausted");
 }
 } // namespace formaview

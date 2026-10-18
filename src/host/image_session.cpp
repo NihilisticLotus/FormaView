@@ -312,25 +312,21 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       for (const auto &[k, v] : d.source.properties)
         if (!k.ends_with("icc_hex") && !k.ends_with("icc_base64"))
           metadata.insert(text(k), text(v));
+      const auto semantics = document.semantics(index);
       p->info = {
           {"sha256", text(d.source.identity.sha256)},
           {"dataWindow", window(p->source.data_window)},
           {"displayWindow", window(p->source.display_window)},
-          {"alpha", static_cast<int>(d.alpha)},
-          {"meaning", static_cast<int>(d.meaning)},
-          {"colourSpace", d.colour_space ? text(*d.colour_space) : QString{}},
+          {"alpha", static_cast<int>(semantics.alpha)},
+          {"containerAlpha", static_cast<int>(d.alpha)},
+          {"meaning", static_cast<int>(semantics.meaning)},
+          {"colourSpace",
+           semantics.colour_space ? text(*semantics.colour_space) : QString{}},
+          {"iccProfileSha256", text(semantics.icc_profile_sha256)},
           {"metadata", metadata},
           {"block", p->source.block_encoding ? text(*p->source.block_encoding)
                                              : QString{}},
           {"format", file.suffix().toUpper()}};
-      const auto entryKey = QString("entry.%1.").arg(index);
-      const auto pageKey = QString("page.%1.").arg(index);
-      if (metadata.contains(entryKey + "alpha"))
-        p->info["alpha"] = metadata[entryKey + "alpha"] == "straight" ? 2 : 1;
-      if (metadata.contains(pageKey + "alpha"))
-        p->info["alpha"] = metadata[pageKey + "alpha"].toInt();
-      if (metadata.contains(entryKey + "colour_space"))
-        p->info["colourSpace"] = metadata[entryKey + "colour_space"];
       bool mips = false, arrays = false, faces = false, slices = false;
       for (std::size_t i = 0; i < d.subresources.size(); ++i) {
         const auto &s = d.subresources[i];

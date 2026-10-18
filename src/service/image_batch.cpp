@@ -375,6 +375,7 @@ struct ImageBatchService::Impl {
         }
       }
       qsizetype succeeded = 0, failed = 0, cancelled_count = 0;
+      std::vector<std::filesystem::path> allocated_outputs;
       for (qsizetype index = 0; index < entries.size(); ++index) {
         auto entry = entries[index].toObject();
         auto request = entry["request"].toObject();
@@ -391,12 +392,33 @@ struct ImageBatchService::Impl {
             update_item(record, index, entry);
           }
           const auto allocation = ImageAdmission(false, stop);
+          auto reserved_outputs = allocated_outputs;
+          if (planning && request["conflict"] == "rename") {
+            // Reserve future requested names too: an earlier rename must not
+            // consume a later skip/overwrite/rename item's destination.
+            for (qsizetype other = 0; other < entries.size(); ++other) {
+              if (other != index)
+                reserved_outputs.emplace_back(
+                    text(entries[other].toObject()["request"].toObject(),
+                         "output")
+                        .toStdWString());
+            }
+          }
+          const auto approved_output =
+              planning ? std::filesystem::path{}
+                       : std::filesystem::path(
+                             text(entry["preflight"].toObject(), "output")
+                                 .toStdWString());
           auto result = execute_image_request(
               request, scope, limits.image, stop, protected_inputs,
               [&](const QJsonObject &intent) {
                 entry["commit_intent"] = intent;
                 update_item(record, index, entry);
-              });
+              },
+              reserved_outputs, approved_output);
+          if (planning)
+            allocated_outputs.emplace_back(
+                text(result, "output").toStdWString());
           entry[planning ? "preflight" : "result"] = result;
           entry["status"] = planning ? QJsonValue("ready") : result["status"];
           ++succeeded;
@@ -478,10 +500,10 @@ struct ImageBatchService::Impl {
       (void)text(request, "output");
       auto output_key = text(request, "output");
       output_key.replace('\\', '/');
-      if (!outputs.insert(output_key.toCaseFolded()).second)
+      if (request["conflict"] != "rename" &&
+          !outputs.insert(output_key.toCaseFolded()).second)
         fail(ErrorCode::Conflict,
-             "Batch destinations must be distinct; duplicate output paths "
-             "require an explicit new name");
+             "Non-renaming batch destinations must be distinct");
       if (!request["options"].isObject())
         fail(ErrorCode::InvalidArgument, "Image options required");
       (void)parse_image_options(request["options"].toObject());
