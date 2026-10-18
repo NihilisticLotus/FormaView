@@ -1,4 +1,4 @@
-find_package(Qt6 6.8.3 EXACT REQUIRED COMPONENTS QuickControls2)
+find_package(Qt6 6.12.0 EXACT REQUIRED COMPONENTS QuickControls2)
 qt_add_library(formaview_desktop STATIC desktop.cpp desktop.hpp)
 target_link_libraries(formaview_desktop PUBLIC FormaView::Core Qt6::Quick PRIVATE formaview_options)
 target_include_directories(formaview_desktop PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -19,23 +19,33 @@ if(TARGET formaview_image_conversion)
     endforeach()
 endif()
 qt_add_executable(formaview main.cpp)
+target_compile_definitions(formaview PRIVATE
+    $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:QT_QML_DEBUG>
+    $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:FORMAVIEW_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}">)
 set_target_properties(formaview PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 set_source_files_properties(Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set(desktop_qml Main.qml Theme.qml Tool.qml Field.qml Readout.qml FilesPane.qml
-    Inspector.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml AppMenu.qml Workspace.qml)
+set(desktop_qml Main.qml Theme.qml AppIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FilesPane.qml
+    Inspector.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_image_conversion)
-    list(APPEND desktop_qml ImagePane.qml ImageInspector.qml PixelPanel.qml ExposureSpinBox.qml ConversionDialog.qml ConversionSettings.qml ConversionInputs.qml ConversionOverrides.qml ConversionResults.qml ImageJobsPane.qml McpSettings.qml)
+    list(APPEND desktop_qml ImagePane.qml ImageInspector.qml PixelPanel.qml ExposureSpinBox.qml ConversionWorkspace.qml ConversionSettings.qml ConversionInputs.qml ConversionOverrides.qml ConversionResults.qml ConversionItemRow.qml ImageJobsPane.qml McpSettings.qml)
 endif()
 qt_add_qml_module(formaview URI FormaView.Engineering
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/FormaView/Engineering
     QML_FILES ${desktop_qml})
 target_link_libraries(formaview PRIVATE formaview_desktop Qt6::QuickControls2 formaview_options)
+file(GLOB_RECURSE desktop_icons CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/*.svg")
+qt_add_resources(formaview ui_icons PREFIX "/formaview" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${desktop_icons})
+add_custom_command(TARGET formaview POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/icons/UPSTREAM-LICENSE"
+        "$<TARGET_FILE_DIR:formaview>/FormaView-Icons-LICENSE.txt")
 if(TARGET formaview_desktopplugin)
     target_link_libraries(formaview PRIVATE formaview_desktopplugin)
 endif()
 if(BUILD_TESTING)
-    find_package(Qt6 6.8.3 EXACT REQUIRED COMPONENTS Test)
+    find_package(Qt6 6.12.0 EXACT REQUIRED COMPONENTS Test)
     qt_add_executable(formaview_desktop_tests ../../tests/desktop_tests.cpp)
+    qt_add_resources(formaview_desktop_tests ui_icons_test PREFIX "/formaview" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${desktop_icons})
     set_target_properties(formaview_desktop_tests PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
     qt_add_qml_module(formaview_desktop_tests URI FormaView.TestUI
         OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/FormaView/TestUI QML_FILES ${desktop_qml})

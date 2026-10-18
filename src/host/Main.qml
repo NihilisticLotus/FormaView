@@ -7,7 +7,8 @@ ApplicationWindow {
     minimumWidth: 1280; minimumHeight: 800
     title: "FormaView"
     color: Theme.base
-    font.pixelSize: 14
+    font.pixelSize: Theme.bodyText
+    font.family: controller.language === "en" ? "Segoe UI Variable Text" : "Microsoft YaHei UI"
     palette.window: Theme.panel
     palette.windowText: Theme.text
     palette.base: Theme.field
@@ -18,5 +19,7 @@ ApplicationWindow {
     palette.highlightedText: Theme.text
     palette.mid: Theme.line
     Binding { target: Theme; property: "language"; value: root.controller.language }
-    Workspace { anchors.fill: parent; anchors.margins: 4; controller: root.controller }
+    Binding { target: Theme; property: "compact"; value: root.controller.preferences.density === "compact" }
+    onClosing: close => { close.accepted = workspace.requestWindowClose() }
+    Workspace { id: workspace; anchors.fill: parent; controller: root.controller }
 }

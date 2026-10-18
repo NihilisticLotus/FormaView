@@ -1,15 +1,17 @@
 # FormaView
 
-Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.8.3 `msvc2022_64`（Quick）。入口提供三语言外壳、目录浏览、按需缩略图和任务状态。同时启用 `FORMAVIEW_BUILD_PROFESSIONAL` 与 `FORMAVIEW_BUILD_RASTER` 后，接入图片预览、批量转换和共用任务服务的 MCP；`--capabilities` 查询实际编入且处理器可用的图片能力。模型和动画预览仍待接入。
+Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.12.0 `msvc2022_64`（Quick）。入口提供三语言外壳、目录浏览、按需缩略图和任务状态。同时启用 `FORMAVIEW_BUILD_PROFESSIONAL` 与 `FORMAVIEW_BUILD_RASTER` 后，接入图片预览、批量转换和共用任务服务的 MCP；`--capabilities` 查询实际编入且处理器可用的图片能力。模型和动画预览仍待接入。
 
 可使用 `formaview.exe --open 文件或目录`，或在窗口中按 `Ctrl+O` 打开文件、`Ctrl+L` 编辑目录，方向键连续浏览、Ctrl／Shift 多选。图片视口支持通道、独立 Alpha、曝光、平铺、像素读数，`F` 适应窗口、`Z` 一个源像素对应一个屏幕物理像素。其他格式的文件读取检查不代表解析成功。转换使用源内容及显式设置，不继承视口状态；先预检、审阅损失再提交。MCP 默认关闭，在设置中应用输入/输出范围后启用，填入独立 Python 环境和适配器路径并复制配置给客户端；停止端点不会自动取消已提交任务。
+
+产品定位为只读资产预览，不提供资产编辑、保存或保存回原文件的操作。通道、曝光、平铺等预览调整只改变显示；“保存设置”只保存软件偏好。批量转换是独立导出流程，输出不得覆盖本次输入资产或其硬链接，覆盖策略仅用于既有输出文件。
 
 配置时指定仓库外的 `FORMAVIEW_UI_TEST_ROOT` 可启用桌面集成测试。测试生成约一万项临时目录并保留证据；原生输入测量需要交互式 Windows 桌面，会临时将测试窗口置于前台。`--smoke --metrics 外部JSON路径` 记录外壳启动与资源观测，计时器间隔不等同输入延迟。
 
 在 PowerShell 中运行：
 
 ```powershell
-$env:FORMAVIEW_QT_ROOT = 'E:\CodexProject\asset-preview-planning\development\toolchain\Qt\6.8.3\msvc2022_64'
+$env:FORMAVIEW_QT_ROOT = 'E:\Qt\6.12.0\msvc2022_64'
 .\tools\dev.ps1 Configure
 .\tools\dev.ps1 Build
 .\tools\dev.ps1 Test
@@ -18,6 +20,8 @@ $env:FORMAVIEW_QT_ROOT = 'E:\CodexProject\asset-preview-planning\development\too
 .\tools\dev.ps1 Lint
 .\tools\dev.ps1 Bench
 ```
+
+QML Preview MCP 使用独立外置构建目录，配置 `-DFORMAVIEW_QML_PREVIEW=ON` 并构建 `RelWithDebInfo`（或使用匹配 Debug 依赖的 Debug）。此选项默认关闭，Release 始终不编入 QML 调试服务。预览使用可执行文件旁的 `preview-state` 保存隔离设置与任务；向其中的 `capture.request` 写入简单文件名，可保存该窗口的 PNG 和尺寸/DPR JSON，供本地界面核查。
 
 核心可独立于 Qt 构建（CMake／CTest 需在 PATH）：
 

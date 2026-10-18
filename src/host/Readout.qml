@@ -10,6 +10,7 @@ ColumnLayout {
     TextEdit {
         objectName: "readoutValue"
         Layout.fillWidth: true
+        Layout.preferredWidth: 0
         text: root.value
         textFormat: TextEdit.PlainText
         readOnly: true

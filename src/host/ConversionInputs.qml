@@ -34,11 +34,11 @@ ColumnLayout {
             if (id !== root.snapshotId) { root.snapshotId = id; root.selected = [] }
         }
     }
-    Tool { id: expand; objectName: "discoverInputsToggle"; checkable: true; text: (checked ? "▾ " : "▸ ") + Theme.t("从输入目录选择图片", "Choose images from input folder", "從輸入資料夾選擇影像") }
+    SectionHeader { id: expand; objectName: "discoverInputsToggle"; checkable: true; text: Theme.t("从输入目录选择图片", "Choose images from input folder", "從輸入資料夾選擇影像") }
     ColumnLayout {
         Layout.fillWidth: true; visible: expand.checked
         RowLayout {
-            CheckBox { id: recursive; objectName: "discoverRecursive"; text: Theme.t("包含子目录", "Include subfolders", "包含子資料夾") }
+            OptionCheck { id: recursive; objectName: "discoverRecursive"; text: Theme.t("包含子目录", "Include subfolders", "包含子資料夾") }
             Tool {
                 objectName: "discoverImagesButton"; text: root.service.busy || root.preparing ? Theme.t("读取中…", "Reading…", "讀取中…") : Theme.t("读取目录列表", "Read folder list", "讀取資料夾清單")
                 enabled: !root.service.busy && !root.preparing && !!root.scope.input_roots[0] && !!root.scope.output_roots[0]
@@ -50,13 +50,13 @@ ColumnLayout {
         RowLayout {
             visible: !!root.snapshotId; Layout.fillWidth: true
             Field { id: filter; objectName: "discoveryFilter"; Layout.fillWidth: true; placeholderText: Theme.t("筛选本页文件名", "Filter names on this page", "篩選本頁檔名"); Accessible.name: placeholderText }
-            ComboBox { id: extension; Layout.preferredWidth: 210; model: [Theme.t("本页全部格式", "All formats on page", "本頁全部格式"), ".png", ".jpg", ".jpeg", ".bmp", ".dib", ".gif", ".ico", ".tga", ".tif", ".tiff", ".webp", ".dds", ".hdr", ".exr"]; Accessible.name: Theme.t("本页扩展名筛选", "Page extension filter", "本頁副檔名篩選") }
+            Choice { id: extension; Layout.preferredWidth: 210; model: [Theme.t("本页全部格式", "All formats on page", "本頁全部格式"), ".png", ".jpg", ".jpeg", ".bmp", ".dib", ".gif", ".ico", ".tga", ".tif", ".tiff", ".webp", ".dds", ".hdr", ".exr"]; Accessible.name: Theme.t("本页扩展名筛选", "Page extension filter", "本頁副檔名篩選") }
         }
         ListView {
             objectName: "discoveryList"; Layout.fillWidth: true; Layout.preferredHeight: Math.min(240, count * 40); clip: true
             model: root.visibleItems; reuseItems: true
             ScrollBar.vertical: ScrollBar {}
-            delegate: CheckBox {
+            delegate: OptionCheck {
                 objectName: "discoveryChoice"
                 required property var modelData
                 width: ListView.view.width; height: 40
@@ -70,9 +70,9 @@ ColumnLayout {
         }
         RowLayout {
             visible: !!root.snapshotId; Layout.fillWidth: true
-            Tool { objectName: "discoveryPrevious"; text: "‹"; enabled: root.service.discoveryOffset > 0; Accessible.name: Theme.t("上一页输入", "Previous input page", "上一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset - 100) }
+            Tool { objectName: "discoveryPrevious"; iconName: "return"; enabled: root.service.discoveryOffset > 0; Accessible.name: Theme.t("上一页输入", "Previous input page", "上一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset - 100) }
             Label { textFormat: Text.PlainText; color: Theme.muted; text: (root.service.discoveryOffset + 1) + " / " + (root.service.discovery.total || 0) }
-            Tool { objectName: "discoveryNext"; text: "›"; enabled: root.service.discovery.next_offset !== null && root.service.discovery.next_offset !== undefined; Accessible.name: Theme.t("下一页输入", "Next input page", "下一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset + 100) }
+            Tool { objectName: "discoveryNext"; iconName: "return"; iconRotation: 180; enabled: root.service.discovery.next_offset !== null && root.service.discovery.next_offset !== undefined; Accessible.name: Theme.t("下一页输入", "Next input page", "下一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset + 100) }
             Tool { objectName: "selectDiscoveredPage"; text: Theme.t("选择本页筛选项", "Select filtered page", "選取本頁篩選項"); enabled: root.visibleItems.length > 0 && root.selected.length < 64; onClicked: { for (const item of root.visibleItems) root.toggle(item.input, true) } }
             Tool { text: Theme.t("清空选择", "Clear selection", "清空選擇"); onClicked: root.selected = [] }
         }

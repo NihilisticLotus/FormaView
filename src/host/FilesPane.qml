@@ -1,18 +1,19 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 Rectangle {
     id: root
     required property var controller
     property bool thumbnails: !!controller.preferences.thumbnails
     signal collapse()
-    color: Theme.panel
+    objectName: "filesPane"
+    color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
     function addressFocus() { address.forceActiveFocus(); address.selectAll() }
     function viewFocus() { (thumbnails ? grid : list).forceActiveFocus() }
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
-    function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : 38)*columns) }
-    function restore() { Qt.callLater(() => { const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; const offset = controller.scrollPosition/columns*(thumbnails ? grid.cellHeight : 38); view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height)) }) }
+    function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
+    function restore() { Qt.callLater(() => { const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; const offset = controller.scrollPosition/columns*(thumbnails ? grid.cellHeight : Theme.fileRowHeight); view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height)) }) }
     function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
     Connections { target: root.controller; function onViewRestored() { root.restore() } }
     onThumbnailsChanged: restore()
@@ -22,17 +23,18 @@ Rectangle {
         spacing: 8
         RowLayout {
             Layout.fillWidth: true
-            Layout.margins: 8
-            Label { text: Theme.t("文件", "Files", "檔案"); color: Theme.text; Layout.fillWidth: true }
-            Tool { id: collapseButton; objectName: "collapseFiles"; text: "‹"; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
+            Layout.margins: 10; Layout.minimumHeight: 34
+            Label { text: Theme.t("文件", "Files", "檔案"); font.pixelSize: Theme.compactText; font.bold: true; color: Theme.text; Layout.fillWidth: true }
+            Tool { id: collapseButton; objectName: "collapseFiles"; iconName: "files-close"; quiet: true; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
         }
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 10; Layout.rightMargin: 10
-            Tool { Layout.fillWidth: true; text: "←"; enabled: root.controller.canBack; hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左"); onClicked: { root.remember(); root.controller.history(-1) } }
-            Tool { Layout.fillWidth: true; text: "→"; enabled: root.controller.canForward; hint: Theme.t("前进 · Alt+右", "Forward · Alt+Right", "前進 · Alt+右"); onClicked: { root.remember(); root.controller.history(1) } }
-            Tool { Layout.fillWidth: true; text: "↑"; enabled: root.controller.directory.length > 0; hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上"); onClicked: { root.remember(); root.controller.parentDirectory() } }
+            Tool { quiet: true; iconName: "return"; enabled: root.controller.canBack; hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左"); onClicked: { root.remember(); root.controller.history(-1) } }
+            Tool { quiet: true; iconName: "return"; iconRotation: 180; enabled: root.controller.canForward; hint: Theme.t("前进 · Alt+右", "Forward · Alt+Right", "前進 · Alt+右"); onClicked: { root.remember(); root.controller.history(1) } }
+            Tool { quiet: true; iconName: "return"; iconRotation: 90; enabled: root.controller.directory.length > 0; hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上"); onClicked: { root.remember(); root.controller.parentDirectory() } }
         }
+
         Field {
             id: address
             objectName: "address"
@@ -61,33 +63,33 @@ Rectangle {
         Tool {
             id: filterButton
             objectName: "filterButton"
-            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
+            Layout.maximumWidth: root.width - 20; Layout.leftMargin: 10; Layout.rightMargin: 10
             text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC"][root.controller.typeFilter] : "")
             hint: text
             onClicked: filters.open()
-            Menu {
+            AppPopupMenu {
                 id: filters
                 y: filterButton.height
-                MenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 0; onTriggered: root.controller.filter(search.text, 0, root.controller.sortOrder) }
-                MenuItem { text: Theme.t("图片 / 纹理", "Images / Textures", "影像 / 紋理"); checkable: true; checked: root.controller.typeFilter === 1; onTriggered: root.controller.filter(search.text, 1, root.controller.sortOrder) }
-                MenuItem { text: Theme.t("模型", "Models", "模型"); checkable: true; checked: root.controller.typeFilter === 2; onTriggered: root.controller.filter(search.text, 2, root.controller.sortOrder) }
-                MenuItem { text: Theme.t("骨骼动画", "Skeletal animation", "骨骼動畫"); checkable: true; checked: root.controller.typeFilter === 3; onTriggered: root.controller.filter(search.text, 3, root.controller.sortOrder) }
-                MenuItem { text: "ABC"; checkable: true; checked: root.controller.typeFilter === 4; onTriggered: root.controller.filter(search.text, 4, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 0; onTriggered: root.controller.filter(search.text, 0, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("图片 / 纹理", "Images / Textures", "影像 / 紋理"); checkable: true; checked: root.controller.typeFilter === 1; onTriggered: root.controller.filter(search.text, 1, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("模型", "Models", "模型"); checkable: true; checked: root.controller.typeFilter === 2; onTriggered: root.controller.filter(search.text, 2, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("骨骼动画", "Skeletal animation", "骨骼動畫"); checkable: true; checked: root.controller.typeFilter === 3; onTriggered: root.controller.filter(search.text, 3, root.controller.sortOrder) }
+                AppMenuItem { text: "ABC"; checkable: true; checked: root.controller.typeFilter === 4; onTriggered: root.controller.filter(search.text, 4, root.controller.sortOrder) }
                 MenuSeparator {}
-                MenuItem { text: Theme.t("名称 ↑", "Name ↑", "名稱 ↑"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 0) }
-                MenuItem { text: Theme.t("名称 ↓", "Name ↓", "名稱 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 1) }
-                MenuItem { text: Theme.t("修改时间 ↓", "Modified ↓", "修改時間 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 2) }
-                MenuItem { text: Theme.t("大小 ↓", "Size ↓", "大小 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 3) }
+                AppMenuItem { text: Theme.t("名称 ↑", "Name ↑", "名稱 ↑"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 0) }
+                AppMenuItem { text: Theme.t("名称 ↓", "Name ↓", "名稱 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 1) }
+                AppMenuItem { text: Theme.t("修改时间 ↓", "Modified ↓", "修改時間 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 2) }
+                AppMenuItem { text: Theme.t("大小 ↓", "Size ↓", "大小 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 3) }
                 onClosed: filterButton.forceActiveFocus()
             }
         }
         RowLayout {
             Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
-            Tool { Layout.fillWidth: true; text: Theme.t("列表", "List", "清單"); checked: !root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", false) } }
-            Tool { Layout.fillWidth: true; text: Theme.t("缩略图", "Thumbnails", "縮圖"); checked: root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", true) } }
+            Tool { iconName: "list-view"; text: Theme.t("列表", "List", "清單"); checked: !root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", false) } }
+            Tool { iconName: "thumbnail-view"; text: Theme.t("缩略图", "Thumbnails", "縮圖"); checked: root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", true) } }
         }
         Item {
-            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.leftMargin: 6; Layout.rightMargin: 6
             Component {
                 id: entryDelegate
                 ItemDelegate {
@@ -102,24 +104,29 @@ Rectangle {
                     required property double fileBytes
                     objectName: "fileDelegate"
                     width: root.thumbnails ? grid.cellWidth : list.width
-                    height: root.thumbnails ? grid.cellHeight : 38
+                    height: root.thumbnails ? grid.cellHeight : Theme.fileRowHeight
                     highlighted: selected
                     text: fileName
                     padding: 8
                     Accessible.name: fileName
                     Keys.onPressed: event => root.handleKey(event)
-                    contentItem: Column {
-                        spacing: 4
+                    contentItem: Item {
                         Image {
-                            visible: root.thumbnails
-                            width: entry.width-16; height: root.thumbnails ? 84 : 0
+                            anchors.top: parent.top; width: parent.width; height: 84; visible: root.thumbnails
                             source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+encodeURIComponent(entry.filePath)+"?"+entry.fileModified : ""
                             sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            Text { anchors.centerIn: parent; visible: parent.status !== Image.Ready; color: Theme.muted; text: entry.isDirectory ? Theme.t("目录", "Folder", "目錄") : parent.status === Image.Loading ? Theme.t("载入中…", "Loading…", "載入中…") : parent.status === Image.Error ? Theme.t("无缩略图", "Unavailable", "無縮圖") : entry.fileName.split('.').pop().toUpperCase(); font.pixelSize: 14 }
+                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : "file"; size: 24; variant: "muted" }
                         }
-                        Text { width: entry.width-16; text: (entry.isDirectory && !root.thumbnails ? "▸ " : "")+entry.fileName; color: Theme.text; font.pixelSize: 14; elide: Text.ElideMiddle }
+                        RowLayout {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
+                            AppIcon { visible: !root.thumbnails; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : entry.fileKind === "model" ? "model" : "file"; size: 20; variant: "muted" }
+                            ColumnLayout { Layout.fillWidth: true; spacing: 4
+                                Label { Layout.fillWidth: true; text: entry.fileName; color: Theme.text; font.pixelSize: 13; elide: Text.ElideMiddle }
+                                Label { Layout.fillWidth: true; visible: !root.thumbnails; text: entry.isDirectory ? Theme.t("文件夹", "Folder", "資料夾") : entry.fileName.split('.').pop().toUpperCase(); font.pixelSize: 11; color: Theme.muted; elide: Text.ElideRight }
+                            }
+                        }
                     }
-                    background: Rectangle { color: entry.selected ? Theme.selection : entry.hovered ? Theme.raised : "transparent"; border.color: entry.activeFocus ? Theme.accent : "transparent"; border.width: 2 }
+                    background: Rectangle { radius: Theme.radius; color: entry.selected ? Theme.selection : entry.hovered ? Theme.raised : "transparent"; border.color: entry.activeFocus ? Theme.accent : "transparent" }
                     MouseArea {
                         anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
                         onClicked: mouse => { if(mouse.button === Qt.RightButton) { context.targetPath = entry.filePath; context.popup() } else { root.controller.select(entry.index, mouse.modifiers); (root.thumbnails ? grid : list).forceActiveFocus() } }
@@ -131,7 +138,7 @@ Rectangle {
                 id: list
                 objectName: "fileList"
                 anchors.fill: parent; visible: !root.thumbnails; clip: true
-                model: root.visible && !root.thumbnails ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: 76
+                model: root.visible && !root.thumbnails ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
                 focus: true; activeFocusOnTab: true
                 keyNavigationEnabled: false
                 ScrollBar.vertical: ScrollBar {}
@@ -154,12 +161,12 @@ Rectangle {
         }
         Label { Layout.margins: 10; color: Theme.muted; font.pixelSize: 12; text: root.controller.count + Theme.t(" 项 · 已选 ", " items · Selected ", " 項 · 已選 ") + root.controller.selectedCount }
     }
-    Menu {
+    AppPopupMenu {
         id: context
         property string targetPath: ""
-        MenuItem { text: Theme.t("打开", "Open", "開啟"); onTriggered: root.controller.openPath(context.targetPath) }
-        MenuItem { text: Theme.t("复制路径", "Copy path", "複製路徑"); onTriggered: root.controller.copy(context.targetPath) }
-        MenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); onTriggered: root.controller.reveal(context.targetPath) }
+        AppMenuItem { text: Theme.t("打开", "Open", "開啟"); onTriggered: root.controller.openPath(context.targetPath) }
+        AppMenuItem { text: Theme.t("复制路径", "Copy path", "複製路徑"); onTriggered: root.controller.copy(context.targetPath) }
+        AppMenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); onTriggered: root.controller.reveal(context.targetPath) }
     }
     function handleKey(event) {
         if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) controller.selectAll()

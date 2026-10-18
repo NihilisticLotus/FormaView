@@ -1,6 +1,5 @@
 import QtQuick
-import QtQuick.Controls
-SpinBox {
+NumberField {
     id: root
     readonly property real realValue: value / 100
     from: -3200; to: 3200; stepSize: 25; editable: true

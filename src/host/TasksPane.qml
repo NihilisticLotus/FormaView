@@ -17,8 +17,8 @@ Rectangle {
         }
         Label { color: Theme.muted; text: Theme.t("活动任务：", "Active tasks: ", "活動工作：")+root.controller.activeTasks }
         TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.fillWidth: true
-            TabButton { text: Theme.t("图片转换", "Image conversion", "影像轉換") }
-            TabButton { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }
+            PageTab { text: Theme.t("图片转换", "Image conversion", "影像轉換") }
+            PageTab { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }
         }
         Loader {
             id: imageJobs; Layout.fillWidth: true; Layout.fillHeight: true
@@ -34,7 +34,7 @@ Rectangle {
             delegate: Rectangle {
                 id: row
                 required property var modelData
-                width: ListView.view.width; height: details.implicitHeight+24; color: Theme.panel; radius: 4
+                width: ListView.view.width; height: details.implicitHeight+24; color: Theme.panel; radius: Theme.groupRadius
                 RowLayout {
                     id: details
                     anchors.fill: parent; anchors.margins: 12; spacing: 20

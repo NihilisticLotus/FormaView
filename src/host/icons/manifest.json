@@ -1,0 +1,962 @@
+{
+  "version": "FormaView-CC-D1-icons",
+  "upstream": "lucide-static@0.542.0",
+  "license": "ISC; includes Feather-derived icons with MIT notice in upstream license",
+  "packageIntegrityVerified": true,
+  "icons": [
+    {
+      "id": "assets",
+      "upstreamName": "folder-open",
+      "labelZhCN": "资产 / 打开目录",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/assets.svg",
+        "muted": "icons/muted/assets.svg",
+        "disabled": "icons/disabled/assets.svg",
+        "on-action": "icons/on-action/assets.svg",
+        "danger": "icons/danger/assets.svg",
+        "warning": "icons/warning/assets.svg",
+        "success": "icons/success/assets.svg"
+      },
+      "originalSha256": "5a74ab1026fda272b0cd620da78d1a6a90f2a9ba1afccf95e6c12183360a668c"
+    },
+    {
+      "id": "conversion",
+      "upstreamName": "arrow-left-right",
+      "labelZhCN": "转换工作区",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/conversion.svg",
+        "muted": "icons/muted/conversion.svg",
+        "disabled": "icons/disabled/conversion.svg",
+        "on-action": "icons/on-action/conversion.svg",
+        "danger": "icons/danger/conversion.svg",
+        "warning": "icons/warning/conversion.svg",
+        "success": "icons/success/conversion.svg"
+      },
+      "originalSha256": "defccc2c39dfde55ad8cb90322df8612f54abd1d510f050bd08da4eede44eb5d"
+    },
+    {
+      "id": "tasks",
+      "upstreamName": "list-checks",
+      "labelZhCN": "任务中心",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/tasks.svg",
+        "muted": "icons/muted/tasks.svg",
+        "disabled": "icons/disabled/tasks.svg",
+        "on-action": "icons/on-action/tasks.svg",
+        "danger": "icons/danger/tasks.svg",
+        "warning": "icons/warning/tasks.svg",
+        "success": "icons/success/tasks.svg"
+      },
+      "originalSha256": "91f5a256270eae1ef767d79b1bd6cb88eebb9e5bbcd21973d7e97a034fbd350d"
+    },
+    {
+      "id": "settings",
+      "upstreamName": "settings",
+      "labelZhCN": "设置",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/settings.svg",
+        "muted": "icons/muted/settings.svg",
+        "disabled": "icons/disabled/settings.svg",
+        "on-action": "icons/on-action/settings.svg",
+        "danger": "icons/danger/settings.svg",
+        "warning": "icons/warning/settings.svg",
+        "success": "icons/success/settings.svg"
+      },
+      "originalSha256": "224f18a84ce0e9492032e7a0e7ad41ca0362516a7802d96d43853498c4275359"
+    },
+    {
+      "id": "file",
+      "upstreamName": "file",
+      "labelZhCN": "通用文件",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/file.svg",
+        "muted": "icons/muted/file.svg",
+        "disabled": "icons/disabled/file.svg",
+        "on-action": "icons/on-action/file.svg",
+        "danger": "icons/danger/file.svg",
+        "warning": "icons/warning/file.svg",
+        "success": "icons/success/file.svg"
+      },
+      "originalSha256": "6fb6905f7a84f6259e94f454bd01250acb8fb57d3e080b8e0366ada72282077f"
+    },
+    {
+      "id": "folder",
+      "upstreamName": "folder",
+      "labelZhCN": "文件目录",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/folder.svg",
+        "muted": "icons/muted/folder.svg",
+        "disabled": "icons/disabled/folder.svg",
+        "on-action": "icons/on-action/folder.svg",
+        "danger": "icons/danger/folder.svg",
+        "warning": "icons/warning/folder.svg",
+        "success": "icons/success/folder.svg"
+      },
+      "originalSha256": "0575823a5c5b0c48e96df38964d42f485ac5756d2d1ab427a86b97986b82b148"
+    },
+    {
+      "id": "image-file",
+      "upstreamName": "file-image",
+      "labelZhCN": "图像文件",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/image-file.svg",
+        "muted": "icons/muted/image-file.svg",
+        "disabled": "icons/disabled/image-file.svg",
+        "on-action": "icons/on-action/image-file.svg",
+        "danger": "icons/danger/image-file.svg",
+        "warning": "icons/warning/image-file.svg",
+        "success": "icons/success/image-file.svg"
+      },
+      "originalSha256": "d7479dd9042d4c86c8e9a6601fab8f8dd56a80d49cda7f86f6cba8e1559a4d92"
+    },
+    {
+      "id": "model",
+      "upstreamName": "box",
+      "labelZhCN": "模型 / 网格",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/model.svg",
+        "muted": "icons/muted/model.svg",
+        "disabled": "icons/disabled/model.svg",
+        "on-action": "icons/on-action/model.svg",
+        "danger": "icons/danger/model.svg",
+        "warning": "icons/warning/model.svg",
+        "success": "icons/success/model.svg"
+      },
+      "originalSha256": "c94352956852f7edb1b9cda2b3606fc774736a9f5dece8d8c8d60a610b468e3c"
+    },
+    {
+      "id": "scene",
+      "upstreamName": "layers-3",
+      "labelZhCN": "场景 / 分层",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/scene.svg",
+        "muted": "icons/muted/scene.svg",
+        "disabled": "icons/disabled/scene.svg",
+        "on-action": "icons/on-action/scene.svg",
+        "danger": "icons/danger/scene.svg",
+        "warning": "icons/warning/scene.svg",
+        "success": "icons/success/scene.svg"
+      },
+      "originalSha256": "2cd913fd7bf16804e2306051e5d7fec610314667938cd301b0954b3d529af150"
+    },
+    {
+      "id": "uv",
+      "upstreamName": "grid-2x2",
+      "labelZhCN": "UV 模式",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/uv.svg",
+        "muted": "icons/muted/uv.svg",
+        "disabled": "icons/disabled/uv.svg",
+        "on-action": "icons/on-action/uv.svg",
+        "danger": "icons/danger/uv.svg",
+        "warning": "icons/warning/uv.svg",
+        "success": "icons/success/uv.svg"
+      },
+      "originalSha256": "f3c576d4331f61c6bc83e3fe9b580efd349789d419dabc71f60bfeaf52cf60bb"
+    },
+    {
+      "id": "weights",
+      "upstreamName": "bone",
+      "labelZhCN": "权重 / 骨骼",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/weights.svg",
+        "muted": "icons/muted/weights.svg",
+        "disabled": "icons/disabled/weights.svg",
+        "on-action": "icons/on-action/weights.svg",
+        "danger": "icons/danger/weights.svg",
+        "warning": "icons/warning/weights.svg",
+        "success": "icons/success/weights.svg"
+      },
+      "originalSha256": "7945b07cec2749c3e59772c8478ccac183c9e3f27a6820bdc47e3c2ff6719634"
+    },
+    {
+      "id": "material",
+      "upstreamName": "palette",
+      "labelZhCN": "材质",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/material.svg",
+        "muted": "icons/muted/material.svg",
+        "disabled": "icons/disabled/material.svg",
+        "on-action": "icons/on-action/material.svg",
+        "danger": "icons/danger/material.svg",
+        "warning": "icons/warning/material.svg",
+        "success": "icons/success/material.svg"
+      },
+      "originalSha256": "6ab33d71602aa7414c2ea6fb937960ab82278d9fe22eaa2445ef87e6a7c266de"
+    },
+    {
+      "id": "focus",
+      "upstreamName": "focus",
+      "labelZhCN": "聚焦选中",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/focus.svg",
+        "muted": "icons/muted/focus.svg",
+        "disabled": "icons/disabled/focus.svg",
+        "on-action": "icons/on-action/focus.svg",
+        "danger": "icons/danger/focus.svg",
+        "warning": "icons/warning/focus.svg",
+        "success": "icons/success/focus.svg"
+      },
+      "originalSha256": "fe18d7dfe6e8bbf24290d6fea307a806120f7b5fea35a359915af6561d5d72c4"
+    },
+    {
+      "id": "wireframe",
+      "upstreamName": "boxes",
+      "labelZhCN": "线框显示",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/wireframe.svg",
+        "muted": "icons/muted/wireframe.svg",
+        "disabled": "icons/disabled/wireframe.svg",
+        "on-action": "icons/on-action/wireframe.svg",
+        "danger": "icons/danger/wireframe.svg",
+        "warning": "icons/warning/wireframe.svg",
+        "success": "icons/success/wireframe.svg"
+      },
+      "originalSha256": "d5a94e6d34a5bae4dbb649d4b457fc8a37b1ff5b70103b1dbd2c0e6eae752d62"
+    },
+    {
+      "id": "visible",
+      "upstreamName": "eye",
+      "labelZhCN": "显示",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/visible.svg",
+        "muted": "icons/muted/visible.svg",
+        "disabled": "icons/disabled/visible.svg",
+        "on-action": "icons/on-action/visible.svg",
+        "danger": "icons/danger/visible.svg",
+        "warning": "icons/warning/visible.svg",
+        "success": "icons/success/visible.svg"
+      },
+      "originalSha256": "6b30712bb1c0a11052248df0918c286a17830e327859746d2ddc79a1296e9e79"
+    },
+    {
+      "id": "hidden",
+      "upstreamName": "eye-off",
+      "labelZhCN": "隐藏",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/hidden.svg",
+        "muted": "icons/muted/hidden.svg",
+        "disabled": "icons/disabled/hidden.svg",
+        "on-action": "icons/on-action/hidden.svg",
+        "danger": "icons/danger/hidden.svg",
+        "warning": "icons/warning/hidden.svg",
+        "success": "icons/success/hidden.svg"
+      },
+      "originalSha256": "06ce28b743c5465ff82432cb2d061ffceffde1aa0ebdefecbf77cfb1853eee05"
+    },
+    {
+      "id": "search",
+      "upstreamName": "search",
+      "labelZhCN": "搜索文件",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/search.svg",
+        "muted": "icons/muted/search.svg",
+        "disabled": "icons/disabled/search.svg",
+        "on-action": "icons/on-action/search.svg",
+        "danger": "icons/danger/search.svg",
+        "warning": "icons/warning/search.svg",
+        "success": "icons/success/search.svg"
+      },
+      "originalSha256": "d76bab0793a6c430f2a9b2772980c79bbb21f98c84ce49fc2d6f4a6cb5659314"
+    },
+    {
+      "id": "list-view",
+      "upstreamName": "list",
+      "labelZhCN": "列表视图",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/list-view.svg",
+        "muted": "icons/muted/list-view.svg",
+        "disabled": "icons/disabled/list-view.svg",
+        "on-action": "icons/on-action/list-view.svg",
+        "danger": "icons/danger/list-view.svg",
+        "warning": "icons/warning/list-view.svg",
+        "success": "icons/success/list-view.svg"
+      },
+      "originalSha256": "07532ab4627dfe0b2264dc32af17be16167e4dac52bb3de5ffdadf0912cc3864"
+    },
+    {
+      "id": "thumbnail-view",
+      "upstreamName": "layout-grid",
+      "labelZhCN": "缩略图视图",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/thumbnail-view.svg",
+        "muted": "icons/muted/thumbnail-view.svg",
+        "disabled": "icons/disabled/thumbnail-view.svg",
+        "on-action": "icons/on-action/thumbnail-view.svg",
+        "danger": "icons/danger/thumbnail-view.svg",
+        "warning": "icons/warning/thumbnail-view.svg",
+        "success": "icons/success/thumbnail-view.svg"
+      },
+      "originalSha256": "7418b7cd5b9a39e3d18314cbcd0eb18dd24648e32e5eefbfe82404cec5d60927"
+    },
+    {
+      "id": "return",
+      "upstreamName": "arrow-left",
+      "labelZhCN": "返回资产",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/return.svg",
+        "muted": "icons/muted/return.svg",
+        "disabled": "icons/disabled/return.svg",
+        "on-action": "icons/on-action/return.svg",
+        "danger": "icons/danger/return.svg",
+        "warning": "icons/warning/return.svg",
+        "success": "icons/success/return.svg"
+      },
+      "originalSha256": "b0dda4dcd91a0037264a2ce1e87d84ae442533cd6342d6c554f6f091e446cc4c"
+    },
+    {
+      "id": "more",
+      "upstreamName": "ellipsis",
+      "labelZhCN": "更多操作",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/more.svg",
+        "muted": "icons/muted/more.svg",
+        "disabled": "icons/disabled/more.svg",
+        "on-action": "icons/on-action/more.svg",
+        "danger": "icons/danger/more.svg",
+        "warning": "icons/warning/more.svg",
+        "success": "icons/success/more.svg"
+      },
+      "originalSha256": "4bd9519770803d526f19989eddc7acde4ad47e3683e84c99e82f0dbb5bb20470"
+    },
+    {
+      "id": "expand",
+      "upstreamName": "chevron-right",
+      "labelZhCN": "展开分组",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/expand.svg",
+        "muted": "icons/muted/expand.svg",
+        "disabled": "icons/disabled/expand.svg",
+        "on-action": "icons/on-action/expand.svg",
+        "danger": "icons/danger/expand.svg",
+        "warning": "icons/warning/expand.svg",
+        "success": "icons/success/expand.svg"
+      },
+      "originalSha256": "ced54b059026986a11e329fa81940a74b2f771306149fb0cd2f94bb7c5449846"
+    },
+    {
+      "id": "collapse",
+      "upstreamName": "chevron-down",
+      "labelZhCN": "收起分组",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/collapse.svg",
+        "muted": "icons/muted/collapse.svg",
+        "disabled": "icons/disabled/collapse.svg",
+        "on-action": "icons/on-action/collapse.svg",
+        "danger": "icons/danger/collapse.svg",
+        "warning": "icons/warning/collapse.svg",
+        "success": "icons/success/collapse.svg"
+      },
+      "originalSha256": "b92388f079b3adacdb2bf20278c9592bc4d91390628bffe40c5e50c19965d5e9"
+    },
+    {
+      "id": "close",
+      "upstreamName": "x",
+      "labelZhCN": "关闭 / 移除输入",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/close.svg",
+        "muted": "icons/muted/close.svg",
+        "disabled": "icons/disabled/close.svg",
+        "on-action": "icons/on-action/close.svg",
+        "danger": "icons/danger/close.svg",
+        "warning": "icons/warning/close.svg",
+        "success": "icons/success/close.svg"
+      },
+      "originalSha256": "b3de3750b991e3e5dc2aa1875716f502a61886367b176937d4f24d2a6062420a"
+    },
+    {
+      "id": "confirm",
+      "upstreamName": "check",
+      "labelZhCN": "已选 / 确认",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/confirm.svg",
+        "muted": "icons/muted/confirm.svg",
+        "disabled": "icons/disabled/confirm.svg",
+        "on-action": "icons/on-action/confirm.svg",
+        "danger": "icons/danger/confirm.svg",
+        "warning": "icons/warning/confirm.svg",
+        "success": "icons/success/confirm.svg"
+      },
+      "originalSha256": "aeca49611ecb3f8f09c1255b033d1b2f6133cb346a07a8c36a20631acdab7e7e"
+    },
+    {
+      "id": "save",
+      "upstreamName": "save",
+      "labelZhCN": "保存设置",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/save.svg",
+        "muted": "icons/muted/save.svg",
+        "disabled": "icons/disabled/save.svg",
+        "on-action": "icons/on-action/save.svg",
+        "danger": "icons/danger/save.svg",
+        "warning": "icons/warning/save.svg",
+        "success": "icons/success/save.svg"
+      },
+      "originalSha256": "fec23c5a721c7c0814590df946c7677a2ee513a5f7e4412272624db9f33d05c5"
+    },
+    {
+      "id": "restore",
+      "upstreamName": "rotate-ccw",
+      "labelZhCN": "恢复默认",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/restore.svg",
+        "muted": "icons/muted/restore.svg",
+        "disabled": "icons/disabled/restore.svg",
+        "on-action": "icons/on-action/restore.svg",
+        "danger": "icons/danger/restore.svg",
+        "warning": "icons/warning/restore.svg",
+        "success": "icons/success/restore.svg"
+      },
+      "originalSha256": "1f2121a1fc1f567b28c50c4eceb89d3ceb9c34fdd8758adf3cbe00d81f03ff85"
+    },
+    {
+      "id": "general",
+      "upstreamName": "sliders-horizontal",
+      "labelZhCN": "通用设置",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/general.svg",
+        "muted": "icons/muted/general.svg",
+        "disabled": "icons/disabled/general.svg",
+        "on-action": "icons/on-action/general.svg",
+        "danger": "icons/danger/general.svg",
+        "warning": "icons/warning/general.svg",
+        "success": "icons/success/general.svg"
+      },
+      "originalSha256": "5e1173cfa396e37d0c82d82acc974538832520be61be7a199c7f6e4812f66ed6"
+    },
+    {
+      "id": "preview",
+      "upstreamName": "monitor",
+      "labelZhCN": "预览设置",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/preview.svg",
+        "muted": "icons/muted/preview.svg",
+        "disabled": "icons/disabled/preview.svg",
+        "on-action": "icons/on-action/preview.svg",
+        "danger": "icons/danger/preview.svg",
+        "warning": "icons/warning/preview.svg",
+        "success": "icons/success/preview.svg"
+      },
+      "originalSha256": "91d68ab89666b2d504c99d98ab84e97bb38ff0d5ae5b3f606a99d0808d98c46a"
+    },
+    {
+      "id": "cache",
+      "upstreamName": "database",
+      "labelZhCN": "缓存设置",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/cache.svg",
+        "muted": "icons/muted/cache.svg",
+        "disabled": "icons/disabled/cache.svg",
+        "on-action": "icons/on-action/cache.svg",
+        "danger": "icons/danger/cache.svg",
+        "warning": "icons/warning/cache.svg",
+        "success": "icons/success/cache.svg"
+      },
+      "originalSha256": "670d6c310d3e9cbebc3de9069c933c33b56135182cbffbe77c8fedf49af16bf4"
+    },
+    {
+      "id": "permissions",
+      "upstreamName": "shield-check",
+      "labelZhCN": "MCP 与权限",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/permissions.svg",
+        "muted": "icons/muted/permissions.svg",
+        "disabled": "icons/disabled/permissions.svg",
+        "on-action": "icons/on-action/permissions.svg",
+        "danger": "icons/danger/permissions.svg",
+        "warning": "icons/warning/permissions.svg",
+        "success": "icons/success/permissions.svg"
+      },
+      "originalSha256": "457c82fbd194a9d0aae85ca1151709215d1a2bb81c8b6ac5fa077a55f5573370"
+    },
+    {
+      "id": "mcp",
+      "upstreamName": "plug",
+      "labelZhCN": "MCP 服务",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/mcp.svg",
+        "muted": "icons/muted/mcp.svg",
+        "disabled": "icons/disabled/mcp.svg",
+        "on-action": "icons/on-action/mcp.svg",
+        "danger": "icons/danger/mcp.svg",
+        "warning": "icons/warning/mcp.svg",
+        "success": "icons/success/mcp.svg"
+      },
+      "originalSha256": "44ecc4942adc80dd8cda47c9835153a39bf2fd5b30e1a9eec18200dab4b6e602"
+    },
+    {
+      "id": "about",
+      "upstreamName": "info",
+      "labelZhCN": "关于 / 信息",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/about.svg",
+        "muted": "icons/muted/about.svg",
+        "disabled": "icons/disabled/about.svg",
+        "on-action": "icons/on-action/about.svg",
+        "danger": "icons/danger/about.svg",
+        "warning": "icons/warning/about.svg",
+        "success": "icons/success/about.svg"
+      },
+      "originalSha256": "77fe76b58aeca3eeb346caa4fc110cf88ec2ddad1303d6db378f05925c87619b"
+    },
+    {
+      "id": "help",
+      "upstreamName": "circle-help",
+      "labelZhCN": "说明 / 帮助",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/help.svg",
+        "muted": "icons/muted/help.svg",
+        "disabled": "icons/disabled/help.svg",
+        "on-action": "icons/on-action/help.svg",
+        "danger": "icons/danger/help.svg",
+        "warning": "icons/warning/help.svg",
+        "success": "icons/success/help.svg"
+      },
+      "originalSha256": "7f30c5dd0f03c6ac6e2bc6944b9e1aaf6a9c8283df9dcc77b613bceb19906b46"
+    },
+    {
+      "id": "warning",
+      "upstreamName": "triangle-alert",
+      "labelZhCN": "警告",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/warning.svg",
+        "muted": "icons/muted/warning.svg",
+        "disabled": "icons/disabled/warning.svg",
+        "on-action": "icons/on-action/warning.svg",
+        "danger": "icons/danger/warning.svg",
+        "warning": "icons/warning/warning.svg",
+        "success": "icons/success/warning.svg"
+      },
+      "originalSha256": "96a3181a77e7e113d5958d11d33a9d445d8cca53cda0104abae0a764e7004377"
+    },
+    {
+      "id": "error",
+      "upstreamName": "circle-x",
+      "labelZhCN": "错误 / 失败",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/error.svg",
+        "muted": "icons/muted/error.svg",
+        "disabled": "icons/disabled/error.svg",
+        "on-action": "icons/on-action/error.svg",
+        "danger": "icons/danger/error.svg",
+        "warning": "icons/warning/error.svg",
+        "success": "icons/success/error.svg"
+      },
+      "originalSha256": "2189f49aa6bba5779203b1f3b2ecf57500fe3e237c91fdc4ec76def4fa941f26"
+    },
+    {
+      "id": "success",
+      "upstreamName": "circle-check",
+      "labelZhCN": "成功",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/success.svg",
+        "muted": "icons/muted/success.svg",
+        "disabled": "icons/disabled/success.svg",
+        "on-action": "icons/on-action/success.svg",
+        "danger": "icons/danger/success.svg",
+        "warning": "icons/warning/success.svg",
+        "success": "icons/success/success.svg"
+      },
+      "originalSha256": "621afcc54c3e528df5b15ef2a090c472d0cbefdffa8e59ecb8b28212708e50ab"
+    },
+    {
+      "id": "pending",
+      "upstreamName": "clock-3",
+      "labelZhCN": "待处理",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/pending.svg",
+        "muted": "icons/muted/pending.svg",
+        "disabled": "icons/disabled/pending.svg",
+        "on-action": "icons/on-action/pending.svg",
+        "danger": "icons/danger/pending.svg",
+        "warning": "icons/warning/pending.svg",
+        "success": "icons/success/pending.svg"
+      },
+      "originalSha256": "359c5060b0ae671bb0c4ca593aec2fe94811f345315c006e830da2ec0d527606"
+    },
+    {
+      "id": "loading",
+      "upstreamName": "loader-circle",
+      "labelZhCN": "处理中",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/loading.svg",
+        "muted": "icons/muted/loading.svg",
+        "disabled": "icons/disabled/loading.svg",
+        "on-action": "icons/on-action/loading.svg",
+        "danger": "icons/danger/loading.svg",
+        "warning": "icons/warning/loading.svg",
+        "success": "icons/success/loading.svg"
+      },
+      "originalSha256": "8b98873f9bbccd5d0ebbb23861f9a3ee1f46492441f22c6fd2fd5f3844f3c3f2"
+    },
+    {
+      "id": "cancel",
+      "upstreamName": "circle-stop",
+      "labelZhCN": "取消任务",
+      "page": "conversion",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/cancel.svg",
+        "muted": "icons/muted/cancel.svg",
+        "disabled": "icons/disabled/cancel.svg",
+        "on-action": "icons/on-action/cancel.svg",
+        "danger": "icons/danger/cancel.svg",
+        "warning": "icons/warning/cancel.svg",
+        "success": "icons/success/cancel.svg"
+      },
+      "originalSha256": "ce3ec25441495acc71b23920c3dd985cd8b53efd1911646142c1b4cfc9493ecd"
+    },
+    {
+      "id": "preflight",
+      "upstreamName": "file-check-2",
+      "labelZhCN": "开始预检",
+      "page": "conversion",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/preflight.svg",
+        "muted": "icons/muted/preflight.svg",
+        "disabled": "icons/disabled/preflight.svg",
+        "on-action": "icons/on-action/preflight.svg",
+        "danger": "icons/danger/preflight.svg",
+        "warning": "icons/warning/preflight.svg",
+        "success": "icons/success/preflight.svg"
+      },
+      "originalSha256": "a0461bb5b6bd71fc285e0a295cfb7b9ef5d9ab55dbb9bc6a68a23d4398b7b6bb"
+    },
+    {
+      "id": "invalid",
+      "upstreamName": "file-x-2",
+      "labelZhCN": "预检阻止",
+      "page": "conversion",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/invalid.svg",
+        "muted": "icons/muted/invalid.svg",
+        "disabled": "icons/disabled/invalid.svg",
+        "on-action": "icons/on-action/invalid.svg",
+        "danger": "icons/danger/invalid.svg",
+        "warning": "icons/warning/invalid.svg",
+        "success": "icons/success/invalid.svg"
+      },
+      "originalSha256": "457e979a9ee4261c96067c588843f0254220142845d4bf97f30e028ada315dde"
+    },
+    {
+      "id": "copy",
+      "upstreamName": "copy",
+      "labelZhCN": "复制路径或读数",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/copy.svg",
+        "muted": "icons/muted/copy.svg",
+        "disabled": "icons/disabled/copy.svg",
+        "on-action": "icons/on-action/copy.svg",
+        "danger": "icons/danger/copy.svg",
+        "warning": "icons/warning/copy.svg",
+        "success": "icons/success/copy.svg"
+      },
+      "originalSha256": "c19483502fe9db3d381d8ac084b053a9d854fa767506089f1782c66e26803a4b"
+    },
+    {
+      "id": "external",
+      "upstreamName": "external-link",
+      "labelZhCN": "外部打开",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/external.svg",
+        "muted": "icons/muted/external.svg",
+        "disabled": "icons/disabled/external.svg",
+        "on-action": "icons/on-action/external.svg",
+        "danger": "icons/danger/external.svg",
+        "warning": "icons/warning/external.svg",
+        "success": "icons/success/external.svg"
+      },
+      "originalSha256": "0f3ed86dc4225706209a147c019d02276baf036224dabfe5e95db47a8d35e53a"
+    },
+    {
+      "id": "delete",
+      "upstreamName": "trash-2",
+      "labelZhCN": "删除 / 清理",
+      "page": "settings",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/delete.svg",
+        "muted": "icons/muted/delete.svg",
+        "disabled": "icons/disabled/delete.svg",
+        "on-action": "icons/on-action/delete.svg",
+        "danger": "icons/danger/delete.svg",
+        "warning": "icons/warning/delete.svg",
+        "success": "icons/success/delete.svg"
+      },
+      "originalSha256": "e11a5ff730cd320a2c736d86589895de7d24d285cea420eae8bfa416d3eb3c5a"
+    },
+    {
+      "id": "minimize",
+      "upstreamName": "minus",
+      "labelZhCN": "最小化窗口",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/minimize.svg",
+        "muted": "icons/muted/minimize.svg",
+        "disabled": "icons/disabled/minimize.svg",
+        "on-action": "icons/on-action/minimize.svg",
+        "danger": "icons/danger/minimize.svg",
+        "warning": "icons/warning/minimize.svg",
+        "success": "icons/success/minimize.svg"
+      },
+      "originalSha256": "3162c6c37f0346089b0429a3679d69c71b6579b3b6701ede7fbb575c8aab0078"
+    },
+    {
+      "id": "maximize",
+      "upstreamName": "square",
+      "labelZhCN": "最大化窗口",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/maximize.svg",
+        "muted": "icons/muted/maximize.svg",
+        "disabled": "icons/disabled/maximize.svg",
+        "on-action": "icons/on-action/maximize.svg",
+        "danger": "icons/danger/maximize.svg",
+        "warning": "icons/warning/maximize.svg",
+        "success": "icons/success/maximize.svg"
+      },
+      "originalSha256": "d63b1fe83b610f1b1d0bf8ed1a1dd3776e2fab08675ce0decdfbd06bfb18ae75"
+    },
+    {
+      "id": "fullscreen",
+      "upstreamName": "maximize",
+      "labelZhCN": "专注预览",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/fullscreen.svg",
+        "muted": "icons/muted/fullscreen.svg",
+        "disabled": "icons/disabled/fullscreen.svg",
+        "on-action": "icons/on-action/fullscreen.svg",
+        "danger": "icons/danger/fullscreen.svg",
+        "warning": "icons/warning/fullscreen.svg",
+        "success": "icons/success/fullscreen.svg"
+      },
+      "originalSha256": "fd4e90bd3db7c45a5eb3a478434a9eee9a729b9b98f5901cd39c074c19b8fe58"
+    },
+    {
+      "id": "files-close",
+      "upstreamName": "panel-left-close",
+      "labelZhCN": "收起文件面板",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/files-close.svg",
+        "muted": "icons/muted/files-close.svg",
+        "disabled": "icons/disabled/files-close.svg",
+        "on-action": "icons/on-action/files-close.svg",
+        "danger": "icons/danger/files-close.svg",
+        "warning": "icons/warning/files-close.svg",
+        "success": "icons/success/files-close.svg"
+      },
+      "originalSha256": "77caf3344b6ae1a6b423980c242035c7decf1f7d01e8c6ac1bda7c5f0189196f"
+    },
+    {
+      "id": "files-open",
+      "upstreamName": "panel-left-open",
+      "labelZhCN": "展开文件面板",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/files-open.svg",
+        "muted": "icons/muted/files-open.svg",
+        "disabled": "icons/disabled/files-open.svg",
+        "on-action": "icons/on-action/files-open.svg",
+        "danger": "icons/danger/files-open.svg",
+        "warning": "icons/warning/files-open.svg",
+        "success": "icons/success/files-open.svg"
+      },
+      "originalSha256": "048879ec54a403af9132cfdcf6ec5d0298638367021a4a2597fd0fb294810064"
+    },
+    {
+      "id": "inspector-close",
+      "upstreamName": "panel-right-close",
+      "labelZhCN": "收起检查器",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/inspector-close.svg",
+        "muted": "icons/muted/inspector-close.svg",
+        "disabled": "icons/disabled/inspector-close.svg",
+        "on-action": "icons/on-action/inspector-close.svg",
+        "danger": "icons/danger/inspector-close.svg",
+        "warning": "icons/warning/inspector-close.svg",
+        "success": "icons/success/inspector-close.svg"
+      },
+      "originalSha256": "f9bdfceb87f5e7a91fb1821c0828a6689846bc2f67d649f50f72cda6eed9b2b9"
+    },
+    {
+      "id": "inspector-open",
+      "upstreamName": "panel-right-open",
+      "labelZhCN": "展开检查器",
+      "page": "asset",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/inspector-open.svg",
+        "muted": "icons/muted/inspector-open.svg",
+        "disabled": "icons/disabled/inspector-open.svg",
+        "on-action": "icons/on-action/inspector-open.svg",
+        "danger": "icons/danger/inspector-open.svg",
+        "warning": "icons/warning/inspector-open.svg",
+        "success": "icons/success/inspector-open.svg"
+      },
+      "originalSha256": "352b917df3a7f78fa4f6c5196e338b2625608a102680cb75155937774d6a03d4"
+    },
+    {
+      "id": "brand-diamond",
+      "upstreamName": "diamond",
+      "labelZhCN": "FormaView 标记候选",
+      "page": "all",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/brand-diamond.svg",
+        "muted": "icons/muted/brand-diamond.svg",
+        "disabled": "icons/disabled/brand-diamond.svg",
+        "on-action": "icons/on-action/brand-diamond.svg",
+        "danger": "icons/danger/brand-diamond.svg",
+        "warning": "icons/warning/brand-diamond.svg",
+        "success": "icons/success/brand-diamond.svg"
+      },
+      "originalSha256": "d3b476fc623467c35f48694ae4ff7eff4f04e33e0ffacf4825a86f5b8282d8b2"
+    }
+  ]
+}

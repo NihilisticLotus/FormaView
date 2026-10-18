@@ -12,7 +12,7 @@ ColumnLayout {
     property bool fixedSample: false
     spacing: 4
     Flow {
-        Layout.fillWidth: true; Layout.preferredHeight: implicitHeight; spacing: 4
+        Layout.fillWidth: true; Layout.preferredHeight: implicitHeight; Layout.margins: 8; spacing: 4
         Repeater {
             model: ["RGB · C", "R", "G", "B", "A"]
             Tool {
@@ -44,22 +44,22 @@ ColumnLayout {
             onValueModified: root.session.setting("exposure", realValue)
         }
         Tool {
-            text: Theme.t("更多", "More", "更多"); onClicked: more.open()
-            Menu {
+            iconName: "more"; quiet: true; hint: Theme.t("更多", "More", "更多"); onClicked: more.open()
+            AppPopupMenu {
                 id: more; y: parent.height
-                MenuItem { text: Theme.t("放大", "Zoom in", "放大"); onTriggered: view.zoomAt(1.25, view.width / 2, view.height / 2) }
-                MenuItem { text: Theme.t("缩小", "Zoom out", "縮小"); onTriggered: view.zoomAt(.8, view.width / 2, view.height / 2) }
-                MenuItem { text: Theme.t("向左平移", "Pan left", "向左平移"); onTriggered: view.pan = Qt.point(view.pan.x - 64, view.pan.y) }
-                MenuItem { text: Theme.t("向右平移", "Pan right", "向右平移"); onTriggered: view.pan = Qt.point(view.pan.x + 64, view.pan.y) }
-                MenuItem { text: Theme.t("向上平移", "Pan up", "向上平移"); onTriggered: view.pan = Qt.point(view.pan.x, view.pan.y - 64) }
-                MenuItem { text: Theme.t("向下平移", "Pan down", "向下平移"); onTriggered: view.pan = Qt.point(view.pan.x, view.pan.y + 64) }
-                MenuItem { text: Theme.t("使用 displayWindow", "Use displayWindow", "使用 displayWindow"); checkable: true; checked: root.session.display.displayWindow; onTriggered: { root.session.setting("displayWindow", checked); view.fit() } }
-                Menu {
+                AppMenuItem { text: Theme.t("放大", "Zoom in", "放大"); onTriggered: view.zoomAt(1.25, view.width / 2, view.height / 2) }
+                AppMenuItem { text: Theme.t("缩小", "Zoom out", "縮小"); onTriggered: view.zoomAt(.8, view.width / 2, view.height / 2) }
+                AppMenuItem { text: Theme.t("向左平移", "Pan left", "向左平移"); onTriggered: view.pan = Qt.point(view.pan.x - 64, view.pan.y) }
+                AppMenuItem { text: Theme.t("向右平移", "Pan right", "向右平移"); onTriggered: view.pan = Qt.point(view.pan.x + 64, view.pan.y) }
+                AppMenuItem { text: Theme.t("向上平移", "Pan up", "向上平移"); onTriggered: view.pan = Qt.point(view.pan.x, view.pan.y - 64) }
+                AppMenuItem { text: Theme.t("向下平移", "Pan down", "向下平移"); onTriggered: view.pan = Qt.point(view.pan.x, view.pan.y + 64) }
+                AppMenuItem { text: Theme.t("使用 displayWindow", "Use displayWindow", "使用 displayWindow"); checkable: true; checked: root.session.display.displayWindow; onTriggered: { root.session.setting("displayWindow", checked); view.fit() } }
+                AppPopupMenu {
                     title: Theme.t("透明合成背景", "Alpha composite background", "透明合成背景")
-                    MenuItem { text: Theme.t("棋盘格", "Checkerboard", "棋盤格"); checkable: true; checked: root.session.display.background === 0; onTriggered: root.session.setting("background", 0) }
-                    MenuItem { text: Theme.t("黑色", "Black", "黑色"); checkable: true; checked: root.session.display.background === 1; onTriggered: root.session.setting("background", 1) }
-                    MenuItem { text: Theme.t("白色", "White", "白色"); checkable: true; checked: root.session.display.background === 2; onTriggered: root.session.setting("background", 2) }
-                    MenuItem { text: Theme.t("中灰", "Mid grey", "中灰"); checkable: true; checked: root.session.display.background === 3; onTriggered: root.session.setting("background", 3) }
+                    AppMenuItem { text: Theme.t("棋盘格", "Checkerboard", "棋盤格"); checkable: true; checked: root.session.display.background === 0; onTriggered: root.session.setting("background", 0) }
+                    AppMenuItem { text: Theme.t("黑色", "Black", "黑色"); checkable: true; checked: root.session.display.background === 1; onTriggered: root.session.setting("background", 1) }
+                    AppMenuItem { text: Theme.t("白色", "White", "白色"); checkable: true; checked: root.session.display.background === 2; onTriggered: root.session.setting("background", 2) }
+                    AppMenuItem { text: Theme.t("中灰", "Mid grey", "中灰"); checkable: true; checked: root.session.display.background === 3; onTriggered: root.session.setting("background", 3) }
                 }
             }
         }
@@ -110,11 +110,11 @@ ColumnLayout {
         Label { textFormat: Text.PlainText; anchors.centerIn: parent; width: parent.width - 40; visible: !!view.renderError; wrapMode: Text.WordWrap; color: Theme.error; text: Theme.t("图片无法在 GPU 上显示；源文件未更改。", "The GPU could not display this image; the source is unchanged.", "GPU 無法顯示此影像；來源檔案未變更。") + "\n" + view.renderError }
         Rectangle {
             anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: 10
-            width: Math.min(parent.width - 20, hud.implicitWidth + 12); height: hud.implicitHeight + 8; color: "#dd222326"; radius: 3
+            width: Math.min(parent.width - 20, hud.implicitWidth + 12); height: hud.implicitHeight + 8; color: "#dd222326"; radius: Theme.radius
             Label { textFormat: Text.PlainText; id: hud; x: 6; y: 4; width: parent.width - 12; color: Theme.text; wrapMode: Text.WordWrap; text: (view.pixelScale * 100).toFixed(1) + "% · " + (root.session.display.channel < 0 ? "RGB" : ["R", "G", "B", "A"][root.session.display.channel]) + (root.session.pixel.valid ? " · (" + root.session.pixel.x + ", " + root.session.pixel.y + ")" + (root.session.display.tiled ? " · tile (" + root.session.pixel.tileX + ", " + root.session.pixel.tileY + ")" : "") : "") + (root.fixedSample ? Theme.t(" · 固定取样", " · Pinned sample", " · 固定取樣") : "") }
         }
     }
-    Tool { id: pixelToggle; objectName: "pixelToggle"; checkable: true; text: (checked ? "▾ " : "▸ ") + Theme.t("像素检查 · 原值 / 显示值", "Pixel inspection · Source / Display", "像素檢查 · 原值 / 顯示值") }
+    SectionHeader { Layout.fillWidth: true; id: pixelToggle; objectName: "pixelToggle"; checkable: true; text: Theme.t("像素检查 · 原值 / 显示值", "Pixel inspection · Source / Display", "像素檢查 · 原值 / 顯示值") }
     Loader {
         Layout.fillWidth: true; Layout.preferredHeight: active ? Math.min(240, implicitHeight) : 0
         active: pixelToggle.checked; sourceComponent: Component { PixelPanel { controller: root.controller } }

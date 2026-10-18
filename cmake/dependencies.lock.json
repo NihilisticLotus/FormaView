@@ -1,19 +1,30 @@
 {
   "schema_version": 1,
   "qt": {
-    "version": "6.8.3",
+    "version": "6.12.0",
     "architecture": "win64_msvc2022_64",
     "runtime_linkage": "shared",
-    "repository": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_683/qt6_683/qt.qt6.683.win64_msvc2022_64/",
-    "archive_prefix": "6.8.3-0-202503201308",
+    "repository": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6120/qt6_6120_msvc2022_64/",
+    "archive_prefix": "6.12.0-0-202609280346",
     "archives_sha256": {
-      "qtbase-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "41688269fac0565db956c66d9eecae777d16197e0c02cd81b88640c1f5d73d3f",
-      "qtdeclarative-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "c2f9f481bf6e8fb004530f20b820fbc77d4ee6dcca24d1ea1d1863d99c5dabf1",
-      "qtsvg-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "48d1d798894cbf8696a0010fcfdeafea652b35159c56ea2060ee85ce3d0048f7",
-      "qttools-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "76ac7b8c86ca72b6608f1d41ee848aeab19663536990b4968ce52db8ec980bc3",
-      "qttranslations-Windows-Windows_11_23H2-MSVC2022-Windows-Windows_11_23H2-X86_64.7z": "c78fef2eff30b880e1aa9b049eff8a283431bc2d7e03132143279b5480d95418",
-      "d3dcompiler_47-x64.7z": "f886f3255600d46b3e651ab5cb8084b42df5e59f78993ad43d8b0cb3b70552c3"
-    }
+      "qtimageformats-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "b5a5729e0dab582a3676bf82ffc77b9de5f95bb9d0a60226f730d97fad2db448",
+      "qtshadertools-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "dfceb86842d60a81ff75c1c2c98d49d186efc5c6cc49f0225b3b2ed699beca4b",
+      "qtbase-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "219d1b86def3be418e31d704572bc4acc91b2ec373c65595c9fb12b42bf098dc",
+      "qtsvg-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "dfcad02224b71724e3314d0bc3ffc0b862dfa6e02bc4aadd39f1738f6c364c79",
+      "qtdeclarative-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "258146e9972fadbc1162cda31c7d7ed7e627f5022b2a848f2edb84d9c2ce27db",
+      "qttools-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "73328e361429378df518f391ebe4d82c51e833f4d5a951692768ab5a5a1d7da5",
+      "qttranslations-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z": "328321e8879a3dc119775b4404d6e32ec2a361696e73f760540a732921507917"
+    },
+    "runtime_sha256": {
+      "Qt6Core.dll": "39175459c4837c8cc0f709a637fb6eadb25d696785109c8393559ec876f02703",
+      "Qt6Gui.dll": "37c79b48b9cc2d9a03d21410c26fea683d236f9280f5c9aaab85d980759f2835",
+      "Qt6Network.dll": "9825558f184c64f639c4b8663650cee0ae8ffe01c18d98ff76f006a02389965f",
+      "Qt6Qml.dll": "2572e315c36d8cea89a5becb910ddccdcf5d34e5421eef1e033187a99b68f84b",
+      "Qt6Quick.dll": "6d9b5639e8cad3b01083fc7c8c838b09d9f2d04a38cc4c339ddc3973123d5fa8",
+      "Qt6QuickControls2.dll": "6dc2413eb7a8138ef821a9886c7b5799d9a570968b1ba31848774f991aa89060",
+      "Qt6QuickTemplates2.dll": "94c70cf4d6a15720a2e2e2b41b4c99f85a3d0b6a758bdb12b18128fe3c26f4bc"
+    },
+    "qml_preview": "Development-only FORMAVIEW_QML_PREVIEW opt-in; QT_QML_DEBUG in Debug/RelWithDebInfo only, never Release."
   },
   "acquisition_tool": {
     "name": "aqtinstall",
@@ -44,7 +55,7 @@
   },
   "professional": {
     "optional": true,
-    "qt": "6.8.3 EXACT; Qt Quick + GuiPrivate; D3D11 QQuickRhiItem; build-time ShaderTools/qsb",
+    "qt": "6.12.0 EXACT; Qt Quick + GuiPrivate; D3D11 QQuickRhiItem; build-time ShaderTools/qsb",
     "render_runtime": "No Quick3D dependency; QRhi private ABI requires matching Qt patch version",
     "directxtex": {
       "version": "2.1.1",
@@ -204,13 +215,13 @@
       "zstd.dll": "1cb8635e2188cd6330f41fba0b581d36c75332cc733dbbd1d1df0f5f75f2615b"
     },
     "qt_build_tools_sha256": {
-      "qsb.exe": "d433dc06891c82ad0ee3e84f00c019c67f3a188cdd9fcc3902403892d362ff86",
-      "Qt6ShaderTools.dll": "d95bee7e9ca3795ca8724efeab0b4ad98b6a1b44971aa925112b0dd7e00d16e2"
+      "qsb.exe": "15b786af5ceefbbb122aa24d20a8bd7fe66a0cde210d329eeca23b65da767fce",
+      "Qt6ShaderTools.dll": "b06a91ed773d1af8fecf54f8b98683a38b73fbfec776c714e080143aded64c90"
     },
     "qt_sbom_sha256": {
-      "qtbase-6.8.3.spdx.json": "73b4dee169c8f3a1c0c2e2f904d0679cc156ce7e9320f7c866bb723dd4faac68",
-      "qtdeclarative-6.8.3.spdx.json": "a8ecaf2320ea7dde15ec8f1914e7edd0522a3d087cf8fcdafed1debd7e7d9441",
-      "qtshadertools-6.8.3.spdx.json": "dbbd8fd69316a2f9768d51add8eeb3333a49b9516d03146fc5f6222091347e5f"
+      "qtbase-6.12.0.spdx.json": "ec627100f721386be2a72e904af13f2ef3d52e2714aee3e25db279fc9464884d",
+      "qtdeclarative-6.12.0.spdx.json": "ba8a99e8717e57ab5c4bec4cdcaa0703b307e8c5a075bf47aa26128260f8fa1a",
+      "qtshadertools-6.12.0.spdx.json": "53510407e6228c666345323e96558f1e453079e4808a5505b8cc8a31d89d1905"
     }
   },
   "raster": {
@@ -259,14 +270,14 @@
         "WEBP_USE_THREAD": "OFF"
       }
     },
-    "qt": "6.8.3 EXACT CPU image handlers; no GUI context required"
+    "qt": "6.12.0 EXACT CPU image handlers; no GUI context required"
   },
   "image_mcp": {
     "sdk": "mcp==1.30.0",
     "source": "https://github.com/modelcontextprotocol/python-sdk",
     "runtime": "CPython 3.12 / Windows x64",
     "dependency_lock": "tools/mcp/requirements.lock",
-    "transport": "official SDK stdio to Qt6.8.3 UserAccessOption local named pipe",
+    "transport": "official SDK stdio to Qt6.12.0 UserAccessOption local named pipe",
     "license": "third_party/mcp-python-LICENSE.txt",
     "deployment": "explicit service and adapter configuration; no automatic user MCP registration"
   }

@@ -1,6 +1,6 @@
 option(FORMAVIEW_BUILD_RASTER "Build CPU raster image adapters (no GUI required)" OFF)
 if(FORMAVIEW_BUILD_RASTER)
-    find_package(Qt6 6.8.3 EXACT REQUIRED COMPONENTS Gui)
+    find_package(Qt6 6.12.0 EXACT REQUIRED COMPONENTS Gui)
     find_package(ZLIB 1.3.2 EXACT CONFIG REQUIRED COMPONENTS static)
     if(NOT TARGET ZLIB::ZLIB)
         add_library(ZLIB::ZLIB ALIAS ZLIB::ZLIBSTATIC)

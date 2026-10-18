@@ -154,6 +154,11 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
   auto settings = QSettings{};
   language_ = settings.value("language", "zh-CN").toString();
   preferences_ = settings.value("preferences").toMap();
+  if (preferences_.contains("restoreLayout") &&
+      !preferences_.value("restoreLayout").toBool()) {
+    preferences_.remove("fileWidth");
+    preferences_["filesVisible"] = preferences_.value("defaultFilesVisible", true);
+  }
   recent_ = settings.value("recent").toStringList().mid(0, 20);
   pollTimer_.setInterval(30);
   connect(&pollTimer_, &QTimer::timeout, this, &Desktop::poll);
@@ -173,8 +178,13 @@ void Desktop::setLanguage(const QString &value) {
 }
 void Desktop::preference(const QString &key, const QVariant &value) {
   if (!QStringList{"fileWidth", "thumbnails", "filesVisible", "mcpInputRoot",
-                   "mcpOutputRoot", "mcpPython", "mcpAdapter"}
+                   "mcpOutputRoot", "mcpPython", "mcpAdapter", "density",
+                   "restoreLayout", "defaultFilesVisible", "inspectorMode"}
            .contains(key))
+    return;
+  if (key == "density" && !QStringList{"standard", "compact"}.contains(value.toString()))
+    return;
+  if (key == "inspectorMode" && !QStringList{"auto", "always", "hidden"}.contains(value.toString()))
     return;
   if (preferences_.value(key) == value)
     return;

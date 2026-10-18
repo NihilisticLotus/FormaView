@@ -8,7 +8,7 @@ BSD-3-Clause or GPL-2.0. Their unmodified notices are included alongside this fi
 Binary redistribution must carry the applicable upstream copyright notices.
 Exact validation DLL and archive hashes are in cmake/dependencies.lock.json.
 
-Qt 6.8.3 Quick and Gui are dynamically linked. Upstream offers commercial
+Qt 6.12.0 Quick and Gui are dynamically linked. Upstream offers commercial
 and LGPL/GPL licensing alternatives; no commercial entitlement is assumed.
 The selected rendering target uses QQuickRhiItem and Qt GuiPrivate, not Quick3D.
 Qt Quick3D is a separately tested external candidate (commercial or GPLv3)
@@ -20,9 +20,9 @@ under the chosen applicable terms. A portable distribution is not supplied here.
 Module-specific attributions must accompany any future Qt binary package.
 
 Upstream references:
-https://doc.qt.io/qt-6.8/licensing.html
-https://doc.qt.io/qt-6.8/qtshadertools-index.html
-https://doc.qt.io/qt-6.8/qtquick3d-index.html
+https://doc.qt.io/qt-6.12/licensing.html
+https://doc.qt.io/qt-6.12/qtshadertools-index.html
+https://doc.qt.io/qt-6.12/qtquick3d-index.html
 https://github.com/microsoft/DirectXTex
 https://github.com/alembic/alembic
 https://github.com/AcademySoftwareFoundation/openexr

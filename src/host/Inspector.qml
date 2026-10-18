@@ -7,7 +7,8 @@ Rectangle {
     id: root
     required property var controller
     property string locatingId: ""
-    color: Theme.panel
+    objectName: "inspectorPane"
+    color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
     readonly property bool imageActive: !!controller.image && controller.image.available
     Loader {
         anchors.fill: parent; anchors.margins: 12
@@ -18,22 +19,22 @@ Rectangle {
     ColumnLayout {
         visible: !root.imageActive
         anchors.fill: parent; anchors.margins: 12; spacing: 14
-        Label { text: Theme.t("检查", "Inspect", "檢查"); color: Theme.accent }
+        Label { text: Theme.t("检查", "Inspect", "檢查"); font.pixelSize: 15; font.bold: true; color: Theme.text }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
         Label { Layout.fillWidth: true; visible: !root.controller.asset.path; text: Theme.t("选择文件以检查", "Select a file to inspect", "選取檔案以檢查"); color: Theme.muted; wrapMode: Text.WordWrap }
         Readout { Layout.fillWidth: true; visible: !!root.controller.asset.path; label: Theme.t("实际文件", "Current file", "目前檔案"); value: root.controller.asset.path || "" }
         Readout { Layout.fillWidth: true; visible: !!root.controller.asset.path; label: Theme.t("类型", "Type", "類型"); value: root.controller.asset.suffix || "—" }
-        Tool { id: statistics; Layout.fillWidth: true; text: (checked ? "▾ " : "▸ ")+Theme.t("文件信息 · 只读", "File details · Read only", "檔案資訊 · 唯讀"); checkable: true; enabled: !!root.controller.asset.path }
+        SectionHeader { id: statistics; Layout.fillWidth: true; text:Theme.t("文件信息 · 只读", "File details · Read only", "檔案資訊 · 唯讀"); checkable: true; enabled: !!root.controller.asset.path }
         ColumnLayout {
             visible: statistics.checked; Layout.fillWidth: true
             Readout { Layout.fillWidth: true; label: Theme.t("字节数", "Bytes", "位元組數"); value: String(root.controller.asset.bytes ?? "—") }
             Readout { Layout.fillWidth: true; label: Theme.t("修改时间", "Modified", "修改時間"); value: root.controller.asset.modified || "—" }
         }
-        Tool { id: resources; Layout.fillWidth: true; checkable: true; text: (checked ? "▾ " : "▸ ")+Theme.t("关联资源", "Linked resources", "關聯資源") + (root.controller.resourceIssues.length ? " · "+root.controller.resourceIssues.length : "") }
-        Label { visible: resources.checked && root.controller.resourceIssues.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("尚无资源报告。专业资源解析暂不可用。", "No resource report. Professional resource parsing is unavailable.", "尚無資源報告。專業資源解析暫不可用。") }
+        SectionHeader { id: resourcesSection; Layout.fillWidth: true; checkable: true; text:Theme.t("关联资源", "Linked resources", "關聯資源") + (root.controller.resourceIssues.length ? " · "+root.controller.resourceIssues.length : "") }
+        Label { visible: resourcesSection.checked && root.controller.resourceIssues.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("尚无资源报告。专业资源解析暂不可用。", "No resource report. Professional resource parsing is unavailable.", "尚無資源報告。專業資源解析暫不可用。") }
         ListView {
             Layout.fillWidth: true; Layout.preferredHeight: Math.min(contentHeight,320)
-            visible: resources.checked || root.controller.resourceIssues.length > 0
+            visible: resourcesSection.checked || root.controller.resourceIssues.length > 0
             clip: true; reuseItems: true; model: root.controller.resourceIssues
             delegate: ColumnLayout {
                 id: issue

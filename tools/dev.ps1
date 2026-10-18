@@ -16,7 +16,7 @@ if ($cmakeCommand) {
 }
 $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 if (-not $QtRoot -or -not (Test-Path -LiteralPath (Join-Path $QtRoot 'lib\cmake\Qt6\Qt6Config.cmake'))) {
-    throw 'Set FORMAVIEW_QT_ROOT or pass -QtRoot for Qt 6.8.3 msvc2022_64.'
+    throw 'Set FORMAVIEW_QT_ROOT or pass -QtRoot for Qt 6.12.0 msvc2022_64.'
 }
 $previousPath = $env:PATH
 $previousQt = $env:FORMAVIEW_QT_ROOT

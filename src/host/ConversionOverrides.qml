@@ -29,17 +29,17 @@ ColumnLayout {
         if (destination === "A") setOption("alpha_channel", name || undefined)
     }
     onInputsChanged: overrides = ({})
-    Tool { id: expand; checkable: true; text: (checked ? "▾ " : "▸ ") + Theme.t("逐项覆盖 · 子资源与真实通道", "Per-item overrides · Subresource and source channels", "逐項覆寫 · 子資源與實際通道") }
+    SectionHeader { id: expand; checkable: true; text: Theme.t("逐项覆盖 · 子资源与真实通道", "Per-item overrides · Subresource and source channels", "逐項覆寫 · 子資源與實際通道") }
     ColumnLayout {
         visible: expand.checked; Layout.fillWidth: true
-        ComboBox { id: source; objectName: "overrideInput"; Layout.fillWidth: true; model: root.inputs; Accessible.name: Theme.t("覆盖哪项输入", "Input to override", "覆寫哪項輸入") }
+        Choice { id: source; objectName: "overrideInput"; Layout.fillWidth: true; model: root.inputs; Accessible.name: Theme.t("覆盖哪项输入", "Input to override", "覆寫哪項輸入") }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("未覆盖的参数沿用统一设置。先预检可读取实际通道；更改子资源后需重新预检再选择该子资源的通道。", "Other parameters inherit the shared settings. Preflight reads actual channels; after changing subresource, preflight again before mapping its channels.", "未覆寫參數沿用統一設定。先預檢可讀取實際通道；變更子資源後須重新預檢再選擇其通道。") }
         RowLayout {
             Label { textFormat: Text.PlainText; color: Theme.text; text: Theme.t("子资源索引", "Subresource index", "子資源索引") }
-            CheckBox { id: resourceOverride; text: Theme.t("覆盖", "Override", "覆寫"); checked: root.current.subresource !== undefined; onToggled: root.setOption("subresource", checked ? resource.value : undefined) }
-            SpinBox { id: resource; objectName: "overrideSubresource"; from: 0; to: 65535; editable: true; enabled: resourceOverride.checked; value: root.current.subresource || 0; onValueModified: root.setOption("subresource", value); Accessible.name: Theme.t("逐项子资源索引", "Per-item subresource", "逐項子資源索引") }
+            OptionCheck { id: resourceOverride; text: Theme.t("覆盖", "Override", "覆寫"); checked: root.current.subresource !== undefined; onToggled: root.setOption("subresource", checked ? resource.value : undefined) }
+            NumberField { id: resource; objectName: "overrideSubresource"; from: 0; to: 65535; editable: true; enabled: resourceOverride.checked; value: root.current.subresource || 0; onValueModified: root.setOption("subresource", value); Accessible.name: Theme.t("逐项子资源索引", "Per-item subresource", "逐項子資源索引") }
         }
-        ComboBox {
+        Choice {
             Layout.fillWidth: true
             readonly property var scalars: ["", "uint8", "uint16", "half", "float32"]
             model: [Theme.t("位深：沿用统一设置", "Precision: inherit shared setting", "位深：沿用統一設定"), "uint8", "uint16", "half", "float32"]
@@ -47,7 +47,7 @@ ColumnLayout {
             onActivated: root.setOption("output_scalar", scalars[currentIndex] || undefined)
             Accessible.name: Theme.t("逐项位深", "Per-item precision", "逐項位深")
         }
-        CheckBox {
+        OptionCheck {
             objectName: "overrideMapping"; enabled: root.names.length > 1
             text: Theme.t("覆盖为 RGBA 映射；其余通道不输出", "Override RGBA mapping; omit other channels", "覆寫為 RGBA 映射；其餘通道不輸出")
             checked: root.current.channels !== undefined
@@ -66,7 +66,7 @@ ColumnLayout {
                 required property string modelData
                 Layout.fillWidth: true; visible: root.current.channels !== undefined
                 Label { textFormat: Text.PlainText; color: Theme.text; text: channelRow.modelData }
-                ComboBox {
+                Choice {
                     Layout.fillWidth: true; model: root.names
                     currentIndex: root.names.indexOf((root.current.channels || []).find(v => v.destination === channelRow.modelData)?.source || "")
                     onActivated: root.mapping(channelRow.modelData, currentText)
