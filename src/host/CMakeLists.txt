@@ -28,7 +28,8 @@ if(BUILD_TESTING)
         if(FORMAVIEW_ASAN)
             # Instrumented runs check ownership and state, not release timing gates.
             set(desktop_test_cases scanSortFilterAndSelection staleCancellationAndFailure
-                uiImeStateAndLanguages viewHistoryAndResourceRecovery keyboardMouseDropAndReadOnly thumbnailBudget)
+                uiImeStateAndLanguages viewHistoryAndResourceRecovery keyboardMouseDropAndReadOnly
+                gridDirectionalNavigation paneFocusRecovery parentNavigationKeepsSession thumbnailBudget)
         endif()
         add_test(NAME desktop_integration COMMAND formaview_desktop_tests ${desktop_test_cases}
             -o "${FORMAVIEW_UI_TEST_ROOT}/desktop-tests.txt,txt")

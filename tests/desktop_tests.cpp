@@ -379,6 +379,8 @@ private slots:
             root_ + "/06b-popup-" + QString::number(popupNumber++) + ".png"));
     evidence_["drawer_popup_type"] = drawer->property("popupType").toInt();
     QTest::keyClick(window_, Qt::Key_Escape);
+    QVERIFY(drawer->property("opened").toBool());
+    QTest::keyClick(window_, Qt::Key_Escape);
     QTRY_VERIFY(!drawer->property("opened").toBool());
     QTRY_VERIFY(rail->hasActiveFocus());
     window_->resize(1600, 900);
@@ -525,6 +527,187 @@ private slots:
     QCOMPARE(address->property("text").toString(), small_);
     desktop_->navigate(fixture_);
     desktop_->filter("", 0, 0);
+    QTRY_COMPARE(desktop_->count(), 10024);
+    QTRY_VERIFY(idle());
+  }
+  void gridDirectionalNavigation() {
+    desktop_->navigate(fixture_);
+    desktop_->filter("", 0, 0);
+    QTRY_COMPARE(desktop_->count(), 10024);
+    QTRY_VERIFY(idle());
+    desktop_->preference("thumbnails", true);
+    QTest::qWait(60);
+    auto *grid = item("fileGrid");
+    QVERIFY(grid);
+    desktop_->select(0);
+    QTRY_VERIFY(idle());
+    grid->forceActiveFocus();
+    const auto session = desktop_->sessionRevision();
+    QTest::keyClick(window_, Qt::Key_Right, Qt::ControlModifier);
+    QCOMPARE(desktop_->currentIndex(), 1);
+    QCOMPARE(desktop_->selectedCount(), 2);
+    QCOMPARE(desktop_->sessionRevision(), session);
+    QTest::keyClick(window_, Qt::Key_Right, Qt::ShiftModifier);
+    QCOMPARE(desktop_->currentIndex(), 2);
+    QCOMPARE(desktop_->selectedCount(), 2);
+    QTest::keyClick(window_, Qt::Key_Left,
+                    Qt::ControlModifier | Qt::ShiftModifier);
+    QCOMPARE(desktop_->currentIndex(), 1);
+    QCOMPARE(desktop_->selectedCount(), 2);
+    const auto columns = std::max(1, static_cast<int>(grid->width() / 128));
+    QTest::keyClick(window_, Qt::Key_Down);
+    QCOMPARE(desktop_->currentIndex(), 1 + columns);
+    QTest::keyClick(window_, Qt::Key_Up);
+    QCOMPARE(desktop_->currentIndex(), 1);
+    QTest::keyClick(window_, Qt::Key_Left);
+    QCOMPARE(desktop_->currentIndex(), 0);
+    QTRY_VERIFY(idle());
+    const auto firstSession = desktop_->sessionRevision();
+    QTest::keyClick(window_, Qt::Key_Left);
+    QTest::keyClick(window_, Qt::Key_Up);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->currentIndex(), 0);
+    QCOMPARE(desktop_->sessionRevision(), firstSession);
+    QTest::keyClick(window_, Qt::Key_End);
+    QTRY_VERIFY(idle());
+    const auto lastSession = desktop_->sessionRevision();
+    QTest::keyClick(window_, Qt::Key_Right);
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->currentIndex(), desktop_->count() - 1);
+    QCOMPARE(desktop_->sessionRevision(), lastSession);
+    desktop_->preference("thumbnails", false);
+    QTest::qWait(60);
+    desktop_->select(0);
+    QTRY_VERIFY(idle());
+    auto *list = item("fileList");
+    QVERIFY(list);
+    list->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Right);
+    QCOMPARE(desktop_->currentIndex(), 0);
+    QTest::keyClick(window_, Qt::Key_Down);
+    QCOMPARE(desktop_->currentIndex(), 1);
+    QTRY_VERIFY(idle());
+  }
+  void paneFocusRecovery() {
+    window_->resize(1600, 900);
+    desktop_->preference("thumbnails", false);
+    desktop_->navigate(fixture_);
+    QTRY_COMPARE(desktop_->count(), 10024);
+    QTRY_VERIFY(idle());
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("focusMode", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("filesVisible", true);
+    QTest::qWait(60);
+    const auto collapseButton = [&]() -> QQuickItem * {
+      for (auto *candidate : window_->findChildren<QQuickItem *>())
+        if (candidate->isVisible() &&
+            candidate->property("text").toString() == QString::fromUtf8("‹"))
+          return candidate;
+      return nullptr;
+    };
+    auto *collapse = collapseButton();
+    QVERIFY(collapse);
+    collapse->forceActiveFocus();
+    QMetaObject::invokeMethod(collapse, "clicked");
+    auto *rail = item("fileRail");
+    QVERIFY(rail);
+    QTRY_VERIFY(rail->hasActiveFocus());
+    QMetaObject::invokeMethod(rail, "clicked");
+    auto *address = item("address");
+    QVERIFY(address);
+    QTRY_VERIFY(address->hasActiveFocus());
+    address->setProperty("text", "Z:/unsubmitted-location");
+    QTest::keyClick(window_, Qt::Key_Escape);
+    collapse = collapseButton();
+    QVERIFY(collapse);
+    QTRY_VERIFY(collapse->hasActiveFocus());
+    QCOMPARE(address->property("text").toString(), fixture_);
+    QCOMPARE(desktop_->directory(), fixture_);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(rail->hasActiveFocus());
+    QMetaObject::invokeMethod(rail, "clicked");
+    QTRY_VERIFY(address->hasActiveFocus());
+    window_->resize(1280, 800);
+    QTRY_VERIFY(rail->hasActiveFocus());
+    auto *drawer = window_->findChild<QObject *>("fileDrawer");
+    QVERIFY(drawer);
+    QMetaObject::invokeMethod(rail, "clicked");
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    address = item("address");
+    QVERIFY(address);
+    QTRY_VERIFY(address->hasActiveFocus());
+    address->setProperty("text", "Z:/unsubmitted-location");
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QVERIFY(drawer->property("opened").toBool());
+    collapse = collapseButton();
+    QVERIFY(collapse);
+    QTRY_VERIFY(collapse->hasActiveFocus());
+    QCOMPARE(desktop_->directory(), fixture_);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!drawer->property("opened").toBool());
+    QTRY_VERIFY(rail->hasActiveFocus());
+    QMetaObject::invokeMethod(rail, "clicked");
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    collapse = collapseButton();
+    QVERIFY(collapse);
+    collapse->forceActiveFocus();
+    QMetaObject::invokeMethod(collapse, "clicked");
+    QTRY_VERIFY(!drawer->property("opened").toBool());
+    QTRY_VERIFY(rail->hasActiveFocus());
+    const auto session = desktop_->sessionRevision();
+    for (auto width : {1600, 1280}) {
+      window_->resize(width, 900);
+      workspace->setProperty("focusMode", true);
+      QTest::qWait(60);
+      QVERIFY(window_->activeFocusItem() &&
+              window_->activeFocusItem()->isVisible());
+      rail->forceActiveFocus();
+      QMetaObject::invokeMethod(rail, "clicked");
+      if (width == 1280)
+        QTRY_VERIFY(drawer->property("opened").toBool());
+      address = item("address");
+      QVERIFY(address);
+      QTRY_VERIFY(address->hasActiveFocus());
+      QCOMPARE(desktop_->sessionRevision(), session);
+      if (width == 1280) {
+        QTest::keyClick(window_, Qt::Key_Escape);
+        QTest::keyClick(window_, Qt::Key_Escape);
+        QTRY_VERIFY(!drawer->property("opened").toBool());
+      }
+    }
+    window_->resize(1600, 900);
+    workspace->setProperty("focusMode", true);
+    QTest::qWait(60);
+    auto *inspectRail = collapseButton();
+    QVERIFY(inspectRail);
+    inspectRail->forceActiveFocus();
+    QMetaObject::invokeMethod(inspectRail, "clicked");
+    QTRY_VERIFY(!workspace->property("focusMode").toBool());
+    QTRY_VERIFY(window_->activeFocusItem() &&
+                window_->activeFocusItem()->isVisible());
+    QCOMPARE(desktop_->sessionRevision(), session);
+  }
+  void parentNavigationKeepsSession() {
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_COMPARE(desktop_->count(), 1);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(idle());
+    const auto session = desktop_->sessionRevision();
+    const auto parent = small_.left(small_.lastIndexOf('/'));
+    desktop_->parentDirectory();
+    QTRY_COMPARE(desktop_->directory(), parent);
+    QTRY_COMPARE(desktop_->count(), 2);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->sessionRevision(), session);
+    desktop_->history(-1);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_COMPARE(desktop_->count(), 1);
+    QCOMPARE(desktop_->sessionRevision(), session);
+    desktop_->navigate(fixture_);
     QTRY_COMPARE(desktop_->count(), 10024);
     QTRY_VERIFY(idle());
   }

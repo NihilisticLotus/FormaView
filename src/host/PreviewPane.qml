@@ -10,6 +10,7 @@ Rectangle {
     signal toggleFocus()
     signal unavailable()
     property bool focused: false
+    function focusLayoutControl() { focusButton.forceActiveFocus() }
     color: Theme.base
     ColumnLayout {
         anchors.fill: parent; spacing: 4
@@ -19,7 +20,7 @@ Rectangle {
                 anchors.fill: parent; anchors.margins: 6
                 Tool { text: Theme.t("外部动画…", "External animation…", "外部動畫…"); hint: Theme.t("动画导入尚未接入", "Animation import is not available yet", "動畫匯入尚未接入"); onClicked: root.unavailable() }
                 Item { Layout.fillWidth: true }
-                Tool { text: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
+                Tool { id: focusButton; text: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
             }
         }
         Rectangle {

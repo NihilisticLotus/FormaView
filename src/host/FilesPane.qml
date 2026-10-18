@@ -9,9 +9,11 @@ Rectangle {
     signal collapse()
     color: Theme.panel
     function addressFocus() { address.forceActiveFocus(); address.selectAll() }
+    function viewFocus() { (thumbnails ? grid : list).forceActiveFocus() }
+    Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
     function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : 38)*columns) }
     function restore() { Qt.callLater(() => { const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; const offset = controller.scrollPosition/columns*(thumbnails ? grid.cellHeight : 38); view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height)) }) }
-    function step(delta, modifiers) { const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
+    function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
     Connections { target: root.controller; function onViewRestored() { root.restore() } }
     onThumbnailsChanged: restore()
     onVisibleChanged: if (visible) restore()
@@ -22,7 +24,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.margins: 8
             Label { text: Theme.t("文件", "Files", "檔案"); color: Theme.text; Layout.fillWidth: true }
-            Tool { text: "‹"; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
+            Tool { id: collapseButton; objectName: "collapseFiles"; text: "‹"; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
         }
         RowLayout {
             Layout.fillWidth: true
@@ -39,8 +41,8 @@ Rectangle {
             Binding { target: address; property: "text"; when: !address.activeFocus; value: root.controller.directory }
             placeholderText: Theme.t("输入目录路径", "Enter a folder path", "輸入目錄路徑")
             Accessible.name: Theme.t("位置", "Location", "位置")
-            onAccepted: if (!inputMethodComposing) { root.remember(); root.controller.navigate(text); list.forceActiveFocus() }
-            Keys.onEscapePressed: event => { text = root.controller.directory; list.forceActiveFocus(); event.accepted = true }
+            onAccepted: if (!inputMethodComposing) { root.remember(); root.controller.navigate(text); root.viewFocus() }
+            Keys.onEscapePressed: event => { text = root.controller.directory; collapseButton.forceActiveFocus(); event.accepted = true }
         }
         Field {
             id: search
@@ -53,7 +55,7 @@ Rectangle {
             onTextEdited: if (!inputMethodComposing) debounce.restart()
             onInputMethodComposingChanged: if (!inputMethodComposing) debounce.restart()
             onAccepted: if (!inputMethodComposing) { debounce.stop(); root.controller.filter(text, root.controller.typeFilter, root.controller.sortOrder) }
-            Keys.onEscapePressed: event => { list.forceActiveFocus(); event.accepted = true }
+            Keys.onEscapePressed: event => { root.viewFocus(); event.accepted = true }
             Timer { id: debounce; interval: 150; onTriggered: if (!search.inputMethodComposing) root.controller.filter(search.text, root.controller.typeFilter, root.controller.sortOrder) }
         }
         Tool {
@@ -161,6 +163,8 @@ Rectangle {
     }
     function handleKey(event) {
         if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) controller.selectAll()
+        else if (thumbnails && event.key === Qt.Key_Right && !(event.modifiers & Qt.AltModifier)) step(1,event.modifiers)
+        else if (thumbnails && event.key === Qt.Key_Left && !(event.modifiers & Qt.AltModifier)) step(-1,event.modifiers)
         else if (event.key === Qt.Key_Down) step(thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1,event.modifiers)
         else if (event.key === Qt.Key_Up) step(thumbnails ? -Math.max(1,Math.floor(grid.width/128)) : -1,event.modifiers)
         else if (event.key === Qt.Key_Home) step(-controller.count,event.modifiers)

@@ -10,8 +10,21 @@ Item {
     property bool tasksVisible: false
     property bool filesVisible: controller.preferences.filesVisible !== false
     readonly property bool narrow: width <= 1300
-    function openAddress() { tasksVisible = false; focusMode = false; if (narrow) { drawer.open(); drawerFiles.addressFocus() } else { filesVisible = true; files.addressFocus() } }
-    function toggleFiles() { files.remember(); if(narrow) drawer.open(); else filesVisible = !filesVisible; controller.preference("filesVisible",filesVisible) }
+    function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }
+    function returnFileFocus() { Qt.callLater(() => { if (root.tasksVisible) return; if (fileRail.visible) fileRail.forceActiveFocus(); else if (files.visible) files.addressFocus(); else preview.focusLayoutControl() }) }
+    function openAddress() {
+        tasksVisible = false; focusMode = false; filesVisible = true
+        controller.preference("filesVisible", true)
+        if (narrow) { drawer.open(); if (drawer.opened) drawerFiles.addressFocus() }
+        else Qt.callLater(() => { if (files.visible) files.addressFocus() })
+    }
+    function toggleFiles() {
+        if (narrow) { if (drawer.visible) drawer.close(); else openAddress(); return }
+        if (focusMode || !filesVisible) { openAddress(); return }
+        files.remember(); filesVisible = false; controller.preference("filesVisible", false); returnFileFocus()
+    }
+    onFocusModeChanged: { files.remember(); if (drawer.visible) drawer.close(); Qt.callLater(() => { if (!root.tasksVisible) preview.focusLayoutControl() }) }
+    onNarrowChanged: { if (narrow && hasFocusWithin(files)) returnFileFocus(); else if (!narrow && drawer.visible) drawer.close() }
     function editing(): bool { const item = root.Window.window.activeFocusItem; return !!item && (item.hasOwnProperty("inputMethodComposing") || item.hasOwnProperty("selectByMouse")) }
     Shortcut { sequence: "Ctrl+O"; onActivated: fileDialog.open() }
     Shortcut { sequence: "Ctrl+L"; onActivated: root.openAddress() }
@@ -40,7 +53,7 @@ Item {
                 Rectangle {
                     Layout.fillHeight: true; Layout.preferredWidth: 40; color: Theme.panel
                     visible: root.focusMode || root.narrow || !root.filesVisible
-                    Tool { id: fileRail; objectName: "fileRail"; width: 38; text: "≡"; hint: Theme.t("展开文件区", "Show files", "展開檔案區"); Accessible.name: hint; onClicked: { if(root.focusMode) {root.focusMode=false;root.filesVisible=true;if(root.narrow)drawer.open()} else root.toggleFiles() } }
+                    Tool { id: fileRail; objectName: "fileRail"; width: 38; text: "≡"; hint: Theme.t("展开文件区", "Show files", "展開檔案區"); Accessible.name: hint; onClicked: root.openAddress() }
                 }
                 FilesPane {
                     id: files
@@ -55,7 +68,7 @@ Item {
                         onPositionChanged: mouse => { if(pressed) root.controller.preference("fileWidth",Math.max(240, Math.min(440,old+mapToItem(root,mouse.x,0).x-start))) }
                     }
                 }
-                PreviewPane { Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; focused: root.focusMode; onOpenFile: fileDialog.open(); onOpenFolder: folderDialog.open(); onLocate: locateDialog.open(); onToggleFocus: root.focusMode = !root.focusMode; onUnavailable: about.open() }
+                PreviewPane { id: preview; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; focused: root.focusMode; onOpenFile: fileDialog.open(); onOpenFolder: folderDialog.open(); onLocate: locateDialog.open(); onToggleFocus: root.focusMode = !root.focusMode; onUnavailable: about.open() }
                 Inspector { Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? 300 : 320; visible: !root.focusMode; controller: root.controller }
                 Rectangle { visible: root.focusMode; Layout.fillHeight: true; Layout.preferredWidth: 40; color: Theme.panel; Tool { width: 38; text: "‹"; hint: Theme.t("展开检查区", "Show inspector", "展開檢查區"); Accessible.name: hint; onClicked: root.focusMode = false } }
             }
@@ -67,9 +80,11 @@ Item {
         id: drawer
         objectName: "fileDrawer"
         width: 288; height: root.height; modal: true; focus: true
+        closePolicy: Popup.CloseOnPressOutside
         FilesPane { id: drawerFiles; anchors.fill: parent; controller: root.controller; onCollapse: drawer.close() }
         onAboutToHide: drawerFiles.remember()
-        onClosed: fileRail.forceActiveFocus()
+        onOpened: drawerFiles.addressFocus()
+        onClosed: root.returnFileFocus()
     }
     FileDialog { id: fileDialog; title: Theme.t("打开文件", "Open file", "開啟檔案"); onAccepted: root.controller.openPath(selectedFile.toString()) }
     FolderDialog { id: folderDialog; title: Theme.t("打开目录", "Open folder", "開啟資料夾"); onAccepted: root.controller.navigate(selectedFolder.toString()) }

@@ -310,11 +310,17 @@ void Desktop::history(int offset) {
     scan(history_[at], at);
 }
 void Desktop::parentDirectory() {
-  if (!directory_.isEmpty()) {
-    auto path = QDir(directory_);
-    path.cdUp();
-    navigate(path.path());
-  }
+  if (directory_.isEmpty())
+    return;
+  // Lexical navigation only. QDir::cdUp() checks existence synchronously.
+  const auto path = std::filesystem::path(directory_.toStdWString());
+  const auto parent = path.parent_path();
+  const auto serverEnd = directory_.indexOf('/', 2);
+  const auto uncRoot =
+      directory_.startsWith("//") &&
+      (serverEnd < 0 || directory_.indexOf('/', serverEnd + 1) < 0);
+  if (!uncRoot && !parent.empty() && parent != path)
+    navigate(QString::fromStdWString(parent.wstring()));
 }
 void Desktop::refresh() {
   if (!directory_.isEmpty())
