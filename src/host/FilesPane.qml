@@ -1,0 +1,174 @@
+pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
+Rectangle {
+    id: root
+    required property var controller
+    property bool thumbnails: !!controller.preferences.thumbnails
+    signal collapse()
+    color: Theme.panel
+    function addressFocus() { address.forceActiveFocus(); address.selectAll() }
+    function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : 38)*columns) }
+    function restore() { Qt.callLater(() => { const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; const offset = controller.scrollPosition/columns*(thumbnails ? grid.cellHeight : 38); view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height)) }) }
+    function step(delta, modifiers) { const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
+    Connections { target: root.controller; function onViewRestored() { root.restore() } }
+    onThumbnailsChanged: restore()
+    onVisibleChanged: if (visible) restore()
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 8
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.margins: 8
+            Label { text: Theme.t("文件", "Files", "檔案"); color: Theme.text; Layout.fillWidth: true }
+            Tool { text: "‹"; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: 10; Layout.rightMargin: 10
+            Tool { Layout.fillWidth: true; text: "←"; enabled: root.controller.canBack; hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左"); onClicked: { root.remember(); root.controller.history(-1) } }
+            Tool { Layout.fillWidth: true; text: "→"; enabled: root.controller.canForward; hint: Theme.t("前进 · Alt+右", "Forward · Alt+Right", "前進 · Alt+右"); onClicked: { root.remember(); root.controller.history(1) } }
+            Tool { Layout.fillWidth: true; text: "↑"; enabled: root.controller.directory.length > 0; hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上"); onClicked: { root.remember(); root.controller.parentDirectory() } }
+        }
+        Field {
+            id: address
+            objectName: "address"
+            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
+            text: root.controller.directory
+            Binding { target: address; property: "text"; when: !address.activeFocus; value: root.controller.directory }
+            placeholderText: Theme.t("输入目录路径", "Enter a folder path", "輸入目錄路徑")
+            Accessible.name: Theme.t("位置", "Location", "位置")
+            onAccepted: if (!inputMethodComposing) { root.remember(); root.controller.navigate(text); list.forceActiveFocus() }
+            Keys.onEscapePressed: event => { text = root.controller.directory; list.forceActiveFocus(); event.accepted = true }
+        }
+        Field {
+            id: search
+            objectName: "search"
+            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
+            text: root.controller.query
+            Binding { target: search; property: "text"; when: !search.activeFocus; value: root.controller.query }
+            placeholderText: Theme.t("搜索文件", "Search files", "搜尋檔案")
+            Accessible.name: placeholderText
+            onTextEdited: if (!inputMethodComposing) debounce.restart()
+            onInputMethodComposingChanged: if (!inputMethodComposing) debounce.restart()
+            onAccepted: if (!inputMethodComposing) { debounce.stop(); root.controller.filter(text, root.controller.typeFilter, root.controller.sortOrder) }
+            Keys.onEscapePressed: event => { list.forceActiveFocus(); event.accepted = true }
+            Timer { id: debounce; interval: 150; onTriggered: if (!search.inputMethodComposing) root.controller.filter(search.text, root.controller.typeFilter, root.controller.sortOrder) }
+        }
+        Tool {
+            id: filterButton
+            objectName: "filterButton"
+            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
+            text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC"][root.controller.typeFilter] : "")
+            hint: text
+            onClicked: filters.open()
+            Menu {
+                id: filters
+                y: filterButton.height
+                MenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 0; onTriggered: root.controller.filter(search.text, 0, root.controller.sortOrder) }
+                MenuItem { text: Theme.t("图片 / 纹理", "Images / Textures", "影像 / 紋理"); checkable: true; checked: root.controller.typeFilter === 1; onTriggered: root.controller.filter(search.text, 1, root.controller.sortOrder) }
+                MenuItem { text: Theme.t("模型", "Models", "模型"); checkable: true; checked: root.controller.typeFilter === 2; onTriggered: root.controller.filter(search.text, 2, root.controller.sortOrder) }
+                MenuItem { text: Theme.t("骨骼动画", "Skeletal animation", "骨骼動畫"); checkable: true; checked: root.controller.typeFilter === 3; onTriggered: root.controller.filter(search.text, 3, root.controller.sortOrder) }
+                MenuItem { text: "ABC"; checkable: true; checked: root.controller.typeFilter === 4; onTriggered: root.controller.filter(search.text, 4, root.controller.sortOrder) }
+                MenuSeparator {}
+                MenuItem { text: Theme.t("名称 ↑", "Name ↑", "名稱 ↑"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 0) }
+                MenuItem { text: Theme.t("名称 ↓", "Name ↓", "名稱 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 1) }
+                MenuItem { text: Theme.t("修改时间 ↓", "Modified ↓", "修改時間 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 2) }
+                MenuItem { text: Theme.t("大小 ↓", "Size ↓", "大小 ↓"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 3) }
+                onClosed: filterButton.forceActiveFocus()
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
+            Tool { Layout.fillWidth: true; text: Theme.t("列表", "List", "清單"); checked: !root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", false) } }
+            Tool { Layout.fillWidth: true; text: Theme.t("缩略图", "Thumbnails", "縮圖"); checked: root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", true) } }
+        }
+        Item {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Component {
+                id: entryDelegate
+                ItemDelegate {
+                    id: entry
+                    required property int index
+                    required property string filePath
+                    required property string fileName
+                    required property string fileKind
+                    required property bool isDirectory
+                    required property bool selected
+                    required property double fileModified
+                    required property double fileBytes
+                    objectName: "fileDelegate"
+                    width: root.thumbnails ? grid.cellWidth : list.width
+                    height: root.thumbnails ? grid.cellHeight : 38
+                    highlighted: selected
+                    text: fileName
+                    padding: 8
+                    Accessible.name: fileName
+                    Keys.onPressed: event => root.handleKey(event)
+                    contentItem: Column {
+                        spacing: 4
+                        Image {
+                            visible: root.thumbnails
+                            width: entry.width-16; height: root.thumbnails ? 84 : 0
+                            source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+encodeURIComponent(entry.filePath)+"?"+entry.fileModified : ""
+                            sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
+                            Text { anchors.centerIn: parent; visible: parent.status !== Image.Ready; color: Theme.muted; text: entry.isDirectory ? Theme.t("目录", "Folder", "目錄") : parent.status === Image.Loading ? Theme.t("载入中…", "Loading…", "載入中…") : parent.status === Image.Error ? Theme.t("无缩略图", "Unavailable", "無縮圖") : entry.fileName.split('.').pop().toUpperCase(); font.pixelSize: 14 }
+                        }
+                        Text { width: entry.width-16; text: (entry.isDirectory && !root.thumbnails ? "▸ " : "")+entry.fileName; color: Theme.text; font.pixelSize: 14; elide: Text.ElideMiddle }
+                    }
+                    background: Rectangle { color: entry.selected ? Theme.selection : entry.hovered ? Theme.raised : "transparent"; border.color: entry.activeFocus ? Theme.accent : "transparent"; border.width: 2 }
+                    MouseArea {
+                        anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: mouse => { if(mouse.button === Qt.RightButton) { context.targetPath = entry.filePath; context.popup() } else { root.controller.select(entry.index, mouse.modifiers); (root.thumbnails ? grid : list).forceActiveFocus() } }
+                        onDoubleClicked: mouse => { if(mouse.button === Qt.LeftButton) root.controller.activate(entry.index) }
+                    }
+                }
+            }
+            ListView {
+                id: list
+                objectName: "fileList"
+                anchors.fill: parent; visible: !root.thumbnails; clip: true
+                model: root.visible && !root.thumbnails ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: 76
+                focus: true; activeFocusOnTab: true
+                keyNavigationEnabled: false
+                ScrollBar.vertical: ScrollBar {}
+                Keys.onPressed: event => root.handleKey(event)
+                onMovementEnded: root.remember()
+            }
+            GridView {
+                id: grid
+                objectName: "fileGrid"
+                anchors.fill: parent; visible: root.thumbnails; clip: true
+                model: root.visible && visible ? root.controller.files : null
+                cellWidth: width / Math.max(1, Math.floor(width/128)); cellHeight: 116
+                delegate: entryDelegate; cacheBuffer: 116; activeFocusOnTab: visible
+                keyNavigationEnabled: false
+                ScrollBar.vertical: ScrollBar {}
+                Keys.onPressed: event => root.handleKey(event)
+                onMovementEnded: root.remember()
+            }
+            Label { anchors.centerIn: parent; visible: root.controller.count === 0; color: Theme.muted; text: root.controller.busy ? Theme.t("正在扫描…", "Scanning…", "正在掃描…") : Theme.t("没有文件", "No files", "沒有檔案") }
+        }
+        Label { Layout.margins: 10; color: Theme.muted; font.pixelSize: 12; text: root.controller.count + Theme.t(" 项 · 已选 ", " items · Selected ", " 項 · 已選 ") + root.controller.selectedCount }
+    }
+    Menu {
+        id: context
+        property string targetPath: ""
+        MenuItem { text: Theme.t("打开", "Open", "開啟"); onTriggered: root.controller.openPath(context.targetPath) }
+        MenuItem { text: Theme.t("复制路径", "Copy path", "複製路徑"); onTriggered: root.controller.copy(context.targetPath) }
+        MenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); onTriggered: root.controller.reveal(context.targetPath) }
+    }
+    function handleKey(event) {
+        if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) controller.selectAll()
+        else if (event.key === Qt.Key_Down) step(thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1,event.modifiers)
+        else if (event.key === Qt.Key_Up) step(thumbnails ? -Math.max(1,Math.floor(grid.width/128)) : -1,event.modifiers)
+        else if (event.key === Qt.Key_Home) step(-controller.count,event.modifiers)
+        else if (event.key === Qt.Key_End) step(controller.count,event.modifiers)
+        else if (event.key === Qt.Key_PageDown) step(10,event.modifiers)
+        else if (event.key === Qt.Key_PageUp) step(-10,event.modifiers)
+        else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) controller.activate(controller.currentIndex)
+        else return
+        event.accepted = true
+    }
+}
