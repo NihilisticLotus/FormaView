@@ -1,10 +1,13 @@
 #include "desktop.hpp"
-#include "formaview/capabilities.hpp"
+#ifdef FORMAVIEW_IMAGE_UI
+#include "formaview/image_requests.hpp"
+#endif
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
 #include <QFile>
 #include <QFont>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QQmlApplicationEngine>
@@ -16,11 +19,18 @@
 #include <string_view>
 
 int main(int argc, char *argv[]) {
-  const auto capabilities = formaview::CapabilityRegistry{};
   for (auto i = 1; i < argc; ++i) {
     if (std::string_view{argv[i]} == "--capabilities") {
+      QCoreApplication app(argc, argv);
+#ifdef FORMAVIEW_IMAGE_UI
+      std::cout << QJsonDocument(formaview::imaging::image_capabilities())
+                       .toJson(QJsonDocument::Compact)
+                       .constData()
+                << '\n';
+#else
       std::cout << "{\"api_version\":1,\"capabilities\":[]}\n";
-      return capabilities.list().empty() ? 0 : 1;
+#endif
+      return 0;
     }
   }
   const auto started = std::chrono::steady_clock::now();
@@ -28,6 +38,12 @@ int main(int argc, char *argv[]) {
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
   QImageReader::setAllocationLimit(32);
   auto app = QGuiApplication{argc, argv};
+#ifdef FORMAVIEW_IMAGE_UI
+  const auto capabilityCount =
+      formaview::imaging::image_capabilities()["capabilities"].toArray().size();
+#else
+  constexpr auto capabilityCount = 0;
+#endif
   auto font = QFont{};
   font.setFamilies({"Segoe UI", "Microsoft YaHei UI"});
   font.setPixelSize(14);
@@ -66,7 +82,7 @@ int main(int argc, char *argv[]) {
           metrics.record({"host_start_to_frame", formaview::CachePath::Cold},
                          now - started);
           std::cout << "HOST_READY rendered_frame=1 qt=" << qVersion()
-                    << " capabilities=" << capabilities.list().size() << '\n';
+                    << " capabilities=" << capabilityCount << '\n';
           if (smoke)
             QCoreApplication::quit();
         }
@@ -100,7 +116,7 @@ int main(int argc, char *argv[]) {
   if (metrics_index >= 0 && metrics_index + 1 < args.size()) {
     auto object = QJsonObject{
         {"boundary",
-         "M04 desktop shell; frame/timer observations are not input latency"},
+         "Desktop host; frame/timer observations are not input latency"},
         {"qt", qVersion()},
         {"rendered", rendered}};
     if (const auto summary = metrics.summary(

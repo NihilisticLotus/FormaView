@@ -4,7 +4,7 @@ if(FORMAVIEW_BUILD_PROFESSIONAL)
     find_package(Imath 3.2.3 EXACT CONFIG REQUIRED)
     find_package(directxtex 2.1.1 EXACT CONFIG REQUIRED)
     find_package(Alembic 1.8.12 EXACT CONFIG REQUIRED)
-    add_library(formaview_professional STATIC src/formats/pro_image.cpp src/formats/geometry_cache.cpp)
+    add_library(formaview_professional STATIC src/formats/pro_image.cpp src/formats/image_transform.cpp src/formats/pro_image_write.cpp src/formats/geometry_cache.cpp)
     add_library(FormaView::Professional ALIAS formaview_professional)
     target_link_libraries(formaview_professional PUBLIC FormaView::Core
         PRIVATE OpenEXR::OpenEXR Microsoft::DirectXTex Alembic::Alembic formaview_options)

@@ -47,6 +47,8 @@ private:
 class Desktop final : public QObject {
   Q_OBJECT
   Q_PROPERTY(QAbstractItemModel *files READ files CONSTANT)
+  Q_PROPERTY(QObject *image READ image CONSTANT)
+  Q_PROPERTY(QObject *imageJobs READ imageJobs CONSTANT)
   Q_PROPERTY(QString directory READ directory NOTIFY changed)
   Q_PROPERTY(QString query READ query NOTIFY changed)
   Q_PROPERTY(int typeFilter READ typeFilter NOTIFY changed)
@@ -73,6 +75,12 @@ public:
   explicit Desktop(QObject *parent = nullptr);
   ~Desktop() override;
   QAbstractItemModel *files() { return &files_; }
+  QObject *image() const { return image_.get(); }
+  QObject *imageJobs() const { return imageJobs_.get(); }
+  Q_INVOKABLE QStringList selectedImages() const;
+  Q_INVOKABLE QString localFile(const QUrl &url) const {
+    return url.isLocalFile() ? url.toLocalFile() : QString{};
+  }
   QString directory() const { return directory_; }
   QString query() const { return query_; }
   int typeFilter() const { return type_; }
@@ -165,6 +173,8 @@ private:
   void saveDirectory();
   void publish(Job &);
   FileList files_;
+  std::unique_ptr<QObject> image_;
+  std::unique_ptr<QObject> imageJobs_;
   formaview::Scheduler scheduler_;
   std::vector<Job> jobs_;
   std::shared_ptr<const std::vector<FileEntry>> source_;

@@ -6,6 +6,8 @@ Rectangle {
     id: root
     required property var controller
     signal back()
+    signal retryImageJob(string id)
+    readonly property bool hasImageJobs: !!controller.imageJobs && controller.imageJobs.configured
     color: Theme.base
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 20; spacing: 16
@@ -14,7 +16,18 @@ Rectangle {
             Tool { text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.back() }
         }
         Label { color: Theme.muted; text: Theme.t("活动任务：", "Active tasks: ", "活動工作：")+root.controller.activeTasks }
+        TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.fillWidth: true
+            TabButton { text: Theme.t("图片转换", "Image conversion", "影像轉換") }
+            TabButton { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }
+        }
+        Loader {
+            id: imageJobs; Layout.fillWidth: true; Layout.fillHeight: true
+            active: root.visible && root.hasImageJobs && taskTabs.currentIndex === 0; visible: active
+            onActiveChanged: { if (active) setSource("ImageJobsPane.qml", {controller: root.controller}) }
+        }
+        Connections { target: imageJobs.item; function onRetry(id) { root.retryImageJob(id) } }
         ListView {
+            visible: !root.hasImageJobs || taskTabs.currentIndex === 1
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; reuseItems: true
             model: root.visible ? root.controller.tasks : null; spacing: 6
             ScrollBar.vertical: ScrollBar {}

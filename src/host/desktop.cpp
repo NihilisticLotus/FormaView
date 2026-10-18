@@ -1,4 +1,8 @@
 #include "desktop.hpp"
+#ifdef FORMAVIEW_IMAGE_UI
+#include "image_jobs.hpp"
+#include "image_session.hpp"
+#endif
 #include <QClipboard>
 #include <QCollator>
 #include <QDateTime>
@@ -32,8 +36,9 @@ formaview::TaskResult failure(formaview::ErrorCode code, const QString &text) {
 }
 QString kind(const QString &name) {
   const auto suffix = QFileInfo(name).suffix().toLower();
-  if (QStringList{"png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "tga",
-                  "ico", "dds", "hdr", "exr"}
+  if (QStringList{"png", "jpg", "jpeg", "jpe", "jfif", "bmp", "dib", "gif",
+                  "tif", "tiff", "tga", "webp", "ico", "dds", "hdr", "rgbe",
+                  "exr"}
           .contains(suffix))
     return "image";
   if (QStringList{"fbx", "obj", "gltf", "glb", "psk", "pskx"}.contains(suffix))
@@ -142,6 +147,10 @@ void FileList::select(int row, int modifiers) {
     emit dataChanged(index(0), index(rowCount() - 1), {Selected});
 }
 Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
+#ifdef FORMAVIEW_IMAGE_UI
+  image_ = std::make_unique<ImageSession>();
+  imageJobs_ = std::make_unique<ImageJobs>();
+#endif
   auto settings = QSettings{};
   language_ = settings.value("language", "zh-CN").toString();
   preferences_ = settings.value("preferences").toMap();
@@ -164,7 +173,7 @@ void Desktop::setLanguage(const QString &value) {
 }
 void Desktop::preference(const QString &key, const QVariant &value) {
   if (!QStringList{"fileWidth", "thumbnails", "filesVisible", "mcpInputRoot",
-                   "mcpOutputRoot"}
+                   "mcpOutputRoot", "mcpPython", "mcpAdapter"}
            .contains(key))
     return;
   if (preferences_.value(key) == value)
@@ -454,6 +463,16 @@ void Desktop::openUrls(const QList<QUrl> &urls) {
   if (!urls.isEmpty() && urls.first().isLocalFile())
     openPath(urls.first().toLocalFile());
 }
+QStringList Desktop::selectedImages() const {
+  QStringList result;
+  for (const auto &path : files_.selection())
+    if (kind(path) == "image")
+      result.push_back(path);
+  result.sort(Qt::CaseInsensitive);
+  if (result.isEmpty() && asset_.value("kind") == "image")
+    result.push_back(asset_.value("path").toString());
+  return result;
+}
 void Desktop::cancel(const QString &id) {
   for (auto &job : jobs_)
     if (QString::fromStdString(job.handle.snapshot().id.value) == id)
@@ -485,6 +504,9 @@ void Desktop::reveal(const QString &path) {
       QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 }
 void Desktop::clearAsset() {
+#ifdef FORMAVIEW_IMAGE_UI
+  static_cast<ImageSession *>(image_.get())->clear();
+#endif
   ++assetRevision_;
   for (auto &j : jobs_)
     if ((j.operation == "inspect" || j.operation == "resource") && !j.consumed)
@@ -686,6 +708,12 @@ void Desktop::publish(Job &job) {
         Qt::QueuedConnection);
   } else {
     asset_ = job.result->asset;
+#ifdef FORMAVIEW_IMAGE_UI
+    if (asset_["kind"] == "image")
+      static_cast<ImageSession *>(image_.get())->open(job.path);
+    else
+      static_cast<ImageSession *>(image_.get())->clear();
+#endif
     resourceIssues_.clear();
     ++sessionRevision_;
     const auto parent =

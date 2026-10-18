@@ -1,0 +1,12 @@
+FormaView's optional CPU raster target uses Qt 6.8.3, libtiff 4.7.2,
+libwebp 1.6.0 (including sharpyuv, demux and mux) and zlib 1.3.2.
+Their license and patent notices accompany this file. These dependency
+licenses do not select or grant a license for FormaView itself.
+
+Static TIFF codecs deployed here: none, LZW, PackBits, CCITT and Deflate.
+JPEG-in-TIFF, LERC, LZMA, ZSTD, JBIG and WebP-in-TIFF are not deployed.
+The application separately validates sample types and photometric layouts;
+presence of a library codec does not advertise all its variants.
+
+bcdec is an external verification-only decoder, not linked or distributed
+with the application. Pillow and tifffile are also verification tools.

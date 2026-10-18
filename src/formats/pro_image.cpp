@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -69,6 +70,8 @@ ImageWindow window(const IMATH_NAMESPACE::Box2i &box) {
           static_cast<std::uint64_t>(h)};
 }
 std::size_t scalar_size(ScalarType t) {
+  if (t == ScalarType::Float64)
+    return 8;
   return t == ScalarType::Half || t == ScalarType::UInt16 ||
                  t == ScalarType::Int16
              ? 2
@@ -132,7 +135,8 @@ struct ImageFile::Impl {
   Limits limits;
   std::vector<std::byte> bytes;
   ImageData desc;
-  bool is_exr{}, hdr{};
+  bool is_exr{}, hdr{}, tga{};
+  std::uint32_t tga_channels{};
   DirectX::ScratchImage dds;
   std::vector<std::array<std::size_t, 3>> indices;
 };
@@ -218,15 +222,36 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
     // Alpha and color interpretation may vary by layer/part. No global guess.
     p->desc.alpha = AlphaMode::Unknown;
   } else {
-    p->hdr =
-        !(p->bytes.size() >= 4 && std::memcmp(p->bytes.data(), "DDS ", 4) == 0);
+    auto extension = path.extension().wstring();
+    std::transform(
+        extension.begin(), extension.end(), extension.begin(),
+        [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    p->tga = extension == L".tga";
+    p->hdr = !p->tga && !(p->bytes.size() >= 4 &&
+                          std::memcmp(p->bytes.data(), "DDS ", 4) == 0);
     DirectX::TexMetadata meta;
-    if (p->hdr)
+    if (p->tga)
+      hr(DirectX::GetMetadataFromTGAMemory(
+          p->bytes.data(), p->bytes.size(),
+          DirectX::TGA_FLAGS_ALLOW_ALL_ZERO_ALPHA, meta));
+    else if (p->hdr)
       hr(DirectX::GetMetadataFromHDRMemory(p->bytes.data(), p->bytes.size(),
                                            meta));
     else
       hr(DirectX::GetMetadataFromDDSMemory(p->bytes.data(), p->bytes.size(),
                                            DirectX::DDS_FLAGS_NONE, meta));
+    if (p->tga) {
+      // The decoded DXGI surface can contain a synthesized fourth component.
+      // Expose source channels, not the padding used by the codec.
+      const auto bits = std::to_integer<unsigned>(p->bytes.at(16));
+      const auto attributes = std::to_integer<unsigned>(p->bytes.at(17)) & 15U;
+      p->tga_channels = bits == 8                         ? 1U
+                        : (bits == 24 || attributes == 0) ? 3U
+                                                          : 4U;
+      p->desc.source.properties["tga_pixel_bits"] = std::to_string(bits);
+      p->desc.source.properties["tga_descriptor"] =
+          std::to_string(std::to_integer<unsigned>(p->bytes.at(17)));
+    }
     budget(meta.width <= limits.dimension && meta.height <= limits.dimension &&
            meta.depth <= limits.dimension);
     budget(meta.arraySize <= limits.subresources && meta.mipLevels <= 32);
@@ -244,7 +269,11 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
       count += planes;
       budget(resident <= limits.decoded_bytes && count <= limits.subresources);
     }
-    if (p->hdr)
+    if (p->tga)
+      hr(DirectX::LoadFromTGAMemory(p->bytes.data(), p->bytes.size(),
+                                    DirectX::TGA_FLAGS_ALLOW_ALL_ZERO_ALPHA,
+                                    &meta, p->dds));
+    else if (p->hdr)
       hr(DirectX::LoadFromHDRMemory(p->bytes.data(), p->bytes.size(), &meta,
                                     p->dds));
     else
@@ -256,16 +285,20 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
       p->desc.source.properties["hdr_decode"] =
           "RGBE midpoint: (mantissa + 0.5) * 2^(exponent-136), divided by "
           "header EXPOSURE; RGB float32, no alpha";
+    if (p->tga)
+      p->desc.source.properties["tga_decode"] =
+          "Stored channel values; all-zero alpha preserved; origin normalized "
+          "by DirectXTex";
     p->desc.source.properties["dxgi_format"] = std::to_string(meta.format);
     p->desc.colour_space =
         DirectX::IsSRGB(meta.format) ? "sRGB" : "unspecified";
     p->desc.alpha =
-        p->hdr ? AlphaMode::Absent
+        p->hdr || (p->tga && p->tga_channels != 4) ? AlphaMode::Absent
         : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_PREMULTIPLIED
             ? AlphaMode::Premultiplied
         : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_STRAIGHT
             ? AlphaMode::Straight
-        : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_OPAQUE
+        : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_OPAQUE && !p->tga
             ? AlphaMode::Absent
             : AlphaMode::Unknown;
     for (std::size_t a = 0; a < meta.arraySize; ++a)
@@ -355,7 +388,8 @@ ImageSubresource ImageFile::decode(std::size_t index,
       hr(DirectX::Decompress(encoded, DXGI_FORMAT_R32G32B32A32_FLOAT, decoded));
       native = decoded.GetImage(0, 0, 0);
       format = native->format;
-    } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+    } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+               (impl_->tga && format == DXGI_FORMAT_B5G5R5A1_UNORM)) {
       // Packed source words stay available in encoded_blocks, decoded values
       // are UNORM.
       hr(DirectX::Convert(*native, DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -364,6 +398,7 @@ ImageSubresource ImageFile::decode(std::size_t index,
       format = native->format;
     }
     auto l = layout(format);
+    const auto stored_count = l.count;
     const auto source_format = impl_->dds.GetMetadata().format;
     if (source_format == DXGI_FORMAT_BC4_UNORM ||
         source_format == DXGI_FORMAT_BC4_SNORM)
@@ -376,13 +411,16 @@ ImageSubresource ImageFile::decode(std::size_t index,
       l.count = 3;
     if (impl_->hdr)
       l.count = 3;
-    const std::array<std::string, 4> names =
-        l.bgra ? std::array<std::string, 4>{"B", "G", "R", "A"}
-               : std::array<std::string, 4>{"R", "G", "B", "A"};
+    if (impl_->tga)
+      l.count = impl_->tga_channels;
+    auto names = l.bgra ? std::array<std::string, 4>{"B", "G", "R", "A"}
+                        : std::array<std::string, 4>{"R", "G", "B", "A"};
+    if (impl_->tga && l.count == 1)
+      names[0] = "Y";
     const auto component = scalar_size(l.type);
     const auto stride = (impl_->hdr || DirectX::IsCompressed(source_format))
                             ? 16
-                            : component * l.count;
+                            : component * stored_count;
     for (std::uint32_t c = 0; c < l.count; ++c) {
       Buffer b;
       b.scalar = l.type;
@@ -433,9 +471,47 @@ double value(const ImageChannel &c, std::size_t pixel) {
     std::memcpy(&v, p, 4);
     return v;
   }
+  case ScalarType::Int16: {
+    std::int16_t v;
+    std::memcpy(&v, p, 2);
+    return v;
+  }
+  case ScalarType::Int32: {
+    std::int32_t v;
+    std::memcpy(&v, p, 4);
+    return v;
+  }
+  case ScalarType::Float64: {
+    double v;
+    std::memcpy(&v, p, 8);
+    return v;
+  }
   default:
     fail("Unsupported pixel scalar");
   }
+}
+double interpreted_value(const ImageChannel &c, std::size_t pixel) {
+  const auto v = value(c, pixel);
+  switch (c.encoding) {
+  case SampleEncoding::Numeric:
+    return v;
+  case SampleEncoding::UNorm:
+    if (c.samples.scalar == ScalarType::UInt8)
+      return v / 255.;
+    if (c.samples.scalar == ScalarType::UInt16)
+      return v / 65535.;
+    if (c.samples.scalar == ScalarType::UInt32)
+      return v / 4294967295.;
+    break;
+  case SampleEncoding::SNorm:
+    if (c.samples.scalar == ScalarType::Int16)
+      return std::max(-1., v / 32767.);
+    if (c.samples.scalar == ScalarType::Int32)
+      return std::max(-1., v / 2147483647.);
+    break;
+  }
+  throw skeletal::Failure(ErrorCode::InvalidArgument,
+                          "Sample encoding does not match scalar type");
 }
 std::vector<float> display_rgba(const ImageSubresource &source,
                                 const DisplayOptions &options) {
@@ -458,15 +534,8 @@ std::vector<float> display_rgba(const ImageSubresource &source,
   for (std::size_t i = 0; i < pixels; ++i) {
     std::array<double, 4> v{0, 0, 0, 1};
     for (std::size_t c = 0; c < 4; ++c)
-      if (channels[c]) {
-        v[c] = value(*channels[c], i);
-        if (channels[c]->encoding == SampleEncoding::UNorm) {
-          if (channels[c]->samples.scalar == ScalarType::UInt8)
-            v[c] /= 255;
-          else if (channels[c]->samples.scalar == ScalarType::UInt16)
-            v[c] /= 65535;
-        }
-      }
+      if (channels[c])
+        v[c] = interpreted_value(*channels[c], i);
     if (!std::all_of(v.begin(), v.end(),
                      [](double x) { return std::isfinite(x); }))
       v = {1, 0, 1, 1};
@@ -476,12 +545,13 @@ std::vector<float> display_rgba(const ImageSubresource &source,
           v[c] /= v[3];
         if (options.meaning == ImageMeaning::Colour) {
           v[c] *= std::exp2(options.exposure);
-          if (options.apply_srgb)
-            v[c] = v[c] <= 0.0031308 ? 12.92 * v[c]
-                                     : 1.055 * std::pow(v[c], 1 / 2.4) - 0.055;
         }
         if (options.composite && options.alpha != AlphaMode::Absent)
-          v[c] = v[c] * v[3] + 0.18 * (1 - v[3]);
+          v[c] = v[c] * std::clamp(v[3], 0., 1.) +
+                 0.18 * (1 - std::clamp(v[3], 0., 1.));
+        if (options.meaning == ImageMeaning::Colour && options.apply_srgb)
+          v[c] = v[c] <= 0.0031308 ? 12.92 * v[c]
+                                   : 1.055 * std::pow(v[c], 1 / 2.4) - 0.055;
       }
     if (options.composite)
       v[3] = 1;

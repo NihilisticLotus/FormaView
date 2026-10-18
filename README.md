@@ -1,8 +1,8 @@
 # FormaView
 
-Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.8.3 `msvc2022_64`（Quick）。当前入口提供三语言外壳、目录浏览、按需缩略图、文件读取检查和真实任务状态。专业预览、转换与 MCP 服务尚未接入，可执行格式能力仍为空。
+Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.8.3 `msvc2022_64`（Quick）。入口提供三语言外壳、目录浏览、按需缩略图和任务状态。同时启用 `FORMAVIEW_BUILD_PROFESSIONAL` 与 `FORMAVIEW_BUILD_RASTER` 后，接入图片预览、批量转换和共用任务服务的 MCP；`--capabilities` 查询实际编入且处理器可用的图片能力。模型和动画预览仍待接入。
 
-可使用 `formaview.exe --open 文件或目录`，或在窗口中按 `Ctrl+O` 打开文件、`Ctrl+L` 编辑目录，方向键连续浏览、Ctrl／Shift 多选。文件读取检查仅验证访问及头部读取，不代表格式解析成功。MCP 设置保存目录偏好，不授予权限或启动服务。资源定位记录会话路径覆盖；后续加载仍需验证格式。
+可使用 `formaview.exe --open 文件或目录`，或在窗口中按 `Ctrl+O` 打开文件、`Ctrl+L` 编辑目录，方向键连续浏览、Ctrl／Shift 多选。图片视口支持通道、独立 Alpha、曝光、平铺、像素读数，`F` 适应窗口、`Z` 一个源像素对应一个屏幕物理像素。其他格式的文件读取检查不代表解析成功。转换使用源内容及显式设置，不继承视口状态；先预检、审阅损失再提交。MCP 默认关闭，在设置中应用输入/输出范围后启用，填入独立 Python 环境和适配器路径并复制配置给客户端；停止端点不会自动取消已提交任务。
 
 配置时指定仓库外的 `FORMAVIEW_UI_TEST_ROOT` 可启用桌面集成测试。测试生成约一万项临时目录并保留证据；原生输入测量需要交互式 Windows 桌面，会临时将测试窗口置于前台。`--smoke --metrics 外部JSON路径` 记录外壳启动与资源观测，计时器间隔不等同输入延迟。
 
@@ -48,6 +48,16 @@ Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_i
 
 专业数据验证目标可用 `-DFORMAVIEW_BUILD_PROFESSIONAL=ON` 启用。将锁定版本 OpenEXR、Imath、DirectXTex、Alembic 的外置安装前缀加入 `CMAKE_PREFIX_PATH`，并将 OpenEXR 及传递依赖 DLL 目录加入运行时 `PATH`。设置 `FORMAVIEW_PRO_TEST_ROOT` 为仓库外测试目录后运行 CTest。ASan 构建须使用同样启用 ASan 的 DirectXTex／Alembic 静态库，明确指定各自包目录及 `-DCMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO=Release`；已编译 OpenEXR DLL 内部不在 ASan 覆盖范围。
 
-`formaview_professional_probe image|image-summary|abc|mesh 输入 外部输出目录` 输出数值核验材料；`image-summary` 仅输出通道哈希。启用 Qt 宿主时需要同版本 ShaderTools，另生成 `formaview_render_probe 外部输出目录 precision|image|mesh|abc [输入]` 技术窗口（ABC 渲染入口仅接收三角面）。渲染使用 Qt 6.8.3 QQuickRhiItem／D3D11／RGBA32F，与 Qt 私有 QRhi ABI 锁定；升级 Qt 必须重新验证。未接入产品能力注册。
+`formaview_professional_probe image|image-summary|abc|mesh 输入 外部输出目录` 输出数值核验材料；`image-summary` 仅输出通道哈希。启用 Qt 宿主时需要同版本 ShaderTools，另生成 `formaview_render_probe 外部输出目录 precision|image|mesh|abc [输入]` 技术窗口（ABC 渲染入口仅接收三角面）。渲染使用 Qt 6.8.3 QQuickRhiItem／D3D11／RGBA32F，与 Qt 私有 QRhi ABI 锁定；升级 Qt 必须重新验证。探针是独立验证入口；产品图片能力由共用图片服务报告。
 
-图片与 ABC 打开／解码接口是阻塞工作线程 API，须经有界调度器调用。保留源样本与独立显示缓冲；DDS 的 sRGB 数值保持编码域，`apply_srgb` 只对线性显示输入编码，不能重复应用。EXR 暂限普通非子采样通道和 tiled level 0，ABC 暂限 Ogawa 变换／多边形及主 UV／法线；Deep EXR、HDF5 和其他 schema 明确拒绝。预算限制已知载荷，第三方解码器内部临时分配与不可中断调用不构成硬实时上界。渲染目标目前是技术验证组件，设备丢失／分配失败的产品级恢复仍需后续接入。
+图片与 ABC 打开／解码接口是阻塞工作线程 API，须经有界调度器调用。保留源样本与独立显示缓冲；DDS 的 sRGB 数值保持编码域，`apply_srgb` 只对线性显示输入编码，不能重复应用。EXR 暂限普通非子采样通道和 tiled level 0，ABC 暂限 Ogawa 变换／多边形及主 UV／法线；Deep EXR、HDF5 和其他 schema 明确拒绝。预算限制已知载荷，第三方解码器内部临时分配与不可中断调用不构成硬实时上界。产品图片视口报告 GPU 分配失败；完整设备丢失恢复仍需专测，模型与 ABC 渲染仍为技术验证组件。
+
+CPU图片转换库可另启用 `FORMAVIEW_BUILD_RASTER=ON`，需要锁定版本libtiff4.7.2、libwebp1.6.0、zlib1.3.2的外置静态安装前缀及QtGui；同时启用professional后构建 `FormaView::ImageConversion`。zlib使用config包的static组件；TIFF启用Deflate、LZW、PackBits，WebP包含demux/mux。版本、源包摘要和依赖许可分别见锁文件与third_party。ASan须使用重新instrument的三个静态库，Qt自身的二进制image handlers不在instrument范围内。
+
+`ImageDocument`／`prepare_image_conversion`是无窗口worker API，按显式子资源、通道、Alpha、数值和元数据策略生成字节及损失报告。Windows `InputLease`／`OutputTransaction`提供本地路径与重解析点检查、输入锁定和临时输出提交；`ImageBatchService`复用这些接口实现后台预检、摘要确认、幂等提交、分页、逐项失败、取消、重试预检和日志恢复。正式图片界面、MCP和无窗口服务共用这些接口与原生能力目录。
+
+同时启用图片读写库时生成无窗口 `formaview_image_service --scope 显式JSON文件 --journal 专用已存在目录 --endpoint 本用户管道名`，依赖同版本QtNetwork。scope含 `input_roots`、`output_roots`、`allow_overwrite`、`policy_revision`；只接受本地绝对路径，拒绝重解析点。journal必须是专用空目录或已有服务目录，服务将其ACL限制为当前用户，并独占拥有；客户端断连不会取消已提交任务。默认单个批处理worker、16排队任务、每计划64项、保留128条计划/任务，达到上限明确拒绝；不自动丢弃幂等记录。检查与批任务共用图像准入，同一时刻只执行一个图像操作，前台检查优先获得下一个文件操作边界；状态/取消不等待该准入。输入和解码载荷默认各512MiB，调度保留3GiB估计空间，第三方内部内存不构成硬上限。批内目标路径必须互异。
+
+MCP技术入口 `tools/mcp/image_stdio.py` 使用官方SDK1.30.0；Python3.12/Windows依赖及hash在 `tools/mcp/requirements.lock`。在独立环境用 `uv pip sync --require-hashes tools/mcp/requirements.lock` 安装，再显式设置 `FORMAVIEW_IMAGE_ENDPOINT` 为已启动服务名。适配器直接连接本用户管道，查询/取消与耗时请求分别限流，不为每次请求启动进程。入口提供原生能力查询、目录发现/分页、inspect、create/get plan、submit/get/list job、cancel、retry plan；所有目标写出必须先审阅完整分页预检并提交摘要，有损项还需明确ack。目录发现只记录候选文件成员，排除并报告重解析点，上限4096图片/512目录/100000访问项；发现记录也计入128条保留上限。此入口不会修改用户MCP配置或自动启动服务。单文件验证模式需另设 `FORMAVIEW_IMAGE_CLI` 为client exe绝对路径、`FORMAVIEW_IMAGE_SCOPE` 为scope文件，并省略endpoint；此模式无持久任务承诺。
+
+恢复保留已记录的逐项结果；未完成任务不自动复跑。临时文件从创建时启用系统自动删除，只有提交意图日志写入后才以FileDispositionInfoEx解除该状态并原子改名；文件系统不支持时明确拒绝，不退回无保护提交。启动时只将文件身份与内容摘要均吻合的输出核对为成功，只清理身份吻合的已记录临时文件。恢复时不推断或通配删除未知文件。断电、文件系统故障、其他卷类型及完整部署仍待专测。GUI与MCP共用这些接口；实际文件兼容性仍需逐项预检。

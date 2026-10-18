@@ -8,7 +8,15 @@ Rectangle {
     required property var controller
     property string locatingId: ""
     color: Theme.panel
+    readonly property bool imageActive: !!controller.image && controller.image.available
+    Loader {
+        anchors.fill: parent; anchors.margins: 12
+        active: root.imageActive; visible: active
+        onActiveChanged: { if (active) setSource("ImageInspector.qml", {controller: root.controller}) }
+        Component.onCompleted: { if (active) setSource("ImageInspector.qml", {controller: root.controller}) }
+    }
     ColumnLayout {
+        visible: !root.imageActive
         anchors.fill: parent; anchors.margins: 12; spacing: 14
         Label { text: Theme.t("检查", "Inspect", "檢查"); color: Theme.accent }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }

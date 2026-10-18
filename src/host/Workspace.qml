@@ -9,6 +9,10 @@ Item {
     property bool focusMode: false
     property bool tasksVisible: false
     property bool filesVisible: controller.preferences.filesVisible !== false
+    function openConversion(page) {
+        conversionLoader.setSource("ConversionDialog.qml", {controller: root.controller, initialTab: page})
+        conversionLoader.active = true
+    }
     readonly property bool narrow: width <= 1300
     function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }
     function returnFileFocus() { Qt.callLater(() => { if (root.tasksVisible) return; if (fileRail.visible) fileRail.forceActiveFocus(); else if (files.visible) files.addressFocus(); else preview.focusLayoutControl() }) }
@@ -41,10 +45,12 @@ Item {
                 onOpenFile: fileDialog.open(); onOpenFolder: folderDialog.open()
                 onToggleFiles: root.toggleFiles(); onToggleFocus: root.focusMode = !root.focusMode
                 onTasks: root.tasksVisible = true; onSettings: settings.open(); onUnavailable: about.open()
+                onConvert: root.openConversion(0)
             }
             Item { Layout.fillWidth: true }
             Tool { objectName: "tasksButton"; text: Theme.t("任务", "Tasks", "工作") + (root.controller.activeTasks ? " · "+root.controller.activeTasks : ""); checked: root.tasksVisible; onClicked: root.tasksVisible = !root.tasksVisible }
             ComboBox { Layout.preferredWidth: 120; model: ["简体中文","English","繁體中文"]; currentIndex: ["zh-CN","en","zh-TW"].indexOf(root.controller.language); onActivated: root.controller.language = ["zh-CN","en","zh-TW"][currentIndex]; Accessible.name: "Language / 语言" }
+            Tool { id: convertButton; objectName: "convertImagesButton"; visible: !!root.controller.imageJobs; text: Theme.t("转换…", "Convert…", "轉換…"); onClicked: root.openConversion(0) }
         }
         Item {
             Layout.fillWidth: true; Layout.fillHeight: true
@@ -72,7 +78,7 @@ Item {
                 Inspector { Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? 300 : 320; visible: !root.focusMode; controller: root.controller }
                 Rectangle { visible: root.focusMode; Layout.fillHeight: true; Layout.preferredWidth: 40; color: Theme.panel; Tool { width: 38; text: "‹"; hint: Theme.t("展开检查区", "Show inspector", "展開檢查區"); Accessible.name: hint; onClicked: root.focusMode = false } }
             }
-            TasksPane { anchors.fill: parent; visible: root.tasksVisible; controller: root.controller; onBack: root.tasksVisible = false }
+            TasksPane { anchors.fill: parent; visible: root.tasksVisible; controller: root.controller; onBack: root.tasksVisible = false; onRetryImageJob: id => { root.controller.imageJobs.retry(id); root.openConversion(1) } }
         }
         Label { Layout.fillWidth: true; Layout.leftMargin: 12; Layout.preferredHeight: 24; color: Theme.muted; font.pixelSize: 12; text: root.controller.busy ? Theme.t("正在扫描目录…", "Scanning folder…", "正在掃描資料夾…") : Theme.t("就绪", "Ready", "就緒") }
     }
@@ -90,10 +96,16 @@ Item {
     FolderDialog { id: folderDialog; title: Theme.t("打开目录", "Open folder", "開啟資料夾"); onAccepted: root.controller.navigate(selectedFolder.toString()) }
     FileDialog { id: locateDialog; title: Theme.t("定位替代文件 · 读取检查后应用", "Locate replacement · Check before applying", "定位替代檔案 · 讀取檢查後套用"); onAccepted: root.controller.openPath(selectedFile.toString()) }
     SettingsDialog { id: settings; controller: root.controller }
+    Loader { id: conversionLoader; active: false; onLoaded: { const dialog = item as Dialog; if (dialog) dialog.open() } }
+    Connections { target: conversionLoader.item; function onClosed() { conversionLoader.active = false; convertButton.forceActiveFocus() } }
     Dialog {
-        id: about; anchors.centerIn: Overlay.overlay; width: 480; modal: true; focus: true; standardButtons: Dialog.Close
+        id: about; anchors.centerIn: Overlay.overlay; width: 480; modal: true; focus: true
+        footer: DialogButtonBox {
+            Button { text: Theme.t("关闭", "Close", "關閉"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            onRejected: about.reject()
+        }
         title: "FormaView"
-        Label { width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; text: Theme.t("文件浏览、缩略图、读取检查与任务中心已接入。专业预览、外部动画、转换与 MCP 服务将在对应阶段开放。\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置\nAlt+方向键 导航 · 方向键连续浏览\nCtrl / Shift 多选 · Esc 关闭弹层", "File browsing, thumbnails, access checks and task status are available. Professional preview, animation, conversion and MCP are not connected yet.\n\nCtrl+O Open · Ctrl+L Location\nAlt+Arrows Navigate · Arrows Browse\nCtrl / Shift Multi-select · Esc Close popup", "檔案瀏覽、縮圖、讀取檢查與工作中心已接入。專業預覽、外部動畫、轉換與 MCP 服務將於對應階段開放。\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置\nAlt+方向鍵 導覽 · 方向鍵連續瀏覽\nCtrl / Shift 多選 · Esc 關閉彈層") }
+        Label { width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; text: (root.controller.imageJobs ? Theme.t("支持图片通道、像素读数、子资源与批量转换。MCP 默认关闭，需在设置中应用范围并启用。模型与动画预览仍待接入。", "Image channels, pixel values, subresources and batch conversion are available. MCP is off by default; apply a scope and enable it in Settings. Model and animation preview are pending.", "支援影像通道、像素讀數、子資源與批次轉換。MCP 預設關閉，須在設定套用範圍並啟用。模型與動畫預覽仍待接入。") : Theme.t("此构建提供文件浏览、缩略图、读取检查与任务中心。未编入图片服务。", "This build provides file browsing, thumbnails, access checks and task status. The image service is not included.", "此組建提供檔案瀏覽、縮圖、讀取檢查與工作中心。未編入影像服務。")) + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置\nAlt+方向键 导航 · 方向键连续浏览\nCtrl / Shift 多选 · Esc 关闭弹层", "\n\nCtrl+O Open · Ctrl+L Location\nAlt+Arrows Navigate · Arrows Browse\nCtrl / Shift Multi-select · Esc Close popup", "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置\nAlt+方向鍵 導覽 · 方向鍵連續瀏覽\nCtrl / Shift 多選 · Esc 關閉彈層") }
     }
     DropArea { anchors.fill: parent; onDropped: drop => { if(drop.hasUrls) { root.controller.openUrls(drop.urls); drop.acceptProposedAction() } } }
 }

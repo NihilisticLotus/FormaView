@@ -9,7 +9,10 @@
 #include <OpenEXR/ImfChannelList.h>
 #include <OpenEXR/ImfFrameBuffer.h>
 #include <OpenEXR/ImfHeader.h>
+#include <OpenEXR/ImfMultiPartOutputFile.h>
 #include <OpenEXR/ImfOutputFile.h>
+#include <OpenEXR/ImfOutputPart.h>
+#include <OpenEXR/ImfPartType.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -77,6 +80,37 @@ void images(const std::filesystem::path &dir) {
                   imaging::value(c, 3) == 4294967295.,
               "UINT precision lost");
   }
+  const auto multipartPath = dir / "multipart.exr";
+  {
+    std::array<E::Header, 2> headers{E::Header(2, 1), E::Header(2, 1)};
+    for (int part = 0; part < 2; ++part) {
+      headers[part].setName(part == 0 ? "luminance" : "depth");
+      headers[part].setType(E::SCANLINEIMAGE);
+      headers[part].dataWindow() = IMATH_NAMESPACE::Box2i({part, 0}, {part, 0});
+      headers[part].channels().insert(part == 0 ? "Y" : "Z",
+                                      E::Channel(E::FLOAT));
+    }
+    E::MultiPartOutputFile output(multipartPath.string().c_str(),
+                                  headers.data(), 2);
+    for (int part = 0; part < 2; ++part) {
+      float sample = part == 0 ? .25F : 7.5F;
+      E::FrameBuffer frame;
+      frame.insert(
+          part == 0 ? "Y" : "Z",
+          E::Slice::Make(E::FLOAT, &sample, headers[part].dataWindow()));
+      E::OutputPart entry(output, part);
+      entry.setFrameBuffer(frame);
+      entry.writePixels(1);
+    }
+  }
+  const auto multipart = imaging::ImageFile::open(multipartPath);
+  require(multipart.description().subresources.size() == 2,
+          "EXR part count lost");
+  const auto depthPart = multipart.decode(1);
+  require(depthPart.part_name == "depth" && depthPart.data_window.x == 1 &&
+              depthPart.channels[0].name == "Z" &&
+              imaging::value(depthPart.channels[0], 0) == 7.5,
+          "EXR selected part content or window changed");
   imaging::DisplayOptions options;
   options.channels = {"layer.Z", "layer.Z", "layer.Z", "missing"};
   options.meaning = ImageMeaning::Data;
@@ -115,6 +149,30 @@ void images(const std::filesystem::path &dir) {
   require(std::abs(premult[0] - .29F) < 1e-6F &&
               std::abs(straight[0] - .19F) < 1e-6F && premult[3] == 1,
           "Explicit alpha interpretation mismatch");
+  compositing.alpha = AlphaMode::Premultiplied;
+  compositing.meaning = ImageMeaning::Colour;
+  compositing.exposure = 1;
+  compositing.apply_srgb = true;
+  const auto linearComposite = imaging::display_rgba(alpha, compositing);
+  const auto expectedComposite = 1.055 * std::pow(.49, 1. / 2.4) - .055;
+  require(std::abs(linearComposite[0] - expectedComposite) < 1e-6,
+          "Premultiplied alpha must be composited before OETF");
+  ImageSubresource signedImage;
+  signedImage.data_window = {0, 0, 1, 1};
+  ImageChannel signedChannel;
+  signedChannel.name = "R";
+  signedChannel.encoding = SampleEncoding::SNorm;
+  signedChannel.samples.scalar = ScalarType::Int16;
+  signedChannel.samples.element_count = 1;
+  const std::int16_t negative = -16384;
+  signedChannel.samples.bytes.resize(sizeof(negative));
+  std::memcpy(signedChannel.samples.bytes.data(), &negative, sizeof(negative));
+  signedImage.channels.push_back(signedChannel);
+  imaging::DisplayOptions signedOptions;
+  signedOptions.channels = {"R", "R", "R", "missing"};
+  const auto signedDisplay = imaging::display_rgba(signedImage, signedOptions);
+  require(std::abs(signedDisplay[0] - (-16384. / 32767.)) < 1e-6,
+          "SNorm display must preserve signed normalized values");
   rejects([&] {
     imaging::Limits limit;
     limit.decoded_bytes = 4;

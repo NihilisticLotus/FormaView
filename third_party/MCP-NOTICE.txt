@@ -1,0 +1,10 @@
+The optional Python stdio adapter uses the official Model Context Protocol
+Python SDK, pinned to mcp 1.30.0 (MIT License).
+Source: https://github.com/modelcontextprotocol/python-sdk
+Copyright (c) 2024 Anthropic, PBC.
+License: mcp-python-LICENSE.txt in this directory.
+
+Python/Windows transitive package versions and distribution hashes are pinned
+in tools/mcp/requirements.lock. The installed distributions retain their own
+license and dist-info records; no third-party Python packages are vendored in
+this repository. A redistributable deployment must include their notices.

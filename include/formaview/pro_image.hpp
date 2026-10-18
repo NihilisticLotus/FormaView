@@ -29,6 +29,7 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 [[nodiscard]] double value(const ImageChannel &, std::size_t pixel);
+[[nodiscard]] double interpreted_value(const ImageChannel &, std::size_t pixel);
 struct DisplayOptions {
   std::array<std::string, 4> channels{"R", "G", "B", "A"};
   ImageMeaning meaning{ImageMeaning::Data};

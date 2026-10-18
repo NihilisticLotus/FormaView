@@ -10,12 +10,14 @@ Rectangle {
     signal toggleFocus()
     signal unavailable()
     property bool focused: false
-    function focusLayoutControl() { focusButton.forceActiveFocus() }
+    readonly property bool imageActive: !!controller.image && (controller.image.available || controller.image.busy || !!controller.image.error)
+    function focusLayoutControl() { if (imageActive) imageFocus.forceActiveFocus(); else focusButton.forceActiveFocus() }
     color: Theme.base
     ColumnLayout {
         anchors.fill: parent; spacing: 4
         Rectangle {
             Layout.fillWidth: true; implicitHeight: 46; color: Theme.panel
+            visible: !root.imageActive
             RowLayout {
                 anchors.fill: parent; anchors.margins: 6
                 Tool { text: Theme.t("外部动画…", "External animation…", "外部動畫…"); hint: Theme.t("动画导入尚未接入", "Animation import is not available yet", "動畫匯入尚未接入"); onClicked: root.unavailable() }
@@ -28,6 +30,7 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent; anchors.margins: 6
                 Label { Layout.fillWidth: true; elide: Text.ElideMiddle; color: Theme.text; text: root.controller.asset.name || Theme.t("预览", "Preview", "預覽") }
+                Tool { id: imageFocus; visible: root.imageActive; text: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
                 Tool { text: Theme.t("更多", "More", "更多"); onClicked: actions.open(); Menu { id: actions; y: parent.height
                     MenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); enabled: !!root.controller.asset.path; onTriggered: root.controller.reveal(root.controller.asset.path) }
                     MenuItem { text: Theme.t("关闭当前文件", "Close current file", "關閉目前檔案"); enabled: !!root.controller.asset.path; onTriggered: root.controller.clearAsset() }
@@ -52,6 +55,7 @@ Rectangle {
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; color: "#303236"
+            visible: !root.imageActive
             ColumnLayout {
                 anchors.centerIn: parent; width: Math.min(parent.width-48, 520); spacing: 16
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; text: root.controller.asset.path ? (root.controller.asset.suffix || Theme.t("文件", "File", "檔案")) : "FormaView"; color: Theme.text; font.pixelSize: 28 }
@@ -61,6 +65,12 @@ Rectangle {
                     Tool { text: Theme.t("打开目录…", "Open folder…", "開啟資料夾…"); onClicked: root.openFolder() }
                 }
             }
+        }
+        Loader {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            active: root.imageActive; visible: active
+            onActiveChanged: { if (active) setSource("ImagePane.qml", {controller: root.controller}) }
+            Component.onCompleted: { if (active) setSource("ImagePane.qml", {controller: root.controller}) }
         }
     }
 }

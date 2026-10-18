@@ -212,5 +212,62 @@
       "qtdeclarative-6.8.3.spdx.json": "a8ecaf2320ea7dde15ec8f1914e7edd0522a3d087cf8fcdafed1debd7e7d9441",
       "qtshadertools-6.8.3.spdx.json": "dbbd8fd69316a2f9768d51add8eeb3333a49b9516d03146fc5f6222091347e5f"
     }
+  },
+  "raster": {
+    "libtiff": {
+      "linkage": "static /MD",
+      "version": "4.7.2",
+      "source": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.gz",
+      "archive_sha256": "672bd7d10aee4606171afb864f3570b83340f6a33e2c186dc0512f7145ffdf6a",
+      "options": {
+        "tiff-contrib": "OFF",
+        "jbig": "OFF",
+        "zlib": "ON",
+        "lzma": "OFF",
+        "libdeflate": "OFF",
+        "webp": "OFF",
+        "BUILD_SHARED_LIBS": "OFF",
+        "zstd": "OFF",
+        "tiff-docs": "OFF",
+        "jpeg": "OFF",
+        "tiff-tools": "OFF",
+        "tiff-tests": "OFF",
+        "lerc": "OFF"
+      }
+    },
+    "zlib": {
+      "linkage": "static /MD",
+      "version": "1.3.2",
+      "source": "https://zlib.net/zlib-1.3.2.tar.gz",
+      "archive_sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+      "options": {
+        "ZLIB_BUILD_SHARED": "OFF",
+        "ZLIB_BUILD_STATIC": "ON",
+        "ZLIB_BUILD_TESTING": "OFF"
+      }
+    },
+    "asan": "Rebuild zlib, libtiff and libwebp with /fsanitize=address /Zi and /MD. Qt image handler binaries are not instrumented.",
+    "libwebp": {
+      "linkage": "static /MD",
+      "version": "1.6.0",
+      "source": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "archive_sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564",
+      "options": {
+        "WEBP_BUILD_LIBWEBPMUX": "ON",
+        "utilities": "OFF",
+        "BUILD_SHARED_LIBS": "OFF",
+        "WEBP_USE_THREAD": "OFF"
+      }
+    },
+    "qt": "6.8.3 EXACT CPU image handlers; no GUI context required"
+  },
+  "image_mcp": {
+    "sdk": "mcp==1.30.0",
+    "source": "https://github.com/modelcontextprotocol/python-sdk",
+    "runtime": "CPython 3.12 / Windows x64",
+    "dependency_lock": "tools/mcp/requirements.lock",
+    "transport": "official SDK stdio to Qt6.8.3 UserAccessOption local named pipe",
+    "license": "third_party/mcp-python-LICENSE.txt",
+    "deployment": "explicit service and adapter configuration; no automatic user MCP registration"
   }
 }

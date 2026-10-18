@@ -6,11 +6,12 @@ ColumnLayout {
     required property string label
     required property string value
     spacing: 4
-    Label { text: root.label; color: Theme.muted; font.pixelSize: 12 }
+    Label { Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; text: root.label; color: Theme.muted; font.pixelSize: 12 }
     TextEdit {
         objectName: "readoutValue"
         Layout.fillWidth: true
         text: root.value
+        textFormat: TextEdit.PlainText
         readOnly: true
         selectByMouse: true
         activeFocusOnTab: true

@@ -1,7 +1,15 @@
 #include "desktop.hpp"
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
+#ifdef FORMAVIEW_IMAGE_UI
+#include "image_jobs.hpp"
+#include "image_session.hpp"
+#include "image_view.hpp"
+#include <cstring>
+#endif
+#include <QBuffer>
 #include <QClipboard>
+#include <QDataStream>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -9,10 +17,12 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
+#include <QJSValue>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMimeData>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -186,6 +196,7 @@ private slots:
     root_ = qEnvironmentVariable("FORMAVIEW_UI_TEST_ROOT");
     QVERIFY(!root_.isEmpty());
     QVERIFY(QDir().mkpath(root_));
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root_ + "/image-journal").toUtf8());
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        root_ + "/settings");
@@ -289,6 +300,31 @@ private slots:
     desktop_->filter("", 0, 0);
     QTRY_VERIFY(idle());
     save("01-files");
+  }
+  void imageAliasClassification() {
+    const auto dir = root_ + "/image-aliases";
+    QVERIFY(QDir().mkpath(dir));
+    const QStringList extensions{"png", "jpg", "jpeg", "jpe",  "jfif", "bmp",
+                                 "dib", "gif", "tif",  "tiff", "tga",  "WEBP",
+                                 "ico", "dds", "hdr",  "rgbe", "exr"};
+    for (const auto &extension : extensions) {
+      QFile file(dir + "/asset." + extension);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("classification fixture only\n");
+    }
+    desktop_->navigate(dir);
+    QTRY_COMPARE(desktop_->directory(), dir);
+    QTRY_COMPARE(desktop_->count(), extensions.size());
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 1, 0);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->count(), extensions.size());
+    for (int i = 0; i < desktop_->count(); ++i)
+      QCOMPARE(desktop_->files()->index(i, 0).data(FileList::Kind).toString(),
+               QString("image"));
+    // Classification is not a decode capability claim.
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle());
   }
   void staleCancellationAndFailure() {
     for (auto i = 0; i < 20; ++i) {
@@ -711,6 +747,1278 @@ private slots:
     QTRY_COMPARE(desktop_->count(), 10024);
     QTRY_VERIFY(idle());
   }
+#ifdef FORMAVIEW_IMAGE_UI
+  void imagePrecisionAndViewport() {
+    using namespace formaview;
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    auto source = ImageSubresource{};
+    source.data_window = {-3, 7, 16, 8};
+    source.display_window = {-10, -5, 32, 32};
+    const std::array<float, 4> values{.125F, .25F, 2.F, .5F};
+    for (std::size_t c = 0; c < 4; ++c) {
+      ImageChannel channel;
+      channel.name = std::array<std::string, 4>{"R", "G", "B", "A"}[c];
+      channel.samples.scalar = ScalarType::Float32;
+      channel.samples.element_count = 128;
+      channel.samples.bytes.resize(128 * sizeof(float));
+      for (std::size_t p = 0; p < 128; ++p)
+        std::memcpy(channel.samples.bytes.data() + p * 4, &values[c], 4);
+      source.channels.push_back(std::move(channel));
+    }
+    const auto bytes = imaging::encode_professional(source, {});
+    const auto path = small_ + "/显示精度.exr";
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(reinterpret_cast<const char *>(bytes.data()),
+                        static_cast<qint64>(bytes.size())),
+             static_cast<qint64>(bytes.size()));
+    file.close();
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    window_->resize(1600, 900);
+    desktop_->openPath(path);
+    QTRY_VERIFY_WITH_TIMEOUT(session->available() && session->path() == path &&
+                                 !session->busy(),
+                             10000);
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    QCOMPARE(view->session(), session);
+    QCOMPARE(session->info()["dataWindow"].toMap()["x"].toLongLong(), -3LL);
+    session->sample(-3, 7);
+    QVERIFY(session->pixel()["valid"].toBool());
+    const auto sourceRows = session->pixel()["source"].toList();
+    QCOMPARE(sourceRows.size(), 4);
+    session->setting("colour", true);
+    session->setting("srgb", true);
+    session->setting("exposure", 1.);
+    session->setting("composite", false);
+    session->setting("alpha", 2);
+    auto *exposure = item("imageExposure");
+    QVERIFY(exposure);
+    auto *exposureInput =
+        qvariant_cast<QQuickItem *>(exposure->property("contentItem"));
+    QVERIFY(exposureInput);
+    exposureInput->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent exposureCommit;
+    exposureCommit.setCommitString("0.75");
+    QCoreApplication::sendEvent(exposureInput, &exposureCommit);
+    QTest::keyClick(window_, Qt::Key_Return);
+    QTRY_COMPARE(session->display()["exposure"].toDouble(), .75);
+    session->setting("exposure", 1.);
+    auto displayed = session->pixel()["display"].toList();
+    QVERIFY(std::abs(displayed[0].toString().toDouble() - .53709873048) < 1e-9);
+    QVERIFY(std::abs(displayed[1].toString().toDouble() - .73535698305) < 1e-9);
+    QVERIFY(std::abs(displayed[2].toString().toDouble() - 1.82479629528) <
+            1e-9);
+    QCOMPARE(displayed[3].toString(), QString("0.5"));
+    const auto position =
+        view->mapToScene(QPointF(view->width() / 2, view->height() / 2));
+    auto centrePixel = [&] {
+      const auto frame = window_->grabWindow();
+      const auto dpr = frame.devicePixelRatio();
+      return frame.pixelColor(qRound(position.x() * dpr),
+                              qRound(position.y() * dpr));
+    };
+    QTRY_VERIFY(std::abs(centrePixel().red() - 137) <= 2);
+    QVERIFY(std::abs(centrePixel().green() - 188) <= 2);
+    QCOMPARE(centrePixel().blue(), 255);
+    session->setting("alpha", 3);
+    session->setting("composite", true);
+    // Composite exposed linear RGB before OETF/SDR clipping. Either checker
+    // square yields red 144..149 and saturated blue; clipping before blending
+    // incorrectly dims the HDR blue channel.
+    QTRY_VERIFY(centrePixel().red() >= 144 && centrePixel().red() <= 149);
+    QCOMPARE(centrePixel().blue(), 255);
+    session->setting("background", 1);
+    QTRY_VERIFY(std::abs(centrePixel().red() - 137) <= 2);
+    session->setting("background", 2);
+    QTRY_VERIFY(std::abs(centrePixel().red() - 225) <= 2);
+    session->setting("background", 0);
+    QVERIFY(view->renderError().isEmpty());
+    session->setting("alpha", 2);
+    session->setting("composite", false);
+    view->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_A);
+    QCOMPARE(session->display()["channel"].toInt(), 3);
+    QTRY_VERIFY(std::abs(centrePixel().red() - 128) <= 2);
+    QCOMPARE(centrePixel().red(), centrePixel().green());
+    QTest::keyClick(window_, Qt::Key_C);
+    QCOMPARE(session->display()["channel"].toInt(), -1);
+    view->actual();
+    QVERIFY(std::abs(view->zoom() * window_->effectiveDevicePixelRatio() - 1) <
+            1e-9);
+    QCOMPARE(view->pixelScale(), 1.);
+    session->setting("tiled", true);
+    const auto rect = view->imageRect();
+    view->pick(rect.x() - view->zoom() * .5, rect.y() - view->zoom() * .5);
+    QCOMPARE(session->pixel()["tileX"].toInt(), -1);
+    QCOMPARE(session->pixel()["tileY"].toInt(), -1);
+    QCOMPARE(session->pixel()["x"].toInt(), 12);
+    QCOMPARE(session->pixel()["y"].toInt(), 14);
+    session->setting("tiled", false);
+    session->sample(-4, 7);
+    QVERIFY(!session->pixel()["valid"].toBool());
+    view->fit();
+    auto *toggle = item("pixelToggle");
+    QVERIFY(toggle);
+    toggle->setProperty("checked", true);
+    session->sample(-3, 7);
+    for (const auto &language :
+         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(80);
+      save("image-float-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
+    session->open(small_ + "/missing.exr");
+    QTRY_VERIFY(!session->busy());
+    QVERIFY(!session->error().isEmpty());
+    QCOMPARE(session->path(), path);
+    session->sample(-3, 7);
+    QVERIFY(!session->pixel()["valid"].toBool());
+    // Two-channel DDS must not fabricate blue or source alpha.
+    source.channels.resize(2);
+    source.data_window = {0, 0, 16, 8};
+    source.display_window = source.data_window;
+    imaging::ProfessionalEncodeOptions options;
+    options.target = imaging::ProfessionalTarget::Dds;
+    options.dds_format = 83;
+    options.allow_lossy = true;
+    options.alpha = AlphaMode::Absent;
+    const auto dds = imaging::encode_professional(source, options);
+    const auto ddsPath = small_ + "/two-channel.dds";
+    QFile ddsFile(ddsPath);
+    QVERIFY(ddsFile.open(QIODevice::WriteOnly));
+    QCOMPARE(ddsFile.write(reinterpret_cast<const char *>(dds.data()),
+                           static_cast<qint64>(dds.size())),
+             static_cast<qint64>(dds.size()));
+    ddsFile.close();
+    session->open(ddsPath);
+    QTRY_VERIFY(!session->busy());
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    QCOMPARE(session->channels().size(), 2);
+    QCOMPARE(session->display()["channel"].toInt(), 0);
+    for (const auto *name :
+         {"imageChannel0", "imageChannel3", "imageChannel4"}) {
+      const auto controls = visualItems(window_->contentItem(), name);
+      QVERIFY2(controls.size() == 1, name);
+      QVERIFY(!controls.front()->isEnabled());
+    }
+    session->sample(0, 0);
+    QCOMPARE(session->pixel()["display"].toList()[3].toString(), QString("1"));
+    save("image-bc5");
+    desktop_->clearAsset();
+    QTRY_VERIFY(!item("imageViewport"));
+    QVERIFY(!session->available());
+  }
+  void imageCacheInvalidation() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    const auto path = small_ + "/cache.bmp";
+    QImage image(32, 32, QImage::Format_RGB888);
+    image.fill(Qt::red);
+    QVERIFY(image.save(path));
+    const QFileInfo before(path);
+    const auto modified = before.lastModified();
+    const auto size = before.size();
+    session->open(path);
+    QTRY_VERIFY(!session->busy());
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    const auto old = session->pixels();
+    const auto digest = session->info().value("sha256").toString();
+    QCOMPARE(digest.size(), 64);
+    session->open(path);
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->pixels(), old);
+#ifdef Q_OS_WIN
+    {
+      const auto writer =
+          CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_WRITE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                      OPEN_EXISTING, 0, nullptr);
+      QVERIFY(writer != INVALID_HANDLE_VALUE);
+      const auto closeWriter = qScopeGuard([writer] { CloseHandle(writer); });
+      session->open(path);
+      QTRY_VERIFY(!session->busy());
+      QVERIFY(!session->error().isEmpty());
+      // Even a matching cache key cannot bless an input currently being edited.
+      QCOMPARE(session->pixels(), old);
+      session->sample(0, 0);
+      QVERIFY(!session->pixel().value("valid").toBool());
+    }
+#endif
+    image.fill(Qt::green);
+    QVERIFY(image.save(path));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadWrite));
+    QVERIFY(file.setFileTime(modified, QFileDevice::FileModificationTime));
+    file.close();
+    QCOMPARE(QFileInfo(path).size(), size);
+    QCOMPARE(QFileInfo(path).lastModified(), modified);
+    session->open(path);
+    QTRY_VERIFY(!session->busy());
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    QVERIFY(session->pixels() != old);
+    QVERIFY(session->info().value("sha256").toString() != digest);
+    session->sample(0, 0);
+    const auto report =
+        QJsonDocument::fromJson(session->pixelReport().toUtf8()).object();
+    QCOMPARE(report["path"].toString(), path);
+    QCOMPARE(report["sha256"].toString(),
+             session->info().value("sha256").toString());
+    QCOMPARE(report["display"].toArray()[1].toString(), QString("1"));
+    const std::weak_ptr<const ImagePixels> released = session->pixels();
+    for (int i = 0; i < 12; ++i)
+      session->clear();
+    QTRY_VERIFY(released.expired());
+  }
+  void imageFormatMatrix() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    const auto directory = root_ + "/fixtures/conversion";
+    QFile png(directory + "/source.png");
+    QVERIFY(png.open(QIODevice::ReadOnly));
+    const auto payload = png.readAll();
+    QByteArray secondPayload;
+    QBuffer secondBuffer(&secondPayload);
+    QVERIFY(secondBuffer.open(QIODevice::WriteOnly));
+    QImage secondIcon(4, 4, QImage::Format_RGB32);
+    secondIcon.fill(Qt::red);
+    QVERIFY(secondIcon.save(&secondBuffer, "PNG"));
+    QFile ico(directory + "/converted.ico");
+    QVERIFY(ico.open(QIODevice::WriteOnly));
+    QDataStream stream(&ico);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream << quint16(0) << quint16(1) << quint16(2) << quint8(8) << quint8(8)
+           << quint8(0) << quint8(0) << quint16(1) << quint16(32)
+           << quint32(payload.size()) << quint32(38);
+    stream << quint8(4) << quint8(4) << quint8(0) << quint8(0) << quint16(1)
+           << quint16(24) << quint32(secondPayload.size())
+           << quint32(38 + payload.size());
+    QCOMPARE(ico.write(payload), payload.size());
+    QCOMPARE(ico.write(secondPayload), secondPayload.size());
+    ico.close();
+    QFile gif(directory + "/converted.gif");
+    QVERIFY(gif.open(QIODevice::WriteOnly));
+    const auto gifBytes =
+        QByteArray::fromHex("474946383961010001008000002060a000000021f904010000"
+                            "01002c00000000010001000002024401003b");
+    QCOMPARE(gif.write(gifBytes), gifBytes.size());
+    gif.close();
+    QJsonArray formats;
+    for (const auto *extension : {"png", "jpeg", "bmp", "tga", "tiff", "webp",
+                                  "dds", "hdr", "exr", "gif", "ico"}) {
+      const auto path = directory + "/converted." + extension;
+      desktop_->openPath(path);
+      QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() &&
+                                   session->path() == path,
+                               10000);
+      QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+      session->sample(0, 0);
+      QVERIFY(session->pixel()["valid"].toBool());
+      const auto channels = session->pixel()["source"].toList();
+      for (int component = 0; component < 3; ++component) {
+        const auto name = QStringList{"R", "G", "B"}[component];
+        const auto found =
+            std::find_if(channels.begin(), channels.end(), [&](const auto &v) {
+              return v.toMap()["name"].toString() == name;
+            });
+        QVERIFY(found != channels.end());
+        const auto sample = found->toMap()["interpreted"].toString().toDouble();
+        QVERIFY2(std::abs(sample - (32 + component * 64) / 255.) < .025,
+                 extension);
+      }
+      session->setting("channel", -1);
+      session->setting("colour", false);
+      session->setting("composite", false);
+      auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+      QVERIFY(view);
+      const auto point =
+          view->mapToScene({view->width() / 2, view->height() / 2});
+      const auto frame = window_->grabWindow();
+      const auto colour =
+          frame.pixelColor(qRound(point.x() * frame.devicePixelRatio()),
+                           qRound(point.y() * frame.devicePixelRatio()));
+      QVERIFY2(std::abs(colour.red() - 32) <= 6 &&
+                   std::abs(colour.green() - 96) <= 6 &&
+                   std::abs(colour.blue() - 160) <= 6,
+               extension);
+      QVERIFY(view->renderError().isEmpty());
+      formats.append(extension);
+      if (QString(extension) == "ico" || QString(extension) == "gif")
+        save(QString("image-format-") + extension);
+    }
+    evidence_["image_gui_read_formats"] = formats;
+    QCOMPARE(session->subresourceCount(), 2);
+    auto *iconEntries = item("imageSubresource");
+    QVERIFY(iconEntries);
+    iconEntries->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_VERIFY(!session->busy() && session->selected() == 1);
+    QCOMPARE(session->info()["dataWindow"].toMap()["width"].toInt(), 4);
+    QCOMPARE(session->info()["metadata"]
+                 .toMap()["entry.1.directory_bits_per_pixel"]
+                 .toString(),
+             QString("24"));
+    session->sample(0, 0);
+    QCOMPARE(session->pixel()["display"].toList()[0].toString(), QString("1"));
+    save("image-ico-second-entry");
+    QTest::keyClick(window_, Qt::Key_Up);
+    QTRY_VERIFY(!session->busy() && session->selected() == 0);
+    QCOMPARE(session->info()["dataWindow"].toMap()["width"].toInt(), 8);
+    QImage quadrants(2, 2, QImage::Format_RGB32);
+    quadrants.setPixelColor(0, 0, Qt::red);
+    quadrants.setPixelColor(1, 0, Qt::green);
+    quadrants.setPixelColor(0, 1, Qt::blue);
+    quadrants.setPixelColor(1, 1, Qt::white);
+    const auto asymmetric = directory + "/orientation.png";
+    QVERIFY(quadrants.save(asymmetric));
+    desktop_->openPath(asymmetric);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->path() == asymmetric,
+                             10000);
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    const auto rectangle = view->imageRect();
+    const auto frame = window_->grabWindow();
+    for (int y = 0; y < 2; ++y)
+      for (int x = 0; x < 2; ++x) {
+        const QPointF local(rectangle.x() + (x + .5) * view->zoom(),
+                            rectangle.y() + (y + .5) * view->zoom());
+        const auto point = view->mapToScene(local) * frame.devicePixelRatio();
+        QCOMPARE(frame.pixelColor(qFloor(point.x()), qFloor(point.y())),
+                 quadrants.pixelColor(x, y));
+        view->pick(local.x(), local.y());
+        QCOMPARE(session->pixel()["x"].toInt(), x);
+        QCOMPARE(session->pixel()["y"].toInt(), y);
+      }
+    save("image-orientation");
+    view->setZoom(view->zoom() / 4);
+    session->setting("tiled", true);
+    const auto tileRect = view->imageRect();
+    const QPointF negativeTile(tileRect.x() - view->zoom() / 2,
+                               tileRect.y() - view->zoom() / 2);
+    view->pick(negativeTile.x(), negativeTile.y());
+    QCOMPARE(session->pixel()["tileX"].toInt(), -1);
+    QCOMPARE(session->pixel()["tileY"].toInt(), -1);
+    QCOMPARE(session->pixel()["x"].toInt(), 1);
+    QCOMPARE(session->pixel()["y"].toInt(), 1);
+    const auto tiledFrame = window_->grabWindow();
+    const auto tilePoint =
+        view->mapToScene(negativeTile) * tiledFrame.devicePixelRatio();
+    QCOMPARE(
+        tiledFrame.pixelColor(qFloor(tilePoint.x()), qFloor(tilePoint.y())),
+        QColor(Qt::white));
+    session->setting("tiled", false);
+    desktop_->clearAsset();
+  }
+  void imageStructuresAndLayers() {
+    using namespace formaview;
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    desktop_->openPath(root_ + "/fixtures/image/subresources-0.dds");
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->available() && !session->busy() &&
+            session->path() == root_ + "/fixtures/image/subresources-0.dds",
+        10000);
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    QCOMPARE(session->dimensions()["array"].toList().size(), 2);
+    QCOMPARE(session->dimensions()["face"].toList().size(), 6);
+    QCOMPARE(session->dimensions()["mip"].toList().size(), 4);
+    session->selectDimension("array", 1);
+    QTRY_VERIFY(!session->busy());
+    session->selectDimension("face", 5);
+    QTRY_VERIFY(!session->busy());
+    session->selectDimension("mip", 2);
+    QTRY_VERIFY(!session->busy());
+    auto current = session->dimensions()["current"].toMap();
+    QCOMPARE(current["array"].toInt(), 1);
+    QCOMPARE(current["face"].toInt(), 5);
+    QCOMPARE(current["mip"].toInt(), 2);
+    session->sample(0, 0);
+    QCOMPARE(session->pixel()["source"]
+                 .toList()[0]
+                 .toMap()["source"]
+                 .toString()
+                 .toDouble(),
+             session->selected() + .25);
+    save("image-dds-cube-array");
+    session->open(root_ + "/fixtures/image/subresources-1.dds");
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->dimensions()["slice"].toList().size(), 4);
+    session->selectDimension("slice", 3);
+    QTRY_VERIFY(!session->busy());
+    session->selectDimension("mip", 2);
+    QTRY_VERIFY(!session->busy());
+    current = session->dimensions()["current"].toMap();
+    QCOMPARE(current["mip"].toInt(), 2);
+    QCOMPARE(current["slice"].toInt(), 0);
+    QCOMPARE(session->dimensions()["slice"].toList().size(), 1);
+    save("image-dds-volume");
+    const auto multipart = root_ + "/fixtures/image/multipart.exr";
+    desktop_->openPath(multipart);
+    QTRY_VERIFY(session->available() && !session->busy() &&
+                session->path() == multipart);
+    QCOMPARE(session->subresourceCount(), 2);
+    auto *parts = item("imageSubresource");
+    QVERIFY(parts);
+    parts->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_VERIFY(!session->busy() && session->selected() == 1);
+    QCOMPARE(session->subresources()[1].toMap()["name"].toString(),
+             QString("depth"));
+    session->sample(1, 0);
+    QVERIFY(session->pixel()["valid"].toBool());
+    QCOMPARE(session->pixel()["source"].toList()[0].toMap()["name"].toString(),
+             QString("Z"));
+    QCOMPARE(
+        session->pixel()["source"].toList()[0].toMap()["source"].toString(),
+        QString("7.5"));
+    save("image-exr-selected-part");
+    ImageSubresource source;
+    source.data_window = source.display_window = {0, 0, 1, 1};
+    for (const auto &[name, value] :
+         std::array<std::pair<const char *, float>, 7>{{{"beauty.R", .125F},
+                                                        {"beauty.G", .25F},
+                                                        {"beauty.B", .5F},
+                                                        {"beauty.A", .75F},
+                                                        {"utility.Z", 1.5F},
+                                                        {"mono.Y", .25F},
+                                                        {"mono.A", .5F}}}) {
+      ImageChannel channel;
+      channel.name = name;
+      channel.samples.scalar = ScalarType::Float32;
+      channel.samples.element_count = 1;
+      channel.samples.bytes.resize(sizeof(value));
+      std::memcpy(channel.samples.bytes.data(), &value, sizeof(value));
+      source.channels.push_back(std::move(channel));
+    }
+    const auto bytes = imaging::encode_professional(source, {});
+    const auto path = small_ + "/actual-layers.exr";
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(reinterpret_cast<const char *>(bytes.data()),
+                        static_cast<qint64>(bytes.size())),
+             static_cast<qint64>(bytes.size()));
+    file.close();
+    session->open(path);
+    QTRY_VERIFY(!session->busy());
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    QCOMPARE(session->info()["layers"].toStringList(),
+             QStringList({"beauty", "mono", "utility"}));
+    QCOMPARE(session->info()["mapping"].toList()[0].toString(),
+             QString("beauty.R"));
+    QCOMPARE(session->display()["channel"].toInt(), -1);
+    session->setting("colour", true);
+    session->setting("exposure", .5);
+    session->selectLayer("utility");
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->info()["mapping"].toList()[0].toString(),
+             QString("utility.Z"));
+    QCOMPARE(session->display()["exposure"].toDouble(), .5);
+    session->sample(0, 0);
+    QCOMPARE(session->pixel()["display"].toList()[0].toString(),
+             QString("1.5"));
+    session->selectLayer("mono");
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->info()["mapping"].toStringList(),
+             QStringList({"mono.Y", "mono.Y", "mono.Y", "mono.A"}));
+    session->selectLayer("beauty");
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->info()["mapping"].toList()[3].toString(),
+             QString("beauty.A"));
+    session->setting("channel", -1);
+    for (const auto &language :
+         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(60);
+      save("image-exr-layers-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
+    desktop_->clearAsset();
+  }
+  void imageConversionGuiLifecycle() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(service);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle());
+    const auto source = small_ + "/唯一图片.png";
+    const auto index =
+        static_cast<FileList *>(desktop_->files())->indexOf(source);
+    QVERIFY(index >= 0);
+    desktop_->select(index);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->selectedImages(), QStringList{source});
+    const auto output = root_ + "/gui-conversion-output";
+    QVERIFY(QDir().mkpath(output));
+    auto *open = item("convertImagesButton");
+    QVERIFY(open);
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        open->mapToScene(QPointF(open->width() / 2, open->height() / 2))
+            .toPoint());
+    auto find = [&](const QString &name) -> QQuickItem * {
+      const auto list = visualItems(window_->contentItem(), name);
+      return list.isEmpty() ? nullptr : list.front();
+    };
+    QTRY_VERIFY(find("conversionOutputRoot"));
+    const auto closePopup =
+        qScopeGuard([popup = QPointer<QObject>(
+                         window_->findChild<QObject *>("conversionDialog"))] {
+          if (popup)
+            QMetaObject::invokeMethod(popup, "close");
+        });
+    auto *outputField = find("conversionOutputRoot");
+    outputField->forceActiveFocus();
+    QInputMethodEvent outputCommit;
+    outputCommit.setCommitString(output);
+    QCoreApplication::sendEvent(outputField, &outputCommit);
+    QCOMPARE(outputField->property("text").toString(), output);
+    save("conversion-settings-zh-CN");
+    auto *create = find("createImagePlan");
+    QVERIFY(create);
+    QVERIFY(create->isEnabled());
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        create->mapToScene(QPointF(create->width() / 2, create->height() / 2))
+            .toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !service->busy() &&
+            !service->plan().value("state").toString().isEmpty() &&
+            service->plan().value("state") != "planning",
+        15000);
+    QVERIFY2(service->plan().value("state") == "ready",
+             qPrintable(QString::fromUtf8(
+                 QJsonDocument(QJsonObject::fromVariantMap(service->plan()))
+                     .toJson())));
+    const auto target = output + "/唯一图片-converted.png";
+    QVERIFY(!QFile::exists(target));
+    const auto planId = service->plan()["id"].toString();
+    QVERIFY(!planId.isEmpty());
+    save("conversion-preflight-zh-CN");
+    if (auto *ack = find("acknowledgeImageLosses"))
+      QTest::mouseClick(
+          window_, Qt::LeftButton, Qt::NoModifier,
+          ack->mapToScene(QPointF(12, ack->height() / 2)).toPoint());
+    auto *submit = find("submitImagePlan");
+    QVERIFY(submit);
+    QVERIFY(submit->isEnabled());
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        submit->mapToScene(QPointF(submit->width() / 2, submit->height() / 2))
+            .toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->job().value("state") == "succeeded",
+                             15000);
+    QVERIFY(QFile::exists(target));
+    const auto decoded = QImage(target);
+    QCOMPARE(decoded.size(), QSize(64, 64));
+    QCOMPARE(decoded.pixelColor(0, 0), QColor(Qt::cyan));
+    const auto jobId = service->job()["id"].toString();
+    const auto losses = service->plan()["items"]
+                            .toList()[0]
+                            .toMap()["preflight"]
+                            .toMap()["losses"]
+                            .toList();
+    service->submit(!losses.isEmpty());
+    QTRY_VERIFY(!service->busy());
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    QCOMPARE(service->job()["id"].toString(), jobId);
+    for (const auto &language :
+         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(60);
+      save("conversion-job-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
+    auto *acknowledgement =
+        window_->findChild<QQuickItem *>("acknowledgeImageLosses");
+    QVERIFY(acknowledgement);
+    acknowledgement->setProperty("checked", true);
+    service->invalidatePlan();
+    QTRY_VERIFY(!acknowledgement->property("checked").toBool());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!find("conversionOutputRoot"));
+    QVERIFY(open->hasActiveFocus());
+    // A changed setting invalidates approval before any new submission.
+    service->invalidatePlan();
+    QVERIFY(service->plan().isEmpty());
+    const auto oldJobs = service->jobs().size();
+    service->submit(true);
+    QCOMPARE(service->jobs().size(), oldJobs);
+    const auto scope = QVariantMap{{"input_roots", QStringList{small_}},
+                                   {"output_roots", QStringList{output}},
+                                   {"allow_overwrite", false}};
+    const auto options = QVariantMap{{"target", "png"}};
+    service->preflight({source}, scope, options, "{name}-converted.{ext}",
+                       "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    QTRY_VERIFY_WITH_TIMEOUT(service->plan().value("state") != "planning",
+                             15000);
+    QVERIFY2(service->plan().value("state") == "ready",
+             qPrintable(QString::fromUtf8(
+                 QJsonDocument(QJsonObject::fromVariantMap(service->plan()))
+                     .toJson())));
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->job().value("state") == "succeeded",
+                             15000);
+    QCOMPARE(service->job()["items"].toList()[0].toMap()["status"].toString(),
+             QString("skipped"));
+    service->preflight({source}, scope, options, "../escape.{ext}", "skip");
+    QTRY_VERIFY(!service->busy());
+    QVERIFY(!service->error().isEmpty());
+    QVERIFY(service->plan().isEmpty());
+    service->preflight({source}, scope, options, "cancelled.{ext}", "skip");
+    service->cancelPreparation();
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
+    QVERIFY(!QFile::exists(output + "/cancelled.png"));
+    const auto python = qEnvironmentVariable("FORMAVIEW_TEST_MCP_PYTHON");
+    const auto adapter = qEnvironmentVariable("FORMAVIEW_TEST_MCP_ADAPTER");
+    const auto client = qEnvironmentVariable("FORMAVIEW_TEST_MCP_CLIENT");
+    QVERIFY2(QFile::exists(python) && QFile::exists(adapter) &&
+                 QFile::exists(client),
+             "Explicit MCP verification runtime and client paths required");
+    QVERIFY(!service->mcpEnabled());
+    service->setMcpEnabled(true);
+    QVERIFY(service->mcpEnabled());
+    QVERIFY(service->lastClient().isEmpty());
+    const auto configuration = QJsonDocument::fromJson(
+        service->mcpConfiguration(python, adapter).toUtf8());
+    QCOMPARE(configuration.object()["mcpServers"]
+                 .toObject()["formaview-images"]
+                 .toObject()["command"]
+                 .toString(),
+             python);
+    QProcess process;
+#ifdef Q_OS_WIN
+    process.setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments *args) {
+          args->flags |= CREATE_NO_WINDOW;
+        });
+#endif
+    const auto report = root_ + "/gui-mcp-report.json";
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(python,
+                  {client, "--endpoint", service->endpoint(), "--adapter",
+                   adapter, "--source", source, "--output",
+                   output + "/from-mcp.png", "--existing-job",
+                   service->job()["id"].toString(), "--report", report});
+    QTRY_VERIFY_WITH_TIMEOUT(process.state() == QProcess::NotRunning, 20000);
+    QVERIFY2(process.exitCode() == 0, process.readAll().constData());
+    QFile result(report);
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    const auto mcpResult = QJsonDocument::fromJson(result.readAll()).object();
+    QCOMPARE(mcpResult["capabilities"].toObject().toVariantMap(),
+             service->capabilities());
+    QCOMPARE(service->lastClient()["name"].toString(),
+             QString("FormaView GUI integration"));
+    QCOMPARE(service->lastClient()["protocol"].toString(),
+             mcpResult["protocol"].toString());
+    service->selectJob(mcpResult["job_id"].toString());
+    QCOMPARE(service->job()["state"].toString(), QString("succeeded"));
+    QCOMPARE(QImage(output + "/from-mcp.png").pixelColor(0, 0),
+             QColor(Qt::cyan));
+    service->setMcpEnabled(false);
+    QVERIFY(!service->mcpEnabled());
+    service->preflight({source, small_ + "/unreadable.png"}, scope,
+                       {{"target", "png"}}, "read-error-{index}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->plan().value("state") != "planning",
+                             15000);
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    QCOMPARE(service->plan()["items"].toList().size(), 2);
+    QCOMPARE(service->plan()["items"].toList()[0].toMap()["status"].toString(),
+             QString("ready"));
+    QCOMPARE(service->plan()["items"].toList()[1].toMap()["status"].toString(),
+             QString("failed"));
+    const auto layered = small_ + "/actual-layers.exr";
+    service->preflight({source, layered}, scope, {{"target", "png"}},
+                       "mapped-{index}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->plan().value("state") != "planning",
+                             15000);
+    QCOMPARE(service->inputInfo().size(), 2);
+    QCOMPARE(service->inputInfo()[1].toMap()["channels"].toList().size(), 7);
+    QCOMPARE(service->plan()["items"].toList()[1].toMap()["status"].toString(),
+             QString("failed"));
+    QVariantList channels;
+    for (const auto *channel : {"R", "G", "B", "A"})
+      channels.append(QVariantMap{{"source", QString("beauty.") + channel},
+                                  {"destination", channel}});
+    const QVariantList overrides{QVariantMap{},
+                                 QVariantMap{{"channels", channels},
+                                             {"output_scalar", "uint8"},
+                                             {"quantization", "clamp_round"},
+                                             {"non_finite", "reject"},
+                                             {"source_alpha", "straight"},
+                                             {"alpha_channel", "beauty.A"}}};
+    service->preflight({source, layered}, scope, {{"target", "png"}},
+                       "mapped-{index}.{ext}", "skip", overrides);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->plan().value("state") != "planning",
+                             15000);
+    QVERIFY2(service->plan().value("state") == "ready",
+             qPrintable(QString::fromUtf8(
+                 QJsonDocument::fromVariant(service->plan()).toJson())));
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->job().value("state") == "succeeded",
+                             15000);
+    QCOMPARE(QImage(output + "/mapped-1.png").pixelColor(0, 0),
+             QColor(Qt::cyan));
+    QCOMPARE(QImage(output + "/mapped-2.png").pixelColor(0, 0),
+             QColor(32, 64, 128, 191));
+  }
+#endif
+  void imageGuiWriteMatrix() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(service);
+    const auto output = root_ + "/gui-write-matrix";
+    QVERIFY(QDir().mkpath(output));
+    const auto source = small_ + "/唯一图片.png";
+    desktop_->navigate(small_);
+    QTRY_VERIFY(desktop_->directory() == small_ && idle());
+    const auto sourceIndex =
+        static_cast<FileList *>(desktop_->files())->indexOf(source);
+    QVERIFY(sourceIndex >= 0);
+    desktop_->select(sourceIndex);
+    const QStringList targets{"png",  "jpeg", "bmp", "tga", "tiff",
+                              "webp", "dds",  "hdr", "exr"};
+    QJsonArray results;
+    for (int i = 0; i < targets.size(); ++i) {
+      const auto target = targets[i];
+      auto *open = item("convertImagesButton");
+      QVERIFY(open && open->isEnabled());
+      QTest::mouseClick(
+          window_, Qt::LeftButton, Qt::NoModifier,
+          open->mapToScene({open->width() / 2, open->height() / 2}).toPoint());
+      QTRY_VERIFY(item("conversionTarget"));
+      QPointer<QObject> dialog(
+          window_->findChild<QObject *>("conversionDialog"));
+      QVERIFY(dialog);
+      const auto close = qScopeGuard([dialog] {
+        if (dialog)
+          QMetaObject::invokeMethod(dialog, "close");
+      });
+      item("conversionInputRoot")->setProperty("text", small_);
+      item("conversionOutputRoot")->setProperty("text", output);
+      item("conversionTarget")->setProperty("currentIndex", i);
+      auto *advanced = item("conversionAdvanced");
+      QVERIFY(advanced);
+      advanced->setProperty("checked", true);
+      const bool floating = target == "hdr" || target == "exr";
+      item("conversionDepth")->setProperty("currentIndex", floating ? 4 : 0);
+      item("conversionAlphaAction")
+          ->setProperty(
+              "currentIndex",
+              target == "jpeg" || target == "bmp" || target == "hdr" ? 1 : 0);
+      item("conversionAllowLossy")
+          ->setProperty("checked", target == "jpeg" || target == "hdr");
+      item("conversionQuantize")->setProperty("checked", floating);
+      auto *preflight = item("createImagePlan");
+      QVERIFY(preflight && preflight->isEnabled());
+      QTest::mouseClick(
+          window_, Qt::LeftButton, Qt::NoModifier,
+          preflight
+              ->mapToScene({preflight->width() / 2, preflight->height() / 2})
+              .toPoint());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !service->busy() && (!service->error().isEmpty() ||
+                               (!service->plan().isEmpty() &&
+                                service->plan().value("state") != "planning")),
+          15000);
+      QVERIFY2(service->error().isEmpty(),
+               qPrintable(target + ": " + service->error()));
+      QVERIFY2(service->plan().value("state") == "ready",
+               qPrintable(QString::fromUtf8(
+                   QJsonDocument::fromVariant(service->plan()).toJson())));
+      const auto lossItems = service->plan()
+                                 .value("items")
+                                 .toList()[0]
+                                 .toMap()
+                                 .value("preflight")
+                                 .toMap()
+                                 .value("losses")
+                                 .toList();
+      auto *ack = window_->findChild<QQuickItem *>("acknowledgeImageLosses");
+      QVERIFY(ack);
+      if (!lossItems.isEmpty()) {
+        QVERIFY(ack->isEnabled());
+        ack->setProperty("checked", true);
+      }
+      auto *submit = item("submitImagePlan");
+      QVERIFY(submit && submit->isEnabled());
+      QTest::mouseClick(
+          window_, Qt::LeftButton, Qt::NoModifier,
+          submit->mapToScene({submit->width() / 2, submit->height() / 2})
+              .toPoint());
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                   service->job().value("state") == "succeeded",
+                               15000);
+      const auto path = output + "/唯一图片-converted." + target;
+      QVERIFY(QFile::exists(path));
+      auto document = formaview::imaging::ImageDocument::open(
+          std::filesystem::path(path.toStdWString()));
+      auto decoded = document.decode(0);
+      QCOMPARE(decoded.data_window.width, 64ULL);
+      QCOMPARE(decoded.data_window.height, 64ULL);
+      for (const auto &channel : decoded.channels)
+        if (channel.name == "R" || channel.name == "G" || channel.name == "B")
+          QVERIFY2(std::abs(formaview::imaging::interpreted_value(channel, 0) -
+                            (channel.name == "R" ? 0. : 1.)) < .025,
+                   qPrintable(target));
+      results.append(QJsonObject{
+          {"target", target},
+          {"job", service->job().value("id").toString()},
+          {"path", path},
+          {"sha256", QString::fromStdString(
+                         document.description().source.identity.sha256)}});
+      QTest::keyClick(window_, Qt::Key_Escape);
+      QTRY_VERIFY(!item("conversionTarget"));
+    }
+    evidence_["image_gui_write_targets"] = results;
+#endif
+  }
+  void mcpSettingsInteraction() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(service && !service->mcpEnabled());
+    const auto scope = service->scope();
+    QVERIFY2(scope.value("output_roots").toList().size() == 1,
+             "A successfully configured scope is required before UI settings "
+             "checks");
+    const auto output = scope.value("output_roots").toList()[0].toString();
+    const auto python = qEnvironmentVariable("FORMAVIEW_TEST_MCP_PYTHON");
+    const auto adapter = qEnvironmentVariable("FORMAVIEW_TEST_MCP_ADAPTER");
+    desktop_->preference("mcpInputRoot", small_);
+    desktop_->preference("mcpOutputRoot", output);
+    desktop_->preference("mcpPython", python);
+    desktop_->preference("mcpAdapter", adapter);
+    auto *dialog = window_->findChild<QObject *>("mcpSettingsDialog");
+    QVERIFY(dialog);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+    const auto closeSettings = qScopeGuard([popup = QPointer<QObject>(dialog)] {
+      if (popup)
+        QMetaObject::invokeMethod(popup, "close");
+    });
+    QTRY_VERIFY(item("mcpEnableButton"));
+    auto *input = item("mcpInput");
+    QVERIFY(input);
+    input->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent commit;
+    commit.setCommitString(small_);
+    QCoreApplication::sendEvent(input, &commit);
+    QCOMPARE(input->property("text").toString(), small_);
+    auto *apply = item("mcpApplyScope");
+    QVERIFY(apply && apply->isEnabled());
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        apply->mapToScene({apply->width() / 2, apply->height() / 2}).toPoint());
+    QTRY_VERIFY(!service->busy());
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    auto *enable = item("mcpEnableButton");
+    QVERIFY(enable && enable->isEnabled());
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        enable->mapToScene({enable->width() / 2, enable->height() / 2})
+            .toPoint());
+    QTRY_VERIFY(service->mcpEnabled());
+    QVERIFY(!apply->isEnabled());
+    QVERIFY(service->lastClient().isEmpty());
+    QProcess process;
+#ifdef Q_OS_WIN
+    process.setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments *args) {
+          args->flags |= CREATE_NO_WINDOW;
+        });
+#endif
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(python, {qEnvironmentVariable("FORMAVIEW_TEST_MCP_CLIENT"),
+                           "--endpoint", service->endpoint(), "--adapter",
+                           adapter, "--source", small_ + "/唯一图片.png",
+                           "--output", output + "/settings-client.png",
+                           "--existing-job", service->job()["id"].toString(),
+                           "--report", root_ + "/settings-mcp-report.json"});
+    QTRY_VERIFY_WITH_TIMEOUT(process.state() == QProcess::NotRunning, 20000);
+    QVERIFY2(process.exitCode() == 0, process.readAll().constData());
+    QTRY_VERIFY(!service->lastClient().isEmpty());
+    auto *scroll = item("mcpSettingsScroll");
+    QVERIFY(scroll);
+    auto *flickable =
+        qvariant_cast<QQuickItem *>(scroll->property("contentItem"));
+    QVERIFY(flickable);
+    for (const auto &language :
+         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      flickable->setProperty("contentY", 0);
+      QTest::qWait(60);
+      save("mcp-enabled-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
+    flickable->setProperty(
+        "contentY",
+        std::max(0., flickable->property("contentHeight").toDouble() -
+                         flickable->height()));
+    QTest::qWait(60);
+    auto *copy = item("mcpCopyConfig");
+    QVERIFY(copy && copy->isEnabled());
+    QGuiApplication::clipboard()->clear();
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        copy->mapToScene({copy->width() / 2, copy->height() / 2}).toPoint());
+    QTRY_VERIFY(!QGuiApplication::clipboard()->text().isEmpty());
+    const auto config =
+        QJsonDocument::fromJson(QGuiApplication::clipboard()->text().toUtf8())
+            .object()["mcpServers"]
+            .toObject()["formaview-images"]
+            .toObject();
+    QCOMPARE(config["command"].toString(), python);
+    QCOMPARE(config["env"].toObject()["FORMAVIEW_IMAGE_ENDPOINT"].toString(),
+             service->endpoint());
+    save("mcp-copy-config");
+    flickable->setProperty("contentY", 0);
+    QTest::qWait(60);
+    QTest::mouseClick(
+        window_, Qt::LeftButton, Qt::NoModifier,
+        enable->mapToScene({enable->width() / 2, enable->height() / 2})
+            .toPoint());
+    QTRY_VERIFY(!service->mcpEnabled());
+    QVERIFY(!copy->isEnabled());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+#endif
+  }
+  void imageDirectorySelection() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(service && !service->mcpEnabled());
+    const auto directory = small_ + "/discovery";
+    const auto listValue = [](const QVariant &value) {
+      return value.metaType() == QMetaType::fromType<QJSValue>()
+                 ? value.value<QJSValue>().toVariant().toList()
+                 : value.toList();
+    };
+    QVERIFY(QDir().mkpath(directory + "/nested"));
+    for (int i = 0; i < 105; ++i)
+      QVERIFY(QFile::copy(
+          small_ + "/唯一图片.png",
+          directory +
+              QString("/image-%1.png").arg(i, 3, 10, QLatin1Char('0'))));
+    QVERIFY(QFile::copy(small_ + "/唯一图片.png",
+                        directory + "/nested/inside.png"));
+    const auto output = root_ + "/discovery-output";
+    QVERIFY(QDir().mkpath(output));
+    const auto click = [&](const char *name) {
+      QTest::qWait(40); // Let changed delegate counts settle the scroll layout.
+      auto *control = item(name);
+      if (!control || !control->isEnabled() || !control->isVisible())
+        return false;
+      for (auto *parent = control->parentItem(); parent;
+           parent = parent->parentItem()) {
+        if (parent->metaObject()->indexOfProperty("contentY") < 0)
+          continue;
+        const auto y = control->mapToItem(parent, {0, 0}).y();
+        if (y < 0 || y + control->height() > parent->height())
+          parent->setProperty(
+              "contentY",
+              std::clamp(
+                  parent->property("contentY").toDouble() + y -
+                      (parent->height() - control->height()) / 2,
+                  0.,
+                  std::max(0., parent->property("contentHeight").toDouble() -
+                                   parent->height())));
+      }
+      QTest::qWait(30);
+      const auto point =
+          control->mapToScene({control->width() / 2, control->height() / 2})
+              .toPoint();
+      if (!QRect(QPoint(0, 0), window_->size()).contains(point))
+        return false;
+      QSignalSpy clicked(control, SIGNAL(clicked()));
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point);
+      if (clicked.count() != 1)
+        save(QString("missed-click-") + name);
+      return clicked.count() == 1;
+    };
+    QVERIFY(click("convertImagesButton"));
+    QTRY_VERIFY(item("conversionInputRoot"));
+    const auto closeConversion =
+        qScopeGuard([popup = QPointer<QObject>(
+                         window_->findChild<QObject *>("conversionDialog"))] {
+          if (popup)
+            QMetaObject::invokeMethod(popup, "close");
+        });
+    item("conversionInputRoot")->setProperty("text", directory);
+    item("conversionOutputRoot")->setProperty("text", output);
+    QVERIFY(click("discoverInputsToggle"));
+    QTRY_VERIFY(item("discoverRecursive"));
+    item("discoverRecursive")->setProperty("checked", true);
+    QVERIFY(click("discoverImagesButton"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !service->busy() && service->discovery().value("total").toInt() == 106,
+        15000);
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    QCOMPARE(service->discovery()["items"].toList().size(), 100);
+    const auto snapshot = service->discovery()["id"].toString();
+    QVERIFY(click("discoveryNext"));
+    QCOMPARE(service->discoveryOffset(), 100);
+    QCOMPARE(service->discovery()["items"].toList().size(), 6);
+    QVERIFY(QFile::copy(small_ + "/唯一图片.png", directory + "/late.png"));
+    QVERIFY(click("discoveryPrevious"));
+    QCOMPARE(service->discovery()["id"].toString(), snapshot);
+    QCOMPARE(service->discovery()["total"].toInt(), 106);
+    auto *filter = item("discoveryFilter");
+    QVERIFY(filter);
+    const auto first =
+        service->discovery()["items"].toList()[0].toMap()["input"].toString();
+    filter->setProperty("text", QFileInfo(first).fileName());
+    QTRY_COMPARE(item("discoveryList")->property("count").toInt(), 1);
+    QVERIFY(click("selectDiscoveredPage"));
+    QCOMPARE(listValue(item("conversionInputs")->property("selected")).size(),
+             1);
+    filter->setProperty("text", "");
+    QTRY_COMPARE(item("discoveryList")->property("count").toInt(), 100);
+    QVERIFY(click("selectDiscoveredPage"));
+    QCOMPARE(listValue(item("conversionInputs")->property("selected")).size(),
+             64);
+    for (const auto &language :
+         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(60);
+      save("conversion-discovery-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
+    QVERIFY(click("useDiscoveredInputs"));
+    const QPointer<QObject> dialog(
+        window_->findChild<QObject *>("conversionDialog"));
+    QVERIFY(dialog);
+    QCOMPARE(listValue(dialog->property("inputs")).size(), 64);
+    QVERIFY(QDir(output).entryList(QDir::Files).isEmpty());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!dialog || !dialog->property("visible").toBool());
+#endif
+  }
+  void imageMixedPerformance() {
+#if defined(FORMAVIEW_IMAGE_UI) && defined(Q_OS_WIN)
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(session && service);
+    auto *workspace = item("workspace");
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    window_->resize(1600, 900);
+    desktop_->navigate(fixture_);
+    QTRY_COMPARE(desktop_->directory(), fixture_);
+    QTRY_VERIFY(idle());
+    QStringList paths;
+    std::array<std::shared_ptr<const ImagePixels>, 2> cached;
+    for (int i = 0; i < 2; ++i) {
+      QImage image(1024, 1024, QImage::Format_RGB32);
+      image.fill(i == 0 ? Qt::yellow : Qt::cyan);
+      paths.append(small_ + QString("/cache-performance-%1.bmp").arg(i));
+      QVERIFY(image.save(paths.back()));
+      desktop_->openPath(paths.back());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !session->busy() && session->path() == paths.back(), 10000);
+      QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+      cached[static_cast<std::size_t>(i)] = session->pixels();
+    }
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    const auto source = small_ + "/mixed-load.bmp";
+    {
+      QImage image(2048, 2048, QImage::Format_RGB32);
+      quint32 state = 0x4d3035U;
+      for (int y = 0; y < image.height(); ++y) {
+        auto *row = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+          state = state * 1664525U + 1013904223U;
+          row[x] = 0xff000000U | (state & 0xffffffU);
+        }
+      }
+      QVERIFY(image.save(source));
+    }
+    const auto output = root_ + "/mixed-output";
+    QVERIFY(QDir().mkpath(output));
+    const QVariantMap scope{{"input_roots", QVariantList{small_}},
+                            {"output_roots", QVariantList{output}},
+                            {"allow_overwrite", false}};
+    QStringList inputs;
+    for (int i = 0; i < 8; ++i)
+      inputs.append(source);
+    service->invalidatePlan();
+    service->preflight(inputs, scope,
+                       {{"target", "png"}, {"png_compression", 9}},
+                       "mixed-{index}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+                                 service->plan().value("state") != "planning",
+                             30000);
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    QVERIFY2(service->plan().value("state") == "ready",
+             qPrintable(QString::fromUtf8(
+                 QJsonDocument::fromVariant(service->plan()).toJson())));
+    view->forceActiveFocus();
+    window_->requestActivate();
+    const auto hwnd = reinterpret_cast<HWND>(window_->winId());
+    const auto foregroundThread =
+        GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    const bool attached =
+        foregroundThread != GetCurrentThreadId() &&
+        AttachThreadInput(GetCurrentThreadId(), foregroundThread, TRUE);
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+    if (attached)
+      AttachThreadInput(GetCurrentThreadId(), foregroundThread, FALSE);
+    const auto restoreTopmost = qScopeGuard([&] {
+      SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    });
+    QTRY_VERIFY(GetForegroundWindow() == hwnd && view->hasActiveFocus());
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && !service->job().isEmpty(),
+                             10000);
+    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    auto *measured =
+        static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    measured->maxEventMs = 0;
+    measured->events = measured->over100ms = 0;
+    measured->slowEvents = {};
+    measured->measure = true;
+    const auto stopMeasurement =
+        qScopeGuard([&] { measured->measure = false; });
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    bool pending = false, ready = false, native = false;
+    int expected = -1;
+    quint64 sequence = 0;
+    std::atomic<quint64> changed{0}, synchronized{0};
+    auto started = std::chrono::steady_clock::now();
+    std::vector<double> cacheTimes, inputTimes;
+    auto mark = [&] {
+      if (pending &&
+          ((!native && !session->busy() &&
+            session->pixels() == cached[static_cast<std::size_t>(expected)]) ||
+           (native && session->display().value("channel").toInt() == expected)))
+        changed.store(sequence);
+    };
+    const auto loaded = connect(session, &ImageSession::changed, this, mark);
+    const auto display =
+        connect(session, &ImageSession::displayChanged, this, mark);
+    const auto synced = connect(
+        window_, &QQuickWindow::afterSynchronizing, window_,
+        [&] { synchronized.store(changed.load()); }, Qt::DirectConnection);
+    const auto frame = connect(
+        window_, &QQuickWindow::frameSwapped, this,
+        [&] {
+          if (pending && synchronized.load() == sequence) {
+            (native ? inputTimes : cacheTimes)
+                .push_back(std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - started)
+                               .count());
+            ready = true;
+            pending = false;
+            loop.quit();
+          }
+        },
+        Qt::QueuedConnection);
+    const auto disconnectAll = qScopeGuard([&] {
+      disconnect(loaded);
+      disconnect(display);
+      disconnect(synced);
+      disconnect(frame);
+    });
+    int cacheOverlap = 0, inputOverlap = 0;
+    for (int i = 0; i < 160; ++i) {
+      native = i >= 40;
+      expected = i % 2;
+      if (i % 20 == 0)
+        desktop_->refresh();
+      if (service->job().value("state") == "running" ||
+          service->job().value("state") == "queued")
+        ++(native ? inputOverlap : cacheOverlap);
+      ready = false;
+      ++sequence;
+      started = std::chrono::steady_clock::now();
+      pending = true;
+      if (!native)
+        session->open(paths[expected]);
+      else {
+        INPUT events[2]{};
+        events[0].type = INPUT_KEYBOARD;
+        events[0].ki.wVk = expected == 0 ? 'R' : 'G';
+        events[1] = events[0];
+        events[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        QCOMPARE(SendInput(2, events, sizeof(INPUT)), UINT(2));
+      }
+      timeout.start(3000);
+      if (!ready)
+        loop.exec();
+      timeout.stop();
+      QVERIFY2(ready, "Image change did not reach a synchronized frame");
+    }
+    const auto summarize = [](std::vector<double> values) {
+      std::sort(values.begin(), values.end());
+      return QJsonObject{
+          {"samples", static_cast<int>(values.size())},
+          {"p95_ms",
+           values[static_cast<std::size_t>(std::ceil(values.size() * .95)) -
+                  1]},
+          {"p99_ms",
+           values[static_cast<std::size_t>(std::ceil(values.size() * .99)) -
+                  1]},
+          {"max_ms", values.back()}};
+    };
+    const auto cacheSummary = summarize(cacheTimes),
+               inputSummary = summarize(inputTimes);
+    evidence_["image_mixed_load"] = QJsonObject{
+        {"cache", cacheSummary},
+        {"native_input", inputSummary},
+        {"cache_samples_during_observed_running_job", cacheOverlap},
+        {"input_samples_during_observed_running_job", inputOverlap},
+        {"main_thread_max_ms", measured->maxEventMs},
+        {"main_thread_over_100ms", measured->over100ms},
+        {"slow_events", measured->slowEvents},
+        {"dpr", window_->effectiveDevicePixelRatio()},
+        {"boundary",
+         "40 verified cache-pointer hits (1024x1024 RGB) and 120 native R/G "
+         "inputs to frameSwapped after generation sync, including GUI "
+         "callback; concurrent eight 2048x2048 PNG writes and eight "
+         "10,024-entry directory rescans; not GPU presentation time"}};
+    measured->measure = false;
+    QTRY_VERIFY_WITH_TIMEOUT(service->job().value("state") == "succeeded",
+                             30000);
+    QCOMPARE(service->job().value("items").toList().size(), 8);
+    for (const auto &entry : service->job().value("items").toList())
+      QCOMPARE(entry.toMap().value("status").toString(), QString("succeeded"));
+    QVERIFY(cacheOverlap > 0 && inputOverlap > 0);
+    QVERIFY2(cacheSummary.value("p95_ms").toDouble() <= 150,
+             "Cached image switch P95 exceeds 150ms");
+    QVERIFY2(inputSummary.value("p95_ms").toDouble() <= 50,
+             "Image native input P95 exceeds 50ms");
+    QVERIFY2(inputSummary.value("p99_ms").toDouble() <= 100,
+             "Image native input P99 exceeds 100ms");
+    QCOMPARE(measured->over100ms, 0);
+    desktop_->clearAsset();
+#endif
+  }
   void thumbnailBudget() {
     auto provider = ThumbnailProvider{};
     QSize decoded;
@@ -733,6 +2041,16 @@ private slots:
   }
   void nativeInputPerformance() {
 #ifdef Q_OS_WIN
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    workspace->setProperty("filesVisible", true);
+    window_->resize(1600, 900);
+    desktop_->navigate(fixture_);
+    QTRY_COMPARE_WITH_TIMEOUT(desktop_->directory(), fixture_, 10000);
+    desktop_->filter("", 0, 0);
+    QTRY_COMPARE_WITH_TIMEOUT(desktop_->count(), 10024, 10000);
     desktop_->select(0);
     QTRY_VERIFY(idle());
     auto *list = item("fileList");
