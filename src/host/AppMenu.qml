@@ -15,7 +15,6 @@ MenuBar {
     }
     required property var controller
     signal openFile()
-    signal openFolder()
     signal toggleFiles()
     signal toggleFocus()
     signal tasks()
@@ -25,7 +24,6 @@ MenuBar {
     AppPopupMenu {
         title: Theme.t("文件", "File", "檔案")
         AppMenuItem { text: Theme.t("打开文件…", "Open file…", "開啟檔案…"); onTriggered: root.openFile() }
-        AppMenuItem { text: Theme.t("打开目录…", "Open folder…", "開啟資料夾…"); onTriggered: root.openFolder() }
         AppPopupMenu {
             id: recentMenu
             title: Theme.t("最近目录", "Recent folders", "最近資料夾")
@@ -47,7 +45,14 @@ MenuBar {
         AppMenuItem { text: Theme.t("专注预览", "Focus view", "專注預覽"); onTriggered: root.toggleFocus() }
         AppMenuItem { text: Theme.t("任务中心", "Task center", "工作中心"); onTriggered: root.tasks() }
     }
-    AppPopupMenu { title: Theme.t("模型", "Model", "模型"); AppMenuItem { text: Theme.t("模型检查尚未接入", "Model inspection is not connected", "模型檢查尚未接入"); enabled: false } }
+    AppPopupMenu {
+        title: Theme.t("模型", "Model", "模型")
+        enabled: !!root.controller.model && root.controller.model.available
+        AppMenuItem { text: Theme.t("模型", "Model", "模型"); onTriggered: root.controller.model.setMode(0) }
+        AppMenuItem { text: Theme.t("UV 检查", "UV inspection", "UV 檢查"); onTriggered: root.controller.model.setMode(1) }
+        AppMenuItem { text: Theme.t("源权重", "Source weights", "來源權重"); onTriggered: root.controller.model.setMode(2) }
+        AppMenuItem { text: Theme.t("LOD / 碰撞", "LOD / Collision", "LOD / 碰撞"); onTriggered: root.controller.model.setMode(3) }
+    }
     AppPopupMenu { title: Theme.t("动画", "Animation", "動畫"); AppMenuItem { text: Theme.t("外部动画…", "External animation…", "外部動畫…"); onTriggered: root.unavailable() } }
     AppPopupMenu { title: Theme.t("图片", "Image", "影像")
         AppMenuItem { text: Theme.t("打开图片…", "Open image…", "開啟影像…"); enabled: !!root.controller.image; onTriggered: root.openFile() }

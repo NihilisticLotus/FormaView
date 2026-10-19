@@ -226,7 +226,8 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
     std::transform(
         extension.begin(), extension.end(), extension.begin(),
         [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-    p->tga = extension == L".tga";
+    p->tga = extension.size() == 4 && extension[0] == L'.' && extension[1] == L't' &&
+             extension[2] == L'g' && extension[3] == L'a';
     p->hdr = !p->tga && !(p->bytes.size() >= 4 &&
                           std::memcmp(p->bytes.data(), "DDS ", 4) == 0);
     DirectX::TexMetadata meta;
@@ -317,7 +318,8 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
           s.depth_slice = static_cast<std::uint32_t>(z);
           s.data_window =
               s.display_window = {0, 0, image->width, image->height};
-          s.block_encoding = "DXGI:" + std::to_string(meta.format);
+          if (DirectX::IsCompressed(meta.format))
+            s.block_encoding = "DXGI:" + std::to_string(meta.format);
           p->desc.subresources.push_back(std::move(s));
           p->indices.push_back({m, a, z});
         }

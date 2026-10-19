@@ -1,4 +1,4 @@
-qt_add_library(formaview_render STATIC render_item.cpp)
+qt_add_library(formaview_render STATIC render_item.cpp ${PROJECT_SOURCE_DIR}/include/formaview/render_item.hpp)
 target_include_directories(formaview_render PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(formaview_render PUBLIC Qt6::Quick PRIVATE Qt6::GuiPrivate formaview_options dxgi)
 target_compile_definitions(formaview_render PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

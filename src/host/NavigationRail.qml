@@ -49,5 +49,5 @@ Rectangle {
         Item { Layout.fillHeight: true }
         NavButton { visible: root.page !== "settings"; objectName: "nav-settings"; Layout.fillWidth: true; iconName: "settings"; collapsed: root.collapsed; text: Theme.t("设置", "Settings", "設定"); onClicked: root.navigate("settings") }
     }
-    Rectangle { anchors.right: parent.right; height: parent.height; width: 1; color: Theme.line }
+    Rectangle { objectName: "navigationDivider"; anchors.right: root.right; height: root.height; width: 1; color: Theme.line }
 }

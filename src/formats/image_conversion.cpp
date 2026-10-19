@@ -59,7 +59,9 @@ ImageDocument ImageDocument::open(const std::filesystem::path &path,
        std::memcmp(magic.data() + 8, "WEBP", 4) == 0))
     return ImageDocument(ExtendedRasterFile::open(path, limits, stop));
   if (is("\x76\x2f\x31\x01", 4) || is("DDS ", 4) || is("#?RADIANCE", 10) ||
-      is("#?RGBE", 6) || extension == L".tga")
+      is("#?RGBE", 6) ||
+      (extension.size() == 4 && extension[0] == L'.' && extension[1] == L't' &&
+       extension[2] == L'g' && extension[3] == L'a'))
     return ImageDocument(ImageFile::open(path, limits, stop));
   return ImageDocument(RasterFile::open(path, limits, stop));
 }

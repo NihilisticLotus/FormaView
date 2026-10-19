@@ -10,6 +10,16 @@ ColumnLayout {
     readonly property var session: controller.image
     readonly property var mapping: session.info.mapping || ["", "", "", ""]
     property bool fixedSample: false
+    property bool loadingNotice: false
+    Timer { id: loadingDelay; interval: 300; onTriggered: root.loadingNotice = root.session.busy }
+    Connections {
+        target: root.session
+        function onChanged() {
+            if (!root.session.busy) { loadingDelay.stop(); root.loadingNotice = false }
+            else if (!loadingDelay.running && !root.loadingNotice) loadingDelay.start()
+        }
+    }
+    Component.onCompleted: if (session.busy) loadingDelay.start()
     spacing: 4
     Flow {
         Layout.fillWidth: true; Layout.preferredHeight: implicitHeight; Layout.margins: 8; spacing: 4
@@ -64,15 +74,6 @@ ColumnLayout {
             }
         }
     }
-    Label { textFormat: Text.PlainText;
-        Layout.fillWidth: true; visible: root.mapping.some(v => !v); wrapMode: Text.WordWrap; color: Theme.muted
-        text: Theme.t("缺失通道已禁用；显示 A=1 不代表源文件含 Alpha。", "Absent channels disabled; display A=1 does not imply source alpha.", "缺失通道已停用；顯示 A=1 不代表來源含 Alpha。")
-    }
-    Label { textFormat: Text.PlainText;
-        Layout.fillWidth: true; visible: root.session.busy || !!root.session.error; wrapMode: Text.WrapAnywhere
-        color: root.session.error ? Theme.error : Theme.accent
-        text: root.session.error ? root.session.error + "\n" + Theme.t("仍显示：", "Still showing: ", "仍顯示：") + root.session.path : Theme.t("正在准备；旧画面读数已停用：", "Preparing; old-image sampling disabled: ", "正在準備；舊畫面讀數已停用：") + root.session.requested
-    }
     Item {
         Layout.fillWidth: true; Layout.fillHeight: true
         ImageView {
@@ -89,7 +90,7 @@ ColumnLayout {
                 else if (event.key === Qt.Key_G) root.session.setting("channel", 1)
                 else if (event.key === Qt.Key_B) root.session.setting("channel", 2)
                 else if (event.key === Qt.Key_A) root.session.setting("channel", 3)
-                else if (event.key === Qt.Key_Escape) root.fixedSample = false
+                else if (event.key === Qt.Key_Escape && root.fixedSample) root.fixedSample = false
                 else return
                 event.accepted = true
             }
@@ -107,6 +108,19 @@ ColumnLayout {
             }
             onWheel: wheel => { view.zoomAt(Math.pow(1.0015, wheel.angleDelta.y), wheel.x, wheel.y); wheel.accepted = true }
         }
+        Rectangle {
+            objectName: "imageLoadingNotice"
+            anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 12
+            visible: root.loadingNotice || !!root.session.error
+            width: root.session.error ? Math.min(560, parent.width - 24) : Math.min(notice.implicitWidth + 24, parent.width - 24)
+            height: notice.implicitHeight + 16
+            color: Theme.panel; radius: Theme.radius; border.color: root.session.error ? Theme.error : Theme.line
+            Label {
+                id: notice; x: 12; y: 8; width: parent.width - 24
+                textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; color: root.session.error ? Theme.error : Theme.muted
+                text: root.session.error ? root.session.error + "\n" + Theme.t("仍显示：", "Still showing: ", "仍顯示：") + root.session.path : Theme.t("正在加载…", "Loading…", "正在載入…")
+            }
+        }
         Label { textFormat: Text.PlainText; anchors.centerIn: parent; width: parent.width - 40; visible: !!view.renderError; wrapMode: Text.WordWrap; color: Theme.error; text: Theme.t("图片无法在 GPU 上显示；源文件未更改。", "The GPU could not display this image; the source is unchanged.", "GPU 無法顯示此影像；來源檔案未變更。") + "\n" + view.renderError }
         Rectangle {
             anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: 10
@@ -115,8 +129,12 @@ ColumnLayout {
         }
     }
     SectionHeader { Layout.fillWidth: true; id: pixelToggle; objectName: "pixelToggle"; checkable: true; text: Theme.t("像素检查 · 原值 / 显示值", "Pixel inspection · Source / Display", "像素檢查 · 原值 / 顯示值") }
-    Loader {
-        Layout.fillWidth: true; Layout.preferredHeight: active ? Math.min(240, implicitHeight) : 0
-        active: pixelToggle.checked; sourceComponent: Component { PixelPanel { controller: root.controller } }
+    // Keep this lightweight readout alive: a deferred inline Component can lose
+    // its creation context during QML Preview updates and leave an empty panel.
+    PixelPanel {
+        Layout.fillWidth: true; Layout.preferredHeight: 220
+        Layout.minimumHeight: 220; Layout.maximumHeight: 220
+        visible: pixelToggle.checked
+        controller: root.controller
     }
 }

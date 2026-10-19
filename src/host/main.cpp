@@ -1,4 +1,5 @@
 #include "desktop.hpp"
+#include "window_chrome.hpp"
 #ifdef FORMAVIEW_IMAGE_UI
 #include "formaview/image_requests.hpp"
 #endif
@@ -11,20 +12,70 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QQmlApplicationEngine>
+#include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QStyleHints>
 #include <QTimer>
 #ifdef QT_QML_DEBUG
 #include <QDir>
-#include <QRegularExpression>
 #include <QPointer>
+#include <QQmlContext>
+#include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
+#include <QtCore/private/qabstractfileengine_p.h>
+#include <QtCore/private/qfsfileengine_p.h>
 #include <filesystem>
 #include <fstream>
 #endif
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <string_view>
+
+#ifdef QT_QML_DEBUG
+namespace {
+class PreviewAssetFiles final : public QAbstractFileEngineHandler {
+public:
+  explicit PreviewAssetFiles(QString module) : module_(std::move(module)) {}
+  std::uint64_t requests() const { return requests_.load(); }
+  std::uint64_t archives() const { return archives_.load(); }
+  std::unique_ptr<QAbstractFileEngine>
+  create(const QString &name) const override {
+    if (name.startsWith(':') || name.startsWith("qrc:"))
+      return {};
+    std::error_code error;
+    const auto path = std::filesystem::absolute(
+        std::filesystem::path(name.toStdWString()), error);
+    if (error)
+      return {};
+    const auto normalized = QDir::fromNativeSeparators(
+        QString::fromStdWString(path.lexically_normal().wstring()));
+#ifdef Q_OS_WIN
+    constexpr auto sensitivity = Qt::CaseInsensitive;
+#else
+    constexpr auto sensitivity = Qt::CaseSensitive;
+#endif
+    if (normalized.compare(module_, sensitivity) == 0 ||
+        normalized.startsWith(module_ + '/', sensitivity))
+      return {};
+    // Only development QML belongs on the preview connection. In particular,
+    // statting an asset must not make Qt's preview engine read its whole body.
+    ++requests_;
+    if (normalized.endsWith(".rar", Qt::CaseInsensitive) ||
+        normalized.endsWith(".zip", Qt::CaseInsensitive) ||
+        normalized.endsWith(".7z", Qt::CaseInsensitive))
+      ++archives_;
+    return std::make_unique<QFSFileEngine>(name);
+  }
+
+private:
+  QString module_;
+  mutable std::atomic<std::uint64_t> requests_{}, archives_{};
+};
+} // namespace
+#endif
 
 int main(int argc, char *argv[]) {
   for (auto i = 1; i < argc; ++i) {
@@ -46,6 +97,7 @@ int main(int argc, char *argv[]) {
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
   QImageReader::setAllocationLimit(32);
   auto app = QGuiApplication{argc, argv};
+  app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #ifdef FORMAVIEW_IMAGE_UI
   const auto capabilityCount =
       formaview::imaging::image_capabilities()["capabilities"].toArray().size();
@@ -59,42 +111,94 @@ int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName("FormaView");
   QCoreApplication::setApplicationName("FormaView");
 #ifdef QT_QML_DEBUG
-  // Development preview sessions must not overwrite the user's settings or jobs.
+  // Development preview sessions must not overwrite the user's settings or
+  // jobs.
   const auto previewRoot = app.applicationDirPath() + "/preview-state";
   QDir().mkpath(previewRoot);
   QSettings::setDefaultFormat(QSettings::IniFormat);
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, previewRoot);
-  qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (previewRoot + "/image-journal").toUtf8());
+  qputenv("FORMAVIEW_IMAGE_STATE_ROOT",
+          (previewRoot + "/image-journal").toUtf8());
+#endif
+#ifdef QT_QML_DEBUG
+  std::unique_ptr<PreviewAssetFiles> previewAssetFiles;
 #endif
   auto desktop = Desktop{};
 #ifdef QT_QML_DEBUG
   // The MCP launcher has no --resource argument. Serve a development-only
   // filesystem module so it can watch QML while retaining singleton metadata.
-  const auto previewImports = previewRoot + "/qml";
+  // Windows app-data locations include the executable directory. QmlPreview
+  // excludes those paths, so keep live QML in a sibling development directory.
+  const auto executableDirectory =
+      std::filesystem::path(app.applicationDirPath().toStdWString());
+  const auto liveDirectory = executableDirectory.parent_path() /
+                             ".formaview-qml-preview" /
+                             executableDirectory.filename();
+  const auto previewImports = QDir::fromNativeSeparators(
+      QString::fromStdWString(liveDirectory.wstring()));
   const auto previewModule = previewImports + "/FormaView/Engineering";
-  QDir().mkpath(previewModule);
+  std::error_code moduleError;
+  std::filesystem::create_directories(
+      std::filesystem::path(previewModule.toStdWString()), moduleError);
+  if (moduleError)
+    return 6;
   QFile moduleSource(":/qt/qml/FormaView/Engineering/qmldir");
-  QFile moduleTarget(previewModule + "/qmldir");
-  if (!moduleSource.open(QIODevice::ReadOnly) ||
-      !moduleTarget.open(QIODevice::WriteOnly))
+  std::ofstream moduleTarget(
+      std::filesystem::path((previewModule + "/qmldir").toStdWString()),
+      std::ios::binary | std::ios::trunc);
+  if (!moduleSource.open(QIODevice::ReadOnly) || !moduleTarget)
     return 6;
   for (const auto &line : moduleSource.readAll().split('\n'))
-    if (!line.startsWith("prefer "))
-      moduleTarget.write(line + '\n');
+    if (!line.startsWith("prefer ")) {
+      moduleTarget.write(line.constData(), line.size());
+      moduleTarget.put('\n');
+    }
   moduleTarget.close();
   QTimer previewSync;
   previewSync.setInterval(250);
   const QDir sourceDirectory(QStringLiteral(FORMAVIEW_QML_SOURCE_DIR));
   int previewSyncCount = 0;
+  int previewSourceFileCount = 0;
   QString previewSyncError;
+  QString previewLastSyncError;
   const auto syncSources = [&] {
     ++previewSyncCount;
-    for (const auto &name : sourceDirectory.entryList({"*.qml", "*.js"}, QDir::Files)) {
-      const auto sourcePath = sourceDirectory.filePath(name);
-      // QmlPreview intercepts QFile reads; native streams must read the editor's
-      // current bytes instead of the preview service's cached copy.
-      std::ifstream source(std::filesystem::path(sourcePath.toStdWString()), std::ios::binary);
-      const auto targetPath = std::filesystem::path((previewModule + "/" + name).toStdWString());
+    previewSourceFileCount = 0;
+    previewSyncError.clear();
+    // The preview virtualizes QDir as well as QFile; inspect editor files
+    // natively.
+    std::error_code directoryError;
+    const auto sourceRoot =
+        std::filesystem::path(sourceDirectory.absolutePath().toStdWString());
+    auto entries =
+        std::filesystem::directory_iterator(sourceRoot, directoryError);
+    std::uint64_t sourceBytes = 0;
+    for (; !directoryError && entries != std::filesystem::directory_iterator{};
+         entries.increment(directoryError)) {
+      const auto &entry = *entries;
+      if (!entry.is_regular_file(directoryError))
+        continue;
+      const auto extension = entry.path().extension().u8string();
+      if (extension != u8".qml" && extension != u8".js")
+        continue;
+      const auto sourcePath = QString::fromStdWString(entry.path().wstring());
+      const auto name =
+          QString::fromStdWString(entry.path().filename().wstring());
+      const auto size = entry.file_size(directoryError);
+      if (directoryError)
+        break;
+      sourceBytes += size;
+      if (++previewSourceFileCount > 1024 || size > 2ULL * 1024 * 1024 ||
+          sourceBytes > 32ULL * 1024 * 1024) {
+        previewSyncError = "Preview source count/size budget exceeded";
+        break;
+      }
+      // QmlPreview intercepts QFile reads; native streams must read the
+      // editor's current bytes instead of the preview service's cached copy.
+      std::ifstream source(std::filesystem::path(sourcePath.toStdWString()),
+                           std::ios::binary);
+      const auto targetPath =
+          std::filesystem::path((previewModule + "/" + name).toStdWString());
       if (!source) {
         previewSyncError = sourcePath;
         continue;
@@ -104,18 +208,43 @@ int main(int argc, char *argv[]) {
       const std::string current((std::istreambuf_iterator<char>(previous)), {});
       previous.close();
       if (current != bytes) {
-        std::ofstream target(targetPath, std::ios::binary);
+        // Publish complete bytes. The official preview server re-adds a
+        // replaced file when its normalized parent directory changes.
+        // Native I/O bypasses the preview engine's read-only QFile view.
+        auto temporary = targetPath;
+        temporary +=
+            "." + std::to_string(QCoreApplication::applicationPid()) + ".tmp";
+        std::ofstream target(temporary, std::ios::binary | std::ios::trunc);
         target.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!target)
-          previewSyncError = QString::fromStdWString(targetPath.wstring());
+        target.close();
+        std::error_code error;
+        if (target.fail())
+          error = std::make_error_code(std::errc::io_error);
+        else
+          std::filesystem::rename(temporary, targetPath, error);
+        if (error) {
+          previewSyncError = QString::fromStdWString(targetPath.wstring()) +
+                             ": " + QString::fromStdString(error.message());
+          std::error_code cleanupError;
+          std::filesystem::remove(temporary, cleanupError);
+        }
       }
     }
+    if (directoryError)
+      previewSyncError = QString::fromStdString(directoryError.message());
+    if (!previewSyncError.isEmpty())
+      previewLastSyncError = previewSyncError;
   };
   syncSources();
   QObject::connect(&previewSync, &QTimer::timeout, &app, syncSources);
   previewSync.start();
 #endif
   auto engine = QQmlApplicationEngine{};
+  QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
+                   [](QObject *object, const QUrl &) {
+                     if (auto *quick = qobject_cast<QQuickWindow *>(object))
+                       installWindowChrome(quick);
+                   });
 #ifdef QT_QML_DEBUG
   engine.addImportPath(previewImports);
 #endif
@@ -129,6 +258,9 @@ int main(int argc, char *argv[]) {
       [] { QCoreApplication::exit(2); }, Qt::QueuedConnection);
 #ifdef QT_QML_DEBUG
   engine.load(QUrl::fromLocalFile(previewModule + "/Main.qml"));
+  // Register after QML's preview service installs its global handler: newest
+  // handlers run first, so ordinary assets keep native file semantics.
+  previewAssetFiles = std::make_unique<PreviewAssetFiles>(previewModule);
 #else
   engine.loadFromModule("FormaView.Engineering", "Main");
 #endif
@@ -145,18 +277,21 @@ int main(int argc, char *argv[]) {
     if (!previewWindow) {
       for (auto *candidate : QGuiApplication::topLevelWindows())
         if (auto *quick = qobject_cast<QQuickWindow *>(candidate);
-            quick && quick->isVisible() && quick->title().startsWith("FormaView")) {
+            quick && quick->isVisible() &&
+            quick->title().startsWith("FormaView")) {
           previewWindow = quick;
           break;
         }
     }
     if (!previewWindow)
       return;
-    const auto requestPath = std::filesystem::path((previewRoot + "/capture.request").toStdWString());
+    const auto requestPath = std::filesystem::path(
+        (previewRoot + "/capture.request").toStdWString());
     std::ifstream request(requestPath, std::ios::binary);
     if (!request)
       return;
-    const std::string requestedName((std::istreambuf_iterator<char>(request)), {});
+    const std::string requestedName((std::istreambuf_iterator<char>(request)),
+                                    {});
     const auto name = QString::fromUtf8(requestedName).trimmed();
     request.close();
     std::error_code removeError;
@@ -167,16 +302,83 @@ int main(int argc, char *argv[]) {
     const auto captured = previewWindow->grabWindow();
     const auto path = previewRoot + "/" + name;
     const auto saved = captured.save(path + ".png");
+    QJsonObject uiState;
+    const auto findVisual = [](auto &&self, QQuickItem *parent,
+                               const QString &name) -> QQuickItem * {
+      if (parent->objectName() == name)
+        return parent;
+      for (auto *child : parent->childItems())
+        if (auto *found = self(self, child, name))
+          return found;
+      return nullptr;
+    };
+    for (const auto *objectName :
+         {"workspace", "filesPane", "fileList", "imageViewport", "pixelToggle",
+          "navigationRail", "nav-assets", "convertImagesButton", "tasksButton",
+          "nav-settings", "folderNavigation", "modelViewport", "uvViewport",
+          "modelPointToggle"}) {
+      if (auto *object = findVisual(findVisual, previewWindow->contentItem(),
+                                    QString::fromLatin1(objectName))) {
+        QJsonObject state;
+        if (const auto *context = QQmlEngine::contextForObject(object))
+          state.insert("source_url", context->baseUrl().toString());
+        for (const auto *property :
+             {"visible", "width", "height", "focusMode", "currentPage",
+              "contentY", "checked", "zoom", "fitMode", "pixelScale", "text",
+              "page", "section", "representation"}) {
+          const auto value = object->property(property);
+          if (value.isValid())
+            state.insert(property, QJsonValue::fromVariant(value));
+        }
+        if (object->property("pan").isValid()) {
+          const auto pan = object->property("pan").toPointF();
+          state.insert("pan", QJsonArray{pan.x(), pan.y()});
+        }
+        uiState.insert(objectName, state);
+      }
+    }
     QFile metadata(path + ".json");
     if (metadata.open(QIODevice::WriteOnly))
-      metadata.write(QJsonDocument(QJsonObject{
-          {"qt", qVersion()}, {"saved", saved},
-          {"source_directory", sourceDirectory.absolutePath()},
-          {"source_files", sourceDirectory.entryList({"*.qml", "*.js"}, QDir::Files).size()},
-          {"sync_count", previewSyncCount}, {"sync_error", previewSyncError},
-          {"dpr", previewWindow->devicePixelRatio()},
-          {"logical_width", previewWindow->width()}, {"logical_height", previewWindow->height()},
-          {"physical_width", captured.width()}, {"physical_height", captured.height()}}).toJson());
+      metadata.write(
+          QJsonDocument(
+              QJsonObject{
+                  {"qt", qVersion()},
+                  {"saved", saved},
+                  {"pid", QCoreApplication::applicationPid()},
+                  {"root_address",
+                   QString::number(
+                       reinterpret_cast<quintptr>(previewWindow.data()), 16)},
+                  {"window_visibility",
+                   static_cast<int>(previewWindow->visibility())},
+                  {"window_x", previewWindow->x()},
+                  {"window_y", previewWindow->y()},
+                  {"directory", desktop.directory()},
+                  {"asset_path", desktop.asset().value("path").toString()},
+                  {"session_revision",
+                   static_cast<qint64>(desktop.sessionRevision())},
+                  {"selection_index", desktop.currentIndex()},
+                  {"selection_count", desktop.selectedCount()},
+                  {"native_file_requests",
+                   static_cast<qint64>(previewAssetFiles->requests())},
+                  {"native_archive_requests",
+                   static_cast<qint64>(previewAssetFiles->archives())},
+                  {"scroll_position", desktop.scrollPosition()},
+                  {"ui_state", uiState},
+                  {"source_directory", sourceDirectory.absolutePath()},
+                  {"live_module", previewModule},
+                  {"app_data_locations",
+                   QJsonArray::fromStringList(QStandardPaths::standardLocations(
+                       QStandardPaths::AppDataLocation))},
+                  {"source_files", previewSourceFileCount},
+                  {"sync_count", previewSyncCount},
+                  {"sync_error", previewSyncError},
+                  {"last_sync_error", previewLastSyncError},
+                  {"dpr", previewWindow->devicePixelRatio()},
+                  {"logical_width", previewWindow->width()},
+                  {"logical_height", previewWindow->height()},
+                  {"physical_width", captured.width()},
+                  {"physical_height", captured.height()}})
+              .toJson());
   });
   previewCapture.start(250);
 #endif

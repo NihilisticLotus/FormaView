@@ -1,4 +1,7 @@
 #include "desktop.hpp"
+#ifdef FORMAVIEW_MODEL_UI
+#include "model_session.hpp"
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
 #include "image_jobs.hpp"
 #include "image_session.hpp"
@@ -147,6 +150,9 @@ void FileList::select(int row, int modifiers) {
     emit dataChanged(index(0), index(rowCount() - 1), {Selected});
 }
 Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
+#ifdef FORMAVIEW_MODEL_UI
+  model_ = std::make_unique<ModelSession>();
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
   image_ = std::make_unique<ImageSession>();
   imageJobs_ = std::make_unique<ImageJobs>();
@@ -157,7 +163,8 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
   if (preferences_.contains("restoreLayout") &&
       !preferences_.value("restoreLayout").toBool()) {
     preferences_.remove("fileWidth");
-    preferences_["filesVisible"] = preferences_.value("defaultFilesVisible", true);
+    preferences_["filesVisible"] =
+        preferences_.value("defaultFilesVisible", true);
   }
   recent_ = settings.value("recent").toStringList().mid(0, 20);
   pollTimer_.setInterval(30);
@@ -182,9 +189,11 @@ void Desktop::preference(const QString &key, const QVariant &value) {
                    "restoreLayout", "defaultFilesVisible", "inspectorMode"}
            .contains(key))
     return;
-  if (key == "density" && !QStringList{"standard", "compact"}.contains(value.toString()))
+  if (key == "density" &&
+      !QStringList{"standard", "compact"}.contains(value.toString()))
     return;
-  if (key == "inspectorMode" && !QStringList{"auto", "always", "hidden"}.contains(value.toString()))
+  if (key == "inspectorMode" &&
+      !QStringList{"auto", "always", "hidden"}.contains(value.toString()))
     return;
   if (preferences_.value(key) == value)
     return;
@@ -238,6 +247,12 @@ void Desktop::start(
   };
   auto submitted = scheduler_.submit(std::move(request));
   if (!submitted.task) {
+    if (operation == "folders") {
+      folderMenu_["busy"] = false;
+      folderMenu_["error"] = QString::fromStdString(submitted.error->message);
+      emit folderMenuChanged();
+      return;
+    }
     error_ = QString::fromStdString(submitted.error->message);
     errorTarget_ = path;
     if (operation == "scan")
@@ -262,9 +277,108 @@ void Desktop::start(
   poll();
 }
 void Desktop::navigate(const QString &path) { scan(localPath(path)); }
+QVariantList Desktop::breadcrumbs(const QString &input) const {
+  // Pure lexical splitting: never stat a path on the GUI thread (UNC included).
+  auto path = QDir::fromNativeSeparators(input);
+  auto result = QVariantList{};
+  if (path.isEmpty())
+    return result;
+  auto root = QString{};
+  if (path.startsWith("//")) {
+    const auto server = path.indexOf('/', 2);
+    const auto share = server < 0 ? -1 : path.indexOf('/', server + 1);
+    root = share < 0 ? path : path.left(share);
+  } else if (path.size() >= 2 && path[1] == ':') {
+    root = path.left(2) + '/';
+  } else if (path.startsWith('/'))
+    root = "/";
+  if (root.isEmpty())
+    return result;
+  result.append(QVariantMap{{"name", root.endsWith(":/") ? root.left(2) : root},
+                            {"path", root}});
+  auto current = root;
+  for (const auto &part :
+       path.mid(root.size()).split('/', Qt::SkipEmptyParts)) {
+    if (!current.endsWith('/'))
+      current += '/';
+    current += part;
+    result.append(QVariantMap{{"name", part}, {"path", current}});
+  }
+  return result;
+}
+void Desktop::closeFolderMenu() {
+  ++folderRevision_;
+  for (const auto &job : jobs_)
+    if (job.operation == "folders" && !job.consumed)
+      job.handle.cancel();
+  folderMenu_.clear();
+  emit folderMenuChanged();
+}
+void Desktop::listFolders(const QString &input) {
+  const auto path = localPath(input);
+  if (path.isEmpty()) {
+    closeFolderMenu();
+    return;
+  }
+  folderMenu_ = {{"path", path},
+                 {"busy", true},
+                 {"error", ""},
+                 {"entries", QVariantList{}}};
+  emit folderMenuChanged();
+  start("folders", path, ++folderRevision_,
+        [path](std::stop_token stop, Result &out) {
+          auto ec = std::error_code{};
+          auto iterator = std::filesystem::directory_iterator(
+              std::filesystem::path(path.toStdWString()), ec);
+          if (ec) {
+            out.error = QString::fromStdString(ec.message());
+            return failure(formaview::ErrorCode::Io, out.error);
+          }
+          auto visited = 0;
+          auto bytes = quint64{};
+          for (; iterator != std::filesystem::directory_iterator{};
+               iterator.increment(ec)) {
+            if (stop.stop_requested())
+              return failure(formaview::ErrorCode::Cancelled, "Cancelled");
+            if (ec)
+              break;
+            if (++visited > 100000 || out.entries.size() >= 4096 ||
+                bytes > 4ULL * 1024 * 1024) {
+              out.error = "Folder list exceeds its metadata budget";
+              return failure(formaview::ErrorCode::ResourceLimit, out.error);
+            }
+            if (!iterator->is_directory(ec)) {
+              if (ec)
+                break;
+              continue;
+            }
+            const auto name =
+                QString::fromStdWString(iterator->path().filename().wstring());
+            const auto child = QDir::fromNativeSeparators(
+                QString::fromStdWString(iterator->path().wstring()));
+            bytes += static_cast<quint64>((child.size() + name.size()) * 2 +
+                                          sizeof(FileEntry));
+            out.entries.push_back({child, name, "folder", 0, 0, true});
+          }
+          if (ec) {
+            out.error = QString::fromStdString(ec.message());
+            return failure(formaview::ErrorCode::Io, out.error);
+          }
+          auto collator = QCollator{};
+          collator.setNumericMode(true);
+          collator.setCaseSensitivity(Qt::CaseInsensitive);
+          std::sort(out.entries.begin(), out.entries.end(),
+                    [&collator](const auto &a, const auto &b) {
+                      const auto order = collator.compare(a.name, b.name);
+                      return order ? order < 0 : a.path < b.path;
+                    });
+          return formaview::TaskResult{};
+        });
+}
 void Desktop::scan(const QString &path, int historyTarget) {
   if (path.isEmpty())
     return;
+  closeFolderMenu();
   saveDirectory();
   scanning_ = true;
   filtering_ = false;
@@ -514,6 +628,9 @@ void Desktop::reveal(const QString &path) {
       QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 }
 void Desktop::clearAsset() {
+#ifdef FORMAVIEW_MODEL_UI
+  static_cast<ModelSession *>(model_.get())->clear();
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
   static_cast<ImageSession *>(image_.get())->clear();
 #endif
@@ -621,6 +738,19 @@ void Desktop::applyResource(const QString &id) {
 }
 void Desktop::publish(Job &job) {
   const auto state = job.handle.snapshot().state;
+  if (job.operation == "folders") {
+    if (job.revision != folderRevision_)
+      return;
+    auto entries = QVariantList{};
+    if (state == formaview::TaskState::Succeeded)
+      for (const auto &entry : job.result->entries)
+        entries.append(QVariantMap{{"name", entry.name}, {"path", entry.path}});
+    folderMenu_["busy"] = false;
+    folderMenu_["entries"] = entries;
+    folderMenu_["error"] = job.result->error;
+    emit folderMenuChanged();
+    return;
+  }
   const auto matching =
       (job.operation == "scan"     ? job.revision == directoryRevision_
        : job.operation == "filter" ? job.revision == filterRevision_
@@ -718,6 +848,12 @@ void Desktop::publish(Job &job) {
         Qt::QueuedConnection);
   } else {
     asset_ = job.result->asset;
+#ifdef FORMAVIEW_MODEL_UI
+    if (asset_["kind"] == "model")
+      static_cast<ModelSession *>(model_.get())->open(job.path);
+    else
+      static_cast<ModelSession *>(model_.get())->clear();
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
     if (asset_["kind"] == "image")
       static_cast<ImageSession *>(image_.get())->open(job.path);
@@ -728,6 +864,14 @@ void Desktop::publish(Job &job) {
     ++sessionRevision_;
     const auto parent =
         QDir::fromNativeSeparators(QFileInfo(job.path).absolutePath());
+    if (parent == directory_) {
+      const int row = files_.indexOf(job.path);
+      if (row >= 0) {
+        current_ = row;
+        if (!files_.selection().contains(job.path))
+          files_.select(row, 0);
+      }
+    }
     if (parent != directory_ &&
         job.result->navigationRevision == directoryRevision_) {
       const auto path = job.path;
@@ -758,6 +902,8 @@ void Desktop::poll() {
       publish(job);
       std::vector<FileEntry>{}.swap(job.result->entries);
     }
+    if (job.operation == "folders")
+      continue;
     if (!terminal)
       ++active;
     const auto detail =

@@ -33,11 +33,11 @@ FocusScope {
         RowLayout {
             Layout.fillWidth: true
             TabBar {
-                id: tabs; objectName: "conversionSteps"; Layout.preferredWidth: 360
+                id: tabs; objectName: "conversionSteps"; Layout.preferredWidth: 300
                 background: Rectangle { color: "transparent" }
-                PageTab { text: Theme.t("1 设置", "1 Settings", "1 設定") }
-                PageTab { text: Theme.t("2 预检", "2 Preflight", "2 預檢") }
-                PageTab { text: Theme.t("3 任务", "3 Jobs", "3 工作") }
+                PageTab { stepStyle: true; text: Theme.t("1 设置", "1 Settings", "1 設定") }
+                PageTab { stepStyle: true; text: Theme.t("2 预检", "2 Preflight", "2 預檢") }
+                PageTab { stepStyle: true; lastStep: true; text: Theme.t("3 任务", "3 Jobs", "3 工作") }
             }
             Item { Layout.fillWidth: true }
             Tool { objectName: "returnToPreview"; quiet: true; iconName: "return"; text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.close() }

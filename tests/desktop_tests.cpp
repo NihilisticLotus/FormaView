@@ -1,6 +1,11 @@
 #include "desktop.hpp"
+#include "window_chrome.hpp"
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
+#ifdef FORMAVIEW_MODEL_UI
+#include "model_session.hpp"
+#include "model_view.hpp"
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
 #include "image_jobs.hpp"
 #include "image_session.hpp"
@@ -28,14 +33,22 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QStyleHints>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QWheelEvent>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+namespace {
+bool workflowHeadless() {
+  return qEnvironmentVariableIsSet("FORMAVIEW_TEST_HEADLESS");
+}
+}
 #ifdef Q_OS_WIN
 #include <d3d11.h>
 #include <dxgi1_4.h>
@@ -231,7 +244,17 @@ private slots:
     QVERIFY(!engine_->rootObjects().isEmpty());
     window_ = qobject_cast<QQuickWindow *>(engine_->rootObjects().front());
     QVERIFY(window_);
+    if (auto *screen = QGuiApplication::primaryScreen()) {
+      window_->setScreen(screen);
+      window_->setPosition(screen->availableGeometry().topLeft()+QPoint(24,24));
+    }
+    if (qEnvironmentVariableIsSet("FORMAVIEW_TEST_PASSIVE_WINDOW")) {
+      window_->setFlags(window_->flags() | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+      window_->setFlag(Qt::WindowStaysOnTopHint, false);
+    }
+    if (!workflowHeadless()) installWindowChrome(window_);
 #ifdef Q_OS_WIN
+    if (!workflowHeadless()) {
     connect(
         window_, &QQuickWindow::beforeRendering, window_,
         [this] {
@@ -262,13 +285,20 @@ private slots:
               Qt::QueuedConnection);
         },
         Qt::DirectConnection);
+    }
 #endif
     window_->show();
     QVERIFY(QTest::qWaitForWindowExposed(window_));
-    QTRY_VERIFY(!renderLuid_.isEmpty());
-    initializeGpuSampler();
-    connect(&gpuSampler_, &QTimer::timeout, this, &DesktopTests::sampleGpu);
-    gpuSampler_.start(250);
+    if (!workflowHeadless()) {
+      QTRY_VERIFY(!renderLuid_.isEmpty());
+      initializeGpuSampler();
+      connect(&gpuSampler_, &QTimer::timeout, this, &DesktopTests::sampleGpu);
+      gpuSampler_.start(250);
+    } else {
+      QCOMPARE(QGuiApplication::platformName(), QString("offscreen"));
+      QCOMPARE(window_->rendererInterface()->graphicsApi(), QSGRendererInterface::Software);
+      evidence_["render_mode"] = "offscreen software; workflow assertions only, no GPU/native-window/visual acceptance";
+    }
     evidence_["fixture"] = fixture_;
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
@@ -304,6 +334,171 @@ private slots:
     desktop_->filter("", 0, 0);
     QTRY_VERIFY(idle());
     save("01-files");
+  }
+  void folderMenuIsolationAndPaths() {
+    const auto base = root_ + "/目录导航/Model";
+    const auto texture = base + "/克劳德/Texture";
+    QVERIFY(QDir().mkpath(texture));
+    QVERIFY(QDir().mkpath(base + "/场景"));
+    QVERIFY(QDir().mkpath(base + "/道具"));
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    desktop_->select(0);
+    QTRY_VERIFY(!desktop_->asset().isEmpty());
+    QTRY_VERIFY(idle());
+    const auto session = desktop_->sessionRevision();
+    const auto selection = desktop_->currentIndex();
+    const auto tasks = desktop_->tasks().size();
+    desktop_->saveView(3);
+    desktop_->listFolders(base);
+    QTRY_VERIFY(!desktop_->folderMenu().value("busy").toBool());
+    QCOMPARE(desktop_->folderMenu().value("entries").toList().size(), 3);
+    QCOMPARE(desktop_->directory(), small_);
+    QCOMPARE(desktop_->currentIndex(), selection);
+    QCOMPARE(desktop_->sessionRevision(), session);
+    QCOMPARE(desktop_->scrollPosition(), 3.0);
+    QCOMPARE(desktop_->tasks().size(), tasks);
+    for (auto i = 0; i < 8; ++i) {
+      desktop_->listFolders(fixture_);
+      desktop_->listFolders(base + "/克劳德");
+    }
+    QTRY_VERIFY(!desktop_->folderMenu().value("busy").toBool());
+    QCOMPARE(desktop_->folderMenu().value("path").toString(), base + "/克劳德");
+    QCOMPARE(desktop_->folderMenu().value("entries").toList().size(), 1);
+    QCOMPARE(desktop_->folderMenu().value("entries").toList()[0].toMap()["path"].toString(), texture);
+    desktop_->listFolders(fixture_);
+    desktop_->closeFolderMenu();
+    QTest::qWait(200);
+    QVERIFY(desktop_->folderMenu().isEmpty());
+    desktop_->listFolders(base + "/不存在");
+    QTRY_VERIFY(!desktop_->folderMenu().value("busy").toBool());
+    QVERIFY(!desktop_->folderMenu().value("error").toString().isEmpty());
+    QVERIFY(desktop_->error().isEmpty());
+    QCOMPARE(desktop_->sessionRevision(), session);
+    desktop_->listFolders(base);
+    desktop_->navigate(texture);
+    QTRY_COMPARE(desktop_->directory(), texture);
+    QTRY_VERIFY(idle());
+    QVERIFY(desktop_->folderMenu().isEmpty());
+    QCOMPARE(desktop_->sessionRevision(), session);
+    const auto drive = desktop_->breadcrumbs("B:/Model/克劳德/Texture/");
+    QCOMPARE(drive.size(), 4);
+    QCOMPARE(drive[0].toMap()["path"].toString(), QString("B:/"));
+    QCOMPARE(drive[1].toMap()["path"].toString(), QString("B:/Model"));
+    const auto unc = desktop_->breadcrumbs("\\\\server\\share\\中文\\Texture");
+    QCOMPARE(unc.size(), 3);
+    QCOMPARE(unc[0].toMap()["path"].toString(), QString("//server/share"));
+    QCOMPARE(unc.last().toMap()["path"].toString(), QString("//server/share/中文/Texture"));
+    QCOMPARE(desktop_->breadcrumbs("C:/").size(), 1);
+    QVERIFY(desktop_->breadcrumbs("").isEmpty());
+    desktop_->history(-1);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->currentIndex(), selection);
+    QCOMPARE(desktop_->selectedCount(), 1);
+  }
+  void folderNavigationInteraction() {
+    QVERIFY(QDir().mkpath(root_ + "/目录导航/Model/克劳德/Texture"));
+    QVERIFY(QDir().mkpath(root_ + "/目录导航/Model/场景"));
+    QVERIFY(QDir().mkpath(root_ + "/目录导航/Model/道具"));
+    window_->resize(1800, 1000);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("focusMode", false);
+    desktop_->preference("filesVisible", true);
+    desktop_->navigate(root_ + "/目录导航/Model/克劳德/Texture");
+    QTRY_COMPARE(desktop_->directory(), root_ + "/目录导航/Model/克劳德/Texture");
+    QTRY_VERIFY(idle());
+    auto *navigation = item("folderNavigation");
+    QVERIFY(navigation);
+    const auto findPath = [&](const char *name, const QString &path) -> QQuickItem * {
+      for (auto *candidate : visualItems(window_->contentItem(), name))
+        if (candidate->property("folderPath").toString() == path) return candidate;
+      return nullptr;
+    };
+    const auto click = [&](QQuickItem *target) {
+      if (target) QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                                  target->mapToScene(QPointF(target->width()/2, target->height()/2)).toPoint());
+    };
+    const auto model = root_ + "/目录导航/Model";
+    const auto session = desktop_->sessionRevision();
+    QTest::qWait(100);
+    save("folder-before-model-arrow");
+    auto *arrow = findPath("breadcrumbChildren", model);
+    QTRY_VERIFY((arrow = findPath("breadcrumbChildren", model)));
+    QVERIFY(arrow->width() >= 32 && arrow->height() >= 32);
+    auto *preview = item("previewPane");
+    const auto previewHeight = preview ? preview->height() : 0;
+    click(arrow);
+    QTRY_COMPARE(desktop_->folderMenu().value("entries").toList().size(), 3);
+    QCOMPARE(desktop_->sessionRevision(), session);
+    if (preview) QCOMPARE(preview->height(), previewHeight);
+    auto *sibling = findPath("folderChild", model + "/场景");
+    QTRY_VERIFY((sibling = findPath("folderChild", model + "/场景")));
+    QCOMPARE(sibling->height(), 36.0);
+    click(sibling);
+    QTRY_COMPARE(desktop_->directory(), model + "/场景");
+    QTRY_VERIFY(idle());
+    auto *name = findPath("breadcrumbName", model);
+    QVERIFY(name);
+    click(name);
+    QTRY_COMPARE(desktop_->directory(), model);
+    QTRY_VERIFY(idle());
+    auto *back = item("folderBack");
+    QVERIFY(back);
+    click(back);
+    QTRY_COMPARE(desktop_->directory(), model + "/场景");
+    QTRY_VERIFY(idle());
+    click(item("copyFolderPath"));
+    QCOMPARE(QGuiApplication::clipboard()->text(), desktop_->directory());
+    QMetaObject::invokeMethod(workspace, "openAddress");
+    QTRY_VERIFY(item("address") && item("address")->hasActiveFocus());
+    auto *address = item("address");
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent commit; commit.setCommitString(small_);
+    QCoreApplication::sendEvent(address, &commit);
+    QTest::keyClick(window_, Qt::Key_Return);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    auto longPath = root_ + "/长目录";
+    for (auto i = 0; i < 5; ++i) longPath += "/非常长的中文文件夹名称" + QString::number(i);
+    QVERIFY(QDir().mkpath(longPath));
+    desktop_->navigate(longPath);
+    QTRY_COMPARE(desktop_->directory(), longPath);
+    QTRY_VERIFY(idle());
+    QTRY_VERIFY(item("hiddenAncestors"));
+    QVERIFY(item("hiddenAncestors")->width() >= 32);
+    QVERIFY(item("hiddenAncestors")->height() >= 32);
+    QCOMPARE(navigation->height(), 38.0);
+    window_->resize(1280, 800);
+    QMetaObject::invokeMethod(workspace, "openAddress");
+    QTRY_VERIFY(item("address") && item("address")->hasActiveFocus());
+    QCOMPARE(item("address")->property("text").toString(), longPath);
+    QTest::keyClick(window_, Qt::Key_Home);
+    QCOMPARE(item("address")->property("cursorPosition").toInt(), 0);
+    QTest::keyClick(window_, Qt::Key_End);
+    QCOMPARE(item("address")->property("cursorPosition").toInt(), longPath.size());
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(window_, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QGuiApplication::clipboard()->text(), longPath);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!item("address"));
+    QVERIFY(window_->activeFocusItem());
+    QTest::keyClick(window_, Qt::Key_Tab);
+    QVERIFY(window_->activeFocusItem());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    auto *drawer = window_->findChild<QObject *>("fileDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(!drawer->property("visible").toBool());
+    window_->resize(1800, 1000);
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    evidence_["folder_navigation"] = "Name/arrow separate clicks; sibling, ancestor, history, clipboard, inline IME path, long-path overflow and narrow keyboard";
   }
   void imageAliasClassification() {
     const auto dir = root_ + "/image-aliases";
@@ -551,7 +746,7 @@ private slots:
     QTRY_VERIFY(filterButton->hasActiveFocus());
     QTest::keyClick(window_, Qt::Key_L, Qt::ControlModifier);
     auto *address = item("address");
-    QVERIFY(address);
+    QTRY_VERIFY((address = item("address")));
     QTRY_VERIFY(address->hasActiveFocus());
     QTest::keyClick(window_, Qt::Key_Escape);
     QMimeData mime;
@@ -632,6 +827,48 @@ private slots:
     QCOMPARE(desktop_->currentIndex(), 1);
     QTRY_VERIFY(idle());
   }
+  void nativeWindowCaptionHitTesting() {
+#ifdef Q_OS_WIN
+    window_->showNormal();
+    window_->resize(1600, 900);
+    QTest::qWait(60);
+    auto *bar = item("topBar");
+    auto *menu = item("applicationMenuButton");
+    QVERIFY(bar);
+    QVERIFY(menu);
+    const auto hit = [this](const QPointF &scene) {
+      const auto hwnd = reinterpret_cast<HWND>(window_->winId());
+      POINT point{qRound(scene.x() * window_->devicePixelRatio()),
+                  qRound(scene.y() * window_->devicePixelRatio())};
+      if (!ClientToScreen(hwnd, &point))
+        return LRESULT{-1};
+      return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(point.x, point.y));
+    };
+    const auto caption = [&] { return bar->mapToScene(QPointF(400, bar->height() / 2)); };
+    QCOMPARE(hit(caption()), LRESULT{HTCAPTION});
+    for (auto *control : bar->childItems()) {
+      if (control->isVisible() && control->property("pressed").isValid())
+        QCOMPARE(hit(control->mapToScene(QPointF(control->width() / 2, control->height() / 2))),
+                 LRESULT{HTCLIENT});
+    }
+    // A popup must receive the outside click rather than starting a window drag.
+    QVERIFY(QMetaObject::invokeMethod(menu, "clicked"));
+    QTRY_COMPARE(hit(caption()), LRESULT{HTCLIENT});
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_COMPARE(hit(caption()), LRESULT{HTCAPTION});
+    window_->showMaximized();
+    QTRY_COMPARE(window_->visibility(), QWindow::Maximized);
+    QCOMPARE(hit(caption()), LRESULT{HTCAPTION});
+    window_->showNormal();
+    QTRY_COMPARE(window_->visibility(), QWindow::Windowed);
+    QCOMPARE(hit(caption()), LRESULT{HTCAPTION});
+    // Reinstalling after discovery of a preview window is harmless.
+    installWindowChrome(window_);
+    QCOMPARE(window_->findChildren<QObject *>("nativeWindowChrome").size(), 1);
+#else
+    QSKIP("Windows native caption handling");
+#endif
+  }
   void paneFocusRecovery() {
     window_->resize(1600, 900);
     desktop_->preference("thumbnails", false);
@@ -659,22 +896,24 @@ private slots:
     QVERIFY(rail);
     QTRY_VERIFY(rail->hasActiveFocus());
     QMetaObject::invokeMethod(rail, "clicked");
+    QTest::qWait(100);
+    save("files-address-restored");
     auto *address = item("address");
-    QVERIFY(address);
+    QTRY_VERIFY((address = item("address")));
     QTRY_VERIFY(address->hasActiveFocus());
     address->setProperty("text", "Z:/unsubmitted-location");
     QTest::keyClick(window_, Qt::Key_Escape);
     collapse = collapseButton();
     QVERIFY(collapse);
-    QTRY_VERIFY(collapse->hasActiveFocus());
-    QCOMPARE(address->property("text").toString(), fixture_);
+    QTRY_VERIFY(window_->activeFocusItem() && window_->activeFocusItem()->objectName() == "breadcrumbName");
     QCOMPARE(desktop_->directory(), fixture_);
-    QTest::keyClick(window_, Qt::Key_Escape);
+    QMetaObject::invokeMethod(collapse, "clicked");
     QTRY_VERIFY(rail->hasActiveFocus());
     QMetaObject::invokeMethod(rail, "clicked");
     QTRY_VERIFY(address->hasActiveFocus());
+    QCOMPARE(address->property("text").toString(), fixture_);
     window_->resize(1280, 800);
-    QTRY_VERIFY(rail->hasActiveFocus());
+    QTRY_VERIFY(rail->isVisible());
     auto *drawer = window_->findChild<QObject *>("fileDrawer");
     QVERIFY(drawer);
     QMetaObject::invokeMethod(rail, "clicked");
@@ -687,7 +926,7 @@ private slots:
     QVERIFY(drawer->property("opened").toBool());
     collapse = collapseButton();
     QVERIFY(collapse);
-    QTRY_VERIFY(collapse->hasActiveFocus());
+    QTRY_VERIFY(window_->activeFocusItem() && window_->activeFocusItem()->objectName() == "breadcrumbName");
     QCOMPARE(desktop_->directory(), fixture_);
     QTest::keyClick(window_, Qt::Key_Escape);
     QTRY_VERIFY(!drawer->property("opened").toBool());
@@ -709,12 +948,13 @@ private slots:
       QTest::qWait(60);
       QVERIFY(window_->activeFocusItem() &&
               window_->activeFocusItem()->isVisible());
-      rail->forceActiveFocus();
-      QMetaObject::invokeMethod(rail, "clicked");
+      QVERIFY(!item("navigationRail"));
+      QVERIFY(!item("fileRail"));
+      QTest::keyClick(window_, Qt::Key_L, Qt::ControlModifier);
       if (width == 1280)
         QTRY_VERIFY(drawer->property("opened").toBool());
       address = item("address");
-      QVERIFY(address);
+      QTRY_VERIFY((address = item("address")));
       QTRY_VERIFY(address->hasActiveFocus());
       QCOMPARE(desktop_->sessionRevision(), session);
       if (width == 1280) {
@@ -727,30 +967,36 @@ private slots:
     window_->resize(1600, 900);
     workspace->setProperty("focusMode", true);
     QTest::qWait(60);
-    auto *inspectRail = collapseButton();
-    QVERIFY(inspectRail);
-    inspectRail->forceActiveFocus();
-    QMetaObject::invokeMethod(inspectRail, "clicked");
+    auto *exitFocus = item("globalFocusPreview");
+    QVERIFY(exitFocus);
+    exitFocus->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Escape);
     QTRY_VERIFY(!workspace->property("focusMode").toBool());
     QTRY_VERIFY(window_->activeFocusItem() &&
                 window_->activeFocusItem()->isVisible());
     QCOMPARE(desktop_->sessionRevision(), session);
   }
   void parentNavigationKeepsSession() {
-    desktop_->navigate(small_);
-    QTRY_COMPARE(desktop_->directory(), small_);
+    const auto parent = root_ + "/parent-navigation";
+    const auto current = parent + "/current";
+    QVERIFY(QDir().mkpath(current));
+    QVERIFY(QDir().mkpath(parent + "/sibling"));
+    QImage image(64, 64, QImage::Format_RGBA8888);
+    image.fill(Qt::cyan);
+    QVERIFY(image.save(current + "/sample.png"));
+    desktop_->navigate(current);
+    QTRY_COMPARE(desktop_->directory(), current);
     QTRY_COMPARE(desktop_->count(), 1);
-    desktop_->openPath(small_ + "/唯一图片.png");
+    desktop_->openPath(current + "/sample.png");
     QTRY_VERIFY(idle());
     const auto session = desktop_->sessionRevision();
-    const auto parent = small_.left(small_.lastIndexOf('/'));
     desktop_->parentDirectory();
     QTRY_COMPARE(desktop_->directory(), parent);
     QTRY_COMPARE(desktop_->count(), 2);
     QTRY_VERIFY(idle());
     QCOMPARE(desktop_->sessionRevision(), session);
     desktop_->history(-1);
-    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_COMPARE(desktop_->directory(), current);
     QTRY_COMPARE(desktop_->count(), 1);
     QCOMPARE(desktop_->sessionRevision(), session);
     desktop_->navigate(fixture_);
@@ -758,6 +1004,176 @@ private slots:
     QTRY_VERIFY(idle());
   }
 #ifdef FORMAVIEW_IMAGE_UI
+  void pixelCompressionDescription_data() {
+    QTest::addColumn<QString>("format");
+    QTest::addColumn<bool>("blockCompressed");
+    QTest::newRow("tga-raw") << QString("tga") << false;
+    QTest::newRow("tga-rle") << QString("tga-rle") << false;
+    QTest::newRow("dds-raw") << QString("dds") << false;
+    QTest::newRow("dds-bc1") << QString("dds") << true;
+  }
+  void pixelCompressionDescription() {
+    QFETCH(QString, format);
+    QFETCH(bool, blockCompressed);
+    // Independent, constant-red fixtures: no production encoder involved.
+    QByteArray bytes;
+    if (format.startsWith("tga")) {
+      bytes = QByteArray::fromHex("000002000000000000000000040004001820");
+      if (format == "tga-rle") {
+        bytes[2] = 10;
+        for (int row = 0; row < 4; ++row)
+          bytes += QByteArray::fromHex("830000ff");
+      } else {
+        for (int i = 0; i < 16; ++i) bytes += QByteArray::fromHex("0000ff");
+      }
+    } else {
+      QDataStream header(&bytes, QIODevice::WriteOnly);
+      header.setByteOrder(QDataStream::LittleEndian);
+      header << quint32(0x20534444) << quint32(124)
+             << quint32(blockCompressed ? 0x81007 : 0x100f)
+             << quint32(4) << quint32(4) << quint32(blockCompressed ? 8 : 16)
+             << quint32(0) << quint32(0);
+      for (int i = 0; i < 11; ++i) header << quint32(0);
+      header << quint32(32) << quint32(blockCompressed ? 4 : 0x41)
+             << quint32(blockCompressed ? 0x31545844 : 0)
+             << quint32(blockCompressed ? 0 : 32)
+             << quint32(blockCompressed ? 0 : 0xff)
+             << quint32(blockCompressed ? 0 : 0xff00)
+             << quint32(blockCompressed ? 0 : 0xff0000)
+             << quint32(blockCompressed ? 0 : 0xff000000)
+             << quint32(0x1000) << quint32(0) << quint32(0) << quint32(0) << quint32(0);
+      QCOMPARE(bytes.size(), 128);
+      if (blockCompressed) bytes += QByteArray::fromHex("00f8000000000000");
+      else for (int i = 0; i < 16; ++i) bytes += QByteArray::fromHex("ff0000ff");
+    }
+    const auto path = small_ + "/" + QTest::currentDataTag() +
+                      (format.startsWith("tga") ? ".tga" : ".dds");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    desktop_->openPath(path);
+    QTRY_VERIFY_WITH_TIMEOUT((!session->busy() && session->path() == path) ||
+                                !session->error().isEmpty(), 10000);
+    QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+    QCOMPARE(session->path(), path);
+    session->setting("channel", -1);
+    session->setting("colour", false);
+    session->setting("composite", false);
+    session->sample(0, 0);
+    QVERIFY(session->pixel()["valid"].toBool());
+    const auto channels = session->pixel()["source"].toList();
+    const auto display = session->pixel()["display"].toList();
+    for (int component = 0; component < 3; ++component) {
+      const auto name = QStringList{"R", "G", "B"}[component];
+      const auto found = std::find_if(channels.begin(), channels.end(), [&](const auto &c) {
+        return c.toMap()["name"].toString() == name;
+      });
+      QVERIFY(found != channels.end());
+      QCOMPARE(found->toMap()["source"].toString().toDouble(),
+               component == 0 ? (blockCompressed ? 1. : 255.) : 0.);
+      QCOMPARE(found->toMap()["interpreted"].toString().toDouble(), component == 0 ? 1. : 0.);
+      QCOMPARE(display[component].toString().toDouble(), component == 0 ? 1. : 0.);
+    }
+    auto *toggle = item("pixelToggle");
+    QVERIFY(toggle);
+    toggle->setProperty("checked", true);
+    auto *description = item("pixelSourceDescription");
+    QVERIFY(description);
+    QTRY_VERIFY(description->isVisible());
+    QTest::qWait(60);
+    save(QString("pixel-compression-") + QTest::currentDataTag());
+    evidence_[QString("pixel-compression-") + QTest::currentDataTag()] =
+        QJsonObject{{"pixel", QJsonObject::fromVariantMap(session->pixel())},
+                    {"label", description->property("text").toString()},
+                    {"block", session->info()["block"].toString()}};
+    QCOMPARE(description->property("text").toString().contains("BC"), blockCompressed);
+    QCOMPARE(!session->info()["block"].toString().isEmpty(), blockCompressed);
+    toggle->setProperty("checked", false);
+  }
+  void imageSwitchKeepsViewportGeometry() {
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    window_->resize(1600, 900);
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    const auto first = small_ + "/switch-first.bmp";
+    const auto second = small_ + "/switch-second.bmp";
+    QImage image(2048, 2048, QImage::Format_RGB888);
+    image.fill(Qt::blue);
+    QVERIFY(image.save(first));
+    image.fill(Qt::green);
+    QVERIFY(image.save(second));
+    desktop_->openPath(first);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == first && !session->busy(), 10000);
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    QTest::qWait(80);
+    const auto height = view->height();
+    const auto zoom = view->zoom();
+    QList<qreal> heights;
+    const auto connection = connect(view, &QQuickItem::heightChanged, view,
+                                    [&] { heights.append(view->height()); });
+    const auto disconnectHeight = qScopeGuard([&] { disconnect(connection); });
+    for (const auto &path : {second, first, second}) {
+      session->open(path);
+      QVERIFY(session->busy());
+      session->sample(0, 0);
+      QVERIFY(!session->pixel()["valid"].toBool());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 10000);
+      QCOMPARE(session->path(), path);
+      QTest::qWait(40);
+      QCOMPARE(view->height(), height);
+      QCOMPARE(view->zoom(), zoom);
+    }
+    for (const auto measured : heights)
+      QVERIFY2(qAbs(measured - height) < .5,
+               qPrintable(QString("Transient viewport resize: %1 -> %2").arg(height).arg(measured)));
+  }
+  void pixelInspectionMouseAndKeyboard() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy(), 10000);
+    auto *toggle = item("pixelToggle");
+    QVERIFY(toggle);
+    toggle->setProperty("checked", false);
+    QTest::qWait(80);
+    const auto centre = toggle->mapToScene({toggle->width()/2, toggle->height()/2});
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, centre.toPoint());
+    QTRY_VERIFY(toggle->property("checked").toBool());
+    auto panel = [&]() -> QQuickItem * {
+      for (auto *candidate : window_->findChildren<QQuickItem *>())
+        if (QString(candidate->metaObject()->className()).startsWith("PixelPanel_") && candidate->isVisible()) return candidate;
+      return nullptr;
+    };
+    QTRY_VERIFY(panel() && panel()->height() > 60 && panel()->width() > 100);
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    QTest::qWait(60);
+    const auto samplingHeight = view->height();
+    const auto samplePoint = view->mapToScene({view->width()/2, view->height()/2});
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, samplePoint.toPoint());
+    QTRY_VERIFY(session->pixel()["valid"].toBool());
+    QVERIFY(!session->pixel()["source"].toList().isEmpty());
+    QVERIFY(!session->pixelReport().isEmpty());
+    QTest::qWait(60);
+    QCOMPARE(view->height(), samplingHeight);
+    save("pixel-click-expanded");
+    toggle->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(!toggle->property("checked").toBool());
+    QTRY_VERIFY(!panel());
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(panel() && panel()->height() > 60);
+    toggle->setProperty("checked", false);
+  }
   void imagePrecisionAndViewport() {
     using namespace formaview;
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
@@ -1415,6 +1831,182 @@ private slots:
     QCOMPARE(desktop_->preferences().value("density").toString(), QString("standard"));
     if (auto *drawer = window_->findChild<QObject *>("fileDrawer"))
       QMetaObject::invokeMethod(drawer, "close");
+  }
+
+  void settingsDirtyLeaveCallbacks() {
+    auto *workspace = item("workspace");
+    auto *settings = window_->findChild<QObject *>("mcpSettingsDialog");
+    QVERIFY(workspace && settings);
+    const auto preferences = desktop_->preferences();
+    const auto restore = qScopeGuard([&] {
+      workspace->setProperty("settingsVisible", false);
+      workspace->setProperty("tasksVisible", false);
+      workspace->setProperty("conversionVisible", false);
+      desktop_->preference("density", preferences.value("density"));
+    });
+    desktop_->preference("density", "standard");
+    for (const auto &destination : {QString("tasks"), QString("conversion")}) {
+      QVERIFY(QMetaObject::invokeMethod(settings, "open", Q_ARG(QVariant, "general")));
+      QTRY_VERIFY(item("settingsDensityCompact"));
+      QVERIFY(QMetaObject::invokeMethod(item("settingsDensityCompact"), "clicked"));
+      QVERIFY(settings->property("dirty").toBool());
+      QTRY_VERIFY(item("settingsDraftStatus"));
+      QCOMPARE(item("settingsDraftStatus")->property("text").toString(), QString("有未保存的更改"));
+      QVERIFY(item("settingsDraftStatus")->mapToScene({0,0}).y() >= window_->height() - 44);
+      QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, destination)));
+      QTRY_VERIFY(item("keepEditingSettings"));
+      QCOMPARE(workspace->property("currentPage").toString(), QString("settings"));
+      QVERIFY(QMetaObject::invokeMethod(item("keepEditingSettings"), "clicked"));
+      QVERIFY(settings->property("dirty").toBool());
+      QCOMPARE(desktop_->preferences().value("density").toString(), QString("standard"));
+      QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, destination)));
+      QTRY_VERIFY(item("discardAndLeaveSettings"));
+      QVERIFY(QMetaObject::invokeMethod(item("discardAndLeaveSettings"), "clicked"));
+      QTRY_COMPARE(workspace->property("currentPage").toString(), destination);
+      QVERIFY(!settings->property("dirty").toBool());
+      QVERIFY(!workspace->property("settingsDirty").toBool());
+      QCOMPARE(desktop_->preferences().value("density").toString(), QString("standard"));
+    }
+  }
+
+  void conversionEditorPlanBinding() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("tasksVisible", false);
+    const auto source = small_ + "/唯一图片.png";
+    desktop_->navigate(small_);
+    QTRY_VERIFY(desktop_->directory() == small_ && idle());
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle());
+    const auto index = static_cast<FileList *>(desktop_->files())->indexOf(source);
+    QVERIFY(index >= 0);
+    desktop_->select(index);
+    QTRY_VERIFY(idle());
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QTRY_VERIFY(item("conversionOutputRoot"));
+    QCOMPARE(item("conversionPreflightStatus")->property("value").toString(), QString("待预检"));
+    QVERIFY(item("conversionContentSource")->property("value").toString().contains("不套用预览"));
+    QCOMPARE(item("conversionNamingExamples")->property("value").toString(), QString("唯一图片-converted.png"));
+    const auto examples = service->nameExamples({source}, "{name}-converted.{ext}", "png", {});
+    QCOMPARE(examples.value("names").toStringList(), QStringList{"唯一图片-converted.png"});
+    QCOMPARE(service->nameExamples({source}, "{name}-{index}.{ext}", "png", {QVariantMap{{"target", "tiff"}}})
+                 .value("names").toStringList(), QStringList{"唯一图片-1.tiff"});
+    QVERIFY(!service->nameExamples({source}, "{name}_m{mip}.{ext}", "png", {}).value("error").toString().isEmpty());
+    QVERIFY(!service->nameExamples({source}, "../{name}.{ext}", "png", {}).value("error").toString().isEmpty());
+    const auto close = qScopeGuard([&] {
+      if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
+        QMetaObject::invokeMethod(conversion, "close");
+    });
+    const auto firstOutput = root_ + "/editor-plan-a";
+    const auto secondOutput = root_ + "/editor-plan-b";
+    QVERIFY(QDir().mkpath(firstOutput) && QDir().mkpath(secondOutput));
+    auto editOutput = [&](const QString &path) {
+      auto *field = item("conversionOutputRoot");
+      QVERIFY(field);
+      field->forceActiveFocus();
+      QVERIFY(QMetaObject::invokeMethod(field, "selectAll"));
+      QInputMethodEvent event;
+      event.setCommitString(path);
+      QCoreApplication::sendEvent(field, &event);
+      QCOMPARE(field->property("text").toString(), path);
+    };
+    const auto click = [&](const char *name) {
+      auto *control = item(name);
+      QVERIFY(control && control->isEnabled());
+      control->forceActiveFocus();
+      QTest::qWait(30);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          control->mapToScene({control->width()/2, control->height()/2}).toPoint());
+    };
+    editOutput(firstOutput);
+    click("createImagePlan");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+    const auto firstPlan = service->plan();
+    const auto firstRequest = firstPlan.value("items").toList().front().toMap().value("request").toMap();
+    QCOMPARE(firstRequest.value("input").toString(), source);
+    QCOMPARE(firstRequest.value("output").toString(), firstOutput + "/唯一图片-converted.png");
+    QCOMPARE(QFileInfo(firstRequest.value("output").toString()).fileName(), examples.value("names").toStringList().front());
+    auto *ack = window_->findChild<QQuickItem *>("acknowledgeImageLosses");
+    QVERIFY(ack);
+    ack->setProperty("checked", true);
+    click("editConversionSettings");
+    QTRY_VERIFY(item("conversionOutputRoot"));
+    editOutput(secondOutput);
+    QTRY_VERIFY(service->plan().isEmpty());
+    QVERIFY(!ack->property("checked").toBool());
+    const auto jobCount = service->jobs().size();
+    service->submit(true);
+    QCOMPARE(service->jobs().size(), jobCount);
+    click("createImagePlan");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+    QVERIFY(service->plan().value("id") != firstPlan.value("id"));
+    const auto request = service->plan().value("items").toList().front().toMap().value("request").toMap();
+    QCOMPARE(request.value("input").toString(), source);
+    QCOMPARE(request.value("output").toString(), secondOutput + "/唯一图片-converted.png");
+    QVERIFY(!QFile::exists(firstRequest.value("output").toString()));
+    QVERIFY(!QFile::exists(request.value("output").toString()));
+    click("submitImagePlan");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 15000);
+    QCOMPARE(QImage(request.value("output").toString()).pixelColor(0, 0), QColor(Qt::cyan));
+    QVERIFY(!QFile::exists(firstRequest.value("output").toString()));
+    evidence_["conversion_editor_binding"] = QJsonObject{{"before", QJsonObject::fromVariantMap(firstRequest)}, {"submitted", QJsonObject::fromVariantMap(request)}};
+  }
+
+  void imageJobsCancelAndShutdown() {
+    const auto input = root_ + "/shutdown-input";
+    QVERIFY(QDir().mkpath(input));
+    QImage image(2048, 2048, QImage::Format_RGBA8888);
+    image.fill(QColor(73, 127, 201, 255));
+    const auto source = input + "/source.png";
+    QVERIFY(image.save(source));
+    QStringList inputs;
+    for (auto i = 0; i < 16; ++i) inputs.append(source);
+    QJsonArray observed;
+    for (const auto &mode : {QString("cancel"), QString("shutdown")}) {
+      const auto output = root_ + "/jobs-" + mode;
+      QVERIFY(QDir().mkpath(output));
+      const QVariantMap scope{{"input_roots", QStringList{input}},
+                              {"output_roots", QStringList{output}},
+                              {"allow_overwrite", false}};
+      auto jobs = std::make_unique<ImageJobs>();
+      jobs->preflight(inputs, scope, {{"target", "png"}, {"png_compression", 9}}, "item-{index}.{ext}", "skip");
+      QTRY_VERIFY_WITH_TIMEOUT(!jobs->busy() && jobs->plan().value("state") == "ready", 30000);
+      jobs->submit(true);
+      QTRY_VERIFY_WITH_TIMEOUT(!jobs->busy() && jobs->job().value("state") == "running", 15000);
+      const auto id = jobs->job().value("id").toString();
+      QVERIFY(!id.isEmpty());
+      if (mode == "cancel") {
+        jobs->cancel("job", id);
+        QTRY_VERIFY(jobs->job().value("cancellation_requested").toBool());
+        QTRY_VERIFY_WITH_TIMEOUT((!QStringList{"queued", "running"}.contains(jobs->job().value("state").toString())), 15000);
+        QVERIFY((QStringList{"cancelled", "partially_succeeded"}.contains(jobs->job().value("state").toString())));
+        const auto entries = jobs->job().value("items").toList();
+        QVERIFY(std::any_of(entries.cbegin(), entries.cend(), [](const auto &entry) { return entry.toMap().value("status") == "cancelled"; }));
+      }
+      QElapsedTimer closing;
+      closing.start();
+      jobs.reset();
+      const auto closeMs = closing.elapsed();
+      ImageJobs recovered;
+      recovered.configureScope(scope);
+      QTRY_VERIFY_WITH_TIMEOUT(!recovered.busy() && recovered.error().isEmpty(), 15000);
+      recovered.selectJob(id);
+      QTRY_COMPARE(recovered.job().value("id").toString(), id);
+      const auto state = recovered.job().value("state").toString();
+      QVERIFY2((QStringList{"cancelled", "partially_succeeded", "interrupted"}.contains(state)), qPrintable(state));
+      const auto entries = recovered.job().value("items").toList();
+      QVERIFY(std::any_of(entries.cbegin(), entries.cend(), [](const auto &entry) {
+        return QStringList{"cancelled", "interrupted"}.contains(entry.toMap().value("status").toString());
+      }));
+      const auto outputs = QDir(output).entryList(QDir::Files);
+      QTest::qWait(200);
+      QCOMPARE(QDir(output).entryList(QDir::Files), outputs);
+      observed.append(QJsonObject{{"mode", mode}, {"job", QJsonObject::fromVariantMap(recovered.job())},
+                                 {"observed_close_ms", closeMs}, {"output_count", outputs.size()}});
+    }
+    evidence_["cancel_and_normal_shutdown"] = observed;
   }
 
   void approvedWorkspaceFidelity() {
@@ -2765,6 +3357,574 @@ private slots:
     QCOMPARE(measured->over100ms, 0);
 #endif
   }
+#ifdef FORMAVIEW_MODEL_UI
+  void modelFocusRestoreRails() {
+    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    auto *workspace = item("workspace");
+    QVERIFY(session && workspace && fixtures.exists("external.gltf"));
+    workspace->setProperty("focusMode", false);
+    desktop_->setLanguage("zh-CN");
+    desktop_->preference("filesVisible", true);
+    desktop_->preference("inspectorMode", "auto");
+    desktop_->openPath(fixtures.filePath("external.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    session->setMode(0);
+    auto *view = qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(view);
+    view->orbit(27, -13);
+    view->panBy(18, -9);
+    view->zoomBy(1.2);
+    const auto camera = view->cameraState();
+    const auto path = session->path();
+    const auto directory = desktop_->directory();
+    const auto revision = desktop_->sessionRevision();
+    const auto mesh = session->meshIndex(), binding = session->bindingIndex();
+    const auto restore = qScopeGuard([&] {
+      workspace->setProperty("focusMode", false);
+      desktop_->preference("inspectorMode", "auto");
+      window_->resize(1600, 900);
+      desktop_->clearAsset();
+    });
+    const auto click = [&](const char *name) {
+      auto *control = item(name);
+      QVERIFY(control && control->isEnabled());
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene({control->width()/2, control->height()/2}).toPoint());
+    };
+    for (const auto width : {1600, 1280}) {
+      window_->resize(width, 900);
+      QTest::qWait(100);
+      if (window_->width() != width) window_->resize(width, 900);
+      for (const auto *railName : {"focusFilesRail", "focusInspectorRail"}) {
+        click("globalFocusPreview");
+        QTRY_VERIFY(workspace->property("focusMode").toBool());
+        QTRY_VERIFY(item("focusFilesRail") && item("focusInspectorRail"));
+        QCOMPARE(item("focusFilesRail")->width(), 36.0);
+        QCOMPARE(item("focusInspectorRail")->width(), 36.0);
+        QVERIFY(item("focusFilesRail")->height() > 600);
+        QVERIFY(!item("navigationRail") && !item("inspectorPane"));
+        save(QString("focus-rails-%1-%2").arg(width).arg(railName));
+        click(railName);
+        QTRY_VERIFY(!workspace->property("focusMode").toBool());
+        if (QString::fromLatin1(railName) == "focusFilesRail" && width == 1280) {
+          auto *drawer = window_->findChild<QObject *>("fileDrawer");
+          QVERIFY(drawer);
+          QTRY_VERIFY(drawer->property("opened").toBool());
+          QMetaObject::invokeMethod(drawer, "close");
+          QTRY_VERIFY(!drawer->property("visible").toBool());
+        }
+        QTRY_VERIFY(item("inspectorPane"));
+        QCOMPARE(view->cameraState(), camera);
+        QCOMPARE(session->path(), path);
+        QCOMPARE(desktop_->directory(), directory);
+        QCOMPARE(desktop_->sessionRevision(), revision);
+        QCOMPARE(session->meshIndex(), mesh);
+        QCOMPARE(session->bindingIndex(), binding);
+        save(QString("focus-restored-%1-%2").arg(width).arg(railName));
+      }
+    }
+    desktop_->preference("inspectorMode", "hidden");
+    click("globalFocusPreview");
+    click("focusInspectorRail");
+    QTRY_VERIFY(item("inspectorPane"));
+    QCOMPARE(view->cameraState(), camera);
+  }
+  void modelDisplayControls() {
+    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session && fixtures.exists("external.gltf"));
+    desktop_->setLanguage("zh-CN");
+    desktop_->openPath(fixtures.filePath("external.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    auto *view=qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(view);
+    const auto click=[&](QQuickItem *control) {
+      QVERIFY(control && control->isVisible() && control->isEnabled());
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,control->mapToScene({control->width()/2,control->height()/2}).toPoint());
+    };
+    const auto frame=view->frame;
+    const auto counts=session->info();
+    const auto camera=view->cameraState();
+    QVERIFY(view->gridVisible() && view->axesVisible());
+    click(item("modelGroundGrid"));
+    QTRY_VERIFY(!view->gridVisible());
+    QVERIFY(view->axesVisible());
+    click(item("modelOriginAxes"));
+    QTRY_VERIFY(!view->axesVisible());
+    QCOMPARE(view->frame,frame);
+    QCOMPARE(view->cameraState(),camera);
+    QCOMPARE(session->info().value("visibleTriangles"),counts.value("visibleTriangles"));
+    save("model-guides-hidden");
+    click(item("modelGroundGrid")); click(item("modelOriginAxes"));
+    QTRY_VERIFY(view->gridVisible() && view->axesVisible());
+    save("model-guides-visible");
+    const auto start=view->mapToScene({view->width()/2,view->height()/2}).toPoint();
+    const auto yaw=view->cameraState().value("yaw").toDouble();
+    QTest::mousePress(window_,Qt::LeftButton,Qt::NoModifier,start);
+    QTest::mouseMove(window_,start+QPoint(80,0),30);
+    QTest::mouseRelease(window_,Qt::LeftButton,Qt::NoModifier,start+QPoint(80,0));
+    QTRY_VERIFY(view->cameraState().value("yaw").toDouble()<yaw);
+    const auto rightYaw=view->cameraState().value("yaw").toDouble();
+    QTest::mousePress(window_,Qt::LeftButton,Qt::NoModifier,start);
+    QTest::mouseMove(window_,start-QPoint(80,0),30);
+    QTest::mouseRelease(window_,Qt::LeftButton,Qt::NoModifier,start-QPoint(80,0));
+    QTRY_VERIFY(view->cameraState().value("yaw").toDouble()>rightYaw);
+    view->fit();
+    const auto &vertices=view->frame->vertices;
+    QVERIFY(vertices.size()>=3);
+    QVector3D centre;
+    for (int i=0;i<3;++i) centre+=QVector3D(vertices[i].x,vertices[i].y,vertices[i].z)/3;
+    const auto ndc=view->viewMatrix.map(centre);
+    const auto hit=view->mapToScene({(ndc.x()+1)*view->width()/2,(1-ndc.y())*view->height()/2});
+    QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,hit.toPoint());
+    QTRY_VERIFY(!session->picked().isEmpty());
+    QVERIFY(item("globalOpenFolderButton") && !item("chooseBrowseFolder"));
+    QVERIFY(item("editLocation") && item("editLocation")->property("iconName").toString().isEmpty());
+    save("model-left-click-source-inspection");
+    desktop_->clearAsset();
+  }
+  void genericResourcesRespectCollapse() {
+    const auto restore=qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(fixture_+"/asset0.obj");
+    QTRY_VERIFY(idle() && !desktop_->asset().isEmpty());
+    auto *model=qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY(!model->busy() && !model->preparing());
+    QTRY_VERIFY(item("genericResourceSection"));
+    auto *section=item("genericResourceSection");
+    QVERIFY(desktop_->reportMissingResource(desktop_->sessionRevision(),"review-fold","missing.png"));
+    QTRY_VERIFY(section->property("checked").toBool() && item("genericResourceList"));
+    const auto point=section->mapToScene({section->width()/2,section->height()/2}).toPoint();
+    QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,point);
+    QTRY_VERIFY(!section->property("checked").toBool());
+    QTRY_VERIFY(!window_->findChild<QQuickItem *>("genericResourceList")->isVisible());
+    QCOMPARE(desktop_->resourceIssues().size(),1);
+    desktop_->validateResource("review-fold",fixture_+"/still-missing.png");
+    QTRY_VERIFY(idle());
+    QVERIFY(!section->property("checked").toBool());
+    save("review-resources-collapsed-with-report");
+    QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,point);
+    QTRY_VERIFY(section->property("checked").toBool() && item("genericResourceList"));
+  }
+  void modelInspectorCollapseRestoresGeometry() {
+    QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected).*"));
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore=qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->setLanguage("zh-CN");
+    window_->resize(1600,900);
+    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(item("modelInspector"));
+    item("modelInspector")->setProperty("tab",0);
+    QTRY_VERIFY(item("modelNodeMatrices"));
+    auto *header=item("modelNodeMatrices");
+    auto *details=window_->findChild<QQuickItem *>("modelNodeDetails");
+    auto *column=item("modelSceneColumn");
+    auto *statistics=item("modelStatistics");
+    auto *resources=item("modelSourceResources");
+    QVERIFY(header && details && column && statistics && resources);
+    QTRY_VERIFY(!header->property("checked").toBool());
+    QTRY_VERIFY(!details->isVisible());
+    QTest::qWait(80);
+    const auto initialHeight=column->height();
+    const auto initialStatistics=statistics->y();
+    const auto initialResources=resources->y();
+    save("inspector-collapse-before");
+    for(int cycle=0;cycle<3;++cycle) {
+      const auto point=header->mapToScene({header->width()/2,header->height()/2}).toPoint();
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,point);
+      QTRY_VERIFY(header->property("checked").toBool() && details->isVisible());
+      QTRY_VERIFY(column->height()>initialHeight+100);
+      if(cycle==0) save("inspector-collapse-expanded");
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,point);
+      QTRY_VERIFY(!header->property("checked").toBool() && !details->isVisible());
+      QTRY_VERIFY(std::abs(column->height()-initialHeight)<1);
+      QTRY_VERIFY(std::abs(statistics->y()-initialStatistics)<1);
+      QTRY_VERIFY(std::abs(resources->y()-initialResources)<1);
+    }
+    save("inspector-collapse-after");
+    session->setMode(3);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTRY_VERIFY(window_->findChild<QQuickItem *>("modelLodDetails")->isVisible());
+    session->setMode(0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTRY_VERIFY(!window_->findChild<QQuickItem *>("modelLodDetails")->isVisible());
+    QTRY_VERIFY(std::abs(column->height()-initialHeight)<1);
+    desktop_->clearAsset();
+  }
+  void modelSkeletonNavigation() {
+    QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|Unable to assign).*"));
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    window_->resize(1600,900);
+    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(item("modelInspectorTab1"));
+    const auto click=[&](QQuickItem *control) {
+      QVERIFY(control && control->isVisible() && control->isEnabled());
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,control->mapToScene({control->width()/2,control->height()/2}).toPoint());
+    };
+    click(item("modelInspectorTab1"));
+    QTRY_VERIFY(item("modelBoneTree") && item("modelBoneSearch"));
+    auto *tree=item("modelBoneTree"); auto *search=item("modelBoneSearch");
+    QVERIFY(tree && search && tree->isVisible());
+    QVERIFY(!item("modelBindingMatrices")->property("checked").toBool());
+    QVERIFY(session->skeleton()->rowCount()>0);
+    auto *view=qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(view);
+    view->orbit(17,8); view->zoomBy(1.2);
+    const auto camera=view->cameraState();
+    const auto shoulder=session->skeleton()->match(session->skeleton()->index(0,0),Qt::DisplayRole,"L_Shoulder_a",1,Qt::MatchRecursive | Qt::MatchExactly);
+    QVERIFY(!shoulder.isEmpty());
+    session->selectSkeletonIndex(session->skeleton()->indexForNode(shoulder.front().data(ModelSkeleton::NodeKey).toString(),shoulder.front().data(ModelSkeleton::JointIndex).toInt()));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTest::qWait(100);
+    const auto selection=session->skeletonSelection();
+    QVERIFY(selection.value("inPalette").toBool());
+    QVERIFY(session->frame()->selectionVertices>0);
+    QCOMPARE(view->cameraState(),camera);
+    const auto shot=window_->grabWindow();
+    const auto viewTop=view->mapToScene({0,0})*window_->devicePixelRatio();
+    const QRect viewPixels(viewTop.toPoint(),QSize(int(view->width()*window_->devicePixelRatio()),int(view->height()*window_->devicePixelRatio())));
+    int orangePixels=0;
+    for(int y=viewPixels.top();y<=viewPixels.bottom();++y) for(int x=viewPixels.left();x<=viewPixels.right();++x) {
+      const auto colour=shot.pixelColor(x,y);
+      if(colour.red()>200 && colour.green()>80 && colour.green()<180 && colour.blue()>20 && colour.blue()<100) ++orangePixels;
+    }
+    QVERIFY2(orangePixels>5,"Selected source binding segment must actually appear in the real model viewport");
+    evidence_["skeleton_selection_orange_pixels"]=orangePixels;
+    save("skeleton-real-cloud-selected");
+    QQuickItem *candidate=nullptr;
+    const auto findRow=[&](auto &&self,QQuickItem *parent)->void {
+      for(auto *child:parent->childItems()) {
+        const auto key=child->property("nodeKey").toString();
+        const auto point=child->mapToItem(tree,{child->width()/2,child->height()/2});
+        if (!candidate && child->isVisible() && child->property("jointIndex").isValid() && child->property("jointIndex").toInt()>=0 && key!=selection.value("id").toString() && QRectF(0,0,tree->width(),tree->height()).contains(point)) candidate=child;
+        self(self,child);
+      }
+    };
+    findRow(findRow,tree); QVERIFY(candidate);
+    const auto clickedId=candidate->property("nodeKey").toString();
+    click(candidate);
+    QTRY_COMPARE(session->skeletonSelection().value("id").toString(),clickedId);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QCOMPARE(view->cameraState(),camera);
+    session->selectSkeletonIndex(session->skeleton()->indexForNode(selection.value("id").toString(),selection.value("boneIndex").toInt()));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QVERIFY(QMetaObject::invokeMethod(tree,"reveal",Q_ARG(bool,false)));
+    session->skeleton()->setSearchText("not_a_real_bone");
+    QCoreApplication::processEvents();
+    QCOMPARE(session->skeleton()->rowCount(),0);
+    session->skeleton()->setSearchText("");
+    QTRY_VERIFY(session->skeleton()->rowCount()>0);
+    search->forceActiveFocus(); QInputMethodEvent query; query.setCommitString("not_a_real_bone"); QCoreApplication::sendEvent(search,&query);
+    QTRY_COMPARE(session->skeleton()->rowCount(),0);
+    QCOMPARE(session->skeletonSelection(),selection);
+    click(item("modelBoneLocate"));
+    QTRY_VERIFY(session->skeleton()->rowCount()>0);
+    QCOMPARE(search->property("text").toString(),QString{});
+    click(item("modelBoneHeat"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->mode()==2 && session->inspectable(),10000);
+    QCOMPARE(session->skeletonSelection(),selection);
+    click(item("modelBindingMatrices"));
+    QTRY_VERIFY(!visualItems(window_->contentItem(),"modelMatrixValues").isEmpty());
+    save("skeleton-real-cloud-advanced");
+    auto *bindingDetails=window_->findChild<QQuickItem *>("modelBindingDetailsLoader");
+    auto *sourceDetails=window_->findChild<QQuickItem *>("modelSourceDetailsLoader");
+    QVERIFY(bindingDetails && sourceDetails && bindingDetails->isVisible());
+    QTRY_VERIFY(sourceDetails->y()>100);
+    const auto ancestor=session->skeleton()->index(0,0);
+    QVERIFY(ancestor.isValid() && ancestor.data(ModelSkeleton::JointIndex).toInt()<0);
+    session->selectSkeletonIndex(ancestor);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTRY_VERIFY(!bindingDetails->isVisible());
+    QTRY_VERIFY(std::abs(sourceDetails->y())<1);
+    QVERIFY(!item("modelBoneHeat")->isEnabled());
+    save("review-skeleton-ancestor-without-binding-gap");
+    session->selectSkeletonIndex(session->skeleton()->indexForNode(selection.value("id").toString(),selection.value("boneIndex").toInt()));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTRY_VERIFY(bindingDetails->isVisible() && sourceDetails->y()>100);
+    click(item("modelBoneCollapse"));
+    QTest::qWait(80);
+    save("skeleton-real-cloud-collapsed");
+    desktop_->clearAsset();
+  }
+  void modelProfessionalUi() {
+    QTest::failOnWarning(QRegularExpression(".*Binding loop detected.*"));
+    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    QVERIFY2(fixtures.exists("external.gltf"), "Set FORMAVIEW_MODEL_FIXTURES to the generated M06 fixtures");
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    auto *workspace = item("workspace");
+    QVERIFY(session && workspace);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    desktop_->preference("fileWidth", 236);
+    desktop_->preference("filesVisible", true);
+    desktop_->preference("inspectorMode", "auto");
+    const auto restore = qScopeGuard([&] {
+      workspace->setProperty("focusMode", false);
+      window_->resize(1600, 900);
+      desktop_->setLanguage("zh-CN");
+      desktop_->clearAsset();
+    });
+    const auto click = [&](QQuickItem *control) {
+      QVERIFY(control && control->isVisible() && control->isEnabled());
+      const auto point = control->mapToScene({control->width()/2, control->height()/2});
+      QVERIFY(QRectF(0, 0, window_->width(), window_->height()).contains(point));
+      QSignalSpy clicked(control,SIGNAL(clicked()));
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point.toPoint());
+      QCOMPARE(clicked.count(),1);
+    };
+    const auto ready = [&] { return session->inspectable(); };
+    desktop_->openPath(fixtures.filePath("external.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(ready(), 10000);
+    QTRY_VERIFY(item("modelPane") && item("modelInspector"));
+    const auto originalMesh = session->meshIndex();
+    const auto originalBinding = session->bindingIndex();
+    QJsonArray screens;
+    for (const auto &layout : {QString("default"), QString("focus"), QString("narrow")}) {
+      const auto size = layout == "narrow" ? QSize(1280,800) : QSize(1600,900);
+      window_->resize(size);
+      // Expanded client-area margins settle after the first native resize
+      // at fractional DPI. Compare the actual client size after that update.
+      QTest::qWait(100);
+      if (window_->size() != size) {
+        window_->resize(size);
+        QTest::qWait(100);
+      }
+      QCOMPARE(window_->size(), size);
+      workspace->setProperty("focusMode", layout == "focus");
+      QTest::qWait(80);
+      for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+        desktop_->setLanguage(language);
+        QTest::qWait(100);
+        for (int mode = 0; mode < 4; ++mode) {
+          const auto name = QByteArray("modelModeTab") + QByteArray::number(mode);
+          click(item(name.constData()));
+          QTRY_COMPARE(session->mode(), mode);
+          QTRY_VERIFY_WITH_TIMEOUT(ready(), 10000);
+          QTest::qWait(80);
+          QCOMPARE(session->meshIndex(), originalMesh);
+          QCOMPARE(session->bindingIndex(), originalBinding);
+          QCOMPARE(item("modelPane")->property("narrow").toBool(), layout == "narrow");
+          if (mode == 1) {
+            QVERIFY(item("uvViewport"));
+            QCOMPARE(bool(item("modelViewport")), layout != "narrow");
+          }
+          const auto screenshot = QString("professional-%1-%2-mode%3").arg(layout,language).arg(mode);
+          save(screenshot);
+          screens.append(QJsonObject{{"name",screenshot},{"layout",layout},{"language",language},
+                                     {"mode",mode},{"width",window_->width()},{"height",window_->height()},
+                                     {"dpr",window_->devicePixelRatio()}});
+        }
+      }
+    }
+    workspace->setProperty("focusMode", false);
+    window_->resize(1600,900);
+    desktop_->setLanguage("zh-CN");
+    QTest::qWait(100);
+    click(item("modelModeTab1"));
+    QTRY_VERIFY_WITH_TIMEOUT(ready() && session->mode() == 1, 10000);
+    QVERIFY(!session->uvBackground().value("shown").toBool());
+    save("professional-uv0-outside-reference");
+    auto *uvChoice = item("modelUVChoice");
+    QVERIFY(uvChoice);
+    uvChoice->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_VERIFY_WITH_TIMEOUT(session->uvIndex() == 1 && ready(), 10000);
+    QVERIFY(session->uvBackground().value("shown").toBool());
+    QCOMPARE(session->frameFor(true)->backgroundVertices, 6U);
+    QVERIFY(item("modelUVBackgroundLegend")->property("text").toString().contains("TEXCOORD_1"));
+    auto *uvView = qobject_cast<ModelView *>(item("uvViewport"));
+    QVERIFY(uvView);
+    uvView->panBy(35, -20);
+    uvView->zoomBy(1.25);
+    const auto manualCamera = uvView->cameraState();
+    QVERIFY(!manualCamera.value("automatic").toBool());
+    click(item("modelUVMaterialOnly"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->materialOnly() && ready(), 10000);
+    QCOMPARE(uvView->cameraState(), manualCamera);
+    save("professional-uv1-rgb-background");
+    desktop_->openPath(fixtures.filePath("two-materials.obj"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == fixtures.filePath("two-materials.obj") && ready(), 10000);
+    click(item("modelModeTab1"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->mode() == 1 && ready(), 10000);
+    auto *materialChoice = item("modelUVMaterialChoice");
+    QVERIFY(materialChoice);
+    materialChoice->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_End);
+    QTRY_VERIFY_WITH_TIMEOUT(session->materialIndex() == session->materials().size() - 1 && ready(), 10000);
+    click(item("modelUVMaterialOnly"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->materialOnly() && ready(), 10000);
+    QCOMPARE(session->info().value("visibleTriangles").toInt(), 1);
+    QCOMPARE(session->frameFor(true)->sourceTriangles, 1ULL);
+    save("professional-uv-material-range");
+    window_->resize(1280,800);
+    QTest::qWait(100);
+    if (window_->size() != QSize(1280,800)) window_->resize(1280,800);
+    QTRY_COMPARE(window_->size(), QSize(1280,800));
+    QTRY_VERIFY(item("modelPane")->property("narrow").toBool());
+    QVERIFY(item("modelUVMaterialChoice")->isVisible());
+    QVERIFY(item("modelUVMaterialOnly")->isVisible());
+    save("professional-uv-material-narrow");
+    window_->resize(1600,900);
+    QTest::qWait(100);
+    desktop_->openPath(fixtures.filePath("eight-normalized.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->path()==fixtures.filePath("eight-normalized.gltf") && ready(),10000);
+    click(item("modelModeTab2"));
+    QTRY_VERIFY_WITH_TIMEOUT(ready() && session->mode()==2,10000);
+    session->pick(QMatrix4x4{},QPointF(-.6,-.6));
+    QCOMPARE(session->influences().size(),8);
+    click(item("modelPointToggle"));
+    QTRY_VERIFY(item("modelAllInfluences"));
+    QTRY_COMPARE(item("modelAllInfluences")->property("count").toInt(),8);
+    auto *influences = item("modelAllInfluences");
+    QTRY_VERIFY(influences->height()>=100);
+    QTRY_VERIFY(influences->property("contentHeight").toDouble()>influences->height());
+    QTest::qWait(100);
+    const auto scrollPoint = influences->mapToScene({influences->width()/2,influences->height()/2});
+    QWheelEvent scroll(scrollPoint,window_->mapToGlobal(scrollPoint.toPoint()),{},QPoint(0,-960),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QCoreApplication::sendEvent(window_,&scroll);
+    QTRY_VERIFY(influences->property("contentY").toDouble()>0);
+    QTRY_VERIFY(item("modelInfluenceRow7"));
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+      auto *lastRow=item("modelInfluenceRow7");
+      if (!lastRow) return false;
+      const auto position=lastRow->mapToItem(influences,{0,0});
+      return position.y()>=-1 && position.y()+lastRow->height()<=influences->height()+1;
+    })(),3000);
+    QTest::qWait(60);
+    save("professional-all-eight-last-record");
+    click(item("modelInspectorTab1"));
+    click(item("modelBindingMatrices"));
+    QTRY_VERIFY(!visualItems(window_->contentItem(),"modelMatrixValues").isEmpty());
+    for (auto *values : visualItems(window_->contentItem(),"modelMatrixValues")) {
+      QVERIFY(values->property("readOnly").toBool());
+      QCOMPARE(values->property("text").toString().count('\n'),3);
+    }
+    save("professional-binding-matrices");
+    click(item("modelInspectorTab0"));
+    click(item("modelNodeMatrices"));
+    QTRY_VERIFY(!visualItems(window_->contentItem(),"modelMatrixValues").isEmpty());
+    save("professional-node-matrices");
+    click(item("modelModeTab1"));
+    QTRY_VERIFY_WITH_TIMEOUT(ready() && session->mode()==1,10000);
+    QVERIFY(session->uvSets().isEmpty());
+    QVERIFY(!session->frameFor(true) || session->frameFor(true)->vertices.empty());
+    save("professional-no-uv-source");
+    evidence_["professional_ui"] = screens;
+  }
+  void modelPreviewIntegration() {
+    QTest::failOnWarning(QRegularExpression(".*index is not valid.*"));
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const QStringList samples{
+        "B:/Model/克劳德/SKM_Cloud.fbx",
+        "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk",
+        "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/CS_Sarge_S0_Skelmesh.pskx"};
+    QJsonArray reports;
+    for (const auto &path : samples) {
+      QVERIFY2(QFileInfo::exists(path), qPrintable(path));
+      desktop_->openPath(path);
+      QTRY_COMPARE_WITH_TIMEOUT(session->path(), path, 10000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->available() || !session->error().isEmpty(), 30000);
+      QVERIFY2(session->error().isEmpty(), qPrintable(session->error()));
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+      QVERIFY(session->frame());
+      QVERIFY(session->frame()->vertices.size() >= 3);
+      QTRY_VERIFY(window_->findChild<ModelView *>("modelViewport"));
+      QPointer<ModelView> view = window_->findChild<ModelView *>("modelViewport");
+      QVERIFY(view->isVisible());
+      QTest::qWait(300);
+      QVERIFY(view);
+      const auto name = QFileInfo(path).completeBaseName();
+      QVERIFY(window_->grabWindow().save(root_ + "/model-" + name + ".png"));
+      const auto frame = session->frame();
+      const auto oldMesh = session->meshIndex(), oldBinding = session->bindingIndex();
+      view->orbit(30, 20); view->panBy(10, -5); view->zoomBy(1.2); view->fit(true);
+      QCOMPARE(session->frame(), frame); // Camera never copies/reuploads geometry.
+      if (!session->uvSets().isEmpty()) {
+        session->setMode(1);
+        QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+        QVERIFY(session->frame()->lines);
+        QVERIFY(!session->frame()->vertices.empty());
+        QTest::qWait(120);
+        QVERIFY(window_->grabWindow().save(root_ + "/uv-" + name + ".png"));
+      }
+      session->setMode(2);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+      if (session->bindingIndex() >= 0) {
+        QVERIFY(session->frame()->heat);
+        QVERIFY(!session->frame()->vertices.empty());
+      }
+      session->setMode(0);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+      QCOMPARE(session->meshIndex(), oldMesh);
+      QCOMPARE(session->bindingIndex(), oldBinding);
+      const auto sourceTextures=session->frame()->textures;
+      const auto sourceTexturePath=session->texturePath();
+      session->associateTexture(small_ + "/唯一图片.png");
+      QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy(),10000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+      QVERIFY2(session->textureError().isEmpty(),qPrintable(session->textureError()));
+      QCOMPARE(session->texturePath(),small_ + "/唯一图片.png");
+      QVERIFY(!session->frame()->textures.empty());
+      QVERIFY(std::any_of(session->frame()->draws.begin(),session->frame()->draws.end(),[](const auto &d){return d.texture>=0;}));
+      QTest::qWait(100);
+      QVERIFY(window_->grabWindow().save(root_ + "/texture-" + name + ".png"));
+      session->removeTexture();
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+      QCOMPARE(session->texturePath(),sourceTexturePath);
+      QCOMPARE(session->frame()->textures,sourceTextures);
+      reports.append(QJsonObject{{"path",path},{"info",QJsonObject::fromVariantMap(session->info())},
+                                 {"meshes",QJsonArray::fromStringList(session->meshes())},
+                                 {"uvSets",QJsonArray::fromStringList(session->uvSets())},
+                                 {"vertices",static_cast<qint64>(frame->vertices.size())}});
+    }
+    // Latest request and cancellation must reject previous asynchronous results.
+    const auto payload=[](auto write){QByteArray b;QDataStream s(&b,QIODevice::WriteOnly);s.setByteOrder(QDataStream::LittleEndian);s.setFloatingPointPrecision(QDataStream::SinglePrecision);write(s);return b;};
+    QByteArray synthetic;
+    const auto block=[&](const char *name,int stride,const QByteArray &data){QByteArray n(name);n.resize(20,'\0');synthetic+=n;synthetic+=payload([&](QDataStream &s){s<<qint32(1999801)<<qint32(stride)<<qint32(stride?data.size()/stride:0);});synthetic+=data;};
+    block("ACTRHEAD",0,{});
+    block("REFSKELT",120,payload([](QDataStream &s){for(int i=0;i<8;++i){QByteArray n="Bone"+QByteArray::number(i);n.resize(64,'\0');s.writeRawData(n.constData(),n.size());s<<qint32(0)<<qint32(i==0?7:0)<<qint32(0);s<<0.F<<0.F<<0.F<<1.F<<0.F<<0.F<<0.F<<1.F<<1.F<<1.F<<1.F;}}));
+    block("PNTS0000",12,payload([](QDataStream &s){s<<-1.F<<0.F<<-1.F<<1.F<<0.F<<-1.F<<0.F<<0.F<<1.F;}));
+    block("VTXW0000",16,payload([](QDataStream &s){for(quint32 i=0;i<3;++i)s<<i<<float(i)<<-1.F<<quint32(0);}));
+    block("FACE0000",12,payload([](QDataStream &s){s<<quint16(0)<<quint16(1)<<quint16(2)<<quint8(0)<<quint8(0)<<quint32(1);}));
+    block("MATT0000",88,payload([](QDataStream &s){QByteArray n("Fixture");n.resize(64,'\0');s.writeRawData(n.constData(),n.size());for(int i=0;i<6;++i)s<<qint32(0);}));
+    block("RAWWEIGHTS",12,payload([](QDataStream &s){for(quint32 i=0;i<8;++i)s<<float(std::ldexp(1.0,-int(i)-1))<<quint32(0)<<i;s<<0.F<<quint32(1)<<quint32(0);}));
+    const auto syntheticPath=root_+"/all-eight-raw.psk";
+    QFile fixture(syntheticPath);QVERIFY(fixture.open(QIODevice::WriteOnly));QCOMPARE(fixture.write(synthetic),synthetic.size());fixture.close();
+    session->open(syntheticPath);
+    QTRY_VERIFY_WITH_TIMEOUT(session->available()||!session->error().isEmpty(),10000);
+    QVERIFY2(session->available(),qPrintable(session->error()));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    session->pick(QMatrix4x4{},QPointF(-.6,-.6));
+    QCOMPARE(session->picked().value("point").toUInt(),0U);
+    QCOMPARE(session->influences().size(),8);
+    QCOMPARE(session->picked().value("sum").toDouble(),.99609375);
+    session->pick(QMatrix4x4{},QPointF(.6,-.6));
+    QCOMPARE(session->picked().value("point").toUInt(),1U);
+    QCOMPARE(session->influences().size(),1);
+    QCOMPARE(session->influences()[0].toMap().value("weight").toDouble(),0.0);
+    session->pick(QMatrix4x4{},QPointF(0,.6));
+    QCOMPARE(session->picked().value("point").toUInt(),2U);
+    QVERIFY(session->influences().isEmpty());
+    for (int i=0;i<6;++i) { session->open(samples[0]); session->open(samples[1]); }
+    QTRY_VERIFY_WITH_TIMEOUT(session->available(), 30000);
+    QCOMPARE(session->path(),samples[1]);
+    session->open(samples[0]); session->cancel();
+    QTest::qWait(400);
+    QVERIFY(!session->available()); QVERIFY(!session->busy()); QVERIFY(!session->frame());
+    session->open(root_ + "/missing.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 10000);
+    QVERIFY(!session->available()); QVERIFY(!session->error().isEmpty());
+    desktop_->clearAsset();
+    evidence_["model_preview"] = reports;
+  }
+#endif
   void cleanupTestCase() {
     if (const auto mem = formaview::process_memory()) {
       evidence_["working_set_bytes"] =
@@ -2773,8 +3933,8 @@ private slots:
           static_cast<qint64>(mem->peak_working_set_bytes);
     }
     gpuSampler_.stop();
-    evidence_["gpu_observed_peak_local_bytes"] = peakGpuLocal_;
-    evidence_["gpu_sampling"] =
+    evidence_["gpu_observed_peak_local_bytes"] = workflowHeadless() ? QJsonValue(QJsonValue::Null) : QJsonValue(peakGpuLocal_);
+    evidence_["gpu_sampling"] = workflowHeadless() ? "not performed in offscreen workflow mode" :
         "DXGI per-process accounting on a retained actual QQuickWindow D3D11 "
         "adapter, "
         "250ms plus screenshots; transient peaks between samples may be "
@@ -2783,7 +3943,7 @@ private slots:
     desktop_.reset();
     QCoreApplication::processEvents();
     QTest::qWait(100);
-    evidence_["gpu_after_release"] = gpuMemory();
+    if (!workflowHeadless()) evidence_["gpu_after_release"] = gpuMemory();
     if (const auto mem = formaview::process_memory())
       evidence_["after_release_working_set_bytes"] =
           static_cast<qint64>(mem->working_set_bytes);
@@ -2794,15 +3954,34 @@ private slots:
 };
 int main(int argc, char **argv) {
   QQuickStyle::setStyle("Basic");
-  QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+  if (workflowHeadless() && qEnvironmentVariable("QT_QPA_PLATFORM") != "offscreen") {
+    qCritical("Headless workflow tests require QT_QPA_PLATFORM=offscreen");
+    return 64;
+  }
+  QQuickWindow::setGraphicsApi(workflowHeadless() ? QSGRendererInterface::Software : QSGRendererInterface::Direct3D11);
   QImageReader::setAllocationLimit(32);
   MeasuredApplication app(argc, argv);
+  app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
   auto font = QFont{};
   font.setFamilies({"Segoe UI", "Microsoft YaHei UI"});
   font.setPixelSize(14);
   app.setFont(font);
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
+  if (workflowHeadless()) {
+    const QSet<QString> allowed{"settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction"};
+    auto selected = 0;
+    const auto arguments = app.arguments();
+    for (auto i = 1; i < arguments.size(); ++i) {
+      if (arguments[i] == "-o" && i + 1 < arguments.size()) { ++i; continue; }
+      if (!allowed.contains(arguments[i])) {
+        qCritical("Offscreen workflow mode accepts only explicitly selected workflow cases");
+        return 64;
+      }
+      ++selected;
+    }
+    if (!selected) return 64;
+  }
 #ifdef FORMAVIEW_IMAGE_UI
   if (app.arguments().value(1) == "--recovery-producer") {
     if (app.arguments().size() != 5) return 20;

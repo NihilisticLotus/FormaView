@@ -56,6 +56,10 @@ public:
   Q_INVOKABLE void retry(const QString &id);
   Q_INVOKABLE void selectJob(const QString &id);
   Q_INVOKABLE void invalidatePlan();
+  Q_INVOKABLE QVariantMap nameExamples(const QStringList &inputs,
+                                      const QString &nameTemplate,
+                                      const QString &target,
+                                      const QVariantList &itemOverrides) const;
   Q_INVOKABLE void cancelPreparation();
 signals:
   void changed();

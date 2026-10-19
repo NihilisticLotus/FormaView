@@ -6,9 +6,20 @@ Item {
     id: root
     objectName: "workspace"
     required property var controller
-    readonly property real navigationWidth: narrow ? 56 : 200
+    readonly property real navigationWidth: focusMode && currentPage === "assets" ? 0 : narrow ? 56 : 200
     readonly property string currentPage: settingsVisible ? "settings" : conversionVisible ? "conversion" : tasksVisible ? "tasks" : "assets"
+    readonly property bool settingsDirty: settingsVisible && settingsDialog.dirty
     property bool focusMode: false
+    function setFocusMode(enabled): void {
+        if (enabled && !focusMode) files.remember()
+        focusMode = enabled
+    }
+    Keys.onEscapePressed: event => {
+        if (root.focusMode && root.currentPage === "assets") {
+            root.focusMode = false
+            event.accepted = true
+        } else event.accepted = false
+    }
     property bool tasksVisible: false
     property bool conversionVisible: false
     property bool settingsVisible: false
@@ -37,7 +48,7 @@ Item {
         settingsVisible = false; conversionVisible = false; tasksVisible = false; focusMode = false; filesVisible = true
         controller.preference("filesVisible", true)
         if (narrow) { drawer.open(); if (drawer.opened) drawerFiles.addressFocus() }
-        else Qt.callLater(() => { if (files.visible) files.addressFocus() })
+        else Qt.callLater(() => folderNavigation.addressFocus())
     }
     function toggleFiles() {
         if (narrow) { if (drawer.visible) drawer.close(); else openAddress(); return }
@@ -63,32 +74,43 @@ Item {
     NavigationRail {
         id: navigation; objectName: "navigationRail"
         anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.bottomMargin: Theme.statusHeight
-        width: root.navigationWidth; page: root.currentPage; collapsed: root.narrow; section: settingsDialog.section; conversionAvailable: !!root.controller.imageJobs
+        width: root.navigationWidth; visible: width > 0; page: root.currentPage; collapsed: root.narrow; section: settingsDialog.section; conversionAvailable: !!root.controller.imageJobs
         onNavigate: destination => root.navigate(destination)
     }
     ColumnLayout {
         anchors.fill: parent; anchors.leftMargin: root.navigationWidth; spacing: 0
         Rectangle {
             Layout.fillWidth: true; Layout.preferredHeight: Theme.topBarHeight; color: Theme.base
+            MouseArea {
+                id: titleDrag
+                objectName: "windowTitleDrag"
+                anchors.fill: parent; anchors.rightMargin: 160
+                onPressed: root.Window.window.startSystemMove()
+                onDoubleClicked: {
+                    const window = root.Window.window
+                    if (window.visibility === Window.Maximized) window.showNormal()
+                    else window.showMaximized()
+                }
+            }
             RowLayout {
-                objectName: "topBar"; anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: 24; spacing: 12
+                objectName: "topBar"; anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: 160; spacing: 12
                 AppIcon { name: root.settingsVisible ? "general" : root.conversionVisible ? "conversion" : root.tasksVisible ? "tasks" : "assets"; size: 20 }
                 Label { font.pixelSize: 18; font.bold: true; color: Theme.text; text: root.settingsVisible ? Theme.t("设置", "Settings", "設定") : root.conversionVisible ? Theme.t("图片批量转换", "Batch image conversion", "影像批次轉換") : root.tasksVisible ? Theme.t("任务中心", "Task center", "工作中心") : Theme.t("资产工作区", "Asset workspace", "資產工作區") }
                 Label { Layout.fillWidth: true; visible: root.currentPage === "assets"; text: root.controller.directory.replace(/\\/g, "/").split("/").pop(); elide: Text.ElideMiddle; color: Theme.muted }
                 Item { visible: root.currentPage !== "assets"; Layout.fillWidth: true }
-                Tool { visible: root.currentPage === "assets"; iconName: "assets"; primary: true; text: Theme.t("打开目录", "Open folder", "開啟資料夾"); onClicked: folderDialog.open() }
+                Tool { objectName: "globalFocusPreview"; visible: root.currentPage === "assets"; iconName: "fullscreen"; checked: root.focusMode; text: root.focusMode ? Theme.t("退出专注 · Esc", "Exit focus · Esc", "退出專注 · Esc") : Theme.t("专注预览", "Focus preview", "專注預覽"); onClicked: root.setFocusMode(!root.focusMode) }
+                Tool { objectName: "globalOpenFolderButton"; visible: root.currentPage === "assets"; iconName: "assets"; primary: true; text: Theme.t("打开目录", "Open folder", "開啟資料夾"); onClicked: folderDialog.open() }
                 Tool {
                     objectName: "applicationMenuButton"; iconName: "more"; quiet: true; hint: Theme.t("应用菜单", "Application menu", "應用程式選單")
                     onClicked: mainMenu.open()
                     Popup {
-                        id: mainMenu; y: parent.height; x: Math.min(0, parent.width - width); padding: 8
+                        id: mainMenu; y: parent.height; x: Math.min(0, parent.width - width); padding: 8; focus: true
                         background: Rectangle { color: Theme.raised; radius: Theme.groupRadius; border.color: Theme.line }
                         contentItem: AppMenu {
                             controller: root.controller
                             onOpenFile: { mainMenu.close(); fileDialog.open() }
-                            onOpenFolder: { mainMenu.close(); folderDialog.open() }
                             onToggleFiles: { mainMenu.close(); root.toggleFiles() }
-                            onToggleFocus: { mainMenu.close(); root.focusMode = !root.focusMode }
+                            onToggleFocus: { mainMenu.close(); root.setFocusMode(!root.focusMode) }
                             onTasks: { mainMenu.close(); root.navigate("tasks") }
                             onSettings: { mainMenu.close(); settingsDialog.open("permissions") }
                             onUnavailable: { mainMenu.close(); about.open() }
@@ -103,16 +125,36 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true
             RowLayout {
                 anchors.fill: parent; anchors.margins: 8; spacing: 8; visible: !root.tasksVisible && !root.conversionVisible && !root.settingsVisible
+                ColumnLayout {
+                    Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8
+                    FolderNavigation {
+                        id: folderNavigation; controller: root.controller
+                        Layout.fillWidth: true; visible: !root.focusMode
+                        onBeforeNavigate: { if (drawer.visible) drawerFiles.remember(); else files.remember() }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8
                 Rectangle {
                     Layout.fillHeight: true; Layout.preferredWidth: 40; color: Theme.panel
-                    visible: root.focusMode || root.narrow || !root.filesVisible
+                    visible: !root.focusMode && (root.narrow || !root.filesVisible)
                     Tool { id: fileRail; objectName: "fileRail"; width: 38; iconName: "files-open"; hint: Theme.t("展开文件区", "Show files", "展開檔案區"); Accessible.name: hint; onClicked: root.openAddress() }
+                }
+                Tool {
+                    id: focusFiles
+                    objectName: "focusFilesRail"; visible: root.focusMode
+                    Layout.fillHeight: true; Layout.preferredWidth: 36
+                    text: Theme.t("文件", "Files", "檔案")
+                    hint: Theme.t("退出专注并打开文件区", "Exit focus and show files", "退出專注並開啟檔案區")
+                    contentItem: Item {
+                        Text { anchors.centerIn: parent; width: Theme.language === "en" ? 120 : font.pixelSize; text: focusFiles.text; font: focusFiles.font; color: Theme.text; wrapMode: Text.WrapAnywhere; horizontalAlignment: Text.AlignHCenter; rotation: Theme.language === "en" ? -90 : 0 }
+                    }
+                    onClicked: root.openAddress()
                 }
                 FilesPane {
                     id: files
                     Layout.fillHeight: true; Layout.preferredWidth: Math.max(220,Math.min(400, root.controller.preferences.fileWidth || Theme.filesWidth))
                     visible: !root.narrow && !root.focusMode && root.filesVisible
-                    controller: root.controller; onCollapse: root.toggleFiles()
+                    controller: root.controller; onCollapse: root.toggleFiles(); onEditAddress: folderNavigation.addressFocus()
                 Rectangle {
                     anchors.right: parent.right; height: parent.height; width: 4; z: 2; color: mouse.containsMouse ? Theme.accent : Theme.base
                     MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor; property real start: 0; property real old: 0
@@ -123,12 +165,28 @@ Item {
                 }
                 PreviewPane {
                     id: preview; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; focused: root.focusMode
-                    onOpenFile: fileDialog.open(); onOpenFolder: folderDialog.open(); onLocate: locateDialog.open()
-                    onToggleFocus: { root.conversionVisible = false; root.focusMode = !root.focusMode }
+                    onOpenFile: fileDialog.open(); onLocate: locateDialog.open()
+                    onToggleFocus: { root.conversionVisible = false; root.setFocusMode(!root.focusMode) }
                     onUnavailable: about.open()
                 }
-                Inspector { Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? Theme.narrowInspectorWidth : Theme.inspectorWidth; visible: root.inspectorVisible; controller: root.controller }
-                Rectangle { visible: root.focusMode; Layout.fillHeight: true; Layout.preferredWidth: 40; color: Theme.panel; Tool { objectName: "inspectorRail"; width: 38; iconName: "inspector-open"; hint: Theme.t("展开检查区", "Show inspector", "展開檢查區"); Accessible.name: hint; onClicked: root.focusMode = false } }
+                    }
+                }
+                Tool {
+                    id: focusInspector
+                    objectName: "focusInspectorRail"; visible: root.focusMode
+                    Layout.fillHeight: true; Layout.preferredWidth: 36
+                    text: Theme.t("检查", "Inspect", "檢查")
+                    hint: Theme.t("退出专注并显示检查区", "Exit focus and show inspector", "退出專注並顯示檢查區")
+                    contentItem: Item {
+                        Text { anchors.centerIn: parent; width: Theme.language === "en" ? 120 : font.pixelSize; text: focusInspector.text; font: focusInspector.font; color: Theme.text; wrapMode: Text.WrapAnywhere; horizontalAlignment: Text.AlignHCenter; rotation: Theme.language === "en" ? -90 : 0 }
+                    }
+                    onClicked: {
+                        root.setFocusMode(false)
+                        if (!root.inspectorVisible) root.controller.preference("inspectorMode", "always")
+                        Qt.callLater(() => inspector.forceActiveFocus())
+                    }
+                }
+                Inspector { id: inspector; Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? Theme.narrowInspectorWidth : Theme.inspectorWidth; visible: root.inspectorVisible; controller: root.controller }
             }
             TasksPane { anchors.fill: parent; visible: root.tasksVisible && !root.conversionVisible && !root.settingsVisible; controller: root.controller; onBack: root.tasksVisible = false; onRetryImageJob: id => { root.controller.imageJobs.retry(id); root.openConversion(1) } }
             SettingsDialog {
@@ -143,10 +201,11 @@ Item {
     Rectangle {
         objectName: "statusBar"; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: Theme.statusHeight; color: Theme.panel
         Rectangle { width: parent.width; height: 1; color: Theme.line }
+        Label { visible: root.settingsVisible && !root.narrow; anchors.left: parent.left; anchors.leftMargin: 24; anchors.verticalCenter: parent.verticalCenter; text: "FormaView"; color: Theme.muted; font.pixelSize: 12 }
         RowLayout {
-            anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: 24; spacing: 12
-            AppIcon { name: root.controller.busy ? "loading" : "success"; size: 16; variant: "muted" }
-            Label { color: Theme.muted; font.pixelSize: 12; text: root.controller.busy ? Theme.t("正在扫描目录…", "Scanning folder…", "正在掃描資料夾…") : Theme.t("就绪", "Ready", "就緒") }
+            anchors.fill: parent; anchors.leftMargin: root.settingsVisible ? root.navigationWidth + 24 : 24; anchors.rightMargin: 24; spacing: 12
+            AppIcon { name: root.settingsDirty ? "warning" : root.controller.busy ? "loading" : "success"; size: 16; variant: "muted" }
+            Label { objectName: "settingsDraftStatus"; color: root.settingsDirty ? Theme.warning : Theme.muted; font.pixelSize: 12; text: root.settingsDirty ? Theme.t("有未保存的更改", "Unsaved changes", "有未儲存的變更") : root.controller.busy ? Theme.t("正在扫描目录…", "Scanning folder…", "正在掃描資料夾…") : Theme.t("就绪", "Ready", "就緒") }
             Item { Layout.fillWidth: true }
             Label { color: Theme.muted; font.pixelSize: 12; text: root.controller.activeTasks ? Theme.t("活动任务 · ", "Active tasks · ", "活動工作 · ") + root.controller.activeTasks : Theme.t("暂无活动任务", "No active tasks", "暫無活動工作") }
         }
@@ -154,9 +213,13 @@ Item {
     Drawer {
         id: drawer
         objectName: "fileDrawer"
-        width: 288; height: root.height; modal: true; focus: true
-        closePolicy: Popup.CloseOnPressOutside
-        FilesPane { id: drawerFiles; anchors.fill: parent; controller: root.controller; onCollapse: drawer.close() }
+        width: Math.min(460, root.width - 24); height: root.height; modal: true; focus: true
+        closePolicy: Popup.CloseOnPressOutside | Popup.CloseOnEscape
+        ColumnLayout {
+            anchors.fill: parent; spacing: 8
+            FolderNavigation { id: drawerNavigation; controller: root.controller; Layout.fillWidth: true; onBeforeNavigate: drawerFiles.remember() }
+            FilesPane { id: drawerFiles; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; onCollapse: drawer.close(); onEditAddress: drawerNavigation.addressFocus() }
+        }
         onAboutToHide: drawerFiles.remember()
         onOpened: drawerFiles.addressFocus()
         onClosed: root.returnFileFocus()

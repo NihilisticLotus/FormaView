@@ -35,7 +35,39 @@ QString errorText(const QJsonObject &r) {
 bool active(const QString &s) {
   return s == "queued" || s == "running" || s == "planning";
 }
+QString outputName(const QString &input, qsizetype index,
+                   const QString &target, QString name) {
+  name.replace("{name}", QFileInfo(input).completeBaseName());
+  name.replace("{index}", QString::number(index + 1));
+  name.replace("{ext}", target);
+  if (name.isEmpty() || name.contains('/') || name.contains('\\') ||
+      name.contains('{') || name.contains('}'))
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            "Output template must be a filename using "
+                            "{name}, {index}, {ext}");
+  return name;
+}
 } // namespace
+QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
+                                    const QString &nameTemplate,
+                                    const QString &target,
+                                    const QVariantList &itemOverrides) const {
+  if (inputs.size() > 64 ||
+      (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size()))
+    return {{"error", tr("Input and per-item options do not match")}};
+  QStringList names;
+  try {
+    for (qsizetype i = 0; i < std::min(inputs.size(), qsizetype(3)); ++i) {
+      const auto overrides = itemOverrides.isEmpty() ? QVariantMap{}
+                                                     : itemOverrides[i].toMap();
+      names.append(outputName(inputs[i], i,
+          overrides.value("target", target).toString(), nameTemplate));
+    }
+  } catch (const skeletal::Failure &e) {
+    return {{"error", QString::fromUtf8(e.what())}};
+  }
+  return {{"names", names}};
+}
 ImageJobs::ImageJobs(QObject *parent)
     : QObject(parent), control_(controlLimits()) {
   timer_.setInterval(100);
@@ -182,15 +214,8 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         }
         if (!itemOptions.contains("source_alpha") && source.contains("alpha"))
           itemOptions["source_alpha"] = source["alpha"];
-        auto name = nameTemplate;
-        name.replace("{name}", QFileInfo(inputs[i]).completeBaseName());
-        name.replace("{index}", QString::number(i + 1));
-        name.replace("{ext}", itemOptions["target"].toString());
-        if (name.isEmpty() || name.contains('/') || name.contains('\\') ||
-            name.contains('{') || name.contains('}'))
-          throw skeletal::Failure(ErrorCode::InvalidArgument,
-                                  "Output template must be a filename using "
-                                  "{name}, {index}, {ext}");
+        const auto name = outputName(inputs[i], i,
+                                    itemOptions["target"].toString(), nameTemplate);
         items.append(QJsonObject{
             {"input", inputs[i]},
             {"output", QDir(outputRoots[0].toString()).filePath(name)},

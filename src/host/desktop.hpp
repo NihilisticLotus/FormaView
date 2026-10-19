@@ -48,6 +48,7 @@ class Desktop final : public QObject {
   Q_OBJECT
   Q_PROPERTY(QAbstractItemModel *files READ files CONSTANT)
   Q_PROPERTY(QObject *image READ image CONSTANT)
+  Q_PROPERTY(QObject *model READ model CONSTANT)
   Q_PROPERTY(QObject *imageJobs READ imageJobs CONSTANT)
   Q_PROPERTY(QString directory READ directory NOTIFY changed)
   Q_PROPERTY(QString query READ query NOTIFY changed)
@@ -71,11 +72,13 @@ class Desktop final : public QObject {
   Q_PROPERTY(QStringList recent READ recent NOTIFY changed)
   Q_PROPERTY(QVariantList resourceIssues READ resourceIssues NOTIFY changed)
   Q_PROPERTY(double scrollPosition READ scrollPosition NOTIFY viewRestored)
+  Q_PROPERTY(QVariantMap folderMenu READ folderMenu NOTIFY folderMenuChanged)
 public:
   explicit Desktop(QObject *parent = nullptr);
   ~Desktop() override;
   QAbstractItemModel *files() { return &files_; }
   QObject *image() const { return image_.get(); }
+  QObject *model() const { return model_.get(); }
   QObject *imageJobs() const { return imageJobs_.get(); }
   Q_INVOKABLE QStringList selectedImages() const;
   Q_INVOKABLE QString localFile(const QUrl &url) const {
@@ -114,6 +117,10 @@ public:
                                     const QString &candidate);
   Q_INVOKABLE void applyResource(const QString &id);
   double scrollPosition() const { return scroll_; }
+  QVariantMap folderMenu() const { return folderMenu_; }
+  Q_INVOKABLE void listFolders(const QString &path);
+  Q_INVOKABLE void closeFolderMenu();
+  Q_INVOKABLE QVariantList breadcrumbs(const QString &path) const;
   Q_INVOKABLE void navigate(const QString &path);
   Q_INVOKABLE void history(int offset);
   Q_INVOKABLE void parentDirectory();
@@ -139,6 +146,7 @@ signals:
   void languageChanged();
   void preferencesChanged();
   void viewRestored();
+  void folderMenuChanged();
 
 private:
   struct Result {
@@ -174,6 +182,7 @@ private:
   void publish(Job &);
   FileList files_;
   std::unique_ptr<QObject> image_;
+  std::unique_ptr<QObject> model_;
   std::unique_ptr<QObject> imageJobs_;
   formaview::Scheduler scheduler_;
   std::vector<Job> jobs_;
@@ -181,13 +190,13 @@ private:
   QTimer pollTimer_;
   QString directory_, query_, error_, errorTarget_, requested_,
       language_{"zh-CN"};
-  QVariantMap asset_, preferences_;
+  QVariantMap asset_, preferences_, folderMenu_;
   QVariantList taskRows_, resourceIssues_;
   QMap<QString, View> views_;
   QStringList viewOrder_, history_, recent_;
   int historyAt_{-1}, type_{}, sort_{}, current_{-1}, active_{};
   quint64 directoryRevision_{}, filterRevision_{}, assetRevision_{},
-      sessionRevision_{}, resourceRevision_{};
+      sessionRevision_{}, resourceRevision_{}, folderRevision_{};
   double scroll_{};
   bool scanning_{}, filtering_{};
 };

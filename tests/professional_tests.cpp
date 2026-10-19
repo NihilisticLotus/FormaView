@@ -221,6 +221,8 @@ void images(const std::filesystem::path &dir) {
             "DDS write");
     auto file = imaging::ImageFile::open(path);
     auto decoded = file.decode(0);
+    require(decoded.block_encoding.has_value() == DirectX::IsCompressed(format),
+            "Block encoding must describe actual BC compression");
     require(!decoded.encoded_blocks.empty(), "Encoded blocks lost");
     for (const auto &c : decoded.channels)
       if (c.name == "R")

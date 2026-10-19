@@ -6,6 +6,11 @@ ApplicationWindow {
     width: 1600; height: 900
     minimumWidth: 1280; minimumHeight: 800
     title: "FormaView"
+    flags: Qt.Window | Qt.CustomizeWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
+    topPadding: 0
+    bottomPadding: 0
+    leftPadding: 0
+    rightPadding: 0
     color: Theme.base
     font.pixelSize: Theme.bodyText
     font.family: controller.language === "en" ? "Segoe UI Variable Text" : "Microsoft YaHei UI"

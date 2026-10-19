@@ -110,6 +110,7 @@ void run(const std::filesystem::path &dir) {
     write(path, encode_professional(input, o));
     auto file = ImageFile::open(path);
     auto result = file.decode(0);
+    require(!result.block_encoding, "TGA is not BC compressed");
     require(result.channels.size() == count,
             "TGA fabricated/missing source channel");
     for (std::size_t c = 0; c < count; ++c) {

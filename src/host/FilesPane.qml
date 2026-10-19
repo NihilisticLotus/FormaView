@@ -9,7 +9,8 @@ Rectangle {
     signal collapse()
     objectName: "filesPane"
     color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
-    function addressFocus() { address.forceActiveFocus(); address.selectAll() }
+    signal editAddress()
+    function addressFocus() { editAddress() }
     function viewFocus() { (thumbnails ? grid : list).forceActiveFocus() }
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
     function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
@@ -26,25 +27,6 @@ Rectangle {
             Layout.margins: 10; Layout.minimumHeight: 34
             Label { text: Theme.t("文件", "Files", "檔案"); font.pixelSize: Theme.compactText; font.bold: true; color: Theme.text; Layout.fillWidth: true }
             Tool { id: collapseButton; objectName: "collapseFiles"; iconName: "files-close"; quiet: true; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: 10; Layout.rightMargin: 10
-            Tool { quiet: true; iconName: "return"; enabled: root.controller.canBack; hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左"); onClicked: { root.remember(); root.controller.history(-1) } }
-            Tool { quiet: true; iconName: "return"; iconRotation: 180; enabled: root.controller.canForward; hint: Theme.t("前进 · Alt+右", "Forward · Alt+Right", "前進 · Alt+右"); onClicked: { root.remember(); root.controller.history(1) } }
-            Tool { quiet: true; iconName: "return"; iconRotation: 90; enabled: root.controller.directory.length > 0; hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上"); onClicked: { root.remember(); root.controller.parentDirectory() } }
-        }
-
-        Field {
-            id: address
-            objectName: "address"
-            Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
-            text: root.controller.directory
-            Binding { target: address; property: "text"; when: !address.activeFocus; value: root.controller.directory }
-            placeholderText: Theme.t("输入目录路径", "Enter a folder path", "輸入目錄路徑")
-            Accessible.name: Theme.t("位置", "Location", "位置")
-            onAccepted: if (!inputMethodComposing) { root.remember(); root.controller.navigate(text); root.viewFocus() }
-            Keys.onEscapePressed: event => { text = root.controller.directory; collapseButton.forceActiveFocus(); event.accepted = true }
         }
         Field {
             id: search
@@ -115,7 +97,7 @@ Rectangle {
                             anchors.top: parent.top; width: parent.width; height: 84; visible: root.thumbnails
                             source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+encodeURIComponent(entry.filePath)+"?"+entry.fileModified : ""
                             sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : "file"; size: 24; variant: "muted" }
+                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : entry.fileKind === "model" ? "model" : "file"; size: 24; variant: "muted" }
                         }
                         RowLayout {
                             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12

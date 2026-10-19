@@ -88,7 +88,7 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: false; Layout.preferredWidth: Math.min(900, root.width - 64); Layout.maximumWidth: 900; Layout.alignment: Qt.AlignHCenter; spacing: 12
-            Label { Layout.fillWidth: true; color: root.dirty ? Theme.warning : Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; text: root.dirty ? Theme.t("有未保存的更改；切换设置页保留草稿。", "Unsaved changes; drafts are retained between settings pages.", "有未儲存的變更；切換設定頁會保留草稿。") : Theme.t("修改后保存生效", "Save to apply changes", "修改後儲存生效") }
+            Label { Layout.fillWidth: true; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; text: Theme.t("修改后保存生效；切换设置页保留草稿。", "Save to apply changes; drafts are retained between settings pages.", "修改後儲存生效；切換設定頁保留草稿。") }
             Tool { objectName: "discardGeneralSettings"; text: Theme.t("放弃更改", "Discard changes", "放棄變更"); enabled: root.dirty; onClicked: root.reset() }
             Tool { objectName: "saveGeneralSettings"; primary: true; text: Theme.t("保存设置", "Save settings", "儲存設定"); enabled: root.dirty; onClicked: root.save() }
         }
