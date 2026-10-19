@@ -475,6 +475,15 @@ private slots:
     click(back);
     QTRY_COMPARE(desktop_->directory(), model + "/场景");
     QTRY_VERIFY(idle());
+    click(item("folderForward"));
+    QTRY_COMPARE(desktop_->directory(), model);
+    QTRY_VERIFY(idle());
+    click(item("folderBack"));
+    QTRY_COMPARE(desktop_->directory(), model + "/场景");
+    QTRY_VERIFY(idle());
+    click(item("folderUp"));
+    QTRY_COMPARE(desktop_->directory(), model);
+    QTRY_VERIFY(idle());
     click(item("copyFolderPath"));
     QCOMPARE(QGuiApplication::clipboard()->text(), desktop_->directory());
     QMetaObject::invokeMethod(workspace, "openAddress");
@@ -484,6 +493,18 @@ private slots:
     QInputMethodEvent commit; commit.setCommitString(small_);
     QCoreApplication::sendEvent(address, &commit);
     QTest::keyClick(window_, Qt::Key_Return);
+    QTRY_COMPARE(desktop_->directory(), small_);
+    QTRY_VERIFY(idle());
+    // Edit/paste an absolute path on a different drive through the same field.
+    QTest::keyClick(window_, Qt::Key_L, Qt::ControlModifier);
+    QTRY_VERIFY(item("address") && item("address")->hasActiveFocus());
+    QGuiApplication::clipboard()->setText("C:/");
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(window_, Qt::Key_V, Qt::ControlModifier);
+    QTest::keyClick(window_, Qt::Key_Return);
+    QTRY_COMPARE(desktop_->directory(), QString("C:/"));
+    QTRY_VERIFY(idle());
+    QTest::keyClick(window_, Qt::Key_Left, Qt::AltModifier);
     QTRY_COMPARE(desktop_->directory(), small_);
     QTRY_VERIFY(idle());
     auto longPath = root_ + "/长目录";
@@ -1158,6 +1179,113 @@ private slots:
       QVERIFY2(qAbs(measured - height) < .5,
                qPrintable(QString("Transient viewport resize: %1 -> %2").arg(height).arg(measured)));
   }
+  void pixelInspectionUsesContentHeight() {
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(idle());
+    QTRY_VERIFY(session->available() && !session->busy());
+    session->sample(0, 0);
+    QTRY_VERIFY(item("pixelToggle"));
+    auto *toggle = item("pixelToggle");
+    toggle->setProperty("checked", true);
+    QTRY_VERIFY(item("pixelPanel"));
+    auto *panel = item("pixelPanel");
+    auto *view = item("imageViewport");
+    QVERIFY(toggle && panel && view);
+    for (const auto size : {QSize(1600, 900), QSize(1280, 800)}) {
+      window_->resize(size);
+      toggle->setProperty("checked", false);
+      QTest::qWait(80);
+      const auto closedHeight = view->height();
+      for (int repeat = 0; repeat < 3; ++repeat) {
+        toggle->setProperty("checked", true);
+        QTRY_VERIFY(panel->isVisible() && panel->implicitHeight() > 60);
+        QTest::qWait(80);
+        const auto expected = qMin(panel->implicitHeight(), panel->parentItem()->height() * .35);
+        QVERIFY2(qAbs(panel->height() - expected) < 1,
+                 qPrintable(QString("Pixel panel reserves %1 for %2 content (cap %3)")
+                                .arg(panel->height()).arg(panel->implicitHeight()).arg(expected)));
+        toggle->setProperty("checked", false);
+        QTRY_VERIFY(qAbs(view->height() - closedHeight) < 1);
+      }
+    }
+    save("pixel-content-height-restored");
+  }
+  void pixelInspectionOverflowAndLanguages() {
+    using namespace formaview;
+    auto source = ImageSubresource{};
+    source.data_window = {0, 0, 2, 2};
+    source.display_window = source.data_window;
+    for (int i = 0; i < 16; ++i) {
+      ImageChannel channel;
+      channel.name = i < 4 ? std::array<std::string, 4>{"R", "G", "B", "A"}[i]
+                           : "layer" + std::to_string(i) + ".value";
+      channel.samples.scalar = ScalarType::Float32;
+      channel.samples.element_count = 4;
+      const float value = i * .125F;
+      channel.samples.bytes.resize(4 * sizeof(value));
+      for (int p = 0; p < 4; ++p)
+        std::memcpy(channel.samples.bytes.data() + p * sizeof(value), &value, sizeof(value));
+      source.channels.push_back(std::move(channel));
+    }
+    const auto bytes = imaging::encode_professional(source, {});
+    const auto path = small_ + "/pixel-sixteen-channels.exr";
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(reinterpret_cast<const char *>(bytes.data()), qint64(bytes.size())), qint64(bytes.size()));
+    file.close();
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    QJsonArray measurements;
+    for (const auto size : {QSize(1600, 900), QSize(1280, 800)}) {
+      window_->resize(size);
+      for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+        desktop_->setLanguage(language);
+        for (const auto &image : {small_ + "/唯一图片.png", path}) {
+          session->open(image);
+          QTRY_VERIFY(session->path() == image && !session->busy());
+          auto *toggle = item("pixelToggle");
+          QVERIFY(toggle);
+          toggle->setProperty("checked", true);
+          QTRY_VERIFY(item("pixelPanel"));
+          auto *panel = item("pixelPanel");
+          // An empty sample must shrink too; valid values may then grow naturally.
+          for (bool valid : {false, true}) {
+            session->sample(valid ? 0 : -999, valid ? 0 : -999);
+            QCOMPARE(session->pixel()["valid"].toBool(), valid);
+            QTest::qWait(80);
+            const auto cap = panel->parentItem()->height() * .35;
+            QVERIFY(qAbs(panel->height() - qMin(panel->implicitHeight(), cap)) < 1);
+            measurements.append(QJsonObject{{"width",window_->width()},{"language",language},{"image",image},
+              {"valid",valid},{"panel_height",panel->height()},{"content_height",panel->implicitHeight()},{"cap",cap}});
+          }
+          if (image == path) {
+            QCOMPARE(session->pixel()["source"].toList().size(), 16);
+            QVERIFY(panel->implicitHeight() > panel->height());
+          }
+          auto *copy = item("copyPixelValues");
+          QVERIFY(copy);
+          copy->forceActiveFocus();
+          QTest::qWait(40);
+          const auto bottom = copy->mapToItem(panel, QPointF(0, copy->height())).y();
+          QVERIFY2(bottom <= panel->height() + 1 && bottom > 0, "Copy button must scroll into view on keyboard focus");
+          QTest::keyClick(window_, Qt::Key_Space);
+          QCOMPARE(QGuiApplication::clipboard()->text(), session->pixelReport());
+          save("pixel-" + QString::number(size.width()) + "-" + language + (image == path ? "-overflow" : "-compact"));
+          toggle->setProperty("checked", false);
+        }
+      }
+    }
+    desktop_->setLanguage("zh-CN");
+    evidence_["pixel_content_geometry"] = measurements;
+  }
   void pixelInspectionMouseAndKeyboard() {
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
     QVERIFY(session);
@@ -1179,14 +1307,14 @@ private slots:
     auto *view = qobject_cast<ImageView *>(item("imageViewport"));
     QVERIFY(view);
     QTest::qWait(60);
-    const auto samplingHeight = view->height();
     const auto samplePoint = view->mapToScene({view->width()/2, view->height()/2});
     QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, samplePoint.toPoint());
     QTRY_VERIFY(session->pixel()["valid"].toBool());
     QVERIFY(!session->pixel()["source"].toList().isEmpty());
     QVERIFY(!session->pixelReport().isEmpty());
     QTest::qWait(60);
-    QCOMPARE(view->height(), samplingHeight);
+    QVERIFY(view->height() > 0);
+    QVERIFY(qAbs(panel()->height() - qMin(panel()->implicitHeight(), panel()->parentItem()->height() * .35)) < 1);
     save("pixel-click-expanded");
     toggle->forceActiveFocus();
     QTest::keyClick(window_, Qt::Key_Space);

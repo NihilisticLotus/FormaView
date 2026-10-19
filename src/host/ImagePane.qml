@@ -132,8 +132,8 @@ ColumnLayout {
     // Keep this lightweight readout alive: a deferred inline Component can lose
     // its creation context during QML Preview updates and leave an empty panel.
     PixelPanel {
-        Layout.fillWidth: true; Layout.preferredHeight: 220
-        Layout.minimumHeight: 220; Layout.maximumHeight: 220
+        Layout.fillWidth: true; Layout.fillHeight: false; Layout.preferredHeight: implicitHeight
+        Layout.minimumHeight: 0; Layout.maximumHeight: Math.max(0, root.height * .35)
         visible: pixelToggle.checked
         controller: root.controller
     }
