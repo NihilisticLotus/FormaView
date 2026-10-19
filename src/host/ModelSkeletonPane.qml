@@ -9,8 +9,17 @@ ColumnLayout {
     required property var session
     readonly property var selected: session.skeletonSelection
     readonly property string selectionKey: (selected.id || "") + ":" + (selected.boneIndex ?? -1)
-    onSelectionKeyChanged: Qt.callLater(tree.reveal, false)
+    onSelectionKeyChanged: revealTimer.restart()
     spacing: 8
+    Timer {
+        id: revealTimer
+        interval: 0
+        onTriggered: {
+            if (search.text || root.session.skeleton.weightedOnly) tree.expandRecursively()
+            tree.reveal(false)
+        }
+    }
+    Timer { id: positionTimer; interval: 0; onTriggered: tree.positionSelection() }
     Label { text: Theme.t("骨骼层级 · 只读", "Skeleton hierarchy · Read only", "骨骼階層 · 唯讀"); color: Theme.text; font.bold: true }
     Label {
         Layout.fillWidth: true
@@ -19,6 +28,7 @@ ColumnLayout {
         color: Theme.muted; elide: Text.ElideMiddle; textFormat: Text.PlainText
     }
     Choice {
+        objectName: "modelSkinBindingChoice"
         Layout.fillWidth: true
         visible: root.session.bindings.length>1
         model: root.session.bindings; currentIndex: root.session.bindingIndex
@@ -67,17 +77,17 @@ ColumnLayout {
             const target=root.session.skeleton.indexForNode(root.selected.id || "", root.selected.boneIndex ?? -1)
             if (target.valid) {
                 tree.expandToIndex(target)
-                Qt.callLater(tree.positionSelection)
+                positionTimer.restart()
             }
         }
         function positionSelection(): void {
             const current=root.session.skeleton.indexForNode(root.selected.id || "", root.selected.boneIndex ?? -1)
             if (current.valid) tree.positionViewAtIndex(current, TableView.Contain)
         }
-        Component.onCompleted: Qt.callLater(tree.reveal, false)
-        onHeightChanged: Qt.callLater(tree.reveal, false)
-        Connections { target: root.session; function onDocumentChanged() { Qt.callLater(tree.reveal, false) } }
-        Connections { target: root.session.skeleton; function onFilterChanged() { Qt.callLater(() => { if (search.text || root.session.skeleton.weightedOnly) tree.expandRecursively(); else tree.reveal(false) }) } }
+        Component.onCompleted: revealTimer.restart()
+        onHeightChanged: revealTimer.restart()
+        Connections { target: root.session; function onDocumentChanged() { revealTimer.restart() } }
+        Connections { target: root.session.skeleton; function onFilterChanged() { revealTimer.restart() } }
         delegate: TreeViewDelegate {
             id: bone
             required property int column

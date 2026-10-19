@@ -8,6 +8,7 @@
 #include <QQuickGraphicsConfiguration>
 #include <QQuickWindow>
 #include <QTimer>
+#include <QThread>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -44,7 +45,7 @@ public:
   bool measuring{};
   std::vector<double> events;
   bool notify(QObject *object, QEvent *event) override {
-    if (!measuring)
+    if (QThread::currentThread() != thread() || !measuring)
       return QGuiApplication::notify(object, event);
     const auto start = Clock::now();
     const auto result = QGuiApplication::notify(object, event);
@@ -281,6 +282,40 @@ int main(int argc, char **argv) {
         resident.value("resident_hits").toInteger() < 79)
       throw std::runtime_error(
           "Warm LOD result must use resident GPU buffers without re-upload");
+    // Session-only explicit classification measures the actual collision view
+    // path without claiming this FBX exported collision or a PhysicsAsset.
+    session.selectMesh(0);
+    session.classifyMesh("", 0, true);
+    ready();
+    QJsonArray firstCollision;
+    for (int mode : {1, 2, 0}) {
+      const auto start = Clock::now();
+      session.setCollisionMode(mode);
+      ready();
+      if (mode == 2 && session.frame()->vertices.empty())
+        throw std::runtime_error("Collision benchmark must draw actual source geometry");
+      firstCollision.append(milliseconds(presented() - start));
+    }
+    evidence["first_collision_switch_ms"] = firstCollision;
+    begin();
+    std::vector<double> collision;
+    for (int i = 0; i < 81; ++i) {
+      const auto start = Clock::now();
+      session.setCollisionMode((i + 1) % 3);
+      ready();
+      collision.push_back(milliseconds(presented() - start));
+    }
+    const auto collisionResult = finish(collision);
+    evidence["resident_collision"] = collisionResult;
+    evidence["collision_boundary"] = "Explicit session-only correction of an actual source mesh; hidden/overlay/collision-only. This source is not claimed to contain exported collision.";
+    if (collisionResult.value("command_to_swap").toObject().value("p95_ms").toDouble() > 100)
+      throw std::runtime_error("Resident collision switch exceeds 100 ms P95");
+    if (collisionResult.value("uploaded_bytes").toInteger() != 0 ||
+        collisionResult.value("resident_hits").toInteger() < 80)
+      throw std::runtime_error("Warm collision result must reuse resident GPU buffers");
+    session.restoreClassification();
+    session.setCollisionMode(0);
+    ready();
     QJsonArray release;
     for (int i = 0; i < 6; ++i) {
       load(i % 2 ? lod : cloud);

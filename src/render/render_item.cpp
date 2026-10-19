@@ -79,6 +79,10 @@ public:
   }
   void initialize(QRhiCommandBuffer *) override {
     if (owner != rhi()) {
+      if (!readbackCompleted) {
+        readback_started = false;
+        readbackPasses = 0;
+      }
       residentCache.clear();
       guidePipeline.reset();
       selectionPipeline.reset();
@@ -125,6 +129,10 @@ public:
       cb->endPass();
       if (observe)
         observe({0, 0, 0, uniform ? 80ULL : 0ULL, gpu_usage(rhi()), false});
+      if (readback && !readbackCompleted) {
+        readbackCompleted = true;
+        readback({}, {});
+      }
       return;
     }
     const auto start = Clock::now();
@@ -498,7 +506,12 @@ public:
     cb->endPass();
     if (readback && !readback_started) {
       readback_started = true;
-      result.completed = [this] { readback(result.data, result.pixelSize); };
+      result.completed = [this] {
+        if (readbackCompleted)
+          return;
+        readbackCompleted = true;
+        readback(result.data, result.pixelSize);
+      };
       auto *batch = rhi()->nextResourceUpdateBatch();
       batch->readBackTexture(QRhiReadbackDescription(colorTexture()), &result);
       cb->resourceUpdate(batch);
@@ -509,7 +522,14 @@ public:
                uploadedBytes,
                static_cast<std::uint32_t>(residentCache.size() + 1),
                residentHit});
-    update();
+    if (readback && !readbackCompleted) {
+      if (++readbackPasses < 120)
+        update();
+      else {
+        readbackCompleted = true;
+        readback({}, {});
+      }
+    }
   }
 
 private:
@@ -607,7 +627,8 @@ private:
   std::function<void(Observation)> observe;
   std::function<void(QByteArray, QSize)> readback;
   QRhiReadbackResult result;
-  bool requested{}, readback_started{};
+  bool requested{}, readback_started{}, readbackCompleted{};
+  unsigned readbackPasses{};
   bool lineMode{};
 };
 } // namespace

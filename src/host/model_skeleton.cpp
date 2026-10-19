@@ -69,22 +69,45 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
   QHash<QString, QList<int>> palette;
   QHash<QString, qulonglong> nodeCounts;
   std::vector<qulonglong> counts(static_cast<std::size_t>(skin.bones.size()));
-  for (int i = 0; i < skin.palette.size(); ++i)
-    palette[skin.palette[i].toMap().value("nodeId").toString()].append(i);
-  for (const auto &point : skin.weights) {
-    QSet<int> seen;
-    for (const auto &weight : point)
-      if (weight.bone >= 0 && weight.bone < skin.bones.size() &&
-          std::isfinite(weight.value) && weight.value > 0)
-        seen.insert(weight.bone);
-    QSet<QString> seenNodes;
-    for (int joint : seen) {
-      ++counts[static_cast<std::size_t>(joint)];
-      seenNodes.insert(skin.palette[joint].toMap().value("nodeId").toString());
+  QHash<QString, int> nodeSlots;
+  QStringList nodeIds;
+  std::vector<int> jointNodes(static_cast<std::size_t>(skin.bones.size()), -1);
+  for (int i = 0; i < skin.palette.size(); ++i) {
+    const auto id = skin.palette[i].toMap().value("nodeId").toString();
+    palette[id].append(i);
+    if (!nodeSlots.contains(id)) {
+      nodeSlots.insert(id, static_cast<int>(nodeIds.size()));
+      nodeIds.append(id);
     }
-    for (const auto &id : seenNodes)
-      ++nodeCounts[id];
+    if (i < skin.bones.size())
+      jointNodes[static_cast<std::size_t>(i)] = nodeSlots.value(id);
   }
+  std::vector<std::size_t> seenJoints(counts.size()),
+      seenNodes(static_cast<std::size_t>(nodeIds.size()));
+  std::vector<qulonglong> nodeTotals(static_cast<std::size_t>(nodeIds.size()));
+  // Stamp arrays count each source point once without allocating two sets per
+  // point, or repeatedly converting palette QVariantMaps in this GUI callback.
+  std::size_t stamp = 0;
+  for (const auto &point : skin.weights) {
+    ++stamp;
+    for (const auto &weight : point) {
+      if (weight.bone >= 0 && weight.bone < skin.bones.size() &&
+          std::isfinite(weight.value) && weight.value > 0) {
+        const auto joint = static_cast<std::size_t>(weight.bone);
+        if (seenJoints[joint] != stamp) {
+          ++counts[joint];
+          seenJoints[joint] = stamp;
+        }
+        const auto node = jointNodes[joint];
+        if (node >= 0 && seenNodes[static_cast<std::size_t>(node)] != stamp) {
+          ++nodeTotals[static_cast<std::size_t>(node)];
+          seenNodes[static_cast<std::size_t>(node)] = stamp;
+        }
+      }
+    }
+  }
+  for (int i = 0; i < nodeIds.size(); ++i)
+    nodeCounts.insert(nodeIds[i], nodeTotals[static_cast<std::size_t>(i)]);
   QSet<QString> included;
   for (auto it = palette.cbegin(); it != palette.cend(); ++it) {
     auto id = it.key();
@@ -132,20 +155,23 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
     items.insert(id, item.get());
     owners[id] = std::move(item);
   }
+  std::vector<std::unique_ptr<QStandardItem>> roots;
   for (const auto &value : document->nodes) {
     const auto node = value.toMap();
     const auto id = node.value("id").toString();
     if (!items.contains(id))
       continue;
-    auto *target = items.value(node.value("parent").toString(),
-                               source_.invisibleRootItem());
+    auto *target = items.value(node.value("parent").toString());
     if (target == items.value(id))
-      target = source_.invisibleRootItem();
-    target->appendRow(owners.at(id).release());
+      target = nullptr;
+    if (target)
+      target->appendRow(owners.at(id).release());
+    else
+      roots.push_back(std::move(owners.at(id)));
   }
+  QHash<int, QStandardItem *> jointItems;
   for (auto it = items.cbegin(); it != items.cend(); ++it) {
     auto *item = it.value();
-    nodes_.insert(it.key(), source_.indexFromItem(item));
     const auto indices = palette.value(it.key());
     for (int i : indices) {
       auto *entry = item;
@@ -160,7 +186,18 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
         entry = owned.get();
         item->appendRow(owned.release());
       }
-      joints_.insert(i, source_.indexFromItem(entry));
+      jointItems.insert(i, entry);
     }
   }
+  // Notify the proxy once per completed root instead of once per bone. The
+  // source hierarchy and QModelIndexes become visible only after construction.
+  QList<QStandardItem *> rows;
+  rows.reserve(static_cast<qsizetype>(roots.size()));
+  for (auto &root : roots)
+    rows.append(root.release());
+  source_.invisibleRootItem()->appendRows(rows);
+  for (auto it = items.cbegin(); it != items.cend(); ++it)
+    nodes_.insert(it.key(), source_.indexFromItem(it.value()));
+  for (auto it = jointItems.cbegin(); it != jointItems.cend(); ++it)
+    joints_.insert(it.key(), source_.indexFromItem(it.value()));
 }

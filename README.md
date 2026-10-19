@@ -23,6 +23,10 @@ $env:FORMAVIEW_QT_ROOT = 'E:\Qt\6.12.0\msvc2022_64'
 
 QML Preview MCP 使用独立外置构建目录，配置 `-DFORMAVIEW_QML_PREVIEW=ON` 并构建 `RelWithDebInfo`（或使用匹配 Debug 依赖的 Debug）。此选项默认关闭，Release 始终不编入 QML 调试服务。预览使用可执行文件旁的 `preview-state` 保存隔离设置与任务；向其中的 `capture.request` 写入简单文件名，可保存该窗口的 PNG 和尺寸/DPR JSON，供本地界面核查。
 
+需要隔离验证 Qt 预览插件修正时，可设置 `FORMAVIEW_QML_PREVIEW_PLUGIN_DIR` 为包含 `qmltooling/qmldbg_preview.dll` 的外置目录。仅开发预览配置使用该路径，配置时锁定 DLL 的 SHA-256，启动时再次核对；文件变化须重新配置。此选项不覆盖 Qt 安装，Release 不加载该覆盖目录。
+
+本地诊断可使用 `formaview --trace <外置JSON路径>`，记录实际窗口尺寸、原生输入与同步帧、模型首帧和进程资源；该模式单独保存设置和任务。原始消息可能没有画面变化，相机延迟只统计实际触发相机变化的输入；帧交换信号不等于显示器呈现时间。
+
 核心可独立于 Qt 构建（CMake／CTest 需在 PATH）：
 
 ```powershell

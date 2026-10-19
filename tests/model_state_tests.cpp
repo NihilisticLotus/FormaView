@@ -86,6 +86,16 @@ int main(int argc, char **argv) {
       tree.setWeightedOnly(false);
       test(!(tree.flags(tree.indexForNode("leaf")) & Qt::ItemIsEditable),
            "skeleton is read-only");
+      auto &duplicatePalette=document.meshes[0].skins[0];
+      duplicatePalette.bones.append("a second palette entry");
+      duplicatePalette.palette.append(QVariantMap{{"nodeId","a"}});
+      duplicatePalette.weights[0].push_back({0,.2});
+      duplicatePalette.weights[0].push_back({3,.3});
+      tree.replace(&document,0,0);
+      test(tree.details("a",-1).value("points").toULongLong()==1 &&
+               tree.details("a",0).value("points").toULongLong()==1 &&
+               tree.details("a",3).value("points").toULongLong()==1,
+           "shared node palette entries count source points once while retaining per-entry counts");
       tree.replace(nullptr, 0, 0);
       test(tree.rowCount() == 0 && tree.details("leaf", 2).isEmpty(),
            "unloading clears skeleton indices and details");

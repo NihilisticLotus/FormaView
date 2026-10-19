@@ -11,6 +11,7 @@ Item {
     id: content
     width: root.width; spacing: 8
     Choice {
+        objectName: "modelLodGroupChoice"
         Layout.fillWidth: true
         model: root.session.lodGroups; currentIndex: root.session.lodGroupIndex
         displayText: count ? currentText : Theme.t("没有已确认的 LOD 组", "No confirmed LOD group", "沒有已確認的 LOD 組")
@@ -21,6 +22,7 @@ Item {
         model: root.session.lodLevels
         delegate: Tool {
             required property var modelData
+            objectName: "modelLodLevel"+modelData.level
             Layout.fillWidth: true
             text: "LOD "+modelData.level+" · "+modelData.triangles+Theme.t(" 三角形", " triangles", " 三角形")+(modelData.current ? Theme.t(" · 当前", " · current", " · 目前") : "")+(modelData.requested&&!modelData.current ? Theme.t(" · 请求中", " · requested", " · 請求中") : "")
             checked: modelData.current
@@ -28,6 +30,7 @@ Item {
         }
     }
     Choice {
+        objectName: "modelCollisionChoice"
         Layout.fillWidth: true
         model: [Theme.t("隐藏碰撞", "Hide collision", "隱藏碰撞"),Theme.t("叠加碰撞", "Overlay collision", "疊加碰撞"),Theme.t("仅碰撞", "Collision only", "僅碰撞")]
         currentIndex: root.session.collisionMode; onActivated: root.session.setCollisionMode(currentIndex)

@@ -602,6 +602,7 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
 ModelSession::ModelSession(QObject *parent)
     : QObject(parent), scene_(this), skeleton_(this) {
   timer_.setInterval(20);
+  timer_.setObjectName("modelSessionPoll");
   connect(&timer_, &QTimer::timeout, this, &ModelSession::poll);
   timer_.start();
 }

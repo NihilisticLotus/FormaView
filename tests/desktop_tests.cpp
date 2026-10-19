@@ -64,7 +64,7 @@ public:
   int events{}, over100ms{};
   QJsonArray slowEvents;
   bool notify(QObject *receiver, QEvent *event) override {
-    if (!measure || QThread::currentThread() != thread())
+    if (QThread::currentThread() != thread() || !measure)
       return QGuiApplication::notify(receiver, event);
     const auto started = std::chrono::steady_clock::now();
     const auto result = QGuiApplication::notify(receiver, event);
@@ -75,11 +75,15 @@ public:
     ++events;
     if (ms > 100)
       ++over100ms;
-    if (ms > 10 && slowEvents.size() < 128)
-      slowEvents.append(
-          QJsonObject{{"ms", ms},
-                      {"type", static_cast<int>(event->type())},
-                      {"receiver", receiver->metaObject()->className()}});
+    if (ms > 10) {
+      const QJsonObject sample{{"ms",ms},{"type",static_cast<int>(event->type())},{"receiver",receiver->metaObject()->className()},{"object",receiver->objectName()}};
+      if(slowEvents.size()<128) slowEvents.append(sample);
+      else {
+        int smallest=0;
+        for(int i=1;i<slowEvents.size();++i) if(slowEvents[i].toObject().value("ms").toDouble()<slowEvents[smallest].toObject().value("ms").toDouble()) smallest=i;
+        if(ms>slowEvents[smallest].toObject().value("ms").toDouble()) slowEvents[smallest]=sample;
+      }
+    }
     return result;
   }
 };
@@ -204,7 +208,25 @@ class DesktopTests final : public QObject {
     return result;
   }
   void save(const QString &name) {
-    QVERIFY(window_->grabWindow().save(root_ + "/" + name + ".png"));
+    const auto pixels=window_->grabWindow();
+    QVERIFY(pixels.save(root_ + "/" + name + ".png"));
+    const auto geometry=window_->geometry();
+    QJsonObject capture{{"name",name},{"logical_width",geometry.width()},{"logical_height",geometry.height()},
+                        {"physical_png_width",pixels.width()},{"physical_png_height",pixels.height()},
+                        {"dpr",window_->devicePixelRatio()},{"x",geometry.x()},{"y",geometry.y()}};
+    if(auto *screen=window_->screen()) {
+      capture["screen"]=screen->name();
+      capture["available_width"]=screen->availableGeometry().width();
+      capture["available_height"]=screen->availableGeometry().height();
+    }
+#ifdef Q_OS_WIN
+    RECT client{};
+    if(GetClientRect(reinterpret_cast<HWND>(window_->winId()),&client)) {
+      capture["native_client_width"]=static_cast<int>(client.right-client.left);
+      capture["native_client_height"]=static_cast<int>(client.bottom-client.top);
+    }
+#endif
+    auto captures=evidence_["captures"].toArray(); captures.append(capture); evidence_["captures"]=captures;
     sampleGpu();
   }
 private slots:
@@ -3651,7 +3673,7 @@ private slots:
     desktop_->clearAsset();
   }
   void modelProfessionalUi() {
-    QTest::failOnWarning(QRegularExpression(".*Binding loop detected.*"));
+    QTest::failOnWarning(QRegularExpression(".*(Binding loop detected|invalid context|Qt.callLater).*"));
     const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
     QVERIFY2(fixtures.exists("external.gltf"), "Set FORMAVIEW_MODEL_FIXTURES to the generated M06 fixtures");
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
@@ -3816,6 +3838,208 @@ private slots:
     QVERIFY(!session->frameFor(true) || session->frameFor(true)->vertices.empty());
     save("professional-no-uv-source");
     evidence_["professional_ui"] = screens;
+  }
+  void modelLodNativeFlow() {
+    QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|invalid context).*"));
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    const QString path="E:/CodexProject/asset-preview-planning/development/toolchain/M02/ufbx/data/maya_lod_group_7500_ascii.fbx";
+    desktop_->openPath(path);
+    QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QVERIFY(session->lodGroups().size()==2 && session->lodLevels().size()==3);
+    const auto ensureVisible=[&](QQuickItem *control) {
+      QTRY_VERIFY(control->width()>0 && control->height()>0);
+      if(auto *scroll=item("modelSceneScroll");scroll && scroll->isAncestorOf(control)) {
+        const auto point=control->mapToItem(scroll,{control->width()/2,control->height()/2});
+        if(point.y()<0 || point.y()>scroll->height()) {
+          auto *flick=scroll->property("contentItem").value<QQuickItem *>();
+          QVERIFY(flick);
+          flick->setProperty("contentY",flick->property("contentY").toDouble()+point.y()-scroll->height()/2);
+          QTest::qWait(50);
+        }
+      }
+    };
+    const auto click=[&](const char *name) {
+      auto *control=item(name);
+      QVERIFY2(control && control->isEnabled(),name);
+      ensureVisible(control);
+      QSignalSpy clicked(control,SIGNAL(clicked()));
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,control->mapToScene({control->width()/2,control->height()/2}).toPoint());
+      QCOMPARE(clicked.count(),1);
+    };
+    click("modelModeTab3");
+    QTRY_VERIFY(item("modelLodLevel2"));
+    click("modelLodLevel2");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->lodLevels()[2].toMap().value("current").toBool(),10000);
+    const auto levelFrame=session->frame();
+    save("lod-native-level2");
+    click("modelModeTab1");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QVERIFY(session->frame()->lines);
+    QVERIFY(session->lodLevels()[2].toMap().value("current").toBool());
+    click("modelModeTab3");
+    QTRY_VERIFY(item("modelCollisionChoice"));
+    auto *choice=item("modelCollisionChoice");
+    ensureVisible(choice);
+    QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,choice->mapToScene({choice->width()/2,choice->height()/2}).toPoint());
+    QTest::keyClick(window_,Qt::Key_End);
+    QTest::keyClick(window_,Qt::Key_Return);
+    QTRY_COMPARE(session->collisionMode(),2);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QVERIFY(session->frame()->vertices.empty()); // No source collision: never invent PhysicsAsset.
+    save("lod-native-no-exported-collision");
+    session->setCollisionMode(0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    click("modelLodLevel0");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->lodLevels()[0].toMap().value("current").toBool(),10000);
+    QVERIFY(session->frame()!=levelFrame);
+    QVERIFY(!session->frame()->vertices.empty());
+    evidence_["lod_native_flow"]=QJsonObject{{"source",path},{"info",QJsonObject::fromVariantMap(session->info())},{"levels",QJsonArray::fromVariantList(session->lodLevels())},{"boundary","Actual QML buttons/ComboBox driven by Qt window mouse/key events; not OS input latency."}};
+    desktop_->clearAsset();
+  }
+  void modelMultipleBindingsNativeFlow() {
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_MULTIBINDING_FIXTURE"));
+    if(path.isEmpty()) QSKIP("Optional two-binding FBX fixture was not configured");
+    QVERIFY2(QFileInfo::exists(path),"Set FORMAVIEW_MULTIBINDING_FIXTURE to the independently generated two-skin FBX fixture");
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    desktop_->openPath(path);
+    QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QCOMPARE(session->bindings().size(),2);
+    QCOMPARE(session->bindingIndex(),-1);
+    auto *tab=item("modelInspectorTab1");
+    QVERIFY(tab);
+    QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,tab->mapToScene({tab->width()/2,tab->height()/2}).toPoint());
+    QTRY_VERIFY(item("modelSkinBindingChoice"));
+    const auto choose=[&](Qt::Key key) {
+      auto *choice=item("modelSkinBindingChoice");
+      QVERIFY(choice);
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,choice->mapToScene({choice->width()/2,choice->height()/2}).toPoint());
+      QTest::keyClick(window_,key); QTest::keyClick(window_,Qt::Key_Return);
+    };
+    choose(Qt::Key_Home);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->bindingIndex()==0,10000);
+    const auto firstId=session->bindingInfo().value("id").toString();
+    const auto firstFrame=session->frame();
+    QVERIFY(!firstId.isEmpty());
+    choose(Qt::Key_End);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->bindingIndex()==1,10000);
+    QVERIFY(session->bindingInfo().value("id").toString()!=firstId);
+    QVERIFY(session->frame()!=firstFrame);
+    QCOMPARE(session->bones().size(),2);
+    save("two-bindings-second-skin");
+    session->setMode(2);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QVERIFY(session->frame()->heat);
+    const auto secondHeat=session->frame();
+    choose(Qt::Key_Home);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->bindingIndex()==0,10000);
+    QVERIFY(session->frame()->heat && session->frame()!=secondHeat);
+    QCOMPARE(session->frame()->vertices.size(),secondHeat->vertices.size());
+    QVERIFY(std::abs(session->frame()->vertices[0].weight-secondHeat->vertices[0].weight)>.5F);
+    evidence_["multiple_bindings_native"]=QJsonObject{{"source",path},{"first_id",firstId},{"skin_count",2},{"boundary","Actual Qt QML ComboBox selection and heat frames; fixture is an explicitly hand-modified FBX, not claimed as a DCC export."}};
+    desktop_->clearAsset();
+  }
+  void modelMixedQueuePerformance() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    auto *service=qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(session && service);
+    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_PERFORMANCE_MODEL"));
+    if(path.isEmpty()) QSKIP("Optional typical performance fixture was not configured");
+    QVERIFY2(QFileInfo::exists(path),"Set FORMAVIEW_PERFORMANCE_MODEL to the 216k-triangle / 256-joint fixture");
+    desktop_->openPath(path);
+    QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(window_->findChild<ModelView *>("modelViewport"));
+    auto *view=window_->findChild<ModelView *>("modelViewport");
+    QImage image(1024,1024,QImage::Format_RGB32);
+    quint32 random=0x4d3036;
+    for(int y=0;y<image.height();++y) {
+      auto *row=reinterpret_cast<QRgb *>(image.scanLine(y));
+      for(int x=0;x<image.width();++x) {random=random*1664525U+1013904223U;row[x]=0xff000000U|(random&0xffffffU);}
+    }
+    const auto input=small_+"/model-mixed.bmp",output=root_+"/model-mixed-output";
+    QVERIFY(image.save(input)); QVERIFY(QDir().mkpath(output));
+    const QVariantMap scope{{"input_roots",QVariantList{small_}},{"output_roots",QVariantList{output}},{"allow_overwrite",false}};
+    QStringList inputs; for(int i=0;i<8;++i) inputs.append(input);
+    service->preflight(inputs,scope,{{"target","png"},{"png_compression",9}},"model-mixed-{index}.{ext}","skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && !service->plan().value("state").toString().isEmpty() && service->plan().value("state")!="planning",30000);
+    QVERIFY2(service->plan().value("state")=="ready",qPrintable(QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson())));
+    struct Signals {std::atomic<quint64> command{},synced{},swapped{};std::atomic<qint64> swapNs{};};
+    const auto telemetrySignals=std::make_shared<Signals>();
+    const auto sync=connect(window_,&QQuickWindow::afterSynchronizing,window_,[telemetrySignals]{telemetrySignals->synced.store(telemetrySignals->command.load());},Qt::DirectConnection);
+    const auto swap=connect(window_,&QQuickWindow::frameSwapped,window_,[telemetrySignals]{telemetrySignals->swapNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());telemetrySignals->swapped.store(telemetrySignals->synced.load());},Qt::DirectConnection);
+    const auto disconnectAll=qScopeGuard([&]{disconnect(sync);disconnect(swap);});
+    auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    measured->events=0;measured->maxEventMs=0;measured->over100ms=0;measured->slowEvents={};measured->measure=true;
+    const auto stop=qScopeGuard([&]{measured->measure=false;});
+    service->submit(true); // Explicitly acknowledge this synthetic workload's reported conversion losses.
+    int concurrent=0;std::vector<double> samples;
+    for(quint64 command=1;command<=240;++command) {
+      const auto state=service->job().value("state").toString();
+      if(state=="running" || state=="queued") ++concurrent;
+      const auto started=std::chrono::steady_clock::now();
+      telemetrySignals->command.store(command);view->orbit(command%2?-.5:.5,.1);
+      QEventLoop loop;QTimer poll,deadline;poll.setInterval(1);deadline.setSingleShot(true);
+      connect(&poll,&QTimer::timeout,&loop,[&]{if(telemetrySignals->swapped.load()>=command)loop.quit();});
+      connect(&deadline,&QTimer::timeout,&loop,&QEventLoop::quit);
+      poll.start();deadline.start(3000);loop.exec();
+      QVERIFY(telemetrySignals->swapped.load()>=command);
+      const auto startNs=std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count();
+      samples.push_back(double(telemetrySignals->swapNs.load()-startNs)/1e6);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(service->job().value("state").toString(),QString("succeeded"),30000);
+    std::sort(samples.begin(),samples.end());
+    const auto p95=samples[227],p99=samples[237];
+    evidence_["model_mixed_queue"]=QJsonObject{{"samples",240},{"while_job_active",concurrent},{"p95_ms",p95},{"p99_ms",p99},{"max_ms",samples.back()},{"max_main_thread_event_ms",measured->maxEventMs},{"main_thread_over_100ms",measured->over100ms},{"job",QJsonObject::fromVariantMap(service->job())},{"boundary","Qt camera command to first frameSwapped after matching synchronization; actual image conversion queue; not OS input or physical display presentation."}};
+    QVERIFY(concurrent>=30); QVERIFY(p95<=50 && p99<=100); QCOMPARE(measured->over100ms,0);
+    desktop_->clearAsset();
+#endif
+  }
+  void modelLoadResourceStress() {
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const QString large="B:/Model/克劳德/SKM_Cloud.fbx";
+    const QString compactModel="E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk";
+    auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    measured->events=0; measured->maxEventMs=0; measured->over100ms=0; measured->slowEvents={};
+    measured->measure=true;
+    const auto stop=qScopeGuard([&]{measured->measure=false;desktop_->clearAsset();});
+    QElapsedTimer elapsed; elapsed.start();
+    QJsonArray cycles;
+    const auto configuredCycles=qEnvironmentVariable("FORMAVIEW_STRESS_CYCLES");
+    const auto cycleCount=configuredCycles.isEmpty()?60:configuredCycles.toInt();
+    QVERIFY(cycleCount>=60 && cycleCount<=600);
+    for(int cycle=0;cycle<cycleCount;++cycle) {
+      desktop_->openPath(large);
+      if(cycle%3==0) {
+        session->cancel();
+        QVERIFY(!session->busy() && !session->frame());
+        desktop_->openPath(compactModel);
+      } else if(cycle%3==1) desktop_->openPath(compactModel);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+      QCOMPARE(session->path(),cycle%3==2?large:compactModel);
+      QTRY_VERIFY(window_->findChild<ModelView *>("modelViewport"));
+      QPointer<ModelView> view=window_->findChild<ModelView *>("modelViewport");
+      QTRY_VERIFY(view->isVisible());
+      for(int i=0;i<10;++i) view->orbit(i%2?-.5:.5,.1);
+      QTest::qWait(500);
+      desktop_->clearAsset();
+      QTRY_VERIFY(!view);
+      QTest::qWait(20);
+      QVERIFY(!session->busy() && !session->available() && !session->frame());
+      const auto memory=formaview::process_memory();
+      QVERIFY(memory);
+      sampleGpu();
+      cycles.append(QJsonObject{{"cycle",cycle},{"elapsed_ms",elapsed.elapsed()},{"rss",static_cast<qint64>(memory->working_set_bytes)},{"private",static_cast<qint64>(memory->private_bytes)},{"gpu",gpuMemory()}});
+    }
+    evidence_["model_load_resource_stress"]=QJsonObject{{"cycles",cycles},{"camera_commands",cycleCount*10},{"events",measured->events},{"max_event_ms",measured->maxEventMs},{"over_100ms",measured->over100ms},{"slow_events",measured->slowEvents},{"boundary","Repeated actual desktop load/cancel/supersede/render/destroy cycles; cycle count is recorded in cycles. Qt input, not OS input. Main-thread event dispatch timing only; process allocators/driver caches need not return RSS to initial baseline."}};
+    QCOMPARE(measured->over100ms,0);
   }
   void modelPreviewIntegration() {
     QTest::failOnWarning(QRegularExpression(".*index is not valid.*"));

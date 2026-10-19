@@ -72,6 +72,8 @@ public:
   bool showGrid{}, showAxes{};
   // Callbacks run on the render thread. Do not touch GUI objects directly.
   std::function<void(Observation)> observe;
+  // One-shot diagnostics; use a new Item for another request. Empty bytes and
+  // size report unavailable geometry or a readback exceeding 120 render passes.
   std::function<void(QByteArray, QSize)> readback;
 
 protected:

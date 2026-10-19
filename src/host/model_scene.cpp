@@ -13,7 +13,6 @@ void ModelScene::replace(const ModelDocument *document) {
   asset->setData(-1, MeshIndex);
   asset->setData(false, Bone);
   asset->setData(true, SourceActive);
-  invisibleRootItem()->appendRow(root.release());
   QHash<QString, QStandardItem *> nodes;
   std::map<QString, std::unique_ptr<QStandardItem>> owners;
   for (const auto &value : document->nodes) {
@@ -50,6 +49,9 @@ void ModelScene::replace(const ModelDocument *document) {
     nodes.value(mesh.nodeId, asset)->appendRow(item.release());
     meshes_[static_cast<int>(i)] = ptr;
   }
+  // Populate off-model, then publish one complete subtree. Publishing the root
+  // first made views and proxies process every descendant insertion separately.
+  invisibleRootItem()->appendRow(root.release());
 }
 QModelIndex ModelScene::meshIndex(int mesh) const {
   const auto it = meshes_.find(mesh);

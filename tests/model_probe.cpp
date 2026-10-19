@@ -35,6 +35,63 @@ int main(int argc, char **argv) {
       wait();
       const auto ms = elapsed.elapsed();
       const auto info = session.info();
+      QJsonArray sourceMeshes;
+      QJsonArray sourceNodes;
+      if (qEnvironmentVariableIsSet("FORMAVIEW_PROBE_SOURCE_DETAILS")) {
+        const auto document = readModelDocument(args[i], {});
+        sourceNodes = QJsonArray::fromVariantList(document->nodes);
+        for (const auto &mesh : document->meshes) {
+          const auto vector = [](const QVector3D &v) {
+            return QJsonArray{v.x(), v.y(), v.z()};
+          };
+          QJsonArray uv, skins, points;
+          for (std::size_t point = 0;
+               point < std::min<std::size_t>(mesh.points.size(), 2048); ++point)
+            points.append(vector(mesh.points[point]));
+          for (const auto &bounds : mesh.uvBounds)
+            uv.append(QJsonArray{bounds[0], bounds[1], bounds[2], bounds[3]});
+          QJsonObject materialTriangles;
+          for (std::size_t triangle = 0; triangle < mesh.triangles.size() / 3;
+               ++triangle) {
+            const auto corner = mesh.triangles[triangle * 3];
+            const auto slot = mesh.cornerMaterial.empty()
+                                  ? 0
+                                  : mesh.cornerMaterial.at(corner);
+            const auto material =
+                mesh.materials.value(static_cast<qsizetype>(slot));
+            materialTriangles[material] =
+                materialTriangles.value(material).toInt() + 1;
+          }
+          for (const auto &skin : mesh.skins) {
+            QJsonArray weights;
+            for (std::size_t point = 0;
+                 point < std::min<std::size_t>(skin.weights.size(), 2048);
+                 ++point) {
+              QJsonArray influences;
+              for (const auto &weight : skin.weights[point])
+                influences.append(QJsonObject{{"bone", weight.bone},
+                                              {"value", weight.value}});
+              weights.append(influences);
+            }
+            skins.append(QJsonObject{
+                {"name", skin.name},
+                {"bones", QJsonArray::fromStringList(skin.bones)},
+                {"palette", QJsonArray::fromVariantList(skin.palette)},
+                {"raw_weights_first_2048", weights}});
+          }
+          sourceMeshes.append(QJsonObject{
+              {"name", mesh.name},
+              {"node", mesh.nodeId},
+              {"points", static_cast<qint64>(mesh.points.size())},
+              {"display_points_first_2048", points},
+              {"triangles", static_cast<qint64>(mesh.triangles.size() / 3)},
+              {"display_basis_low", vector(mesh.boundsLow)},
+              {"display_basis_high", vector(mesh.boundsHigh)},
+              {"uv_bounds", uv},
+              {"material_triangles", materialTriangles},
+              {"skins", skins}});
+        }
+      }
       for (int mesh = 0; mesh < session.meshes().size(); ++mesh) {
         session.selectMesh(mesh);
         session.setMode(0);
@@ -61,17 +118,31 @@ int main(int argc, char **argv) {
       }
       QJsonObject skeletonEvidence;
       if (!session.bones().isEmpty()) {
-        int selected=0;
-        for(int joint=0;joint<session.bones().size();++joint) if(session.bones()[joint].contains("L_Shoulder_a")) selected=joint;
-        session.selectBone(selected); session.setMode(0); wait();
+        int selected = 0;
+        for (int joint = 0; joint < session.bones().size(); ++joint)
+          if (session.bones()[joint].contains("L_Shoulder_a"))
+            selected = joint;
+        session.selectBone(selected);
+        session.setMode(0);
+        wait();
         QJsonArray lines;
-        const auto frame=session.frame();
-        for(std::size_t guide=frame->guides.size()-frame->selectionVertices;guide<frame->guides.size();++guide) {
-          const auto &v=frame->guides[guide]; lines.append(QJsonArray{v.x,v.y,v.z});
+        const auto frame = session.frame();
+        for (std::size_t guide =
+                 frame->guides.size() - frame->selectionVertices;
+             guide < frame->guides.size(); ++guide) {
+          const auto &v = frame->guides[guide];
+          lines.append(QJsonArray{v.x, v.y, v.z});
         }
-        skeletonEvidence={{"selection",QJsonObject::fromVariantMap(session.skeletonSelection())},{"binding",QJsonObject::fromVariantMap(session.bindingInfo())},{"lines",lines}};
+        skeletonEvidence = {
+            {"selection",
+             QJsonObject::fromVariantMap(session.skeletonSelection())},
+            {"binding", QJsonObject::fromVariantMap(session.bindingInfo())},
+            {"lines", lines}};
       }
-      records.append(QJsonObject{{"skeleton",skeletonEvidence},{"path", args[i]},
+      records.append(QJsonObject{{"source_nodes", sourceNodes},
+                                 {"source_meshes", sourceMeshes},
+                                 {"skeleton", skeletonEvidence},
+                                 {"path", args[i]},
                                  {"load_ms", ms},
                                  {"info", QJsonObject::fromVariantMap(info)}});
     }

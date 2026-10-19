@@ -1,5 +1,10 @@
 #include "desktop.hpp"
+#include "desktop_trace.hpp"
 #include "window_chrome.hpp"
+#include <QFileInfo>
+#include <QSettings>
+#include <QScopeGuard>
+#include <QThread>
 #ifdef FORMAVIEW_IMAGE_UI
 #include "formaview/image_requests.hpp"
 #endif
@@ -18,11 +23,11 @@
 #include <QStyleHints>
 #include <QTimer>
 #ifdef QT_QML_DEBUG
+#include <QCryptographicHash>
 #include <QDir>
 #include <QPointer>
 #include <QQmlContext>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QtCore/private/qabstractfileengine_p.h>
 #include <QtCore/private/qfsfileengine_p.h>
@@ -77,7 +82,43 @@ private:
 } // namespace
 #endif
 
+namespace {
+// Named functions avoid the stateless-functor template path that traps in
+// Qt 6.12 headers with clang-cl 19 UBSan; keep the same signal semantics.
+void installCreatedWindowChrome(QObject *object, const QUrl &) {
+  if (auto *quick = qobject_cast<QQuickWindow *>(object))
+    installWindowChrome(quick);
+}
+void failRootCreation() { QCoreApplication::exit(2); }
+} // namespace
+
+class DesktopApplication final : public QGuiApplication {
+public:
+  using QGuiApplication::QGuiApplication;
+  DesktopTrace *trace{};
+  bool notify(QObject *receiver,QEvent *event) override {
+    if (QThread::currentThread()!=thread() || !trace)
+      return QGuiApplication::notify(receiver,event);
+    trace->beginDispatch(receiver,event);
+    const auto restore=qScopeGuard([this]{trace->endDispatch();});
+    return QGuiApplication::notify(receiver,event);
+  }
+};
+
 int main(int argc, char *argv[]) {
+  const auto applicationStarted = std::chrono::steady_clock::now();
+#if defined(QT_QML_DEBUG) && defined(FORMAVIEW_PREVIEW_PLUGIN_DIR)
+  QFile plugin(QStringLiteral(FORMAVIEW_PREVIEW_PLUGIN_DIR) +
+               "/qmltooling/qmldbg_preview.dll");
+  if (!plugin.open(QIODevice::ReadOnly) ||
+      QCryptographicHash::hash(plugin.readAll(), QCryptographicHash::Sha256).toHex() !=
+          QByteArray(FORMAVIEW_PREVIEW_PLUGIN_SHA256)) {
+    std::cerr << "Isolated QML preview plugin fingerprint mismatch\n";
+    return 7;
+  }
+  qputenv("QT_PLUGIN_PATH", QByteArray(FORMAVIEW_PREVIEW_PLUGIN_DIR) + ';' +
+                                qgetenv("QT_PLUGIN_PATH"));
+#endif
   for (auto i = 1; i < argc; ++i) {
     if (std::string_view{argv[i]} == "--capabilities") {
       QCoreApplication app(argc, argv);
@@ -96,7 +137,7 @@ int main(int argc, char *argv[]) {
   QQuickStyle::setStyle("Basic");
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
   QImageReader::setAllocationLimit(32);
-  auto app = QGuiApplication{argc, argv};
+  auto app = DesktopApplication{argc, argv};
   app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #ifdef FORMAVIEW_IMAGE_UI
   const auto capabilityCount =
@@ -123,6 +164,17 @@ int main(int argc, char *argv[]) {
 #ifdef QT_QML_DEBUG
   std::unique_ptr<PreviewAssetFiles> previewAssetFiles;
 #endif
+  const auto traceArgument = app.arguments().indexOf("--trace");
+  QString tracePath;
+  if (traceArgument >= 0 && traceArgument + 1 < app.arguments().size()) {
+    tracePath = app.arguments()[traceArgument + 1];
+    const auto traceRoot = QFileInfo(tracePath).absolutePath();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       traceRoot + "/settings");
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT",
+            (traceRoot + "/image-journal").toUtf8());
+  }
   auto desktop = Desktop{};
 #ifdef QT_QML_DEBUG
   // The MCP launcher has no --resource argument. Serve a development-only
@@ -241,10 +293,7 @@ int main(int argc, char *argv[]) {
 #endif
   auto engine = QQmlApplicationEngine{};
   QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
-                   [](QObject *object, const QUrl &) {
-                     if (auto *quick = qobject_cast<QQuickWindow *>(object))
-                       installWindowChrome(quick);
-                   });
+                   &installCreatedWindowChrome);
 #ifdef QT_QML_DEBUG
   engine.addImportPath(previewImports);
 #endif
@@ -255,7 +304,7 @@ int main(int argc, char *argv[]) {
   const auto smoke = app.arguments().contains("--smoke");
   QObject::connect(
       &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
-      [] { QCoreApplication::exit(2); }, Qt::QueuedConnection);
+      &failRootCreation, Qt::QueuedConnection);
 #ifdef QT_QML_DEBUG
   engine.load(QUrl::fromLocalFile(previewModule + "/Main.qml"));
   // Register after QML's preview service installs its global handler: newest
@@ -269,6 +318,11 @@ int main(int argc, char *argv[]) {
   auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().front());
   if (!window)
     return 3;
+  std::unique_ptr<DesktopTrace> nativeTrace;
+  if (!tracePath.isEmpty())
+    nativeTrace = std::make_unique<DesktopTrace>(window, &desktop, tracePath,
+                                                 applicationStarted);
+  app.trace=nativeTrace.get();
 #ifdef QT_QML_DEBUG
   window->setTitle("FormaView · QML Preview");
   QPointer<QQuickWindow> previewWindow = window;
@@ -412,7 +466,8 @@ int main(int argc, char *argv[]) {
                    now - previous_tick);
     previous_tick = now;
   });
-  timer.start(16);
+  if (smoke || !tracePath.isEmpty() || app.arguments().contains("--metrics"))
+    timer.start(16);
   if (smoke)
     QTimer::singleShot(10000, &app, [window] {
       std::cerr << "HOST_TIMEOUT visible=" << window->isVisible()
@@ -427,6 +482,9 @@ int main(int argc, char *argv[]) {
   if (openIndex >= 0 && openIndex + 1 < app.arguments().size())
     desktop.openPath(app.arguments()[openIndex + 1]);
   const auto exit_code = app.exec();
+  app.trace=nullptr;
+  if (nativeTrace)
+    nativeTrace->flush();
   const auto args = app.arguments();
   const auto metrics_index = args.indexOf("--metrics");
   if (metrics_index >= 0 && metrics_index + 1 < args.size()) {

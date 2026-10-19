@@ -53,7 +53,8 @@ Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
     state->owned.store(value.owned_gpu_bytes);
   };
   item->readback = [state](const QByteArray &bytes, QSize size) {
-    if (bytes.size() == size.width() * size.height() * 16) {
+    if (size.isValid() && !size.isEmpty() &&
+        bytes.size() == size.width() * size.height() * 16) {
       const auto at =
           (size.height() / 2 * size.width() + size.width() / 2) * 16;
       std::memcpy(state->result.rgba.data(), bytes.constData() + at, 16);
@@ -97,6 +98,53 @@ struct ResidencyResult {
   std::array<float, 4> rgba{};
   Observation expired, cleared;
 };
+QJsonObject idleRendering(const std::shared_ptr<Frame> &frame, bool empty) {
+  QQuickWindow window;
+  window.setFlags(window.flags() | Qt::WindowDoesNotAcceptFocus |
+                  Qt::WindowTransparentForInput);
+  window.resize(256, 256);
+  auto item = std::make_unique<Item>(window.contentItem());
+  item->setSize({256, 256});
+  const auto frames = std::make_shared<std::atomic<int>>(0);
+  const auto callbacks = std::make_shared<std::atomic<int>>(0);
+  const auto failure = std::make_shared<std::atomic<bool>>(false);
+  item->observe = [frames](Observation value) {
+    if (!value.released)
+      ++*frames;
+  };
+  if (empty)
+    item->readback = [callbacks, failure](QByteArray bytes, QSize size) {
+      ++*callbacks;
+      failure->store(bytes.isEmpty() && size.isEmpty());
+    };
+  item->setFrame(empty ? std::make_shared<Frame>() : frame);
+  window.show();
+  const auto settle = [](int duration) {
+    QElapsedTimer time;
+    time.start();
+    while (time.elapsed() < duration) {
+      QCoreApplication::processEvents();
+      QThread::msleep(1);
+    }
+  };
+  settle(300);
+  const auto before = frames->load();
+  settle(500);
+  const auto after = frames->load();
+  if (before < 1 || after > before + 1 ||
+      (empty && (callbacks->load() != 1 || !failure->load())))
+    throw std::runtime_error("Static renderer did not settle or empty readback "
+                             "failed to report once");
+  item.reset();
+  window.hide();
+  window.releaseResources();
+  return {
+      {"case", empty ? "empty readback failure and idle" : "static model idle"},
+      {"before_frames", before},
+      {"after_frames", after},
+      {"idle_ms", 500},
+      {"failure_callbacks", callbacks->load()}};
+}
 ResidencyResult residency(std::vector<std::shared_ptr<Frame>> frames) {
   QQuickWindow window;
   window.setFlags(window.flags() | Qt::WindowDoesNotAcceptFocus |
@@ -147,7 +195,8 @@ ResidencyResult residency(std::vector<std::shared_ptr<Frame>> frames) {
       item->readback = [state](const QByteArray &bytes, QSize size) {
         const auto at =
             (size.height() / 2 * size.width() + size.width() / 2) * 16;
-        if (bytes.size() != size.width() * size.height() * 16)
+        if (!size.isValid() || size.isEmpty() ||
+            bytes.size() != size.width() * size.height() * 16)
           return;
         std::memcpy(state->result.rgba.data(), bytes.constData() + at, 16);
         state->read.store(true);
@@ -263,7 +312,7 @@ int main(int argc, char **argv) {
       texture->rgba = {1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1};
       texture->wrapU = wrap;
       f->textures = {texture};
-      f->draws = {{0, 6, 0}};
+      f->draws = {{0, 6, 0, false, {}}};
       check(QString("Texture wrap %1").arg(wrap), f,
             wrap == 0 ? std::array<float, 4>{1, 0, 0, 1}
                       : std::array<float, 4>{0, 1, 0, 1});
@@ -370,6 +419,10 @@ int main(int argc, char **argv) {
                  .arg(result.cleared.owned_gpu_bytes))
                 .toStdString());
     }
+    records.append(idleRendering(cached({1, 0, 0}), false));
+    ++assertions;
+    records.append(idleRendering({}, true));
+    ++assertions;
   } catch (const std::exception &e) {
     std::cerr << "FAILED after " << assertions << " assertions: " << e.what()
               << '\n';
