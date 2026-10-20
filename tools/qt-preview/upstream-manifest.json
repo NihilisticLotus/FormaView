@@ -1,0 +1,150 @@
+{
+  "commit": "4332fbbb4c340463dc8cee36dda0c85d932122d8",
+  "files": [
+    {
+      "path": "core/qqmlpreviewbindingpatchcontext.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewbindingpatchcontext.cpp",
+      "sha256": "309f709ef9886fe52b1eaa0940b3ca05854e3791ae1e4374705ab0dd7ee6a9b1"
+    },
+    {
+      "path": "core/qqmlpreviewbindingpatchcontext_p.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewbindingpatchcontext_p.h",
+      "sha256": "1030fe18b2f38a9a85089b3c673ba515760e5f2810315e704a239c040637593d"
+    },
+    {
+      "path": "core/qqmlpreviewdiff.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewdiff.cpp",
+      "sha256": "fc1fa36c5ca1c4e4702436b408631b5f72f9cbcb7e8ddcf8788af922d9cc3701"
+    },
+    {
+      "path": "core/qqmlpreviewdiff_p.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewdiff_p.h",
+      "sha256": "6be0cc3fde370447369a510560f64f2b5b831901ee5ec7aa8914584172346c35"
+    },
+    {
+      "path": "core/qqmlpreviewobjectpatch.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewobjectpatch.cpp",
+      "sha256": "6aef258b44e40d960fdf72c10cfd738943f75e7ca659523ecb1fa29d3c599aa5"
+    },
+    {
+      "path": "core/qqmlpreviewobjectpatch_p.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/qmlpreview/qqmlpreviewobjectpatch_p.h",
+      "sha256": "c8fcde22c34d4ec79dd88626078fad9bc24dac635aaab6a09cad75776ed41d68"
+    },
+    {
+      "path": "plugin/proxytranslator.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/proxytranslator.cpp",
+      "sha256": "ad3292af15554b207ec2380e925a503436c74177877f40a6bd5ab0a2b73288b0"
+    },
+    {
+      "path": "plugin/proxytranslator.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/proxytranslator.h",
+      "sha256": "7e494f91f7bba12e29156d3c8bd54d35c755edb499de9cc0b96dd85d0ac4a16a"
+    },
+    {
+      "path": "plugin/qqmlclassicpreviewhandler.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlclassicpreviewhandler.cpp",
+      "sha256": "7e258f989523119a776b606166e7698b65bcb93c970f0c01d8e139b564771840"
+    },
+    {
+      "path": "plugin/qqmlclassicpreviewhandler.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlclassicpreviewhandler.h",
+      "sha256": "226b4ad66a34e5efd69b438f17ec8b604c9c8b85519d9250fec4b41e3145596e"
+    },
+    {
+      "path": "plugin/qqmldebugtranslationservice.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmldebugtranslationservice.cpp",
+      "sha256": "3b44fa6f03c39d2f147939c030f8b1e0c0162be67bb1fe6ccac782a057382e15"
+    },
+    {
+      "path": "plugin/qqmldebugtranslationservice.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmldebugtranslationservice.h",
+      "sha256": "635f402a2d5006a250449ca770ad685cd3f6d1c1691d7425654ffe6d9b1660af"
+    },
+    {
+      "path": "plugin/qqmlinplacepreviewhandler.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlinplacepreviewhandler.cpp",
+      "sha256": "028c608f985dd72967961821e42241a1671470f5a771e283474ed79c8361324c"
+    },
+    {
+      "path": "plugin/qqmlinplacepreviewhandler.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlinplacepreviewhandler.h",
+      "sha256": "691a4534b49be738afbd17d3b91e9f98f72b4a7c1eaab01ef3d2094b155c83ea"
+    },
+    {
+      "path": "plugin/qqmlpreviewblacklist.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewblacklist.cpp",
+      "sha256": "3517d3c9a46d55c282479fa987137657ea47c4ff109cadcbac22edd97deedabc"
+    },
+    {
+      "path": "plugin/qqmlpreviewblacklist.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewblacklist.h",
+      "sha256": "593bf44721481b210797afa409a5ce4b19e2ba2acd22e1413a739da71081c2cb"
+    },
+    {
+      "path": "plugin/qqmlpreviewfileengine.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewfileengine.cpp",
+      "sha256": "5fa63794288d1d9eef50abf0ba140aec692a4cdf2a8d1d37e64c6ecc4f2f6bec"
+    },
+    {
+      "path": "plugin/qqmlpreviewfileengine.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewfileengine.h",
+      "sha256": "ff2b645b5da39b19d4a5cd8c87199cf96748fb5331d5bb308a05d9ba26f7aae4"
+    },
+    {
+      "path": "plugin/qqmlpreviewfileloader.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewfileloader.cpp",
+      "sha256": "5358b4562a75dd9ecaefbb8695ea0bdcaf3ceacc2b920fabd21db3d5aebefc9c"
+    },
+    {
+      "path": "plugin/qqmlpreviewfileloader.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewfileloader.h",
+      "sha256": "6cdad37c6b411b75fb25b48f9c1435e92f0ca068ae6372c14e1e144090577310"
+    },
+    {
+      "path": "plugin/qqmlpreviewhandler.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewhandler.cpp",
+      "sha256": "7851e6fc0302bf1a821af9a136e74e66b483224f7a425802313680086fd329ba"
+    },
+    {
+      "path": "plugin/qqmlpreviewhandler.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewhandler.h",
+      "sha256": "7f58b3f85e9b744ea41473c689517e4cd42440fb3bbfe11b4eb8368fa28efd53"
+    },
+    {
+      "path": "plugin/qqmlpreviewposition.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewposition.cpp",
+      "sha256": "5fdefdc4bae0c83e83a6fb9ce3d7a023ec990271be3cfce7008dbf653bd425c3"
+    },
+    {
+      "path": "plugin/qqmlpreviewposition.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewposition.h",
+      "sha256": "2650262c51a7b0938563713c31a0257e21c05cdae044cf536345590b0ca636d2"
+    },
+    {
+      "path": "plugin/qqmlpreviewservice.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewservice.cpp",
+      "sha256": "bda846d66d4d015b90473443a3ff670798dbbea9ea0905a9b86707f49e63368c"
+    },
+    {
+      "path": "plugin/qqmlpreviewservice.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewservice.h",
+      "sha256": "682c1febd35e2e936df4fe53616ae986381f663b0edd4e7f462cd5c53b2b22ef"
+    },
+    {
+      "path": "plugin/qqmlpreviewservice.json",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewservice.json",
+      "sha256": "f782f670316e364e9c952cf716e0ddffb9cf5d292f88bebb3a4e518dfd3e90b6"
+    },
+    {
+      "path": "plugin/qqmlpreviewservicefactory.cpp",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewservicefactory.cpp",
+      "sha256": "fafd5b3400b07dd26875c72d9d5219d1612860ccfb215141064041c18aac8195"
+    },
+    {
+      "path": "plugin/qqmlpreviewservicefactory.h",
+      "url": "https://raw.githubusercontent.com/qt/qtdeclarative/4332fbbb4c340463dc8cee36dda0c85d932122d8/src/plugins/qmltooling/qmldbg_preview/qqmlpreviewservicefactory.h",
+      "sha256": "b061fdbfe00324c0bf2d3c8b046224d773010e235b3c7c2cbd865cb52cb3e404"
+    }
+  ]
+}

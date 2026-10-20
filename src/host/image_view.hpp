@@ -30,7 +30,7 @@ public:
   Q_INVOKABLE void fit();
   Q_INVOKABLE void actual();
   Q_INVOKABLE void zoomAt(double factor, double x, double y);
-  Q_INVOKABLE void pick(double x, double y);
+  Q_INVOKABLE bool pick(double x, double y);
   QRectF imageRect() const;
 signals:
   void sessionChanged();

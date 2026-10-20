@@ -55,7 +55,7 @@ Item {
         if (focusMode || !filesVisible) { openAddress(); return }
         files.remember(); filesVisible = false; controller.preference("filesVisible", false); returnFileFocus()
     }
-    onFocusModeChanged: { files.remember(); if (drawer.visible) drawer.close(); Qt.callLater(() => { if (!root.tasksVisible) preview.focusLayoutControl() }) }
+    onFocusModeChanged: { if (drawer.visible) drawer.close(); Qt.callLater(() => { if (!root.tasksVisible) preview.focusLayoutControl() }) }
     onNarrowChanged: { if (narrow && hasFocusWithin(files)) returnFileFocus(); else if (!narrow && drawer.visible) drawer.close() }
     function editing(): bool { const item = root.Window.window.activeFocusItem; return !!item && (item.hasOwnProperty("inputMethodComposing") || item.hasOwnProperty("selectByMouse")) }
     Shortcut { sequence: "Ctrl+O"; onActivated: fileDialog.open() }
@@ -215,10 +215,21 @@ Item {
         objectName: "fileDrawer"
         width: Math.min(460, root.width - 24); height: root.height; modal: true; focus: true
         closePolicy: Popup.CloseOnPressOutside | Popup.CloseOnEscape
-        ColumnLayout {
-            anchors.fill: parent; spacing: 8
-            FolderNavigation { id: drawerNavigation; controller: root.controller; Layout.fillWidth: true; onBeforeNavigate: drawerFiles.remember() }
-            FilesPane { id: drawerFiles; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; onCollapse: drawer.close(); onEditAddress: drawerNavigation.addressFocus() }
+        contentItem: FocusScope {
+            focus: true
+            Keys.onPressed: event => {
+                if (root.editing() || event.modifiers !== Qt.AltModifier) return
+                if (![Qt.Key_Left, Qt.Key_Right, Qt.Key_Up].includes(event.key)) return
+                drawerFiles.remember()
+                if (event.key === Qt.Key_Up) root.controller.parentDirectory()
+                else root.controller.history(event.key === Qt.Key_Left ? -1 : 1)
+                event.accepted = true
+            }
+            ColumnLayout {
+                anchors.fill: parent; spacing: 8
+                FolderNavigation { id: drawerNavigation; controller: root.controller; Layout.fillWidth: true; onBeforeNavigate: drawerFiles.remember() }
+                FilesPane { id: drawerFiles; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; onCollapse: drawer.close(); onEditAddress: drawerNavigation.addressFocus() }
+            }
         }
         onAboutToHide: drawerFiles.remember()
         onOpened: drawerFiles.addressFocus()
@@ -235,7 +246,7 @@ Item {
             onRejected: about.reject()
         }
         title: "FormaView"
-        Label { width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; text: (root.controller.imageJobs ? Theme.t("支持图片通道、像素读数、子资源与批量转换。MCP 默认关闭，需在设置中应用范围并启用。模型与动画预览仍待接入。", "Image channels, pixel values, subresources and batch conversion are available. MCP is off by default; apply a scope and enable it in Settings. Model and animation preview are pending.", "支援影像通道、像素讀數、子資源與批次轉換。MCP 預設關閉，須在設定套用範圍並啟用。模型與動畫預覽仍待接入。") : Theme.t("此构建提供文件浏览、缩略图、读取检查与任务中心。未编入图片服务。", "This build provides file browsing, thumbnails, access checks and task status. The image service is not included.", "此組建提供檔案瀏覽、縮圖、讀取檢查與工作中心。未編入影像服務。")) + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置\nAlt+方向键 导航 · 方向键连续浏览\nCtrl / Shift 多选 · Esc 关闭弹层", "\n\nCtrl+O Open · Ctrl+L Location\nAlt+Arrows Navigate · Arrows Browse\nCtrl / Shift Multi-select · Esc Close popup", "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置\nAlt+方向鍵 導覽 · 方向鍵連續瀏覽\nCtrl / Shift 多選 · Esc 關閉彈層") }
+        Label { width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; text: (root.controller.imageJobs ? Theme.t("支持图片通道、像素读数、子资源与批量转换。MCP 默认关闭，需在设置中应用范围并启用。动画播放尚未提供。", "Image channels, pixel values, subresources and batch conversion are available. MCP is off by default; apply a scope and enable it in Settings. Animation playback is not yet available.", "支援影像通道、像素讀數、子資源與批次轉換。MCP 預設關閉，須在設定套用範圍並啟用。動畫播放尚未提供。") : Theme.t("此构建提供文件浏览、缩略图、读取检查与任务中心。未编入图片服务。", "This build provides file browsing, thumbnails, access checks and task status. The image service is not included.", "此組建提供檔案瀏覽、縮圖、讀取檢查與工作中心。未編入影像服務。")) + (root.controller.model ? Theme.t("\n支持 FBX/PSK 模型、骨骼、UV 与源权重只读检查。", "\nRead-only FBX/PSK model, skeleton, UV and source-weight inspection is available.", "\n支援 FBX/PSK 模型、骨骼、UV 與來源權重唯讀檢查。") : "") + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置\nAlt+← 后退 · Alt+→ 前进 · Alt+↑ 上级\n文件列表内 ↑/↓ 连续浏览\nCtrl / Shift 多选 · Esc 关闭弹层", "\n\nCtrl+O Open · Ctrl+L Location\nAlt+Left Back · Alt+Right Forward · Alt+Up Parent\nUp/Down Browse in file list\nCtrl / Shift Multi-select · Esc Close popup", "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置\nAlt+← 返回 · Alt+→ 前進 · Alt+↑ 上層\n檔案清單內 ↑/↓ 連續瀏覽\nCtrl / Shift 多選 · Esc 關閉彈層") }
     }
     DropArea { anchors.fill: parent; enabled: !root.conversionVisible && !root.settingsVisible; onDropped: drop => { if(drop.hasUrls) { root.controller.openUrls(drop.urls); drop.acceptProposedAction() } } }
 }

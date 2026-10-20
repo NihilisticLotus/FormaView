@@ -14,7 +14,29 @@ Rectangle {
     function viewFocus() { (thumbnails ? grid : list).forceActiveFocus() }
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
     function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
-    function restore() { Qt.callLater(() => { const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; const offset = controller.scrollPosition/columns*(thumbnails ? grid.cellHeight : Theme.fileRowHeight); view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height)) }) }
+    property bool restorePending: false
+    property real restorePosition: 0
+    function applyRestore() {
+        if (!visible) return
+        const view = thumbnails ? grid : list
+        view.forceLayout()
+        const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1
+        const offset = restorePosition/columns*(thumbnails ? grid.cellHeight : Theme.fileRowHeight)
+        view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height))
+    }
+    function restore() {
+        restorePosition = controller.scrollPosition
+        restorePending = true
+        Qt.callLater(applyRestore)
+    }
+    Connections {
+        target: root.Window.window
+        enabled: root.visible && root.restorePending
+        function onFrameSwapped() {
+            root.applyRestore()
+            root.restorePending = false
+        }
+    }
     function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
     Connections { target: root.controller; function onViewRestored() { root.restore() } }
     onThumbnailsChanged: restore()
@@ -151,6 +173,7 @@ Rectangle {
         AppMenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); onTriggered: root.controller.reveal(context.targetPath) }
     }
     function handleKey(event) {
+        if (event.modifiers & Qt.AltModifier) return
         if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) controller.selectAll()
         else if (thumbnails && event.key === Qt.Key_Right && !(event.modifiers & Qt.AltModifier)) step(1,event.modifiers)
         else if (thumbnails && event.key === Qt.Key_Left && !(event.modifiers & Qt.AltModifier)) step(-1,event.modifiers)

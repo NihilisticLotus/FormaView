@@ -1,0 +1,50 @@
+--- a/core/qqmlpreviewbindingpatchcontext.cpp
++++ b/core/qqmlpreviewbindingpatchcontext.cpp
+@@ -47 +47,4 @@
+-            if (cu->runtimeFunctions[binding->value.compiledScriptIndex] == f)
++            // Arrow handlers execute the binding wrapper's nested function.
++            // They are internal too and must be recreated, never stashed after deletion.
++            if (const auto *function = cu->runtimeFunctions[binding->value.compiledScriptIndex];
++                function == f || (function && function->nestedFunction() == f))
+@@ -394,0 +398,12 @@
++        // Preserved instance handlers must also leave the rebuilt target's deletion list.
++        // External Connections objects retain ownership of their own handlers.
++        bool detachedFromTargetOwner = false;
++        for (auto *owned = QQmlData::get(m_object)->signalHandlers; owned;
++             owned = owned->m_nextSignal) {
++            if (owned == boundSignal) {
++                detachedFromTargetOwner = true;
++                break;
++            }
++        }
++        if (detachedFromTargetOwner)
++            boundSignal->removeFromObject();
+@@ -396 +411,2 @@
+-                { QString::fromUtf8(signature), std::unique_ptr<QQmlBoundSignal>(boundSignal) });
++                { QString::fromUtf8(signature), std::unique_ptr<QQmlBoundSignal>(boundSignal),
++                  detachedFromTargetOwner });
+@@ -554,2 +570,6 @@
+-            if (signalIndex >= 0)
+-                QQmlData::connectEndpoint(stored.handler.release(), m_object, signalIndex, engine);
++            if (signalIndex >= 0) {
++                auto *handler = stored.handler.release();
++                if (stored.detachedFromTargetOwner)
++                    handler->addToObject(m_object);
++                QQmlData::connectEndpoint(handler, m_object, signalIndex, engine);
++            }
+@@ -995,2 +1015,9 @@
+-    if (qProp.read() == expectedOld)
+-        qProp.write(coerceToPropertyType(v4, newValue, metaType));
++    if (qProp.read() == expectedOld) {
++        const auto value = coerceToPropertyType(v4, newValue, metaType);
++        if (qProp.isWritable())
++            qProp.write(value);
++        else if (QQmlVMEMetaObject::getForProperty(qProp.object(), qProp.index()))
++            // Update a QML initializer without making the public property writable.
++            // Never bypass a native C++ property's setter.
++            QQmlPropertyPrivate::get(qProp)->writeValueProperty(value, {});
++    }
+--- a/core/qqmlpreviewbindingpatchcontext_p.h
++++ b/core/qqmlpreviewbindingpatchcontext_p.h
+@@ -113,0 +114 @@
++        bool detachedFromTargetOwner = false;

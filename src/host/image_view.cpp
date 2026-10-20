@@ -268,9 +268,11 @@ QRectF ImageView::imageRect() const {
           static_cast<double>(data.width) * zoom_,
           static_cast<double>(data.height) * zoom_};
 }
-void ImageView::pick(double x, double y) {
-  if (!previous_ || !session_)
-    return;
+bool ImageView::pick(double x, double y) {
+  if (!previous_ || !session_ || session_->busy() ||
+      !session_->error().isEmpty() || !std::isfinite(x) || !std::isfinite(y) ||
+      x < 0 || y < 0 || x >= width() || y >= height())
+    return false;
   const auto r = imageRect();
   const auto &w = previous_->source.data_window;
   auto px = (x - r.x()) / zoom_, py = (y - r.y()) / zoom_;
@@ -281,8 +283,14 @@ void ImageView::pick(double x, double y) {
     px -= tx * static_cast<double>(w.width);
     py -= ty * static_cast<double>(w.height);
   }
+  // Leaving the image is not a new sample. Keep the last valid readout;
+  // session loading/clearing still invalidates samples from the old image.
+  if (px < 0 || py < 0 || px >= static_cast<double>(w.width) ||
+      py >= static_cast<double>(w.height))
+    return false;
   session_->sample(std::floor(px) + static_cast<double>(w.x),
                    std::floor(py) + static_cast<double>(w.y), tx, ty);
+  return session_->pixel().value("valid").toBool();
 }
 void ImageView::geometryChange(const QRectF &now, const QRectF &old) {
   QQuickRhiItem::geometryChange(now, old);

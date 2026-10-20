@@ -1019,6 +1019,90 @@ private slots:
                 window_->activeFocusItem()->isVisible());
     QCOMPARE(desktop_->sessionRevision(), session);
   }
+  void focusRestoresFileScroll_data() {
+    QTest::addColumn<int>("entries");
+    QTest::newRow("short-overflow") << 9;
+    QTest::newRow("long-overflow") << 16;
+  }
+  void focusRestoresFileScroll() {
+    QFETCH(int, entries);
+    window_->resize(1600, 908);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("focusMode", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("filesVisible", true);
+    desktop_->preference("thumbnails", false);
+    const auto folder = root_ + QString("/focus-scroll-%1").arg(entries);
+    QVERIFY(QDir().mkpath(folder));
+    QImage image(8, 8, QImage::Format_RGBA8888);
+    image.fill(Qt::cyan);
+    for (int i = 0; i < entries; ++i)
+      QVERIFY(image.save(folder + QString("/sample%1.png").arg(i)));
+    desktop_->navigate(folder);
+    QTRY_COMPARE(desktop_->count(), entries);
+    QTRY_VERIFY(idle());
+    auto *list = item("fileList");
+    QVERIFY(list);
+    QTRY_VERIFY(list->property("contentHeight").toDouble() > list->height() + 1);
+    // Directory restoration completes on the first rendered frame. Decoder idle
+    // alone does not mean the saved scroll offset has been applied.
+    QTRY_VERIFY(!item("filesPane")->property("restorePending").toBool());
+    for (int round = 0; round < 3; ++round) {
+      const auto position = list->property("originY").toDouble()
+                          + list->property("contentHeight").toDouble() - list->height();
+      list->setProperty("contentY", position);
+      QTest::qWait(50);
+      const auto before = list->property("contentY").toDouble();
+      QVERIFY(before > list->property("originY").toDouble() + 1);
+      QVERIFY(QMetaObject::invokeMethod(item("globalFocusPreview"), "clicked"));
+      QTRY_VERIFY(workspace->property("focusMode").toBool());
+      QTest::qWait(50);
+      QVERIFY(QMetaObject::invokeMethod(item("globalFocusPreview"), "clicked"));
+      QTRY_VERIFY(!workspace->property("focusMode").toBool());
+      QTRY_VERIFY(!item("filesPane")->property("restorePending").toBool());
+      QCOMPARE(list->property("contentY").toDouble(), before);
+    }
+  }
+  void drawerHistoryShortcuts() {
+    window_->resize(1280, 800);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    workspace->setProperty("focusMode", false);
+    const auto parent = root_ + "/drawer-history";
+    const auto child = parent + "/child";
+    QVERIFY(QDir().mkpath(child));
+    desktop_->navigate(parent);
+    QTRY_COMPARE(desktop_->directory(), parent);
+    QTRY_VERIFY(idle());
+    desktop_->navigate(child);
+    QTRY_COMPARE(desktop_->directory(), child);
+    QTRY_VERIFY(idle());
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openAddress"));
+    auto *drawer = window_->findChild<QObject *>("fileDrawer");
+    QVERIFY(drawer);
+    const auto cleanup = qScopeGuard([&] {
+      QMetaObject::invokeMethod(drawer, "close");
+      QTRY_VERIFY(!drawer->property("visible").toBool());
+      window_->resize(1600, 900);
+    });
+    QTRY_VERIFY(drawer->property("opened").toBool());
+    auto *address = item("address");
+    QVERIFY(address);
+    QTRY_VERIFY(address->hasActiveFocus());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!address->hasActiveFocus());
+    QVERIFY(drawer->property("opened").toBool());
+    QTest::keyClick(window_, Qt::Key_Left, Qt::AltModifier);
+    QTRY_COMPARE(desktop_->directory(), parent);
+    QTRY_VERIFY(idle());
+    QTest::keyClick(window_, Qt::Key_Right, Qt::AltModifier);
+    QTRY_COMPARE(desktop_->directory(), child);
+    QTRY_VERIFY(idle());
+    QTest::keyClick(window_, Qt::Key_Up, Qt::AltModifier);
+    QTRY_COMPARE(desktop_->directory(), parent);
+  }
   void parentNavigationKeepsSession() {
     const auto parent = root_ + "/parent-navigation";
     const auto current = parent + "/current";
@@ -1179,6 +1263,54 @@ private slots:
       QVERIFY2(qAbs(measured - height) < .5,
                qPrintable(QString("Transient viewport resize: %1 -> %2").arg(height).arg(measured)));
   }
+  void pixelHoverKeepsReadoutAndGeometry() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    QVERIFY(session);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(session->available() && !session->busy());
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    item("pixelToggle")->setProperty("checked", true);
+    QTest::qWait(100);
+    auto *pane = view->parentItem()->parentItem();
+    pane->setProperty("fixedSample", false);
+    view->fit();
+    const auto height = view->height();
+    const auto zoom = view->zoom();
+    auto move = [&](QPointF p) {
+      QTest::mouseMove(window_, view->mapToScene(p).toPoint());
+      QTest::qWait(30);
+    };
+    for (int repeat = 0; repeat < 12; ++repeat) {
+      move(view->imageRect().center());
+      QTRY_VERIFY(session->pixel()["valid"].toBool());
+      const auto sample = session->pixel();
+      move({1, 1});
+      QCOMPARE(session->pixel(), sample);
+      QVERIFY(qAbs(view->height() - height) < .5);
+      QVERIFY(qAbs(view->zoom() - zoom) < .00001);
+    }
+    const auto sample = session->pixel();
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      view->mapToScene({1, 1}).toPoint());
+    QVERIFY(!pane->property("fixedSample").toBool());
+    QCOMPARE(session->pixel(), sample);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      view->mapToScene(view->imageRect().center()).toPoint());
+    QVERIFY(pane->property("fixedSample").toBool());
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      view->mapToScene({1, 1}).toPoint());
+    QVERIFY(pane->property("fixedSample").toBool());
+    QCOMPARE(session->pixel(), sample);
+    view->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QVERIFY(!pane->property("fixedSample").toBool());
+    // Loading another image must still invalidate the previous image's sample.
+    session->open(fixture_ + "/图片0.png");
+    QVERIFY(!session->pixel()["valid"].toBool());
+    QTRY_VERIFY(!session->busy());
+    save("pixel-hover-stable");
+  }
   void pixelInspectionUsesContentHeight() {
     auto *workspace = item("workspace");
     QVERIFY(workspace);
@@ -1256,7 +1388,7 @@ private slots:
           toggle->setProperty("checked", true);
           QTRY_VERIFY(item("pixelPanel"));
           auto *panel = item("pixelPanel");
-          // An empty sample must shrink too; valid values may then grow naturally.
+          // Empty readouts reserve channel rows so first hover does not resize the image.
           for (bool valid : {false, true}) {
             session->sample(valid ? 0 : -999, valid ? 0 : -999);
             QCOMPARE(session->pixel()["valid"].toBool(), valid);

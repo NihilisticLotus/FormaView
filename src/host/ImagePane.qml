@@ -18,6 +18,9 @@ ColumnLayout {
             if (!root.session.busy) { loadingDelay.stop(); root.loadingNotice = false }
             else if (!loadingDelay.running && !root.loadingNotice) loadingDelay.start()
         }
+        function onPixelChanged() {
+            if (!root.session.pixel.valid) root.fixedSample = false
+        }
     }
     Component.onCompleted: if (session.busy) loadingDelay.start()
     spacing: 4
@@ -101,7 +104,10 @@ ColumnLayout {
             property point start
             property point oldPan
             onPressed: mouse => { view.forceActiveFocus(); start = Qt.point(mouse.x, mouse.y); oldPan = view.pan }
-            onClicked: mouse => { if (mouse.button === Qt.LeftButton) { view.pick(mouse.x, mouse.y); root.fixedSample = !root.fixedSample } }
+            onClicked: mouse => {
+                if (mouse.button === Qt.LeftButton && view.pick(mouse.x, mouse.y))
+                    root.fixedSample = !root.fixedSample
+            }
             onPositionChanged: mouse => {
                 if (pressedButtons & Qt.MiddleButton) view.pan = Qt.point(oldPan.x + mouse.x - start.x, oldPan.y + mouse.y - start.y)
                 else if (!root.fixedSample) view.pick(mouse.x, mouse.y)
