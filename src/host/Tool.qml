@@ -4,14 +4,15 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 Button {
     id: control
+    property bool form: false
     property bool quiet: false
     property bool primary: false
     property string hint: ""
     property string iconName: ""
     property real iconRotation: 0
-    implicitHeight: Theme.controlHeight
+    implicitHeight: control.form ? Theme.formControlHeight : Theme.controlHeight
     implicitWidth: Math.max(32, implicitContentWidth + leftPadding + rightPadding)
-    font.pixelSize: Theme.compactText
+    font.pixelSize: control.form ? Theme.formText : Theme.compactText
     focusPolicy: Qt.StrongFocus
     leftPadding: text ? 12 : 7
     rightPadding: leftPadding

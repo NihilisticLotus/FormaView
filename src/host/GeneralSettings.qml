@@ -31,20 +31,20 @@ Item {
             id: scroll; objectName: "generalSettingsScroll"
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             ColumnLayout {
-                width: Math.min(900, scroll.availableWidth); x: (scroll.availableWidth - width) / 2; spacing: 28
+                width: Math.min(900, scroll.availableWidth); x: (scroll.availableWidth - width) / 2; spacing: 24
                 SettingsGroup {
                     visible: root.section === "general"; title: Theme.t("外观", "Appearance", "外觀")
                     SettingsRow {
                         label: Theme.t("界面语言", "Interface language", "介面語言")
-                        Choice { objectName: "settingsLanguage"; Layout.preferredWidth: 220; model: ["简体中文", "English", "繁體中文"]; currentIndex: ["zh-CN","en","zh-TW"].indexOf(root.draft.language); onActivated: root.change("language", ["zh-CN","en","zh-TW"][currentIndex]); Accessible.name: Theme.t("界面语言", "Interface language", "介面語言") }
+                        Choice { form: true; objectName: "settingsLanguage"; Layout.preferredWidth: 220; model: ["简体中文", "English", "繁體中文"]; currentIndex: ["zh-CN","en","zh-TW"].indexOf(root.draft.language); onActivated: root.change("language", ["zh-CN","en","zh-TW"][currentIndex]); Accessible.name: Theme.t("界面语言", "Interface language", "介面語言") }
                     }
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
                     SettingsRow {
                         label: Theme.t("界面密度", "Interface density", "介面密度")
                         RowLayout {
                             spacing: 0
-                            Tool { objectName: "settingsDensityStandard"; Layout.preferredWidth: 105; text: Theme.t("标准", "Standard", "標準"); checked: root.draft.density === "standard"; onClicked: root.change("density", "standard") }
-                            Tool { objectName: "settingsDensityCompact"; Layout.preferredWidth: 105; text: Theme.t("紧凑", "Compact", "緊湊"); checked: root.draft.density === "compact"; onClicked: root.change("density", "compact") }
+                            Tool { form: true; objectName: "settingsDensityStandard"; Layout.preferredWidth: 105; text: Theme.t("标准", "Standard", "標準"); checked: root.draft.density === "standard"; onClicked: root.change("density", "standard") }
+                            Tool { form: true; objectName: "settingsDensityCompact"; Layout.preferredWidth: 105; text: Theme.t("紧凑", "Compact", "緊湊"); checked: root.draft.density === "compact"; onClicked: root.change("density", "compact") }
                         }
                     }
                 }
@@ -58,12 +58,12 @@ Item {
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
                     SettingsRow {
                         label: Theme.t("文件面板", "Files pane", "檔案面板")
-                        Choice { objectName: "settingsFiles"; Layout.preferredWidth: 220; model: [Theme.t("默认展开", "Expanded by default", "預設展開"), Theme.t("默认收起", "Collapsed by default", "預設收起")]; currentIndex: root.draft.defaultFilesVisible ? 0 : 1; onActivated: root.change("defaultFilesVisible", currentIndex === 0); Accessible.name: parent.label }
+                        Choice { form: true; objectName: "settingsFiles"; Layout.preferredWidth: 220; model: [Theme.t("默认展开", "Expanded by default", "預設展開"), Theme.t("默认收起", "Collapsed by default", "預設收起")]; currentIndex: root.draft.defaultFilesVisible ? 0 : 1; onActivated: root.change("defaultFilesVisible", currentIndex === 0); Accessible.name: parent.label }
                     }
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
                     SettingsRow {
                         label: Theme.t("检查器", "Inspector", "檢查器")
-                        Choice { objectName: "settingsInspector"; Layout.preferredWidth: 220; model: [Theme.t("按需显示", "Show with an asset", "按需顯示"), Theme.t("始终显示", "Always show", "一律顯示"), Theme.t("默认收起", "Collapsed", "預設收起")]; currentIndex: ["auto", "always", "hidden"].indexOf(root.draft.inspectorMode); onActivated: root.change("inspectorMode", ["auto","always","hidden"][currentIndex]); Accessible.name: parent.label }
+                        Choice { form: true; objectName: "settingsInspector"; Layout.preferredWidth: 220; model: [Theme.t("按需显示", "Show with an asset", "按需顯示"), Theme.t("始终显示", "Always show", "一律顯示"), Theme.t("默认收起", "Collapsed", "預設收起")]; currentIndex: ["auto", "always", "hidden"].indexOf(root.draft.inspectorMode); onActivated: root.change("inspectorMode", ["auto","always","hidden"][currentIndex]); Accessible.name: parent.label }
                     }
                 }
                 SettingsGroup {
@@ -71,12 +71,12 @@ Item {
                     SettingsRow {
                         label: Theme.t("缓存位置", "Cache location", "快取位置")
                         description: Theme.t("当前使用内存缓存，不写入磁盘目录", "Uses memory cache; no disk cache directory", "目前使用記憶體快取，不寫入磁碟目錄")
-                        Field { Layout.preferredWidth: 260; readOnly: true; text: Theme.t("进程内存", "Process memory", "程序記憶體"); Accessible.name: parent.label }
+                        Field { form: true; Layout.preferredWidth: 260; readOnly: true; text: Theme.t("进程内存", "Process memory", "程序記憶體"); Accessible.name: parent.label }
                     }
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
                     SettingsRow {
                         visible: root.section !== "cache"; label: Theme.t("缓存管理", "Cache management", "快取管理")
-                        Tool { quiet: true; iconName: "expand"; text: Theme.t("查看缓存信息", "View cache details", "檢視快取資訊"); onClicked: root.sectionRequested("cache") }
+                        Tool { form: true; quiet: true; iconName: "expand"; text: Theme.t("查看缓存信息", "View cache details", "檢視快取資訊"); onClicked: root.sectionRequested("cache") }
                     }
                     SettingsRow { visible: root.section === "cache"; label: Theme.t("缩略图缓存", "Thumbnail cache", "縮圖快取"); description: Theme.t("按需加载；最多占用 32 MiB，退出时释放。", "Loaded on demand; capped at 32 MiB and released on exit.", "按需載入；最多使用 32 MiB，結束時釋放。") }
                 }
@@ -89,8 +89,8 @@ Item {
         RowLayout {
             Layout.fillWidth: false; Layout.preferredWidth: Math.min(900, root.width - 64); Layout.maximumWidth: 900; Layout.alignment: Qt.AlignHCenter; spacing: 12
             Label { Layout.fillWidth: true; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; text: Theme.t("修改后保存生效；切换设置页保留草稿。", "Save to apply changes; drafts are retained between settings pages.", "修改後儲存生效；切換設定頁保留草稿。") }
-            Tool { objectName: "discardGeneralSettings"; text: Theme.t("放弃更改", "Discard changes", "放棄變更"); enabled: root.dirty; onClicked: root.reset() }
-            Tool { objectName: "saveGeneralSettings"; primary: true; text: Theme.t("保存设置", "Save settings", "儲存設定"); enabled: root.dirty; onClicked: root.save() }
+            Tool { form: true; objectName: "discardGeneralSettings"; text: Theme.t("放弃更改", "Discard changes", "放棄變更"); enabled: root.dirty; onClicked: root.reset() }
+            Tool { form: true; objectName: "saveGeneralSettings"; primary: true; text: Theme.t("保存设置", "Save settings", "儲存設定"); enabled: root.dirty; onClicked: root.save() }
         }
     }
 }

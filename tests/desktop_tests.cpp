@@ -2134,7 +2134,8 @@ private slots:
       QVERIFY(settings->property("dirty").toBool());
       QTRY_VERIFY(item("settingsDraftStatus"));
       QCOMPARE(item("settingsDraftStatus")->property("text").toString(), QString("有未保存的更改"));
-      QVERIFY(item("settingsDraftStatus")->mapToScene({0,0}).y() >= window_->height() - 44);
+      // Visibility/text are updated before the layout polish places the label.
+      QTRY_VERIFY(item("settingsDraftStatus")->mapToScene({0,0}).y() >= window_->height() - 44);
       QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, destination)));
       QTRY_VERIFY(item("keepEditingSettings"));
       QCOMPARE(workspace->property("currentPage").toString(), QString("settings"));

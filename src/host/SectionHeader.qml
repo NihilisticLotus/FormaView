@@ -4,10 +4,11 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 Button {
     id: control
-    implicitHeight: Theme.rowHeight
+    property bool form: false
+    implicitHeight: control.form ? Theme.formControlHeight : Theme.rowHeight
     implicitWidth: implicitContentWidth + 28
     checkable: true; focusPolicy: Qt.StrongFocus
-    font.pixelSize: Theme.compactText
+    font.pixelSize: control.form ? Theme.formText : Theme.compactText
     leftPadding: 10; rightPadding: 10
     contentItem: RowLayout {
         spacing: 8

@@ -3,9 +3,10 @@ import QtQuick
 import QtQuick.Controls.Basic
 ComboBox {
     id: control
-    implicitHeight: Theme.controlHeight
+    property bool form: false
+    implicitHeight: control.form ? Theme.formControlHeight : Theme.controlHeight
     implicitWidth: Math.max(120, implicitContentWidth + 44)
-    font.pixelSize: Theme.compactText
+    font.pixelSize: control.form ? Theme.formText : Theme.compactText
     leftPadding: 10; rightPadding: 30
     focusPolicy: Qt.StrongFocus
     contentItem: Text { text: control.displayText; font: control.font; color: control.enabled ? Theme.text : Theme.muted; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }

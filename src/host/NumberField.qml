@@ -2,9 +2,10 @@ import QtQuick
 import QtQuick.Controls.Basic
 SpinBox {
     id: control
+    property bool form: false
     implicitWidth: 140
-    implicitHeight: Theme.controlHeight
-    font.pixelSize: Theme.compactText
+    implicitHeight: control.form ? Theme.formControlHeight : Theme.controlHeight
+    font.pixelSize: control.form ? Theme.formText : Theme.compactText
     up.indicator: Rectangle {
         x: control.mirrored ? 0 : control.width - width
         implicitWidth: 30; implicitHeight: Theme.controlHeight; height: control.height

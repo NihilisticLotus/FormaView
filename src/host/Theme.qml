@@ -5,6 +5,9 @@ QtObject {
     readonly property int bodyText: 13
     readonly property int compactText: 13
     readonly property int noteText: 12
+    readonly property int formText: compact ? 14 : 16
+    readonly property int formHeading: 18
+    readonly property int formControlHeight: compact ? 34 : 40
     readonly property int controlHeight: compact ? 28 : 32
     readonly property int rowHeight: compact ? 32 : 36
     readonly property int fileRowHeight: compact ? 48 : 60

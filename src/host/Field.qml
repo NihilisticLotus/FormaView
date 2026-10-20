@@ -2,8 +2,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 TextField {
     id: control
-    implicitHeight: Theme.controlHeight
-    font.pixelSize: Theme.compactText
+    property bool form: false
+    implicitHeight: control.form ? Theme.formControlHeight : Theme.controlHeight
+    font.pixelSize: control.form ? Theme.formText : Theme.compactText
     color: Theme.text
     selectionColor: Theme.selection
     selectedTextColor: Theme.text

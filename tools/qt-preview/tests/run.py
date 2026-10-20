@@ -87,10 +87,21 @@ for fixture, case in [("text", "text"), ("theme", "theme"), ("structure", "struc
         valid &= bool(d["errors"]) and all("Expected token" in e for e in d["errors"])
     else:
         valid &= not d["errors"]
+    # The legacy handler cases deliberately exercise the deprecated implicit
+    # Connections syntax as well as modern functions. Any other warning is a
+    # regression, including transient null-parent bindings during reconstruction.
+    warnings = d["final"].get("warnings", [])
+    legacy_warning = ("QML Connections: Implicitly defined onFoo properties in Connections are deprecated. "
+                      "Use this syntax instead: function onFoo(<arguments>) { ... }")
+    expected_warnings = [w for w in warnings if fixture in ("handlers-v2", "external-update")
+        and "/ExternalObservers.qml:" in w and w.endswith(legacy_warning)]
+    unexpected_warnings = [w for w in warnings if w not in expected_warnings]
+    valid &= not unexpected_warnings
     results.append({"case": fixture, "passed": bool(valid), "loaded_plugin": str(loaded),
         "exit_code": d["exit_code"], "stages": len(stages), "restored": d["a_restored_bytes"],
         "expected_compile_error": case == "invalid", "errors": d["errors"],
-        "warnings": d["final"].get("warnings", [])})
+        "warnings": warnings, "expected_legacy_warnings": expected_warnings,
+        "unexpected_warnings": unexpected_warnings})
     print(json.dumps(results[-1], ensure_ascii=False), flush=True)
 (root / "result.json").write_text(json.dumps({"plugin": str(plugin),
     "plugin_sha256": hashlib.sha256(plugin.read_bytes()).hexdigest(), "results": results},
