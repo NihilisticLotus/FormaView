@@ -268,6 +268,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
   busy_ = true;
   error_.clear();
   pixel_.clear();
+  samplePinned_ = false;
   emit changed();
   emit pixelChanged();
   auto result = std::make_shared<std::shared_ptr<ImagePixels>>();
@@ -534,6 +535,7 @@ void ImageSession::clear() {
   error_.clear();
   requested_.clear();
   pixel_.clear();
+  samplePinned_ = false;
   // FIFO worker cleanup releases cached CPU storage without blocking the UI.
   TaskRequest r;
   r.priority = Priority::Foreground;
@@ -573,11 +575,19 @@ void ImageSession::setting(const QString &name, const QVariant &v) {
     sample(pixel_["x"].toDouble(), pixel_["y"].toDouble(),
            pixel_["tileX"].toInt(), pixel_["tileY"].toInt());
 }
+void ImageSession::setSamplePinned(bool pinned) {
+  pinned = pinned && pixel_.value("valid").toBool() && !busy_;
+  if (samplePinned_ == pinned)
+    return;
+  samplePinned_ = pinned;
+  emit pixelChanged();
+}
 void ImageSession::sample(double x, double y, int tileX, int tileY) {
   pixel_ = {
       {"valid", false}, {"x", x}, {"y", y}, {"tileX", tileX}, {"tileY", tileY}};
   if (!pixels_ || busy_ || !error_.isEmpty() || !std::isfinite(x) ||
       !std::isfinite(y)) {
+    samplePinned_ = false;
     emit pixelChanged();
     return;
   }
@@ -586,6 +596,7 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
              py = std::floor(y) - static_cast<double>(s.data_window.y);
   if (px < 0 || py < 0 || px >= s.data_window.width ||
       py >= s.data_window.height) {
+    samplePinned_ = false;
     emit pixelChanged();
     return;
   }

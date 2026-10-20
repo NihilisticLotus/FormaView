@@ -269,6 +269,14 @@ QRectF ImageView::imageRect() const {
           static_cast<double>(data.height) * zoom_};
 }
 bool ImageView::pick(double x, double y) {
+  // The sample and its lock share a session lifetime. Hover events from a
+  // replacement pane or a window resize cannot overwrite a pinned sample.
+  if (session_ && session_->samplePinned())
+    return false;
+  return pickAt(x, y, false);
+}
+bool ImageView::pinAt(double x, double y) { return pickAt(x, y, true); }
+bool ImageView::pickAt(double x, double y, bool pin) {
   if (!previous_ || !session_ || session_->busy() ||
       !session_->error().isEmpty() || !std::isfinite(x) || !std::isfinite(y) ||
       x < 0 || y < 0 || x >= width() || y >= height())
@@ -290,6 +298,8 @@ bool ImageView::pick(double x, double y) {
     return false;
   session_->sample(std::floor(px) + static_cast<double>(w.x),
                    std::floor(py) + static_cast<double>(w.y), tx, ty);
+  if (pin)
+    session_->setSamplePinned(true);
   return session_->pixel().value("valid").toBool();
 }
 void ImageView::geometryChange(const QRectF &now, const QRectF &old) {

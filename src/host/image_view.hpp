@@ -31,6 +31,7 @@ public:
   Q_INVOKABLE void actual();
   Q_INVOKABLE void zoomAt(double factor, double x, double y);
   Q_INVOKABLE bool pick(double x, double y);
+  Q_INVOKABLE bool pinAt(double x, double y);
   QRectF imageRect() const;
 signals:
   void sessionChanged();
@@ -43,6 +44,7 @@ protected:
   void itemChange(ItemChange, const ItemChangeData &) override;
 
 private:
+  bool pickAt(double x, double y, bool pin);
   void refresh();
   QPointer<ImageSession> session_;
   std::shared_ptr<const ImagePixels> previous_;

@@ -11,16 +11,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--build", type=Path, required=True)
 parser.add_argument("--qt", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--plugin", type=Path, help="Verify this installed copy of the built plugin")
+parser.add_argument("--sdk-discovery", action="store_true",
+                    help="Use only the SDK plugin path; no project plugin override")
 args = parser.parse_args()
 root = args.output.resolve()
 root.mkdir(parents=True, exist_ok=False)
 manifest = json.loads((args.build / "plugin-RelWithDebInfo.json").read_text())
-plugin = Path(manifest["deployed"]).resolve(strict=True)
+plugin = (args.plugin or Path(manifest["deployed"])).resolve(strict=True)
 assert plugin.read_bytes() == Path(manifest["built"]).read_bytes()
+if args.sdk_discovery:
+    assert plugin == (args.qt / "plugins/qmltooling/qmldbg_preview.dll").resolve(strict=True)
 driver = Path(json.loads((args.build / "regression-RelWithDebInfo.json").read_text())["executable"])
 env = os.environ.copy()
 env.update(PATH=str(args.qt / "bin") + ";" + env["PATH"],
-           QT_PLUGIN_PATH=str(plugin.parent.parent) + ";" + str(args.qt / "plugins"),
+           QT_PLUGIN_PATH=(str(args.qt / "plugins") if args.sdk_discovery else
+                           str(plugin.parent.parent) + ";" + str(args.qt / "plugins")),
            QML_IMPORT_PATH=str(args.qt / "qml"), QT_QUICK_BACKEND="software",
            QT_QPA_PLATFORM="offscreen")
 results = []
@@ -104,6 +110,7 @@ for fixture, case in [("text", "text"), ("theme", "theme"), ("structure", "struc
         "unexpected_warnings": unexpected_warnings})
     print(json.dumps(results[-1], ensure_ascii=False), flush=True)
 (root / "result.json").write_text(json.dumps({"plugin": str(plugin),
+    "sdk_discovery": args.sdk_discovery,
     "plugin_sha256": hashlib.sha256(plugin.read_bytes()).hexdigest(), "results": results},
     ensure_ascii=False, indent=2), encoding="utf-8")
 assert all(r["passed"] for r in results)

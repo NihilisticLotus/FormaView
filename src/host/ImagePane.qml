@@ -9,7 +9,7 @@ ColumnLayout {
     required property var controller
     readonly property var session: controller.image
     readonly property var mapping: session.info.mapping || ["", "", "", ""]
-    property bool fixedSample: false
+    readonly property bool fixedSample: session.samplePinned
     property bool loadingNotice: false
     Timer { id: loadingDelay; interval: 300; onTriggered: root.loadingNotice = root.session.busy }
     Connections {
@@ -17,9 +17,6 @@ ColumnLayout {
         function onChanged() {
             if (!root.session.busy) { loadingDelay.stop(); root.loadingNotice = false }
             else if (!loadingDelay.running && !root.loadingNotice) loadingDelay.start()
-        }
-        function onPixelChanged() {
-            if (!root.session.pixel.valid) root.fixedSample = false
         }
     }
     Component.onCompleted: if (session.busy) loadingDelay.start()
@@ -93,7 +90,7 @@ ColumnLayout {
                 else if (event.key === Qt.Key_G) root.session.setting("channel", 1)
                 else if (event.key === Qt.Key_B) root.session.setting("channel", 2)
                 else if (event.key === Qt.Key_A) root.session.setting("channel", 3)
-                else if (event.key === Qt.Key_Escape && root.fixedSample) root.fixedSample = false
+                else if (event.key === Qt.Key_Escape && root.fixedSample) root.session.setSamplePinned(false)
                 else return
                 event.accepted = true
             }
@@ -105,8 +102,7 @@ ColumnLayout {
             property point oldPan
             onPressed: mouse => { view.forceActiveFocus(); start = Qt.point(mouse.x, mouse.y); oldPan = view.pan }
             onClicked: mouse => {
-                if (mouse.button === Qt.LeftButton && view.pick(mouse.x, mouse.y))
-                    root.fixedSample = !root.fixedSample
+                if (mouse.button === Qt.LeftButton) view.pinAt(mouse.x, mouse.y)
             }
             onPositionChanged: mouse => {
                 if (pressedButtons & Qt.MiddleButton) view.pan = Qt.point(oldPan.x + mouse.x - start.x, oldPan.y + mouse.y - start.y)

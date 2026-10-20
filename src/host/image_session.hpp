@@ -34,6 +34,7 @@ class ImageSession : public QObject {
   Q_PROPERTY(QVariantList channels READ channels NOTIFY changed)
   Q_PROPERTY(int selected READ selected NOTIFY changed)
   Q_PROPERTY(QVariantMap pixel READ pixel NOTIFY pixelChanged)
+  Q_PROPERTY(bool samplePinned READ samplePinned NOTIFY pixelChanged)
   Q_PROPERTY(QVariantMap display READ display NOTIFY displayChanged)
   Q_PROPERTY(QVariantMap dimensions READ dimensions NOTIFY changed)
 public:
@@ -58,6 +59,7 @@ public:
   }
   int selected() const { return selected_; }
   QVariantMap pixel() const { return pixel_; }
+  bool samplePinned() const { return samplePinned_; }
   QVariantMap display() const { return display_; }
   QVariantMap dimensions() const;
   std::shared_ptr<const ImagePixels> pixels() const { return pixels_; }
@@ -70,6 +72,7 @@ public:
   Q_INVOKABLE void selectDimension(const QString &name, int value);
   Q_INVOKABLE void setting(const QString &name, const QVariant &value);
   Q_INVOKABLE void sample(double x, double y, int tileX = 0, int tileY = 0);
+  Q_INVOKABLE void setSamplePinned(bool pinned);
   Q_INVOKABLE QString pixelReport() const;
 signals:
   void changed();
@@ -92,4 +95,5 @@ private:
   quint64 generation_{};
   int selected_{}, resourceOffset_{};
   bool busy_{};
+  bool samplePinned_{};
 };

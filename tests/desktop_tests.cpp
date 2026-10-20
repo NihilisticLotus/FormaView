@@ -1273,7 +1273,7 @@ private slots:
     item("pixelToggle")->setProperty("checked", true);
     QTest::qWait(100);
     auto *pane = view->parentItem()->parentItem();
-    pane->setProperty("fixedSample", false);
+    session->setSamplePinned(false);
     view->fit();
     const auto height = view->height();
     const auto zoom = view->zoom();
@@ -1310,6 +1310,77 @@ private slots:
     QVERIFY(!session->pixel()["valid"].toBool());
     QTRY_VERIFY(!session->busy());
     save("pixel-hover-stable");
+  }
+  void pinnedSampleSurvivesPaneRecreation() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(session->available() && !session->busy());
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    QTest::qWait(100);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                     view->mapToScene(view->imageRect().center()).toPoint());
+    auto *pane = view->parentItem()->parentItem();
+    QVERIFY(pane->property("fixedSample").toBool());
+    const auto sample = session->pixel();
+    auto *loader = pane->parentItem();
+    QVERIFY(loader->metaObject()->indexOfProperty("active") >= 0);
+    QPointer<QQuickItem> oldPane = pane;
+    QVERIFY(loader->setProperty("active", false));
+    QTRY_VERIFY(oldPane.isNull());
+    QCOMPARE(session->pixel(), sample);
+    QVERIFY(loader->setProperty("active", true));
+    QTRY_VERIFY(item("imageViewport"));
+    view = qobject_cast<ImageView *>(item("imageViewport"));
+    pane = view->parentItem()->parentItem();
+    QVERIFY2(pane->property("fixedSample").toBool(),
+             "A replacement image pane must retain the session's pinned sample");
+    QTest::mouseMove(window_, view->mapToScene(view->imageRect().topLeft() + QPointF(4, 4)).toPoint());
+    QCOMPARE(session->pixel(), sample);
+    save("pinned-pane-recreated");
+  }
+  void pinnedSampleRepickAndWindowStates() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(session->available() && !session->busy());
+    auto *view = qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    QTest::qWait(100);
+    auto click = [&](QPointF point) {
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                       view->mapToScene(point).toPoint());
+    };
+    click(view->imageRect().center());
+    auto *pane = view->parentItem()->parentItem();
+    QVERIFY(pane->property("fixedSample").toBool());
+    const auto first = session->pixel();
+    click(view->imageRect().center() + QPointF(20, 10));
+    QVERIFY2(pane->property("fixedSample").toBool(),
+             "Clicking a second pixel must repin, not silently resume hover sampling");
+    QVERIFY(session->pixel() != first);
+    const auto sample = session->pixel();
+    for (int repeat = 0; repeat < 3; ++repeat) {
+      window_->showMaximized();
+      QTRY_COMPARE(window_->visibility(), QWindow::Maximized);
+      QTest::qWait(60);
+      QTest::mouseMove(window_, view->mapToScene(view->imageRect().center()).toPoint());
+      QCOMPARE(session->pixel(), sample);
+      QVERIFY(pane->property("fixedSample").toBool());
+      window_->showNormal();
+      QTRY_COMPARE(window_->visibility(), QWindow::Windowed);
+      window_->resize(repeat % 2 ? QSize(1280, 800) : QSize(1600, 900));
+      QTest::qWait(60);
+      QCOMPARE(session->pixel(), sample);
+      QVERIFY(pane->property("fixedSample").toBool());
+    }
+    view->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QVERIFY(!pane->property("fixedSample").toBool());
+    session->open(fixture_ + "/图片0.png");
+    QVERIFY(!session->pixel()["valid"].toBool());
+    QTRY_VERIFY(!session->busy());
+    QVERIFY(!pane->property("fixedSample").toBool());
+    save("pinned-window-states");
   }
   void pixelInspectionUsesContentHeight() {
     auto *workspace = item("workspace");

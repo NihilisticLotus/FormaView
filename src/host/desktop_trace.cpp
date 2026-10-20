@@ -1,5 +1,8 @@
 #include "desktop_trace.hpp"
 #include "desktop.hpp"
+#ifdef FORMAVIEW_IMAGE_UI
+#include "image_session.hpp"
+#endif
 #ifdef FORMAVIEW_MODEL_UI
 #include "model_view.hpp"
 #endif
@@ -83,6 +86,15 @@ public:
     // native filter while CreateWindowEx is itself dispatching messages.
     handle_ = reinterpret_cast<HWND>(window->winId());
     qGuiApp->installNativeEventFilter(this);
+#ifdef FORMAVIEW_IMAGE_UI
+    if (auto *image = qobject_cast<ImageSession *>(desktop_->image()))
+      QObject::connect(image, &ImageSession::pixelChanged, owner, [this] {
+        if (pixelEvents_.size() < 2000)
+          pixelEvents_.append(QJsonObject{
+              {"elapsed_ms", ms(Clock::now() - state_->start)},
+              {"sample", imageSample()}});
+      });
+#endif
     QObject::connect(
         window, &QQuickWindow::afterSynchronizing, owner,
         [state = state_] {
@@ -186,6 +198,24 @@ public:
     const auto *event = static_cast<MSG *>(message);
     if (!window_ || event->hwnd != handle_)
       return false;
+    if (windowEvents_.size() < 2000 &&
+        (event->message == WM_LBUTTONDOWN || event->message == WM_LBUTTONUP ||
+         event->message == WM_NCLBUTTONDOWN || event->message == WM_NCLBUTTONUP ||
+         event->message == WM_NCLBUTTONDBLCLK || event->message == WM_SYSCOMMAND ||
+         event->message == WM_SIZE)) {
+      POINT client = event->pt;
+      ScreenToClient(handle_, &client);
+      windowEvents_.append(QJsonObject{
+          {"elapsed_ms", ms(Clock::now() - state_->start)},
+          {"message", static_cast<int>(event->message)},
+          {"wparam", static_cast<qint64>(event->wParam)},
+          {"screen_x", static_cast<int>(event->pt.x)},
+          {"screen_y", static_cast<int>(event->pt.y)},
+          {"client_x", static_cast<int>(client.x)},
+          {"client_y", static_cast<int>(client.y)},
+          {"width", window_->width()}, {"height", window_->height()},
+          {"dpr", window_->devicePixelRatio()}, {"sample", imageSample()}});
+    }
     const bool moving =
         event->message == WM_MOUSEMOVE &&
         (event->wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON));
@@ -302,6 +332,14 @@ public:
           {"cpu_ms", double(ticks(kernel) + ticks(user)) / 10000.0}});
     }
   }
+  QJsonObject imageSample() const {
+#ifdef FORMAVIEW_IMAGE_UI
+    if (auto *image = qobject_cast<ImageSession *>(desktop_->image()))
+      return {{"path", image->path()}, {"pinned", image->samplePinned()},
+              {"pixel", QJsonObject::fromVariantMap(image->pixel())}};
+#endif
+    return {};
+  }
   void flush() {
     QJsonObject result;
     {
@@ -362,6 +400,9 @@ public:
             {"available_height", screen->availableGeometry().height()}};
     }
     result["resources"] = resources_;
+    result["image_sampling"] = imageSample();
+    result["window_events"] = windowEvents_;
+    result["pixel_events"] = pixelEvents_;
     QDir().mkpath(QFileInfo(path_).absolutePath());
     QSaveFile file(path_);
     const auto bytes = QJsonDocument(result).toJson();
@@ -379,6 +420,7 @@ private:
   QTimer timer_, views_;
   int ticks_{};
   QJsonArray resources_;
+  QJsonArray windowEvents_, pixelEvents_;
   std::vector<Input> dispatchStack_;
 };
 
