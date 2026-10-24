@@ -14,6 +14,7 @@ ColumnLayout {
     readonly property string inspectionKey: JSON.stringify([inputs, paired.text])
     onInputsChanged: { selectedClips = []; content.currentIndex = inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
     readonly property bool multipleStacks: organization.currentIndex === 1
+    readonly property bool hasActorX: (inputs || []).some(p => /\.(psk|pskx|psa)$/i.test(String(p)))
     readonly property string contentLabel: content.displayText
     readonly property string coordinateLabel: axes.displayText + " · " + unit.displayText
     readonly property string contentValue: ["combined", "model", "animation"][content.currentIndex]
@@ -52,12 +53,12 @@ ColumnLayout {
                     onActivated: root.edited(); Accessible.name: Theme.t("导出内容", "Export content", "匯出內容")
                 }
             }
-            RowLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1
+            RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("配对文件", "Paired file", "配對檔案") }
                 Field { id: paired; objectName: "modelExportPaired"; form: true; Layout.fillWidth: true; placeholderText: Theme.t("模型配 PSA；PSA 配参考 PSK / PSKX", "PSA for model; reference PSK/PSKX for PSA", "模型配 PSA；PSA 配參考 PSK / PSKX"); onTextEdited: { root.selectedClips = []; root.edited() } Accessible.name: placeholderText }
                 Tool { form: true; iconName: "folder"; hint: Theme.t("选择配对文件", "Choose paired file", "選擇配對檔案"); onClicked: pairFile.open() }
             }
-            RowLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1
+            RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("骨架配对", "Skeleton pairing", "骨架配對") }
                 Choice { id: pairing; form: true; Layout.fillWidth: true
                     labels: [Theme.t("严格匹配源记录", "Strict source records", "嚴格匹配來源記錄"), Theme.t("使用参考模型骨架", "Use reference skeleton", "使用參考模型骨架")]
@@ -65,7 +66,7 @@ ColumnLayout {
                     onActivated: root.edited(); Accessible.name: Theme.t("骨架配对", "Skeleton pairing", "骨架配對")
                 }
             }
-            Readout { form: true; Layout.fillWidth: true; visible: content.currentIndex !== 1; label: Theme.t("PSA 配置 · 自动适配", "PSA config · Automatic", "PSA 設定 · 自動適配"); value: Theme.t("自动查找同目录同名 .config；预检列明采用路径、RemoveTracks 与参考恢复规则。", "Find same-directory, same-basename .config; preflight lists the applied file, RemoveTracks and reference recovery rules.", "自動尋找同目錄同名 .config；預檢列明採用路徑、RemoveTracks 與參考恢復規則。") }
+            Readout { form: true; Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1; label: Theme.t("PSA 配置 · 自动适配", "PSA config · Automatic", "PSA 設定 · 自動適配"); value: Theme.t("自动查找同目录同名 .config；预检列明采用路径、RemoveTracks 与参考恢复规则。", "Find same-directory, same-basename .config; preflight lists the applied file, RemoveTracks and reference recovery rules.", "自動尋找同目錄同名 .config；預檢列明採用路徑、RemoveTracks 與參考恢復規則。") }
             RowLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("动作片段", "Animation clips", "動作片段") }
                 Choice { id: clipMode; objectName: "modelExportClipMode"; form: true; Layout.fillWidth: true
@@ -101,14 +102,14 @@ ColumnLayout {
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("坐标预设", "Axis preset", "座標預設") }
                 Choice { id: axes; objectName: "modelExportAxes"; form: true; Layout.fillWidth: true
                     labels: [Theme.t("保留源坐标", "Preserve source", "保留來源座標"), "Maya · Y↑ / RH", "Houdini · Y↑ / RH", "Unreal Engine · Z↑ / LH", "3ds Max · Z↑ / RH", "Cinema 4D · Y↑ / LH", "Blender · Z↑ / RH", "Unity · Y↑ / LH"]
-                    notes: [Theme.t("ActorX 本路径明确解释为 Z 上、X 前、右手、厘米。", "This ActorX path explicitly uses Z up, X forward, right-handed, centimetres.", "ActorX 本路徑明確解釋為 Z 上、X 前、右手、公分。"), Theme.t("Maya 默认 Y 上、厘米；单位仍由下方单独设置。", "Maya defaults to Y up and cm; set output units separately below.", "Maya 預設 Y 上、公分；單位仍由下方單獨設定。"), Theme.t("Houdini 常用米；选择预设不会自动改变输出单位。", "Houdini commonly uses metres; this preset does not change output units.", "Houdini 常用公尺；選擇預設不會自動改變輸出單位。"), Theme.t("左手；+X 前，+Y 右，+Z 上；常用厘米。", "Left-handed: +X forward, +Y right, +Z up; commonly cm.", "左手；+X 前，+Y 右，+Z 上；常用公分。"), Theme.t("右手、Z 上；System Unit 默认英寸，与显示单位不同。", "Right-handed Z up; System Unit defaults to inches and differs from display units.", "右手、Z 上；System Unit 預設英吋，與顯示單位不同。"), Theme.t("左手、Y 上；按实际 Project Scale 选择单位。", "Left-handed Y up; use the actual Project Scale.", "左手、Y 上；按實際 Project Scale 選擇單位。"), Theme.t("右手、Z 上；按 Scene Units 选择单位，不猜测角色朝向。", "Right-handed Z up; use Scene Units. Character facing is not inferred.", "右手、Z 上；按 Scene Units 選擇單位，不猜測角色朝向。"), Theme.t("左手；+Z 前，+X 右，+Y 上；常用米。", "Left-handed: +Z forward, +X right, +Y up; commonly metres.", "左手；+Z 前，+X 右，+Y 上；常用公尺。")]
+                    notes: [Theme.t("FBX 保留文件声明；glTF/VRM 为右手 Y 上、米；ActorX 为 Z 上、X 前、右手、厘米。OBJ/PMX 的源单位假设列入预检。", "FBX uses file metadata; glTF/VRM use right-handed Y-up metres; ActorX uses right-handed Z-up/X-forward cm. Preflight lists OBJ/PMX unit assumptions.", "FBX 保留檔案宣告；glTF/VRM 為右手 Y 上、公尺；ActorX 為 Z 上、X 前、右手、公分。OBJ/PMX 的來源單位假設列入預檢。"), Theme.t("Maya 默认 Y 上、厘米；单位仍由下方单独设置。", "Maya defaults to Y up and cm; set output units separately below.", "Maya 預設 Y 上、公分；單位仍由下方單獨設定。"), Theme.t("Houdini 常用米；选择预设不会自动改变输出单位。", "Houdini commonly uses metres; this preset does not change output units.", "Houdini 常用公尺；選擇預設不會自動改變輸出單位。"), Theme.t("左手；+X 前，+Y 右，+Z 上；常用厘米。", "Left-handed: +X forward, +Y right, +Z up; commonly cm.", "左手；+X 前，+Y 右，+Z 上；常用公分。"), Theme.t("右手、Z 上；System Unit 默认英寸，与显示单位不同。", "Right-handed Z up; System Unit defaults to inches and differs from display units.", "右手、Z 上；System Unit 預設英吋，與顯示單位不同。"), Theme.t("左手、Y 上；按实际 Project Scale 选择单位。", "Left-handed Y up; use the actual Project Scale.", "左手、Y 上；按實際 Project Scale 選擇單位。"), Theme.t("右手、Z 上；按 Scene Units 选择单位，不猜测角色朝向。", "Right-handed Z up; use Scene Units. Character facing is not inferred.", "右手、Z 上；按 Scene Units 選擇單位，不猜測角色朝向。"), Theme.t("左手；+Z 前，+X 右，+Y 上；常用米。", "Left-handed: +Z forward, +X right, +Y up; commonly metres.", "左手；+Z 前，+X 右，+Y 上；常用公尺。")]
                     onActivated: root.edited(); Accessible.name: Theme.t("导出坐标预设", "Output axis preset", "匯出座標預設")
                 }
             }
             RowLayout { Layout.fillWidth: true
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("输出单位", "Output units", "輸出單位") }
                 Choice { id: unit; objectName: "modelExportUnit"; form: true; Layout.fillWidth: true; labels: [Theme.t("保留源单位", "Preserve source units", "保留來源單位"), "cm", "m", "mm", "in"]
-                    notes: [Theme.t("ActorX 源约定为厘米。", "ActorX source convention is centimetres.", "ActorX 來源約定為公分。"), "1 cm = 0.01 m", "1 m = 100 cm", "1 mm = 0.1 cm", "1 in = 2.54 cm"]
+                    notes: [Theme.t("按源格式保留单位；无单位声明时在预检中说明假设。", "Preserve source units; preflight reports assumptions when units are not declared.", "按來源格式保留單位；無單位宣告時在預檢中說明假設。"), "1 cm = 0.01 m", "1 m = 100 cm", "1 mm = 0.1 cm", "1 in = 2.54 cm"]
                     onActivated: root.edited(); Accessible.name: Theme.t("输出单位", "Output units", "輸出單位")
                 }
             }

@@ -2536,6 +2536,75 @@ private slots:
 
 
 #ifdef FORMAVIEW_MODEL_EXPORT
+  void sceneExportGuiLifecycle() {
+    const auto fixtures = qEnvironmentVariable("FORMAVIEW_SCENE_EXPORT_FIXTURES");
+    if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_SCENE_EXPORT_FIXTURES to scene_export_tests synthetic fixtures");
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace"); QVERIFY(service && workspace);
+    desktop_->navigate(fixtures); QTRY_VERIFY(desktop_->directory() == fixtures && idle());
+    desktop_->filter("", 0, 0); QTRY_VERIFY(idle());
+    const auto index = static_cast<FileList *>(desktop_->files())->indexOf(fixtures + "/source.glb");
+    QVERIFY(index >= 0); desktop_->select(index); QTRY_VERIFY(idle());
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QTRY_VERIFY(item("modelExportContent"));
+    const auto cleanup = qScopeGuard([&] { if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(conversion, "close"); });
+    const auto edit = [&](const char *name, const QString &text) {
+      auto *field = item(name); QVERIFY(field); field->forceActiveFocus();
+      QVERIFY(QMetaObject::invokeMethod(field, "selectAll"));
+      QInputMethodEvent event; event.setCommitString(text); QCoreApplication::sendEvent(field, &event);
+      QCOMPARE(field->property("text").toString(), text);
+    };
+    const auto choose = [&](const char *name, int value) {
+      auto *choice = item(name); QVERIFY(choice); choice->forceActiveFocus(); QTest::keyClick(window_, Qt::Key_Home);
+      for (int n = 0; n < value; ++n) QTest::keyClick(window_, Qt::Key_Down);
+      QCOMPARE(choice->property("currentIndex").toInt(), value);
+    };
+    const auto click = [&](const char *name) {
+      auto *control = item(name); QVERIFY(control && control->isEnabled()); control->forceActiveFocus(); QTest::qWait(80);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, control->mapToScene({control->width()/2,control->height()/2}).toPoint());
+    };
+    const auto output = root_ + "/scene-export"; QVERIFY(QDir().mkpath(output)); edit("conversionOutputRoot", output);
+    choose("modelExportContent", 0);
+    auto *pairedControl = window_->findChild<QQuickItem *>("modelExportPaired");
+    QVERIFY(pairedControl); QVERIFY(!pairedControl->isVisible());
+    click("modelExportInspect"); QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && !service->modelSources().isEmpty(), 10000);
+    QCOMPARE(service->modelSources().front().toMap().value("clips").toList().size(), 2);
+    QJsonArray jobs;
+    for (int mode = 0; mode < 2; ++mode) {
+      if (mode) click("editConversionSettings");
+      choose("modelExportOrganization", mode == 0 ? 1 : 0);
+      QCOMPARE(item("conversionNamingTemplate")->property("text").toString(), mode == 0 ? QString("{name}-animations.{ext}") : QString("{name}-{clip}.{ext}"));
+      save("scene-settings-" + QString::number(mode)); click("createImagePlan");
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+      QCOMPARE(service->plan().value("items").toList().size(), mode == 0 ? 1 : 2);
+      save("scene-preflight-" + QString::number(mode));
+      if (auto *ack = item("acknowledgeImageLosses"); ack && !ack->property("checked").toBool()) click("acknowledgeImageLosses");
+      click("submitImagePlan"); QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
+      for (const auto &v : service->job().value("items").toList()) {
+        const auto result = v.toMap().value("result").toMap();
+        const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(result.value("committed_output").toString().toStdWString()));
+        QCOMPARE(doc.data().clips.size(), mode == 0 ? 2u : 1u); QCOMPARE(doc.data().meshes.size(), 1u);
+        for (const auto &clip : doc.data().clips) {
+          QCOMPARE(clip.start, clip.source.original_name == "Move" ? 2.0 : 7.0);
+          QCOMPARE(clip.end, clip.source.original_name == "Move" ? 4.0 : 9.0);
+        }
+      }
+      jobs.append(QJsonObject::fromVariantMap(service->job()));
+      item("conversionSteps")->setProperty("currentIndex", 1);
+    }
+    QStringList sources;
+    for (const auto *suffix : {"obj", "gltf", "glb", "pmx", "vrm"}) sources.append(fixtures + "/source." + suffix);
+    QVariantMap scope{{"input_roots", QStringList{fixtures}}, {"output_roots", QStringList{output}}, {"allow_overwrite", false}};
+    service->preflight(sources, scope, {{"target", "fbx"}, {"export_content", "model"}}, "batch-{index}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+    QCOMPARE(service->plan().value("items").toList().size(), 5);
+    service->submit(true); QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
+    for (const auto &v : service->job().value("items").toList()) {
+      const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(v.toMap().value("result").toMap().value("committed_output").toString().toStdWString()));
+      QCOMPARE(doc.data().meshes.size(), 1u); QVERIFY(doc.data().clips.empty());
+    }
+    jobs.append(QJsonObject::fromVariantMap(service->job())); evidence_["scene_export_gui"] = jobs;
+  }
   void modelExportGuiLifecycle() {
     const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to skeletal_tests fbx synthetic fixtures");

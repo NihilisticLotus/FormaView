@@ -132,7 +132,7 @@ FormGroup {
         Tool { form: true; text: Theme.t("取消", "Cancel", "取消"); onClicked: root.back() }
 Tool { form: true; iconName: "preflight"; primary: true; objectName: "createImagePlan"; text: root.controller.imageJobs.busy ? Theme.t("正在准备…", "Preparing…", "正在準備…") : Theme.t("开始预检", "Start preflight", "開始預檢"); enabled: !root.controller.imageJobs.busy && root.inputs.length > 0 && !!input.text && !!output.text && !root.namingPreview.error && (conflict.currentIndex !== 2 || overwrite.checked); onClicked: root.preflight({input_roots: [input.text], output_roots: [output.text], allow_overwrite: overwrite.checked}, root.options(), naming.nameTemplate, ["skip", "rename", "overwrite"][conflict.currentIndex]) }
     }
-FileDialog { id: modelFiles; fileMode: FileDialog.OpenFiles; nameFilters: ["ActorX (*.psk *.pskx *.psa)"]; onAccepted: { root.chooseInputs(selectedFiles.map(f => root.controller.localFile(f))); root.edited() } }
+FileDialog { id: modelFiles; fileMode: FileDialog.OpenFiles; nameFilters: ["Models (" + (root.controller.imageJobs.capabilities.model_export?.input_formats || []).map(x => "*." + x).join(" ") + ")"]; onAccepted: { root.chooseInputs(selectedFiles.map(f => root.controller.localFile(f))); root.edited() } }
 FolderDialog { id: inputFolder; onAccepted: { input.text = root.controller.localFile(selectedFolder); root.edited() } }
 FolderDialog { id: outputFolder; onAccepted: { output.text = root.controller.localFile(selectedFolder); root.edited() } }
 }

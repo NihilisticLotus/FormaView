@@ -193,6 +193,10 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           const auto content = itemOptions.take("export_content").toString("combined");
           const auto organization = itemOptions.take("file_organization").toString("per-clip");
           const auto paired = itemOptions.take("paired_file").toString();
+          const auto suffix = QFileInfo(inputs[i]).suffix().toLower();
+          const bool actorx = suffix == "psk" || suffix == "pskx" || suffix == "psa";
+          itemOptions["coordinates"] = actorx ? "actorx-z-up-x-forward-rh-cm" : "source";
+          if (!actorx) itemOptions.remove("pairing_policy");
           const bool selection_explicit = itemOptions.contains("selected_clips");
           const auto selection = itemOptions.take("selected_clips").toArray();
           if (content != "model" && content != "combined" && content != "animation")
@@ -200,11 +204,11 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           if (organization != "per-clip" && organization != "multiple-stacks")
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Unknown file organization");
           auto animation_source = source;
-          if (content == "combined" && !source["has_mesh"].toBool() &&
+          if (actorx && content == "combined" && !source["has_mesh"].toBool() &&
               paired.isEmpty() && !source.contains("error"))
             throw skeletal::Failure(ErrorCode::InvalidArgument,
                 "Model + animation export needs a paired reference model for PSA input");
-          if (content != "model" && !paired.isEmpty()) {
+          if (actorx && content != "model" && !paired.isEmpty()) {
             if (source["has_mesh"].toBool()) {
               itemOptions["animation"] = paired;
               auto inspect_animation = request("inspect");
@@ -223,7 +227,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           if (content != "model" && clips.isEmpty() && !animation_source.contains("error")) {
             if (selection_explicit) continue;
             throw skeletal::Failure(ErrorCode::InvalidArgument,
-                "No source animation selected; choose model-only or pair a PSA animation");
+                "No source animation selected; choose model-only, or supply an ActorX animation pair");
           }
           if (content == "model" && !source["has_mesh"].toBool() && !source.contains("error"))
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
@@ -363,7 +367,8 @@ void ImageJobs::inspectModelInputs(const QStringList &inputs, const QVariantMap 
       for (const auto &input : inputs) {
         auto q = request("inspect"); q["input"] = input;
         auto source = execute_image_request(q, policy, {}, stop);
-        if (source["has_mesh"].toBool() && !paired.isEmpty()) {
+        const auto suffix = QFileInfo(input).suffix().toLower();
+        if ((suffix == "psk" || suffix == "pskx") && source["has_mesh"].toBool() && !paired.isEmpty()) {
           q["input"] = paired;
           source = execute_image_request(q, policy, {}, stop);
         }

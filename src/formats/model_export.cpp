@@ -1,5 +1,6 @@
 #include "formaview/model_export.hpp"
 #include "formaview/fbx.hpp"
+#include "scene_export.hpp"
 #include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
@@ -147,7 +148,7 @@ bool handles(const QJsonObject &r) {
   if (r["options"].toObject()["target"] == "fbx")
     return true;
   const auto ext = QFileInfo(r["input"].toString()).suffix().toLower();
-  return ext == "psk" || ext == "pskx" || ext == "psa";
+  return ext == "psk" || ext == "pskx" || ext == "psa" || scene_export::handles(ext);
 }
 void validate_options(const QJsonObject &o) {
   const std::set<QString> allowed{
@@ -157,9 +158,9 @@ void validate_options(const QJsonObject &o) {
   for (auto it = o.begin(); it != o.end(); ++it)
     if (!allowed.contains(it.key()))
       fail(ErrorCode::InvalidArgument, "Unknown model export option");
-  if (o["target"] != "fbx" || o["coordinates"] != "actorx-z-up-x-forward-rh-cm")
+  if (o["target"] != "fbx" || (o.contains("coordinates") && o["coordinates"] != "actorx-z-up-x-forward-rh-cm" && o["coordinates"] != "source"))
     fail(ErrorCode::InvalidArgument,
-         "FBX target and explicit ActorX numerical convention required");
+         "Expected FBX target and a supported source coordinate convention");
   for (const auto key : {"clip_id", "reference", "animation", "companion",
                          "pairing_policy", "output_axes", "output_unit"})
     if (o.contains(key) && (!o[key].isString() || o[key].toString().isEmpty()))
@@ -186,9 +187,13 @@ void validate_options(const QJsonObject &o) {
     fail(ErrorCode::InvalidArgument, "Unknown pairing policy");
 }
 QJsonObject capabilities() {
+  QJsonArray formats{"psk", "pskx", "psa", "obj", "fbx", "pmx"};
+#ifdef FORMAVIEW_GLTF_EXPORT
+  formats.append("gltf"); formats.append("glb"); formats.append("vrm");
+#endif
   return {
       {"id", "model.export_fbx"},
-      {"input_formats", QJsonArray{"psk", "pskx", "psa"}},
+      {"input_formats", formats},
       {"output_formats", QJsonArray{"fbx"}},
       {"approval_required", true},
       {"clip_selection",
@@ -212,6 +217,10 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   if (operation != "inspect" && operation != "preflight" &&
       operation != "convert")
     fail(ErrorCode::InvalidArgument, "Unsupported model export operation");
+  if (scene_export::handles(QFileInfo(request["input"].toString()).suffix().toLower()))
+    return scene_export::execute(request, scope, limits, stop, protected_inputs, commit_observer, reserved_outputs, approved_output);
+  if (operation != "inspect" && request["options"].toObject()["coordinates"] != "actorx-z-up-x-forward-rh-cm")
+    fail(ErrorCode::InvalidArgument, "Explicit ActorX numerical convention required");
   sk::ReadOptions read;
   read.limits = limits;
   read.stop = stop;

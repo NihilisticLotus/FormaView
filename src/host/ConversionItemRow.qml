@@ -18,7 +18,7 @@ Rectangle {
     implicitHeight: content.implicitHeight + 24
     color: Theme.panel
     ColumnLayout {
-        id: content; anchors.fill: parent; anchors.margins: 12; spacing: 10
+        id: content; x: 12; y: 12; width: parent.width - 24; spacing: 10
         RowLayout {
             Layout.fillWidth: true; spacing: 24
             ColumnLayout {
@@ -37,7 +37,7 @@ Rectangle {
                 Label { Layout.fillWidth: true; textFormat: Text.PlainText; visible: !!root.entry.error; color: Theme.error; wrapMode: Text.WrapAnywhere; text: root.entry.error ? root.entry.error.code + ": " + root.entry.error.message : "" }
                 Repeater {
                     model: root.preflight ? root.result.losses || [] : []
-                    Label { required property var modelData; Layout.fillWidth: true; font.pixelSize: Theme.compactText; textFormat: Text.PlainText; color: Theme.accent; wrapMode: Text.WrapAnywhere; text: modelData.code + ": " + modelData.detail }
+                    Label { required property var modelData; Layout.fillWidth: true; font.pixelSize: Theme.compactText; textFormat: Text.PlainText; color: Theme.accent; wrapMode: Text.Wrap; text: modelData.code + ": " + modelData.detail }
                 }
                 Label { Layout.fillWidth: true; visible: !!root.entry.temporary_cleanup_error || !!root.entry.outcome_uncertain; color: Theme.error; wrapMode: Text.WordWrap; text: Theme.t("需检查中断或临时文件清理结果。", "Review interrupted output or temporary-file cleanup.", "需檢查中斷或暫存檔清理結果。") }
             }
@@ -48,7 +48,7 @@ Rectangle {
             Readout { Layout.fillWidth: true; label: Theme.t("来源 → 确定输出", "Source → Resolved output", "來源 → 確定輸出"); value: (root.request.input || "") + "\n→ " + root.output }
             Readout { visible: root.modelExport; Layout.fillWidth: true; label: Theme.t("动作与根运动", "Clips and root motion", "動作與根運動"); value: root.clipSummary + "\n" + Theme.t("保留源根运动；每个动作独立 Stack / Take。", "Source root motion; each clip is an independent Stack/Take.", "保留來源根運動；每個動作獨立 Stack / Take。") }
             Readout { visible: root.modelExport; Layout.fillWidth: true; label: Theme.t("坐标与单位", "Axes and units", "座標與單位"); value: (root.result.output_coordinates?.preset || "—") + " · " + (root.result.output_coordinates?.unit || "—") + " · " + (root.result.output_coordinates?.metres_per_unit ?? "—") + " m/unit" }
-            Readout { visible: root.modelExport; Layout.fillWidth: true; label: "PSA .config"; value: (root.result.psa_companion?.status || "—") + "\n" + (root.result.psa_companion?.candidate || "") + "\n" + JSON.stringify(root.result.psa_companion?.clip_rules || [], null, 2) }
+            Readout { visible: root.modelExport && !!root.result.psa_companion; Layout.fillWidth: true; label: "PSA .config"; value: (root.result.psa_companion?.status || "—") + "\n" + (root.result.psa_companion?.candidate || "") + "\n" + JSON.stringify(root.result.psa_companion?.clip_rules || [], null, 2) }
             Tool { text: Theme.t("复制完整详情", "Copy full details", "複製完整詳情"); onClicked: root.controller.copy(JSON.stringify(root.entry, null, 2)) }
         }
     }

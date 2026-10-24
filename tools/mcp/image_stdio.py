@@ -251,7 +251,7 @@ async def retry_image_plan(job_id: str) -> dict[str, Any]:
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
 async def inspect_model(input: str) -> dict[str, Any]:
-    """Inspect PSK/PSKX/PSA source structure and stable animation clip IDs for FBX export.
+    """Inspect supported model source structure and stable animation clip IDs for FBX export.
 
     Does not inherit preview root lock. Query capabilities.model_export for actual formats.
     """
@@ -263,7 +263,11 @@ async def create_model_export_plan(items: list[dict[str, Any]]) -> dict[str, Any
     """Preflight FBX export through the shared durable job service, up to 64 explicit outputs.
 
     Each item: input, output, conflict=skip/rename/overwrite, options.
-    options: target='fbx', coordinates='actorx-z-up-x-forward-rh-cm'.
+    options: target='fbx'. PSK/PSKX/PSA additionally require
+    coordinates='actorx-z-up-x-forward-rh-cm'; other inputs use source conventions.
+    OBJ/glTF/GLB/FBX/PMX/VRM share this interface when listed in capabilities.
+    For multi-animation FBX splitting, inspect the source, then create one item
+    per clip_id. Each clip keeps its original time interval.
     Optional output_axes: source/maya/houdini/unreal/3ds-max/cinema4d/blender/unity;
     output_unit: source/cm/m/mm/in. Defaults preserve explicit source convention.
     PSK/PSKX alone exports a model. PSA requires clip_id from inspect_model.

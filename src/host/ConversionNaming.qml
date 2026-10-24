@@ -17,6 +17,7 @@ ColumnLayout {
     onModelModeChanged: chooseDefault()
     onMultipleStacksChanged: {
         if (modelMode && multipleStacks && pattern.text === "{name}-{clip}.{ext}") { preset.currentIndex = 3; pattern.text = "{name}-animations.{ext}"; edited() }
+        else if (modelMode && !multipleStacks && pattern.text === "{name}-animations.{ext}") { preset.currentIndex = 2; pattern.text = "{name}-{clip}.{ext}"; edited() }
     }
     RowLayout {
         Layout.fillWidth: true; spacing: 12

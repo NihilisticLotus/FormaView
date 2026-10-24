@@ -382,7 +382,21 @@ struct ImageBatchService::Impl {
         const auto request = entry.toObject()["request"].toObject();
         const auto options = request["options"].toObject();
         if (options["target"] != "fbx") continue;
-        for (const auto &auxiliary : model_export::auxiliary_inputs(request)) {
+        auto auxiliaries = model_export::auxiliary_inputs(request);
+        const auto suffix = QFileInfo(request["input"].toString()).suffix().toLower();
+        if (suffix != "psk" && suffix != "pskx" && suffix != "psa") {
+          auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
+          try {
+            const auto allocation = ImageAdmission(false, stop);
+            const auto source = execute_image_request(inspect, scope, limits.image, stop);
+            for (const auto &value : source["sources"].toArray())
+              auxiliaries.emplace_back(value.toObject()["path"].toString().toStdWString());
+          } catch (const skeletal::Failure &) {
+            // The per-item pass reports malformed/cancelled inputs. Keep the
+            // base source protected without aborting unrelated batch items.
+          }
+        }
+        for (const auto &auxiliary : auxiliaries) {
           InputSnapshot fallback;
           fallback.resolved_path = auxiliary;
           try {
@@ -413,7 +427,7 @@ struct ImageBatchService::Impl {
           }
           const auto allocation = ImageAdmission(false, stop);
           auto reserved_outputs = allocated_outputs;
-          if (planning && request["conflict"] == "rename") {
+          if (planning && request.value("conflict") == "rename") {
             // Reserve future requested names too: an earlier rename must not
             // consume a later skip/overwrite/rename item's destination.
             for (qsizetype other = 0; other < entries.size(); ++other) {
