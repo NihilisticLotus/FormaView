@@ -6845,6 +6845,96 @@ private slots:
     QVERIFY(!report.targetNode.has_value());
     qInfo()<<"R13 real glTF conservative rejection"<<outside<<"rotations; worst norm squared error"<<worstNorm;
   }
+  void modelR13MalformedDecoderEvidence() {
+    auto source=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
+    QVERIFY(source->decoderSnapshot);
+    for(int fault=0;fault<4;++fault){
+      auto bad=std::make_shared<ModelDecoderSnapshot>(*source->decoderSnapshot);
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*bad->animations);
+      auto &c=data->clips[0].channels[0];QVERIFY(c.times.size()>1);QVERIFY(!c.values.empty());
+      if(fault==0)c.times[1]=c.times[0];
+      if(fault==1)c.values[0]=std::numeric_limits<double>::quiet_NaN();
+      if(fault==2)c.values.pop_back();
+      if(fault==3){c.times.clear();c.values.clear();}
+      bad->animations=data;
+      QCOMPARE(compareFixedDecoder(bad,bad).value("verdict").toString(),QString("insufficient"));
+    }
+  }
+  void modelMorphStepEndpoint() {
+    const auto directory=qEnvironmentVariable("FORMAVIEW_R13_STEP");QVERIFY(!directory.isEmpty());
+    const auto document=readModelDocument(directory+"/step.gltf",{});
+    QFile expected(directory+"/expected.json");QVERIFY(expected.open(QIODevice::ReadOnly));
+    const auto last=QJsonDocument::fromJson(expected.readAll()).object().value("last").toArray();
+    const auto end=document->animationClips.at(0).end;
+    for(double t:{end,end+1.0}){
+      const auto weights=document->morphWeightsAt(0,t);QCOMPARE(weights.size(),std::size_t(1));QCOMPARE(weights[0].size(),std::size_t(2));
+      for(int i=0;i<last.size();++i)QCOMPARE(weights[0][i],last[i].toDouble());
+      const auto worlds=document->worldAt(0,end);
+      const auto frame=buildAnimationFrame(*document,0,t,100,false,&worlds);
+      const auto &mesh=document->meshes[0];
+      for(std::size_t corner=0;corner<mesh.triangles.size();++corner){
+        const auto point=mesh.corners[mesh.triangles[corner]];const auto &base=mesh.raw[point];QVector3D p(float(base.x),float(base.y),float(base.z));
+        for(int k=0;k<last.size();++k){const auto &delta=mesh.morphTargets[k].positionDeltas[point];p+=QVector3D(float(delta.x),float(delta.y),float(delta.z))*float(last[k].toDouble());}
+        p=(document->displayBasis.map(p)-document->center)/std::max(document->radius,1e-6f);
+        const auto &actual=frame->vertices[corner];QVERIFY((p-QVector3D(actual.x,actual.y,actual.z)).length()<=1e-4f);
+      }
+    }
+  }
+  void modelR13MorphEvidence() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_MORPH");QVERIFY(!dir.isEmpty());
+    const auto original=readModelDocument(dir+"/morph-anim.gltf",{});
+    QVERIFY(original->decoderSnapshot);
+    QCOMPARE(compareFixedDecoder(original->decoderSnapshot,original->decoderSnapshot).value("verdict").toString(),QString("equivalent"));
+    QFile input(dir+"/morph-anim.gltf");QVERIFY(input.open(QIODevice::ReadOnly));
+    const auto envelope=QJsonDocument::fromJson(input.readAll()).object();
+    const auto folder=root_+"/r13-morph";QVERIFY(QDir().mkpath(folder));
+    const auto buffers=envelope.value("buffers").toArray();
+    for(const auto &b:buffers){const auto uri=b.toObject().value("uri").toString();
+      if(!uri.startsWith("data:")){QVERIFY(!uri.contains(".."));QVERIFY(QFile::copy(dir+"/"+uri,folder+"/"+uri));}}
+    const auto load=[&](QJsonObject value,const QString &name){
+      const auto path=folder+"/"+name+".gltf";QFile file(path);
+      if(!file.open(QIODevice::WriteOnly))return std::shared_ptr<ModelDocument>{};
+      file.write(QJsonDocument(value).toJson());file.close();return readModelDocument(path,{});
+    };
+    auto changed=envelope;auto meshes=changed.value("meshes").toArray();auto mesh=meshes[0].toObject();
+    mesh.insert("weights",QJsonArray{0.5,0.0});meshes[0]=mesh;changed.insert("meshes",meshes);
+    auto defaults=load(changed,"default");QVERIFY(defaults&&defaults->decoderSnapshot);
+    QCOMPARE(compareFixedDecoder(original->decoderSnapshot,defaults->decoderSnapshot).value("reason").toString(),QString("mappedMorphConflict"));
+    auto shading=envelope;shading.insert("extensionsUsed",QJsonArray{"KHR_materials_unlit"});
+    auto allowed=load(shading,"shading");QVERIFY(allowed&&allowed->decoderSnapshot);
+    QCOMPARE(compareFixedDecoder(original->decoderSnapshot,allowed->decoderSnapshot).value("verdict").toString(),QString("equivalent"));
+    auto unknown=envelope;unknown.insert("extensionsUsed",QJsonArray{"EXT_unknown_animation"});
+    auto rejected=load(unknown,"unknown");QVERIFY(rejected);QVERIFY(!rejected->decoderSnapshot);
+    std::stop_source cancelled;cancelled.request_stop();
+    QCOMPARE(compareFixedDecoder(original->decoderSnapshot,allowed->decoderSnapshot,cancelled.get_token()).value("verdict").toString(),QString("cancelled"));
+  }
+  void modelR13ClipCorrespondence() {
+    const auto source=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
+    QVERIFY(source->decoderSnapshot);
+    auto base=std::make_shared<ModelDecoderSnapshot>(*source->decoderSnapshot);
+    auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*base->animations);
+    QVERIFY(!data->clips.empty());auto clip=data->clips[0];
+    // Exact dyadic times keep this a strict timestamp-translation control.
+    for(auto &ch:clip.channels){QVERIFY(ch.times.size()>1);for(std::size_t k=0;k<ch.times.size();++k)ch.times[k]=static_cast<double>(k);}
+    clip.start=0;clip.end=static_cast<double>(clip.channels[0].times.size()-1);clip.name="A";
+    data->clips={clip,clip};data->clips[1].name="B";base->animations=data;
+    auto target=std::make_shared<ModelDecoderSnapshot>(*base);
+    auto shifted=std::make_shared<formaview::gltf::GltfAnimationData>(*data);
+    std::reverse(shifted->clips.begin(),shifted->clips.end());
+    for(auto &c:shifted->clips){c.start+=8;c.end+=8;for(auto &ch:c.channels)for(auto &t:ch.times)t+=8;}
+    target->animations=shifted;
+    auto proof=compareFixedDecoder(base,target);
+    QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
+    QCOMPARE(proof.value("curveCorrespondence").toMap().value("verdict").toString(),QString("exactKeysUnderTimeTranslation"));
+    QVERIFY(!proof.value("curveCorrespondence").toMap().value("floatingEvaluationEquivalent").toBool());
+    QCOMPARE(proof.value("curveCorrespondence").toMap().value("pairs").toList().size(),qsizetype(2));
+    shifted->clips[0].channels[0].values[0]+=.125;
+    QCOMPARE(compareFixedDecoder(base,target).value("curveCorrespondence").toMap().value("verdict").toString(),QString("insufficient"));
+    shifted->clips[0].channels[0].values[0]-=.125;
+    shifted->clips[0].channels[0].times[1]+=.25;
+    QCOMPARE(compareFixedDecoder(base,target).value("curveCorrespondence").toMap().value("verdict").toString(),QString("insufficient"));
+  }
+
   void modelR13FixedDecoderCongruence() {
     // A derived metadata-only envelope is a decoder control, not a second
     // independent asset or a format compatibility proof. Preserve the strict
@@ -7217,7 +7307,12 @@ private slots:
     // Autodesk FBX SDK 2020.2 EvaluateGlobalTransform is the oracle (p35-dialect). 48 chains:
     // 3 inheritance types x uniform/non-uniform root scale x plain/pivot+pre/post x +/- scale x 2 rotation orders.
     const auto dir=qEnvironmentVariable("FORMAVIEW_FBX_DIALECT");QVERIFY(!dir.isEmpty());
-    QFile oracle(dir+"/oracle.txt");QVERIFY(oracle.open(QIODevice::ReadOnly));
+    const auto expanded=qEnvironmentVariable("FORMAVIEW_FBX_DIALECT_EXTRA").split(';',Qt::SkipEmptyParts);
+    QCOMPARE(expanded.size(),qsizetype(3));
+    QStringList dirs{dir};dirs.append(expanded);
+    for(int domain=0;domain<dirs.size();++domain) {
+    const auto current=dirs[domain];
+    QFile oracle(current+"/oracle.txt");QVERIFY(oracle.open(QIODevice::ReadOnly));
     QMap<QString,double> worst;QMap<QString,int> samples;QHash<QString,std::shared_ptr<formaview::skeletal::FbxDocument>> documents;
     while(!oracle.atEnd()) {
       const auto parts=QString::fromUtf8(oracle.readLine()).trimmed().split(' ',Qt::SkipEmptyParts);
@@ -7225,26 +7320,30 @@ private slots:
       QCOMPARE(parts.size(),19);
       const auto file=parts[0];const double seconds=parts[1].toDouble();
       auto &document=documents[file];
-      if(!document)document=std::make_shared<formaview::skeletal::FbxDocument>(formaview::skeletal::FbxDocument::read(std::filesystem::path((dir+"/"+file).toStdWString())));
+      if(!document)document=std::make_shared<formaview::skeletal::FbxDocument>(formaview::skeletal::FbxDocument::read(std::filesystem::path((current+"/"+file).toStdWString())));
       const auto pose=document->evaluate(0,seconds);std::size_t at=0;
       while(at<document->data().nodes.size()&&QString::fromStdString(document->data().nodes[at].source.original_name)!=parts[2])++at;
       QVERIFY(at<pose.world.size());
+      const auto parent=document->data().nodes[at].parent;
+      const auto chained=parent?formaview::skeletal::multiply(pose.world[*parent],pose.local[at]):pose.local[at];
+      for(std::size_t k=0;k<16;++k)QVERIFY(std::abs(chained[k]-pose.world[at][k])<=1e-7);
+      const auto &node=document->data().nodes[at];
+      const auto rest=parent?formaview::skeletal::multiply(document->data().nodes[*parent].default_world,node.default_local):node.default_local;
+      for(std::size_t k=0;k<16;++k)QVERIFY(std::abs(rest[k]-node.default_world[k])<=1e-7);
       double error=0;for(int c=0;c<4;++c)for(int r=0;r<4;++r)error=std::max(error,std::abs(parts[3+c*4+r].toDouble()-pose.world[at][static_cast<std::size_t>(r*4+c)]));
       worst[file]=std::max(worst.value(file),error);++samples[file];
     }
-    QCOMPARE(worst.size(),qsizetype(48));
+    QCOMPARE(worst.size(),qsizetype(domain==0?48:(domain==2?1728:576)));
     int matched=0,diverged=0;QJsonArray rows;
     for(auto it=worst.cbegin();it!=worst.cend();++it) {
       QCOMPARE(samples.value(it.key()),15);
-      // ufbx's componentwise-scale mode (SDK RrSs) disagrees with the SDK below a negative-scale parent.
-      // This pins the observed divergence as a characterization; it is not a correctness claim for that dialect.
-      const bool documented=it.key().contains("-RrSs-")&&it.key().contains("-negscale-");
-      if(documented){QVERIFY2(it.value()>1e-3,qPrintable(it.key()));++diverged;}
-      else{QVERIFY2(it.value()<=1e-7,qPrintable(it.key()+" "+QString::number(it.value())));++matched;}
-      rows.append(QJsonObject{{"file",it.key()},{"maxError",it.value()},{"documentedDivergence",documented}});
+      const bool valid=it.value()<=1e-7;
+      if(valid)++matched;else ++diverged;
+      rows.append(QJsonObject{{"file",it.key()},{"maxError",it.value()},{"matched",valid}});
     }
-    QCOMPARE(matched,40);QCOMPARE(diverged,8);
-    QFile proof(root_+"/fbx-dialect-oracle.json");QVERIFY(proof.open(QIODevice::WriteOnly));proof.write(QJsonDocument(rows).toJson());
+    QFile proof(root_+"/fbx-dialect-oracle-"+QString::number(domain)+".json");QVERIFY(proof.open(QIODevice::WriteOnly));proof.write(QJsonDocument(rows).toJson());proof.close();
+    QCOMPARE(diverged,0);QCOMPARE(matched,worst.size());
+    }
   }
   void modelR13DecoderPublication() {
     const auto file=qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf";

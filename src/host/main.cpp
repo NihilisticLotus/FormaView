@@ -482,10 +482,10 @@ int main(int argc, char *argv[]) {
   const auto openIndex = app.arguments().indexOf("--open");
   if (openIndex >= 0 && openIndex + 1 < app.arguments().size())
     desktop.openPath(app.arguments()[openIndex + 1]);
-  const auto exit_code = app.exec();
+  auto exit_code = app.exec();
   app.trace=nullptr;
-  if (nativeTrace)
-    nativeTrace->flush();
+  if (nativeTrace && !nativeTrace->flush(true) && exit_code == 0)
+    exit_code = 6; // Requested trace could not be saved completely.
   const auto args = app.arguments();
   const auto metrics_index = args.indexOf("--metrics");
   if (metrics_index >= 0 && metrics_index + 1 < args.size()) {

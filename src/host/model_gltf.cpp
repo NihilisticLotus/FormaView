@@ -1036,9 +1036,10 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                                                            perKey);
                   auto &out = weights[mi];
                   out.assign(count, 0.0);
-                  if (channel.times.size() == 1) {
+                  if (channel.times.size() == 1 || seconds >= channel.times.back()) {
+                    const auto key = seconds >= channel.times.back() ? channel.times.size()-1 : 0;
                     for (std::size_t t = 0; t < count; ++t)
-                      out[t] = channel.values[t % channel.values.size()];
+                      out[t] = channel.values[key*perKey+t];
                     break;
                   }
                   // hi stays at size-2 so hi+1 is always a real key; the
@@ -1166,9 +1167,15 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
   // Fixed-decoder identity mapping only. Preserve raw defaults (including
   // non-unit quaternions); this is separate from the normative format proof.
   bool decoderComplete=evidence->fullNodeDomain && evidence->nativeSkinBindings.has_value()
-      && raw->extensions_used_count==0 && anims->warnings.empty()
+      && anims->warnings.empty()
       && anims->clips.size()==raw->animations_count;
   auto snapshot=std::make_shared<ModelDecoderSnapshot>();
+  for(std::size_t i=0;i<raw->extensions_used_count;++i){
+    const auto extension=name(raw->extensions_used[i]);
+    if(extension=="KHR_materials_unlit"||extension=="KHR_texture_transform")
+      snapshot->excludedShadingExtensions.append(extension);
+    else decoderComplete=false;
+  }
   auto append=[&](const auto &value) {
     budget.reserve(sizeof(value));
     snapshot->metadata.append(reinterpret_cast<const char*>(&value),sizeof(value));
@@ -1187,13 +1194,65 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
     float local[16];cgltf_node_transform_local(&n,local);
     for(float v:local){decoderComplete &= std::isfinite(v);append(v);}
   }
+  // Morph proof covers decoded local position/normal inputs, separately from
+  // skinning weights, materials and rasterization. Keep complete byte evidence,
+  // not a hash standing in for equality. Optional evidence must not make a
+  // previously loadable model fail its resource budget.
+  if (decoderComplete) {
+    const auto overhead=raw->nodes_count*(sizeof(QByteArray)+sizeof(std::size_t));
+    if(overhead>1024ULL*1024*1024-budget.decoded)decoderComplete=false;
+    else {
+      budget.reserve(overhead);
+      snapshot->morphInputs.resize(raw->nodes_count);
+      snapshot->morphTargetCounts.resize(raw->nodes_count);
+    }
+  }
+  std::size_t morphBytes=0, morphItems=0;
+  for(std::size_t ni=0;ni<raw->nodes_count && decoderComplete;++ni) {
+    check(stop);const auto &node=raw->nodes[ni];
+    if(!node.mesh)continue;
+    std::size_t targetCount=0;
+    for(std::size_t pi=0;pi<node.mesh->primitives_count;++pi)
+      targetCount=std::max(targetCount,node.mesh->primitives[pi].targets_count);
+    if(!targetCount)continue;
+    snapshot->morphTargetCounts[ni]=targetCount;
+    auto &bytes=snapshot->morphInputs[ni];
+    const auto add=[&](const auto &value) {
+      if((++morphItems%4096)==0)check(stop);
+      if(!decoderComplete)return;
+      if(sizeof(value)>64ULL*1024*1024-morphBytes || sizeof(value)>1024ULL*1024*1024-budget.decoded) {
+        decoderComplete=false;return;
+      }
+      budget.reserve(sizeof(value));morphBytes+=sizeof(value);
+      bytes.append(reinterpret_cast<const char*>(&value),sizeof(value));
+    };
+    add(node.mesh->primitives_count);add(targetCount);
+    const auto *defaults=node.weights?node.weights:node.mesh->weights;
+    const auto defaultCount=node.weights?node.weights_count:node.mesh->weights_count;
+    for(std::size_t i=0;i<targetCount;++i){const float w=i<defaultCount?defaults[i]:0.f;decoderComplete &= std::isfinite(w);add(w);}
+    std::size_t primitives=0;
+    const auto triples=[&](const auto &values){add(values.size());for(const auto &v:values){add(v.x);add(v.y);add(v.z);}};
+    for(std::size_t mi=0;mi<result->meshes.size() && decoderComplete;++mi) {
+      if(meshNodes[mi]!=ni)continue;
+      ++primitives;const auto &mesh=result->meshes[mi];
+      if(mesh.morphTargets.size()!=targetCount){decoderComplete=false;break;}
+      triples(mesh.raw);triples(mesh.animationPositions);triples(mesh.morphBaseNormals);
+      add(mesh.animationNormals.size());for(const auto &normal:mesh.animationNormals){add(normal.x());add(normal.y());add(normal.z());}
+      add(mesh.triangles.size());for(auto v:mesh.triangles)add(v);
+      add(mesh.corners.size());for(auto v:mesh.corners)add(v);
+      for(const auto &target:mesh.morphTargets){triples(target.positionDeltas);triples(target.normalDeltas);}
+    }
+    if(primitives!=node.mesh->primitives_count)decoderComplete=false;
+  }
+
   for(std::size_t c=0;c<anims->clips.size() && decoderComplete;++c) {
     if(anims->clips[c].channels.size()!=raw->animations[c].channels_count)decoderComplete=false;
     std::set<std::pair<std::uint32_t,int>> targets;
     for(const auto &channel:anims->clips[c].channels) {
       check(stop);
-      if(channel.path==gltf::TrackPath::Weights || channel.path==gltf::TrackPath::Unsupported
-          || channel.node_index>=raw->nodes_count || raw->nodes[channel.node_index].has_matrix
+      if(channel.path==gltf::TrackPath::Unsupported
+          || channel.node_index>=raw->nodes_count ||
+          (raw->nodes[channel.node_index].has_matrix && channel.path!=gltf::TrackPath::Weights)
           || !targets.emplace(channel.node_index,static_cast<int>(channel.path)).second)decoderComplete=false;
     }
   }
@@ -1257,12 +1316,17 @@ bool decoderView(const ModelDecoderSnapshot &s, DecoderView &out, std::stop_toke
 QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot> &a,
     const std::shared_ptr<const ModelDecoderSnapshot> &b, std::stop_token stop,
     const FixedDecoderOptions &options) {
-  QVariantMap report{{"domain","fixedDecoderProgram"},{"version",3},{"promotionEnabled",false},
-    {"scope","mapped complete decoded program; transforms only; same process implementation"}};
+  QVariantMap report{{"domain","fixedDecoderProgram"},{"version",4},{"promotionEnabled",false},
+    {"scope","mapped decoded node transforms and local morph inputs; same process implementation; excludes skin weights, shading and rasterization"}};
   // Callers may only tighten the built-in limits.
   const auto channelBudget=std::min<std::size_t>(options.channelBudget,1048576);
   const auto scalarBudget=std::min<std::size_t>(options.scalarBudget,67108864);
-  auto finish=[&](const char *v,const char *r){report.insert("verdict",v);report.insert("reason",r);return report;};
+  auto finish=[&](const char *v,const char *r){
+    report.insert("verdict",v);report.insert("reason",r);
+    if(!report.contains("curveCorrespondence"))report.insert("curveCorrespondence",QVariantMap{
+      {"verdict","insufficient"},{"reason",r},{"promotionEnabled",false},{"floatingEvaluationEquivalent",false}});
+    return report;
+  };
   if(stop.stop_requested())return finish("cancelled","cancelled");
   if(!a||!b||!a->animations||!b->animations)return finish("insufficient","missingEvidence");
   report.insert("sourceSha",a->sourceSha);report.insert("targetSha",b->sourceSha);
@@ -1314,6 +1378,31 @@ QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot
   report.insert("mapping",contract?"explicitBijection":identity?"fullIdentity":"fullNameBijection");
   report.insert("mappedPairs",pairs);
   report.insert("mappingSha",QString::fromLatin1(QCryptographicHash::hash(mappingBytes,QCryptographicHash::Sha256).toHex()));
+  const auto morphShape=[&](const ModelDecoderSnapshot &v){return
+    (v.morphInputs.empty()&&v.morphTargetCounts.empty()) ||
+    (v.morphInputs.size()==n&&v.morphTargetCounts.size()==n);};
+  if(!morphShape(*a)||!morphShape(*b))return finish("insufficient","invalidMorphSnapshot");
+  std::size_t morphScalars=0,morphNodes=0;
+  for(std::size_t i=0;i<n;++i){
+    if(stop.stop_requested())return finish("cancelled","cancelled");
+    const auto j=map[i];
+    const auto ac=a->morphTargetCounts.empty()?0:a->morphTargetCounts[i];
+    const auto bc=b->morphTargetCounts.empty()?0:b->morphTargetCounts[j];
+    const QByteArray empty;
+    const auto &u=a->morphInputs.empty()?empty:a->morphInputs[i];
+    const auto &v=b->morphInputs.empty()?empty:b->morphInputs[j];
+    if(ac!=bc||u.size()!=v.size()||((ac==0)!=u.isEmpty()))return finish("insufficient","mappedMorphConflict");
+    if(ac)++morphNodes;
+    for(qsizetype offset=0;offset<u.size();offset+=4096){
+      if(stop.stop_requested())return finish("cancelled","cancelled");
+      const auto bytes=std::min<qsizetype>(4096,u.size()-offset);
+      morphScalars+=(static_cast<std::size_t>(bytes)+7)/8;
+      if(morphScalars>scalarBudget)return finish("insufficient","budgetExceeded");
+      if(std::memcmp(u.constData()+offset,v.constData()+offset,static_cast<std::size_t>(bytes)))return finish("insufficient","mappedMorphConflict");
+    }
+  }
+  report.insert("morphNodes",static_cast<qulonglong>(morphNodes));
+  report.insert("excludedShadingExtensions",QVariantMap{{"source",a->excludedShadingExtensions},{"target",b->excludedShadingExtensions}});
   const auto &x=*a->animations,&y=*b->animations;
   // Coverage means identical externally supplied local overrides, not equality
   // of the authored curves. Defaults/parent/IBM above must be exact, including
@@ -1322,29 +1411,50 @@ QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot
   // non-empty channel in EVERY clip. animatedAll: every clip overrides at least one group,
   // so the static local branch is never evaluated for that node.
   struct Coverage{std::vector<unsigned> unionMask,forced;std::vector<unsigned char> animatedAll;};
-  std::size_t channels=0;
-  auto cover=[&](const gltf::GltfAnimationData &data,Coverage &out){
+  std::size_t channels=0,validatedScalars=morphScalars;
+  auto cover=[&](const ModelDecoderSnapshot &snapshot,const gltf::GltfAnimationData &data,Coverage &out){
     out.unionMask.assign(n,0);out.forced.assign(n,data.clips.empty()?0u:7u);out.animatedAll.assign(n,data.clips.empty()?0:1);
     std::vector<unsigned> valid(n);
     for(const auto &clip:data.clips){
+      if(!std::isfinite(clip.start)||!std::isfinite(clip.end)||clip.start>clip.end)return false;
       std::set<std::pair<std::uint32_t,int>> targets;std::fill(valid.begin(),valid.end(),0u);
       for(const auto &c:clip.channels){
         if(stop.stop_requested()||++channels>channelBudget||c.node_index>=n)return false;
         unsigned bit=0;
-        switch(c.path){case gltf::TrackPath::Translation:bit=1;break;case gltf::TrackPath::Rotation:bit=2;break;case gltf::TrackPath::Scale:bit=4;break;default:return false;}
-        if(c.components!=(bit==2?4u:3u)||!targets.emplace(c.node_index,static_cast<int>(c.path)).second)return false;
+        switch(c.path){case gltf::TrackPath::Translation:bit=1;break;case gltf::TrackPath::Rotation:bit=2;break;case gltf::TrackPath::Scale:bit=4;break;case gltf::TrackPath::Weights:bit=8;break;default:return false;}
+        const auto expected=bit==8?(snapshot.morphTargetCounts.empty()?0:snapshot.morphTargetCounts[c.node_index]):(bit==2?4u:3u);
+        if(!expected || (bit==8&&c.interpolation==gltf::Interpolation::CubicSpline) || c.components!=(bit==8?1u:expected)||!targets.emplace(c.node_index,static_cast<int>(c.path)).second)return false;
         out.unionMask[c.node_index]|=bit;
-        const std::size_t per=static_cast<std::size_t>(c.components)*(c.interpolation==gltf::Interpolation::CubicSpline?3u:1u);
-        if(!c.times.empty()&&c.values.size()==c.times.size()*per)valid[c.node_index]|=bit;
+        const std::size_t per=static_cast<std::size_t>(bit==8?expected:c.components)*(c.interpolation==gltf::Interpolation::CubicSpline?3u:1u);
+        if(c.interpolation!=gltf::Interpolation::Linear&&c.interpolation!=gltf::Interpolation::Step&&c.interpolation!=gltf::Interpolation::CubicSpline)return false;
+        if(c.times.empty()||c.times.size()>std::numeric_limits<std::size_t>::max()/per||c.values.size()!=c.times.size()*per)return false;
+        for(std::size_t k=0;k<c.times.size();++k){
+          if((k%4096)==0&&stop.stop_requested())return false;
+          if(++validatedScalars>scalarBudget||!std::isfinite(c.times[k])||(k&&c.times[k]<=c.times[k-1]))return false;
+        }
+        for(std::size_t k=0;k<c.values.size();++k){
+          if((k%4096)==0&&stop.stop_requested())return false;
+          if(++validatedScalars>scalarBudget||!std::isfinite(c.values[k]))return false;
+        }
+        if(c.times.front()<clip.start||c.times.back()>clip.end)return false;
+        valid[c.node_index]|=bit;
       }
-      for(std::size_t i=0;i<n;++i){out.forced[i]&=valid[i];if(!valid[i])out.animatedAll[i]=0;}
+      for(std::size_t i=0;i<n;++i){out.forced[i]&=valid[i];if(!(valid[i]&7u))out.animatedAll[i]=0;}
     }
     return true;};
   Coverage ca,cb;
-  if(!cover(x,ca)||!cover(y,cb))return stop.stop_requested()?finish("cancelled","cancelled"):
-      finish("insufficient",channels>channelBudget?"budgetExceeded":"invalidChannels");
+  // The established scalar cap counts corresponding scalar pairs, not both
+  // sides added together. Validate each side under that same cap before the
+  // pairwise comparison below; otherwise a valid 45M-scalar program is rejected
+  // merely because validation reads both inputs. Neither cap is enlarged.
+  const bool validSource=cover(*a,x,ca);
+  if(!validSource)return stop.stop_requested()?finish("cancelled","cancelled"):
+      finish("insufficient",(channels>channelBudget||validatedScalars>scalarBudget)?"budgetExceeded":"invalidChannels");
+  validatedScalars=morphScalars;
+  if(!cover(*b,y,cb))return stop.stop_requested()?finish("cancelled","cancelled"):
+      finish("insufficient",(channels>channelBudget||validatedScalars>scalarBudget)?"budgetExceeded":"invalidChannels");
   QVariantList coverage;int components=0;
-  for(std::size_t i=0;i<n;++i){const auto mask=ca.unionMask[i]&cb.unionMask[map[i]];if(!mask)continue;
+  for(std::size_t i=0;i<n;++i){const auto mask=ca.unionMask[i]&cb.unionMask[map[i]]&7u;if(!mask)continue;
     components+=static_cast<int>((mask&1)!=0)+static_cast<int>((mask&2)!=0)+static_cast<int>((mask&4)!=0);
     coverage.append(QVariantMap{{"source",static_cast<uint>(i)},{"target",static_cast<uint>(map[i])},{"mask",mask}});
   }
@@ -1382,7 +1492,8 @@ QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot
       {"componentCount",components},{"paths",coverage},{"deadDefaults",dead}});
     return finish("insufficient","mappedDefaultOrParentConflict");
   }
-  std::size_t count=0;
+  // Charge the comparison by scalar pairs; validation has its own identical cap.
+  std::size_t count=morphScalars;
   auto equal=[&](const std::vector<double> &u,const std::vector<double> &v){if(u.size()!=v.size())return false;
     for(std::size_t i=0;i<u.size();++i){if((i%4096)==0&&stop.stop_requested())return false;
       if(++count>scalarBudget||std::memcmp(&u[i],&v[i],sizeof(double))!=0)return false;}return true;};
@@ -1399,6 +1510,58 @@ QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot
       if(p.interpolation!=q.interpolation||p.components!=q.components||!equal(p.times,q.times)||!equal(p.values,q.values)){same=false;break;}
     }
   }
+  // Names select candidate clip pairs only; all decoded keys, interpolation,
+  // components and values must independently prove the correspondence.
+  // Timestamp translation is a curve-data statement, NOT a proof of identical
+  // IEEE-754 sampling after t+offset (cancellation/rounding can differ).
+  QVariantMap alignment{{"promotionEnabled",false},{"floatingEvaluationEquivalent",false},
+    {"scope","exact decoded curve keys under a constant timestamp translation; no time scaling, retargeting or floating-evaluation equivalence"}};
+  QVariantList alignedPairs;
+  bool aligned=same;
+  if(same) {
+    for(std::size_t i=0;i<x.clips.size();++i)alignedPairs.append(QVariantMap{
+      {"sourceClip",static_cast<qulonglong>(i)},{"targetClip",static_cast<qulonglong>(i)},{"targetTimeOffset",0.0}});
+    alignment.insert("mapping","sameIndexExactProgram");
+  } else {
+    aligned=x.clips.size()==y.clips.size()&&!x.clips.empty();
+    std::map<std::string,std::size_t> clipNames;std::set<std::string> sourceNames;
+    for(std::size_t i=0;i<y.clips.size()&&aligned;++i)
+      aligned=!y.clips[i].name.empty()&&clipNames.emplace(y.clips[i].name,i).second;
+    // TwoSum's residual checks exact real addition of binary64 inputs. A
+    // rounded offset or a rounded translated key is never accepted silently.
+    const auto exactSum=[](double a,double b,double target){
+      if(!std::isfinite(a)||!std::isfinite(b)||!std::isfinite(target))return false;
+      const double sum=a+b,part=sum-a;
+      const double residual=(a-(sum-part))+(b-part);
+      return std::isfinite(sum)&&sum==target&&residual==0;
+    };
+    for(std::size_t i=0;i<x.clips.size()&&aligned;++i) {
+      if(stop.stop_requested())return finish("cancelled","cancelled");
+      const auto &u=x.clips[i];const auto found=clipNames.find(u.name);
+      if(found==clipNames.end()||!sourceNames.insert(u.name).second){aligned=false;break;}
+      const auto j=found->second;const auto &v=y.clips[j];const double offset=v.start-u.start;
+      if(!exactSum(u.start,offset,v.start)||!exactSum(u.end,offset,v.end)||u.channels.size()!=v.channels.size()){aligned=false;break;}
+      std::map<std::pair<std::uint32_t,int>,const gltf::AnimationChannel*> target;
+      for(const auto &channel:v.channels)target.emplace(std::make_pair(channel.node_index,static_cast<int>(channel.path)),&channel);
+      for(const auto &p:u.channels) {
+        const auto it=target.find({static_cast<std::uint32_t>(map[p.node_index]),static_cast<int>(p.path)});
+        if(it==target.end()){aligned=false;break;}const auto &q=*it->second;
+        if(p.interpolation!=q.interpolation||p.components!=q.components||p.times.size()!=q.times.size()||!equal(p.values,q.values)){aligned=false;break;}
+        for(std::size_t k=0;k<p.times.size();++k) {
+          if((k%4096)==0&&stop.stop_requested())return finish("cancelled","cancelled");
+          if(++count>scalarBudget||!exactSum(p.times[k],offset,q.times[k])){aligned=false;break;}
+        }
+        if(!aligned)break;
+      }
+      if(aligned)alignedPairs.append(QVariantMap{{"sourceClip",static_cast<qulonglong>(i)},
+        {"targetClip",static_cast<qulonglong>(j)},{"targetTimeOffset",offset}});
+    }
+    alignment.insert("mapping","uniqueNamesThenExactKeyProof");
+  }
+  alignment.insert("verdict",aligned?"exactKeysUnderTimeTranslation":"insufficient");
+  alignment.insert("pairs",aligned?alignedPairs:QVariantList{});
+  report.insert("curveCorrespondence",alignment);
+
   report.insert("comparedScalars",static_cast<qulonglong>(count));
   if(stop.stop_requested())return finish("cancelled","cancelled");
   if(count>scalarBudget)return finish("insufficient","budgetExceeded");

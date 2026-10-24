@@ -89,6 +89,10 @@ struct ModelMesh {
 struct ModelDecoderSnapshot {
   std::vector<QString> nodeNames; // full raw domain; unique names may establish a candidate bijection
   QByteArray metadata;
+  // Full decoded local morph inputs; empty vector means a legacy TRS-only snapshot.
+  std::vector<QByteArray> morphInputs;
+  std::vector<std::size_t> morphTargetCounts;
+  QStringList excludedShadingExtensions;
   QString sourceSha;
   std::shared_ptr<const formaview::gltf::GltfAnimationData> animations;
 };

@@ -13,7 +13,8 @@ public:
   DesktopTrace(QQuickWindow *, Desktop *, QString,
                std::chrono::steady_clock::time_point);
   ~DesktopTrace() override;
-  void flush();
+  // Final failure is observable by the diagnostic process exit status.
+  bool flush(bool final = false);
   void beginDispatch(QObject *, QEvent *);
   void endDispatch();
 

@@ -1,6 +1,8 @@
 #include "formaview/fbx.hpp"
 #include "formaview/file_access.hpp"
 #include <cmath>
+#include <limits>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -16,6 +18,97 @@ Matrix4 convert(const ufbx_matrix &m) {
   return {m.m00, m.m01, m.m02, m.m03, m.m10, m.m11, m.m12, m.m13,
           m.m20, m.m21, m.m22, m.m23, 0,     0,     0,     1};
 }
+// SDK 2020.2 inheritance boundary, independently checked against SDK-authored
+// negative-scale, pivot, Euler-order and mixed-inheritance chains. Source
+// local channels remain ufbx-decoded; only their hierarchical composition is
+// adapted. A singular parent has no unique rotation/scale decomposition and
+// retains the reader result instead of manufacturing an inverse.
+struct EvaluatedWorlds {
+  std::vector<ufbx_matrix> values;
+  bool complete{true};
+};
+EvaluatedWorlds sdk_worlds(const ufbx_scene &scene, std::stop_token stop) {
+  EvaluatedWorlds result;
+  result.values.resize(scene.nodes.count);
+  std::vector<const ufbx_node *> order(scene.nodes.begin(), scene.nodes.end());
+  std::stable_sort(order.begin(), order.end(), [](auto *a, auto *b) {
+    return a->node_depth < b->node_depth;
+  });
+  const auto product = [](const ufbx_matrix &a, const ufbx_matrix &b) {
+    return ufbx_matrix_mul(&a, &b);
+  };
+  for (const auto *node : order) {
+    cancelled(stop);
+    auto &world = result.values[node->typed_id];
+    world = node->node_to_world;
+    if (!node->parent) continue;
+    const auto &parent = result.values[node->parent->typed_id];
+    auto inherited = parent;
+    inherited.cols[3] = {0, 0, 0};
+    auto rotation = node->local_transform;
+    rotation.translation = {0, 0, 0};
+    rotation.scale = {1, 1, 1};
+    const auto localRotation = ufbx_transform_to_matrix(&rotation);
+    auto scaling = ufbx_identity_transform;
+    scaling.scale = node->local_transform.scale;
+    const auto localScale = ufbx_transform_to_matrix(&scaling);
+    if (node->inherit_mode == UFBX_INHERIT_MODE_IGNORE_PARENT_SCALE) {
+      const auto scale = node->parent->local_transform.scale;
+      if (scale.x == 0 || scale.y == 0 || scale.z == 0) {
+        result.complete = false;
+        continue;
+      }
+      auto inverse = ufbx_identity_transform;
+      inverse.scale = {1 / scale.x, 1 / scale.y, 1 / scale.z};
+      inherited = product(inherited, ufbx_transform_to_matrix(&inverse));
+    }
+    if (node->inherit_mode == UFBX_INHERIT_MODE_COMPONENTWISE_SCALE) {
+      auto normalized = inherited;
+      const double sign = ufbx_matrix_determinant(&inherited) < 0 ? -1 : 1;
+      bool valid = ufbx_matrix_determinant(&inherited) != 0;
+      for (auto column = 0; column < 3; ++column) {
+        auto &v = normalized.cols[column];
+        const double length = std::hypot(v.x, v.y, v.z);
+        if (!(length > 0) || !std::isfinite(length)) { valid = false; break; }
+        v.x *= sign / length; v.y *= sign / length; v.z *= sign / length;
+      }
+      if (!valid) { result.complete = false; continue; }
+      // FBX AMatrix extracts XYZ Euler angles from signed normalized columns.
+      // Gram-Schmidt and polar/quaternion decomposition differ under shear.
+      constexpr double radiansToDegrees = 57.2957795130823208768;
+      const double cy=std::hypot(normalized.m00,normalized.m10);
+      // FbxEuler::DegenerateThreshold defaults to 16*FLT_EPSILON in SDK 2020.2.
+      // Near gimbal lock the SDK sets Z=0 and retains the coupled angle in X.
+      const bool singular=cy<=16.0*std::numeric_limits<float>::epsilon();
+      const ufbx_vec3 angles{
+          (singular?std::atan2(-normalized.m12,normalized.m11):std::atan2(normalized.m21,normalized.m22))*radiansToDegrees,
+          std::atan2(-normalized.m20,cy)*radiansToDegrees,
+          (singular?0.0:std::atan2(normalized.m10,normalized.m00))*radiansToDegrees};
+      auto transform = ufbx_identity_transform;
+      transform.rotation = ufbx_euler_to_quat(angles, UFBX_ROTATION_ORDER_XYZ);
+      const auto parentRotation = ufbx_transform_to_matrix(&transform);
+      const auto inverseRotation = ufbx_matrix_invert(&parentRotation);
+      const auto shearScale = product(inverseRotation, inherited);
+      world = product(product(product(parentRotation, localRotation), shearScale), localScale);
+    } else {
+      // Rrs cancels the parent's LOCAL scale before ordinary multiplication;
+      // its remaining inherited scale/shear stays before the local rotation.
+      world = product(product(inherited, localRotation), localScale);
+    }
+    world.cols[3] = ufbx_transform_position(&parent, node->local_transform.translation);
+  }
+  return result;
+}
+ufbx_matrix effective_local(const ufbx_node &node,
+                            const std::vector<ufbx_matrix> &worlds) {
+  if (!node.parent) return worlds[node.typed_id];
+  const auto &parent = worlds[node.parent->typed_id];
+  const auto determinant = ufbx_matrix_determinant(&parent);
+  if (determinant == 0 || !std::isfinite(determinant)) return node.node_to_parent;
+  const auto inverse = ufbx_matrix_invert(&parent);
+  return ufbx_matrix_mul(&inverse, &worlds[node.typed_id]);
+}
+
 std::string str(ufbx_string s) { return {s.data, s.length}; }
 FbxMaterial material_value(const ufbx_material &material) {
   FbxMaterial value;
@@ -132,7 +225,7 @@ transform::Evidence FbxDocument::transform_evidence(std::stop_token stop) const 
   cancelled(stop);
   transform::Evidence out;
   out.sha256 = impl_->data.source.identity.sha256;
-  out.adapterVersion = "ufbx-0.23.1/r13-evidence-3";
+  out.adapterVersion = "ufbx-0.23.1/sdk-inheritance-1/r13-evidence-4";
   const auto &scene = *impl_->scene;
   if (scene.nodes.count > transform::Policy{}.maxNodes)
     return out; // Incomplete, never silently truncate the full node domain.
@@ -154,6 +247,7 @@ transform::Evidence FbxDocument::transform_evidence(std::stop_token stop) const 
   }
   const auto vector = [](ufbx_vec3 v) -> transform::Vec3 { return {v.x,v.y,v.z}; };
   const auto quaternion = [](ufbx_quat q) -> transform::Quat { return {q.x,q.y,q.z,q.w}; };
+  const auto evaluated = sdk_worlds(scene, stop);
   out.nodes.reserve(scene.nodes.count);
   for (const auto *node : scene.nodes) {
     cancelled(stop);
@@ -167,7 +261,7 @@ transform::Evidence FbxDocument::transform_evidence(std::stop_token stop) const 
     // The pinned reader's documented FBX defaults are part of its semantics:
     // missing pivot/offset/pre/post = zero, order = XYZ. Do not infer a
     // canonical meaning for coordinate conversion or synthetic scale helpers.
-    if (!node->has_adjust_transform && !node->has_root_adjust_transform &&
+    if (evaluated.complete && !node->has_adjust_transform && !node->has_root_adjust_transform &&
         !node->is_scale_helper && !node->is_geometry_transform_helper &&
         node->rotation_order < UFBX_ROTATION_ORDER_SPHERIC) {
       transform::Evaluation e;
@@ -363,6 +457,7 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
         .first->second;
   };
   budget(s.nodes.count, 2 * sizeof(FbxNode) + 512);
+  const auto evaluated = sdk_worlds(s, stop);
   d.nodes.reserve(s.nodes.count);
   for (const auto *n : s.nodes) {
     cancelled(stop);
@@ -371,9 +466,9 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
     node.bone = n->bone != nullptr;
     if (n->parent)
       node.parent = n->parent->typed_id;
-    node.default_local = convert(n->node_to_parent);
-    node.default_world = convert(n->node_to_world);
-    node.geometry_world = convert(n->geometry_to_world);
+    node.default_local = convert(effective_local(*n, evaluated.values));
+    node.default_world = convert(evaluated.values[n->typed_id]);
+    node.geometry_world = convert(ufbx_matrix_mul(&evaluated.values[n->typed_id], &n->geometry_to_node));
     budget(n->materials.count, sizeof(FbxMaterial) + 256);
     for (const auto *material : n->materials)
       node.materials.push_back(materialSnapshot(material));
@@ -530,13 +625,14 @@ MatrixPose FbxDocument::evaluate(std::size_t clip, double seconds,
   if (!pose)
     failed(error);
   cancelled(stop);
+  const auto evaluated = sdk_worlds(*pose, stop);
   MatrixPose result;
   result.local.reserve(s.nodes.count);
   result.world.reserve(s.nodes.count);
   for (const auto *n : pose->nodes) {
     cancelled(stop);
-    result.local.push_back(convert(n->node_to_parent));
-    result.world.push_back(convert(n->node_to_world));
+    result.local.push_back(convert(effective_local(*n, evaluated.values)));
+    result.world.push_back(convert(evaluated.values[n->typed_id]));
   }
   return result;
 }

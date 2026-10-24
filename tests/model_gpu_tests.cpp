@@ -5,6 +5,8 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <wct.h>
+#pragma comment(lib,"advapi32.lib")
 #include <malloc.h>
 #include <QScopeGuard>
 #include <dbghelp.h>
@@ -122,7 +124,9 @@ void openSample(ModelSession &session,const QString &path,const QStringList &ext
   }
 }
 // GUI-thread stall watchdog (diagnostic): stacks are captured with the thread suspended, resolved later.
-struct StallSample {double ms{};double stalledMs{};int count{};void *ip[40]{};};
+struct WaitNode {DWORD type{},status{},pid{},tid{};};
+struct StallSample {double ms{};double stalledMs{};int count{};void *ip[40]{};
+ DWORD waitError{},waitCount{};BOOL waitCycle{};WaitNode waitNodes[WCT_MAX_NODE_COUNT]{};};
 struct Watch {std::atomic<long long> beat{0};std::atomic<bool> run{true};std::vector<StallSample> samples;};
 long long beatNow() {return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 int unwindStack(CONTEXT context,void **out,int capacity) {
@@ -139,6 +143,10 @@ int unwindStack(CONTEXT context,void **out,int capacity) {
 }
 void watchdogLoop(HANDLE gui,Watch *watch,std::chrono::steady_clock::time_point origin) {
   int taken=0;
+  const auto waitSession=OpenThreadWaitChainSession(0,nullptr);
+  const auto waitSessionError=waitSession?0:GetLastError();
+  const auto closeWait=qScopeGuard([&]{if(waitSession)CloseThreadWaitChainSession(waitSession);});
+  const auto guiId=GetThreadId(gui);
   while(watch->run.load()) {
     Sleep(10);
     const auto beat=watch->beat.load();if(!beat)continue;
@@ -150,6 +158,19 @@ void watchdogLoop(HANDLE gui,Watch *watch,std::chrono::steady_clock::time_point 
       CONTEXT context{};context.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER;
       if(GetThreadContext(gui,&context))sample.count=unwindStack(context,sample.ip,40);
       ResumeThread(gui);
+    }
+    // Query only AFTER resuming: a suspended GUI thread can hold locks needed
+    // by WCT itself. Flags=0 follows this process and reports the first foreign
+    // thread without probing that process. Failure is evidence, never bypassed.
+    sample.waitError=waitSessionError;
+    if(waitSession){
+      WAITCHAIN_NODE_INFO nodes[WCT_MAX_NODE_COUNT]{};DWORD count=WCT_MAX_NODE_COUNT;
+      if(GetThreadWaitChain(waitSession,0,0,guiId,&count,nodes,&sample.waitCycle)){
+        sample.waitCount=std::min<DWORD>(count,WCT_MAX_NODE_COUNT);
+        for(DWORD i=0;i<sample.waitCount;++i){auto &out=sample.waitNodes[i];const auto &in=nodes[i];
+          out.type=in.ObjectType;out.status=in.ObjectStatus;
+          if(in.ObjectType==WctThreadType){out.pid=in.ThreadObject.ProcessId;out.tid=in.ThreadObject.ThreadId;}}
+      }else sample.waitError=GetLastError();
     }
     watch->samples.push_back(sample);++taken;
   }
@@ -186,7 +207,13 @@ QJsonObject summarizeStalls(const std::vector<StallSample> &samples) {
       for(int f=0;f<samples[k].count;++f){const auto frame=name(samples[k].ip[f]);if(!systemModule(frame)){owner=frame;break;}}
       if(samples[k].count)leaves[name(samples[k].ip[0])]++;
       owners[owner]++;groupOwners[owner]++;
-      if(k==i || k==(i+j)/2 || k==j){QJsonArray frames;for(int f=0;f<std::min(samples[k].count,16);++f)frames.append(name(samples[k].ip[f]));stacks.append(QJsonObject{{"stalledMs",samples[k].stalledMs},{"frames",frames}});}
+      if(k==i || k==(i+j)/2 || k==j){QJsonArray frames,chain;
+        for(int f=0;f<std::min(samples[k].count,16);++f)frames.append(name(samples[k].ip[f]));
+        for(DWORD f=0;f<samples[k].waitCount;++f){const auto &v=samples[k].waitNodes[f];chain.append(QJsonObject{
+          {"type",static_cast<int>(v.type)},{"status",static_cast<int>(v.status)},{"pid",static_cast<qint64>(v.pid)},{"tid",static_cast<qint64>(v.tid)}});}
+        stacks.append(QJsonObject{{"stalledMs",samples[k].stalledMs},{"frames",frames},{"waitChain",chain},
+          {"waitError",static_cast<qint64>(samples[k].waitError)},{"waitCycle",samples[k].waitCycle!=FALSE}});
+      }
     }
     QJsonObject groupOwnerJson;for(const auto &[key,count]:groupOwners)groupOwnerJson[key]=count;
     stall["firstNonSystemFrame"]=groupOwnerJson;stall["stacks"]=stacks;stalls.append(stall);i=j+1;
@@ -580,6 +607,37 @@ int main(int argc,char **argv) {
         report["resourcePlateauPassed"]=report["handleGrowth"].toInt()<=32 && report["privateGrowthBytes"].toDouble()<=baseline["privateBytes"].toDouble()*.25+64.0*1024*1024;
       }
       if(phase!="exit"){item.reset();session.clear();window.hide();window.releaseResources();QCoreApplication::processEvents();}
+    }
+    else if(mode=="highlight") {
+      ModelSession session;openSample(session,path,externals);const auto d=session.documentSnapshot();
+      require(d&&d->animated()&&!d->meshes.empty(),"Animated mesh required for fallback-highlight control");
+      auto state=stateFor(*d);int checked=0;double worst=0;
+      const auto &clip=d->animationClips.at(d->animationClips.size()>1?1:0);
+      const int ci=d->animationClips.size()>1?1:0;
+      const auto geometry=buildModelGpuGeometry(*d,state,500,{});
+      for(double factor:{.0,.371,.9}) {
+        const double time=clip.start+(clip.end-clip.start)*factor;
+        const auto worlds=d->worldAt(ci,time);
+        const auto pose=buildAnimationFrame(*d,ci,time,501,d->actorSkinDomain(),&worlds);
+        require(pose->worlds==worlds,"CPU pose discards the animated worlds required by skeleton highlighting");
+        int perTime=0;
+        for(qsizetype ni=0;ni<d->nodes.size() && perTime<8;++ni) {
+          const auto record=d->nodes[ni].toMap();if(!record.value("bone").toBool())continue;
+          state.highlightedNode=record.value("id").toString();const auto highlight=resolveGpuHighlight(*d,state.highlightedNode);
+          if(highlight.node<0||highlight.edges.empty())continue;
+          const auto cpu=buildModelFrames(*d,state,502,{},pose.get()).model;
+          const auto gpu=buildModelGpuPose(*d,*geometry,{},worlds,503,ci,time,nullptr,&highlight).model;
+          require(cpu->selectionVertices==gpu->selectionVertices&&cpu->selectionVertices>0,"CPU/GPU highlight edge counts differ");
+          for(std::size_t i=0;i<cpu->selectionVertices;++i){
+            const auto &a=cpu->guides[cpu->guides.size()-cpu->selectionVertices+i];
+            const auto &b=gpu->guides[gpu->guides.size()-gpu->selectionVertices+i];
+            worst=std::max(worst,double((QVector3D(a.x,a.y,a.z)-QVector3D(b.x,b.y,b.z)).length()));
+          }
+          ++checked;++perTime;
+        }
+      }
+      require(checked>=3,"No meaningful animated highlight coverage");require(worst<=1e-4,"CPU fallback highlights rest skeleton instead of the displayed animated skeleton");
+      report["highlightCases"]=checked;report["maxPositionError"]=worst;session.clear();
     }
     else if(mode=="morph") {
       // glTF morph-weight animation: the weights channel must actually drive

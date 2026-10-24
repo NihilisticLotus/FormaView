@@ -67,7 +67,13 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
       f->guides.push_back({p.x(), p.y(), p.z(), 0, 0, 0, 0, 1, 0, tint.x(),
                            tint.y(), tint.z(), 1, -2, .5F});
     };
-    if (!state.highlightedNode.isEmpty()) {
+    if (!state.highlightedNode.isEmpty() && pose && !pose->worlds.empty()) {
+      const auto selection=resolveGpuHighlight(document,state.highlightedNode);
+      const auto position=[&](int index){const auto &m=pose->worlds.at(static_cast<std::size_t>(index));
+        return (document.displayBasis.map(QVector3D(float(m[3]),float(m[7]),float(m[11])))-document.center)/std::max(document.radius,1e-6F);};
+      if(selection.node>=0){const auto start=position(selection.node);
+        for(int edge:selection.edges){guide(start,QVector3D(.95F,.48F,.18F));guide(position(edge),QVector3D(.95F,.48F,.18F));f->selectionVertices+=2;}}
+    } else if (!state.highlightedNode.isEmpty() && !pose) {
       const auto &mesh =
           document.meshes.at(static_cast<std::size_t>(state.mesh));
       QHash<QString, QVariantMap> palette;
@@ -565,6 +571,7 @@ buildAnimationFrame(const ModelDocument &d, std::size_t clip, double seconds,
       throw skeletal::Failure(ErrorCode::Internal,
                               "Skinned corners are not triangles");
     auto f = std::make_shared<render::Frame>();
+    f->worlds = worlds;
     f->revision = revision;
     f->clip=static_cast<int>(clip);f->seconds=seconds;
     f->lines = false;
@@ -641,6 +648,7 @@ buildAnimationFrame(const ModelDocument &d, std::size_t clip, double seconds,
       throw skeletal::Failure(ErrorCode::Internal,
                               "Driven pose does not match target nodes");
     auto f = std::make_shared<render::Frame>();
+    f->worlds = worlds;
     f->revision = revision;
     f->clip=static_cast<int>(clip);f->seconds=seconds;
     f->lines = false;
@@ -872,6 +880,7 @@ buildAnimationFrame(const ModelDocument &d, std::size_t clip, double seconds,
     throw skeletal::Failure(ErrorCode::Internal,
                             "Animation pose does not match skeleton");
   auto f = std::make_shared<render::Frame>();
+    f->worlds = worlds;
   f->revision = revision;
   f->clip=static_cast<int>(clip);f->seconds=seconds;
   f->lines = true;

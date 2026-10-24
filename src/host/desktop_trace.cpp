@@ -24,6 +24,7 @@
 #include <QtCore/qt_windows.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <map>
@@ -214,7 +215,7 @@ public:
     qGuiApp->removeNativeEventFilter(this);
     timer_.stop();
     views_.stop();
-    flush();
+    if (!finalized_) flush(true);
   }
   bool nativeEventFilter(const QByteArray &, void *message,
                          qintptr *) override {
@@ -460,7 +461,8 @@ public:
 #endif
     return {};
   }
-  void flush() {
+  bool flush(bool final = false) {
+    if (finalized_) return lastSaveOk_ && statusSaveOk_;
     QJsonObject result;
     {
       std::lock_guard lock(state_->mutex);
@@ -500,8 +502,11 @@ public:
     if (window_) {
       const auto geometry = window_->geometry();
       RECT client{}, native{};
-      GetClientRect(reinterpret_cast<HWND>(window_->winId()), &client);
-      GetWindowRect(reinterpret_cast<HWND>(window_->winId()), &native);
+      // Diagnostics must not recreate a native window after it was closed.
+      if (window_->handle() && IsWindow(handle_)) {
+        GetClientRect(handle_, &client);
+        GetWindowRect(handle_, &native);
+      }
       result["geometry"] = QJsonObject{
           {"logical_x", geometry.x()},
           {"logical_y", geometry.y()},
@@ -532,9 +537,35 @@ public:
     QDir().mkpath(QFileInfo(path_).absolutePath());
     QSaveFile file(path_);
     const auto bytes = QJsonDocument(result).toJson();
-    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
-        !file.commit())
-      qWarning() << "Cannot save desktop trace" << path_ << file.errorString();
+    ++saveAttempts_;
+    lastSaveOk_ = file.open(QIODevice::WriteOnly) &&
+        file.write(bytes) == bytes.size() && file.commit();
+    if (lastSaveOk_) lastSuccessfulSaveMs_ = ms(Clock::now() - state_->start);
+    else {
+      ++saveFailures_;
+      lastSaveError_ = file.errorString();
+      qWarning() << "Cannot save desktop trace" << path_ << lastSaveError_;
+    }
+    // Independent atomic status file remains observable while a reader holds
+    // the main trace without FILE_SHARE_DELETE. Never claim complete output
+    // from a stale trace; preserve transient failures even after recovery.
+    const QJsonObject status{{"version",1},{"trace",path_},
+        {"pid",static_cast<qint64>(QCoreApplication::applicationPid())},
+        {"final",final},{"lastSaveOk",lastSaveOk_},
+        {"attempts",saveAttempts_},{"failures",saveFailures_},
+        {"lastError",lastSaveError_},{"lastSuccessfulSaveMs",lastSuccessfulSaveMs_}};
+    QSaveFile statusFile(path_ + ".save-status.json");
+    const auto statusBytes = QJsonDocument(status).toJson();
+    statusSaveOk_ = statusFile.open(QIODevice::WriteOnly) &&
+        statusFile.write(statusBytes) == statusBytes.size() && statusFile.commit();
+    if (!lastSaveOk_ || !statusSaveOk_) {
+      const auto message = (QStringLiteral("FORMAVIEW_TRACE_SAVE_FAILED: ") + path_ +
+          QStringLiteral("; trace=") + file.errorString() +
+          QStringLiteral("; status=") + statusFile.errorString()).toUtf8();
+      std::fprintf(stderr,"%s\n",message.constData()); std::fflush(stderr);
+    }
+    finalized_ = final;
+    return lastSaveOk_ && statusSaveOk_;
   }
 
 private:
@@ -542,6 +573,10 @@ private:
   HWND handle_{};
   Desktop *desktop_;
   QString path_;
+  bool finalized_{}, lastSaveOk_{}, statusSaveOk_{};
+  qint64 saveAttempts_{}, saveFailures_{};
+  double lastSuccessfulSaveMs_{-1};
+  QString lastSaveError_;
   std::shared_ptr<Shared> state_;
   QTimer timer_, views_;
   int ticks_{};
@@ -562,7 +597,7 @@ DesktopTrace::DesktopTrace(QQuickWindow *window, Desktop *desktop, QString path,
     : impl_(std::make_unique<Impl>(this, window, desktop, std::move(path),
                                    start)) {}
 DesktopTrace::~DesktopTrace() = default;
-void DesktopTrace::flush() { impl_->flush(); }
+bool DesktopTrace::flush(bool final) { return impl_->flush(final); }
 void DesktopTrace::beginDispatch(QObject *receiver, QEvent *event) {
   impl_->beginDispatch(receiver, event);
 }
