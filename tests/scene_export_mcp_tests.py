@@ -69,6 +69,14 @@ async def main():
                     actual=json.loads(report.read_text(encoding='utf-8'))
                     assert len(actual['clips'])==len(result['clips'])
                     assert bool(actual['meshes'])==(item['request']['options'].get('include_mesh',True))
+                # Malformed sparse storage must produce a normal error without
+                # terminating the shared process or preventing the next read.
+                document=json.loads((fixtures/'source.gltf').read_text())
+                document['bufferViews'].append(dict(buffer=0,byteOffset=1024*1024,byteLength=1))
+                document['accessors'][0]['sparse']=dict(count=1,indices=dict(bufferView=len(document['bufferViews'])-1,componentType=5121),values=dict(bufferView=0))
+                malformed=fixtures/'malformed.gltf';malformed.write_text(json.dumps(document),encoding='utf-8')
+                assert 'error' in await call('inspect_model',input=str(malformed))
+                assert 'error' not in await call('inspect_model',input=str(fixtures/'source.gltf'))
                 # A changed external binary invalidates the exact preflight approval.
                 changed=dict(items[1],output=str(args.output/'changed.fbx'))
                 p=await call('create_model_export_plan',items=[changed]);p=await terminal('plan',p['plan_id'])
@@ -86,13 +94,23 @@ async def main():
                 p=await call('create_model_export_plan',items=protected);p=await terminal('plan',p['plan_id'])
                 assert p['items'][0]['status']=='failed',p
                 assert auxiliary.read_bytes()==original
+                # A missing texture still reserves its referenced path against
+                # other outputs: a tolerated read loss is not write permission.
+                missing=fixtures/'missing-texture.fbx'
+                document=json.loads((fixtures/'source.gltf').read_text())
+                document['images'][0]['uri']=missing.name
+                owner=fixtures/'missing-texture-owner.gltf';owner.write_text(json.dumps(document),encoding='utf-8')
+                protected=[dict(items[0],output=str(missing)),dict(items[1],input=str(owner),output=str(args.output/'missing-owner.fbx'))]
+                p=await call('create_model_export_plan',items=protected);p=await terminal('plan',p['plan_id'])
+                assert p['items'][0]['status']=='failed',p
+                assert not missing.exists()
                 # Native cancellation uses the same plan ID exposed over MCP.
                 pending=[dict(items[2],output=str(args.output/('cancel-'+str(i)+'.fbx'))) for i in range(32)]
                 p=await call('create_model_export_plan',items=pending)
                 await call('cancel_image_work',kind='plan',work_id=p['plan_id'])
                 cancelled=await terminal('plan',p['plan_id']);assert cancelled['state']=='cancelled',cancelled
                 assert hashes=={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in hashes}
-                (args.output/'passed.json').write_text(json.dumps(dict(passed=True,outputs=len(job['items']),changed_buffer=True,batch_source_protection=True,cancellation=True)),encoding='utf-8')
+                (args.output/'passed.json').write_text(json.dumps(dict(passed=True,outputs=len(job['items']),malformed_input_survival=True,changed_buffer=True,batch_source_protection=True,missing_texture_protection=True,cancellation=True)),encoding='utf-8')
                 print('Generic MCP exports passed:',len(job['items']))
     finally:
         (args.output/'mcp-records.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),encoding='utf-8')

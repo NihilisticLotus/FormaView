@@ -1,6 +1,7 @@
 #include <span>
 #include "formaview/file_access.hpp"
 #include "formaview/gltf_anim.hpp"
+#include "../formats/gltf_storage.hpp"
 #include "model_document.hpp"
 #include "model_metadata.hpp"
 #include "model_texture.hpp"
@@ -285,6 +286,11 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
       throw skeletal::Failure(
           ErrorCode::Unsupported,
           "glTF meshopt-compressed buffers require a separate decoder");
+  // Preview never had node/clip/element caps; the decoded-bytes Budget governs.
+  skeletal::Limits unbounded;
+  unbounded.bones = unbounded.clips = std::numeric_limits<std::uint32_t>::max();
+  unbounded.elements = std::numeric_limits<std::uint64_t>::max();
+  formaview::gltf::validate_loaded_storage(*raw, unbounded, stop);
   if (cgltf_validate(raw) != cgltf_result_success)
     fail("glTF validation failed");
   Accessors access{budget, {}};

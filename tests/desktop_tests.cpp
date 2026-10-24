@@ -2536,6 +2536,21 @@ private slots:
 
 
 #ifdef FORMAVIEW_MODEL_EXPORT
+  void sceneMalformedPreviewStorage() {
+    const auto fixtures = qEnvironmentVariable("FORMAVIEW_SCENE_REVIEW_FIXTURES");
+    if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_SCENE_REVIEW_FIXTURES to review fixtures");
+    for (const auto *name : {"sparse-outside-buffer.gltf", "offset-overflow.gltf", "deep-hierarchy.gltf"}) {
+      const auto path = fixtures + "/" + name;
+      QVERIFY(QFile::exists(path));
+      QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, readModelDocument(path, {}));
+    }
+    // Positive controls: the guard must not disable valid sparse data or GLB.
+    for (const auto *name : {"source.gltf", "valid-sparse.gltf", "source.glb"}) {
+      QVERIFY(QFile::exists(fixtures + "/" + name));
+      const auto model = readModelDocument(fixtures + "/" + name, {});
+      QVERIFY2(model, name);
+    }
+  }
   void sceneExportGuiLifecycle() {
     const auto fixtures = qEnvironmentVariable("FORMAVIEW_SCENE_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_SCENE_EXPORT_FIXTURES to scene_export_tests synthetic fixtures");

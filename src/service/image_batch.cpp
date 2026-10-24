@@ -391,11 +391,24 @@ struct ImageBatchService::Impl {
             const auto source = execute_image_request(inspect, scope, limits.image, stop);
             for (const auto &value : source["sources"].toArray())
               auxiliaries.emplace_back(value.toObject()["path"].toString().toStdWString());
+            for (const auto &value : source["referenced_sources"].toArray())
+              auxiliaries.emplace_back(value.toString().toStdWString());
           } catch (const skeletal::Failure &) {
             // The per-item pass reports malformed/cancelled inputs. Keep the
             // base source protected without aborting unrelated batch items.
           }
         }
+        // Preserve approved dependency paths even if the source has become
+        // unreadable since preflight. Later per-item validation reports it.
+        if (!planning) {
+          const auto preflight = entry.toObject()["preflight"].toObject();
+          for (const auto &value : preflight["sources"].toArray())
+            auxiliaries.emplace_back(value.toObject()["path"].toString().toStdWString());
+          for (const auto &value : preflight["referenced_sources"].toArray())
+            auxiliaries.emplace_back(value.toString().toStdWString());
+        }
+        std::sort(auxiliaries.begin(), auxiliaries.end());
+        auxiliaries.erase(std::unique(auxiliaries.begin(), auxiliaries.end()), auxiliaries.end());
         for (const auto &auxiliary : auxiliaries) {
           InputSnapshot fallback;
           fallback.resolved_path = auxiliary;

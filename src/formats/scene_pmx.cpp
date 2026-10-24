@@ -346,8 +346,8 @@ void read_pmx(Scene &s, const QByteArray &bytes) {
     const auto &bone = bones[static_cast<size_t>(i)];
     int depth{};
     for (auto p = bone.parent; p >= 0; p = bones[static_cast<size_t>(p)].parent)
-      if (++depth > bone_count)
-        invalid("Cyclic PMX bone hierarchy");
+      if (++depth > 256 || depth > bone_count)
+        invalid("Cyclic or excessively deep PMX bone hierarchy");
     auto *parent = bone.parent < 0 ? s.scene->GetRootNode()
                                    : nodes[static_cast<size_t>(bone.parent)];
     parent->AddChild(nodes[static_cast<size_t>(i)]);

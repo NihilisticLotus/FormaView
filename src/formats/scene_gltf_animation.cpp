@@ -142,12 +142,19 @@ void curve(FbxAnimCurve *curve, const std::vector<Sample> &samples,
   if (!curve)
     invalid("Cannot create FBX animation curve");
   curve->KeyModifyBegin();
+  int expected{};
   for (const auto &sample : samples) {
     FbxTime time;
     time.SetSecondDouble(sample.time);
     const auto key = curve->KeyAdd(time);
-    curve->KeySetValue(key,
-                       static_cast<float>(sample.value[component] * scale));
+    if (key != expected++)
+      throw skeletal::Failure(ErrorCode::Unsupported,
+                              "glTF keys collide at FBX time resolution");
+    const auto value = sample.value[component] * scale;
+    if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+      throw skeletal::Failure(ErrorCode::Unsupported,
+                              "glTF curve value exceeds FBX float range");
+    curve->KeySetValue(key, static_cast<float>(value));
     curve->KeySetInterpolation(key,
                                step ? FbxAnimCurveDef::eInterpolationConstant
                                     : FbxAnimCurveDef::eInterpolationLinear);
@@ -185,9 +192,12 @@ void gltf_animations(Scene &s, const cgltf_data &data, GltfAccessors &access,
         invalid("Invalid glTF animation accessor");
       const auto &times = access.read(sampler.input),
                  &values = access.read(sampler.output);
+      const double maximum_seconds =
+          static_cast<double>(FBXSDK_TC_INFINITY) / FBXSDK_TC_SECOND;
       for (size_t i = 0; i < times.size(); ++i)
-        if (times[i] < 0 || (i && times[i] <= times[i - 1]))
-          invalid("glTF animation times must increase");
+        if (times[i] < 0 || times[i] >= maximum_seconds ||
+            (i && times[i] <= times[i - 1]))
+          invalid("glTF animation times must increase within the FBX time range");
       const bool rotation =
                      channel.target_path == cgltf_animation_path_type_rotation,
                  weights =

@@ -187,13 +187,25 @@ std::filesystem::path Scene::relative(const QString &uri) const {
   return (path.parent_path() / std::filesystem::path(decoded.toStdWString()))
       .lexically_normal();
 }
-QString Scene::image(const QString &uri, const QByteArray &content) {
-  const auto name = QString(uri).replace('\\', '/');
+QString Scene::image(const QString &uri, const std::optional<QByteArray> &content) {
+  const auto source = QString(uri).replace('\\', '/');
+  if (!content && media_sources.contains(source))
+    return media_sources[source];
+  auto bytes = content ? *content : load(relative(source));
+  if (bytes.isEmpty())
+    invalid("Empty texture payload");
+  // Resource names are not identities: an embedded image may have the same
+  // name as a different external image. Give every payload its own FBX name.
+  const auto digest = QString::fromLatin1(
+      QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+  const auto suffix = QFileInfo(source).suffix();
+  const auto name = "formaview-media-" + digest + (suffix.isEmpty() ? "" : "." + suffix);
   if (!media.contains(name)) {
-    auto bytes = content.isEmpty() ? load(relative(name)) : content;
     reserve(static_cast<std::uint64_t>(bytes.size()));
     media.insert(name, std::move(bytes));
   }
+  if (!content)
+    media_sources.insert(source, name);
   return name;
 }
 FbxFileTexture *Scene::texture(const QString &name, const QString &uv) {
@@ -450,9 +462,17 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   std::vector<InputLease> leases;
   std::vector<InputSnapshot> inputs(protected_inputs.begin(),
                                     protected_inputs.end());
-  QJsonArray sources;
+  QJsonArray sources, references;
   std::uint64_t total{};
   const auto load = [&](const std::filesystem::path &path) {
+    // Even missing or out-of-scope resources remain source paths. A tolerated
+    // texture-read loss must never make that path eligible for publication.
+    InputSnapshot referenced;
+    referenced.resolved_path = path.lexically_normal();
+    inputs.push_back(referenced);
+    const auto reference = QString::fromStdWString(referenced.resolved_path.wstring());
+    if (!references.contains(reference))
+      references.append(reference);
     auto lease = InputLease::open(scope, path, limits.input_bytes, stop);
     const auto snapshot_value = lease.snapshot();
     if (snapshot_value.size_bytes > limits.input_bytes - total)
@@ -486,6 +506,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
     result["version"] = 1;
     result["input"] = snapshot(input);
     result["sources"] = sources;
+    result["referenced_sources"] = references;
     return result;
   }
   const auto options = request["options"].toObject();
@@ -531,13 +552,14 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   const QJsonObject approval_data{
       {"request", canonical},
       {"sources", sources},
+      {"referenced_sources", references},
       {"losses", result["losses"]},
       {"scope_inputs", roots_in},
       {"scope_outputs", roots_out},
       {"overwrite", scope.allow_overwrite},
       {"output", QString::fromStdWString(output.path.wstring())},
       {"policy", QString::fromStdString(scope.policy_revision)},
-      {"implementation", "M08-scene-v1"}};
+      {"implementation", "M08-scene-v2-reviewed"}};
   const auto approval = QString::fromLatin1(
       QCryptographicHash::hash(
           QJsonDocument(approval_data).toJson(QJsonDocument::Compact),
@@ -546,6 +568,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   result["version"] = 1;
   result["input"] = snapshot(input);
   result["sources"] = sources;
+  result["referenced_sources"] = references;
   result["target"] = "fbx";
   result["output"] = QString::fromStdWString(output.path.wstring());
   result["output_exists"] = output.exists;

@@ -1,5 +1,6 @@
 #include "formaview/gltf_anim.hpp"
 #include "formaview/file_access.hpp"
+#include "gltf_storage.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -272,6 +273,7 @@ GltfAnimationData read_gltf_animations(const std::filesystem::path &path,
     buffer.data = storage[static_cast<std::size_t>(i)].data();
     buffer.data_free_method = cgltf_data_free_method_none;
   }
+  validate_loaded_storage(*raw, limits, stop, false);
   status = cgltf_validate(raw);
   if (status != cgltf_result_success)
     fail("cgltf validation failed");

@@ -1,4 +1,5 @@
 #include "scene_gltf.hpp"
+#include "gltf_storage.hpp"
 #include <QJsonDocument>
 #include <algorithm>
 #include <cmath>
@@ -75,10 +76,15 @@ FbxFileTexture *texture(Scene &s, const cgltf_data &data,
                            static_cast<qsizetype>(image->buffer_view->size));
       } else
         invalid("Missing glTF image payload");
+      // Payload signatures win: mimeType is optional and may be absent or wrong.
       const auto mime = QString::fromUtf8(image->mime_type);
-      const auto suffix = mime.contains("jpeg")   ? "jpg"
-                          : mime.contains("webp") ? "webp"
-                                                  : "png";
+      const auto suffix =
+          bytes.startsWith(QByteArray::fromHex("89504e47"))        ? "png"
+          : bytes.startsWith(QByteArray::fromHex("ffd8ff"))        ? "jpg"
+          : bytes.startsWith("RIFF") && bytes.mid(8, 4) == "WEBP" ? "webp"
+          : mime.contains("jpeg")                                  ? "jpg"
+          : mime.contains("webp")                                  ? "webp"
+                                                                   : "png";
       name = s.image(
           QString("image-%1.%2").arg(image - data.images).arg(suffix), bytes);
     }
@@ -271,9 +277,7 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
     }
     b.data_free_method = cgltf_data_free_method_none;
   }
-  for (size_t i = 0; i < data.buffer_views_count; ++i)
-    if (data.buffer_views[i].has_meshopt_compression)
-      unsupported("Meshopt compressed glTF needs decoding before export");
+  gltf::validate_loaded_storage(data, s.limits, s.stop);
   if (cgltf_validate(raw) != cgltf_result_success)
     invalid("glTF structure validation failed");
   GltfAccessors access{s, {}};
@@ -294,10 +298,29 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
     float local[16];
     cgltf_node_transform_local(&src, local);
     const auto m = from_columns(local);
-    node->LclTranslation.Set(m.GetT());
-    node->LclRotation.Set(m.GetR());
-    node->LclScaling.Set(m.GetS());
+    if (src.has_matrix) {
+      FbxAMatrix reconstructed;
+      reconstructed.SetTRS(m.GetT(), m.GetR(), m.GetS());
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+          if (std::abs(m[r][c] - reconstructed[r][c]) >
+              1e-5 * std::max(1.0, std::abs(m[r][c])))
+            unsupported("glTF node matrix cannot be represented as FBX TRS");
+      node->LclTranslation.Set(m.GetT());
+      node->LclRotation.Set(m.GetR());
+      node->LclScaling.Set(m.GetS());
+    } else {
+      // Decomposing a signed-scale matrix can redistribute signs into rotation.
+      // Animation replaces individual TRS channels, so retain source channels.
+      FbxAMatrix rotation;
+      rotation.SetQ(FbxQuaternion(src.rotation[0], src.rotation[1],
+                                  src.rotation[2], src.rotation[3]));
+      node->LclTranslation.Set(FbxDouble3(src.translation[0], src.translation[1], src.translation[2]));
+      node->LclRotation.Set(rotation.GetR());
+      node->LclScaling.Set(FbxDouble3(src.scale[0], src.scale[1], src.scale[2]));
+    }
     node->SetRotationOrder(FbxNode::eSourcePivot, eEulerXYZ);
+    node->SetTransformationInheritType(FbxTransform::eInheritRSrs);
     if (joints.contains(&src)) {
       auto *bone = FbxSkeleton::Create(s.scene, node->GetName());
       bone->SetSkeletonType(FbxSkeleton::eLimbNode);
@@ -309,13 +332,6 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
     if (src.has_mesh_gpu_instancing)
       unsupported(
           "EXT_mesh_gpu_instancing requires explicit instance expansion");
-  }
-  // cgltf validates indices, but not every producer's parent cycle.
-  for (size_t i = 0; i < data.nodes_count; ++i) {
-    size_t depth{};
-    for (auto *p = data.nodes[i].parent; p; p = p->parent)
-      if (++depth > data.nodes_count)
-        invalid("Cyclic glTF hierarchy");
   }
   for (size_t i = 0; i < data.nodes_count; ++i)
     (data.nodes[i].parent
@@ -354,6 +370,7 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
                                              "_primitive_" + std::to_string(pi))
                                                 .c_str());
       auto *node = FbxNode::Create(s.scene, mesh->GetName());
+      node->SetTransformationInheritType(FbxTransform::eInheritRSrs);
       nodes[ni]->AddChild(node);
       node->SetNodeAttribute(mesh);
       mesh->InitControlPoints(static_cast<int>(count));

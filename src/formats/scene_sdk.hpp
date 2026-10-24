@@ -17,6 +17,7 @@ struct Scene {
   skeletal::Limits limits;
   std::stop_token stop;
   QMap<QString, QByteArray> media;
+  QMap<QString, QString> media_sources;
   QString callback_error;
   QJsonArray losses;
   QJsonObject metadata;
@@ -29,7 +30,7 @@ struct Scene {
   void reserve(std::uint64_t bytes);
   void loss(const QString &code, const QString &detail);
   std::filesystem::path relative(const QString &uri) const;
-  QString image(const QString &uri, const QByteArray &content = {});
+  QString image(const QString &uri, const std::optional<QByteArray> &content = {});
   FbxFileTexture *texture(const QString &key, const QString &uv = "UV0");
   void preload_media();
 };
