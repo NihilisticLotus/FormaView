@@ -33,6 +33,15 @@ struct Snapshot {
   double publishedAt{-1},publishedSeconds{};
   int publishedClip{-1};
 };
+struct InputRecord {
+  double at{};DWORD time{},device{},origin{},error{};UINT message{};
+  std::uint64_t hwnd{},wp{},lp{},extra{},sequence{};POINT point{};
+};
+struct SizeOrigin {
+  Dispatch message;DWORD tid{},device{},origin{},error{};int count{};void *ip[64]{};
+  std::array<InputRecord,16> inputs{};unsigned inputCount{};
+  std::array<Dispatch,8> parents{};unsigned parentCount{};
+};
 struct Publication {
   double at{},seconds{};
   std::uint64_t revision{},hash{},contentVersion{};
@@ -92,12 +101,13 @@ public:
   static constexpr UINT calibrationMessage=WM_APP+0x241;
   explicit Probe(Clock::time_point origin,std::size_t capacity):origin_(origin),gui_(GetCurrentThreadId()) {
     publications_.reserve(std::min<std::size_t>(capacity,500000));
-    nativeSlow_.reserve(4096);qtSlow_.reserve(4096);
+    nativeSlow_.reserve(4096);qtSlow_.reserve(4096);sizeOrigins_.reserve(128);
     Probe *expected=nullptr;
     if(!active.compare_exchange_strong(expected,this))throw std::runtime_error("Duplicate forensic probe");
     before_=SetWindowsHookExW(WH_CALLWNDPROC,beforeHook,nullptr,gui_);
     after_=SetWindowsHookExW(WH_CALLWNDPROCRET,afterHook,nullptr,gui_);
-    if(!before_||!after_) {
+    getMessage_=SetWindowsHookExW(WH_GETMESSAGE,getMessageHook,nullptr,gui_);
+    if(!before_||!after_||!getMessage_) {
       const auto error=GetLastError();close();throw std::runtime_error("GUI hook unavailable: "+std::to_string(error));
     }
     WNDCLASSW wc{};wc.lpfnWndProc=calibrationProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"FormaView.ForensicCalibration";
@@ -151,6 +161,22 @@ public:
     state_.publishedClip=p.clip;state_.publishedSeconds=p.seconds;
     if(publications_.size()<publications_.capacity())publications_.push_back(p);else ++publicationOverflow_;
   }
+  void calibrateRenderEvent() {
+    const auto name=L"Local\\FormaView.RenderForensics."+std::to_wstring(GetCurrentProcessId());
+    HANDLE event=CreateEventW(nullptr,TRUE,FALSE,name.c_str());
+    if(!event)throw std::runtime_error("Render event calibration creation failed");
+    const auto close=qScopeGuard([&]{CloseHandle(event);});
+    std::atomic<DWORD> setter{0};const double start=now();
+    std::thread worker([&]{setter=GetCurrentThreadId();Sleep(300);SetEvent(event);});
+    const auto join=qScopeGuard([&]{if(worker.joinable())worker.join();});
+    const auto result=WaitForSingleObjectEx(event,5000,TRUE);const double end=now();
+    if(worker.joinable())worker.join();
+    std::lock_guard lock(mutex_);
+    renderCalibration_=QJsonObject{{"startMs",start},{"endMs",end},{"result",static_cast<qint64>(result)},
+      {"eventName",QString::fromStdWString(name)},{"eventHandle",QString::number(reinterpret_cast<std::uintptr_t>(event),16)},
+      {"renderTid",static_cast<qint64>(GetCurrentThreadId())},{"setterTid",static_cast<qint64>(setter.load())},
+      {"boundary","Setter is known by construction; Event does not have mutex ownership."}};
+  }
   void calibrateMutex() {
     const auto name=L"Local\\FormaView.Forensics."+std::to_wstring(GetCurrentProcessId());
     HANDLE mutex=CreateMutexW(nullptr,FALSE,name.c_str());
@@ -168,6 +194,10 @@ public:
       {"message",static_cast<int>(calibrationMessage)},{"hwnd",QString::number(reinterpret_cast<std::uintptr_t>(control_),16)},
       {"mutexName",QString::fromStdWString(name)},{"mutexHandle",QString::number(reinterpret_cast<std::uintptr_t>(mutex),16)},{"ownerTid",static_cast<qint64>(owner.load())},{"guiTid",static_cast<qint64>(gui_)}};
   }
+  __declspec(noinline) static void sendSize(HWND window){
+    const auto result=SendMessageW(window,WM_SYSCOMMAND,SC_SIZE,0);
+    static std::atomic<LRESULT> completed{0};completed.store(result,std::memory_order_relaxed); // Prevent tail-call removal of the sender frame.
+  }
   void resizeControl(HWND window) {
     RECT before{};if(!GetWindowRect(window,&before))throw std::runtime_error("Resize control window unavailable");
     std::atomic<unsigned> posted{0};const double start=now();
@@ -184,14 +214,41 @@ public:
     });
     const auto join=qScopeGuard([&]{if(keys.joinable())keys.join();});
     // SC_SIZE uses the native modal loop, on this test-owned window only.
-    SendMessageW(window,WM_SYSCOMMAND,SC_SIZE,0);const double end=now();
+    const bool cross=qEnvironmentVariable("FORMAVIEW_FORENSICS_CROSS_SIZE")=="1";
+    DWORD sender=gui_;
+    if(cross) {
+      std::atomic<bool> done{false};std::atomic<DWORD> senderId{0};
+      std::thread send([&]{senderId=GetCurrentThreadId();sendSize(window);done=true;});
+      const auto finish=qScopeGuard([&]{if(send.joinable())send.join();});
+      while(!done.load()){QCoreApplication::processEvents();Sleep(1);}
+      sender=senderId.load();
+    } else sendSize(window);
+    const double end=now();
     if(keys.joinable())keys.join();
     RECT after{};GetWindowRect(window,&after);
     SetWindowPos(window,nullptr,before.left,before.top,before.right-before.left,before.bottom-before.top,SWP_NOACTIVATE|SWP_NOZORDER);
     resize_=QJsonObject{{"kind","controlledNativeSizeLoop"},{"startMs",start},{"endMs",end},
       {"message",WM_SYSCOMMAND},{"wParam",SC_SIZE},{"hwnd",QString::number(reinterpret_cast<std::uintptr_t>(window),16)},
-      {"postedKeys",static_cast<int>(posted.load())},{"beforeWidth",static_cast<int>(before.right-before.left)},{"afterWidth",static_cast<int>(after.right-after.left)},
+      {"senderFunction",QString::number(reinterpret_cast<std::uintptr_t>(&sendSize),16)},{"senderTid",static_cast<qint64>(sender)},{"crossThread",cross},{"postedKeys",static_cast<int>(posted.load())},{"beforeWidth",static_cast<int>(before.right-before.left)},{"afterWidth",static_cast<int>(after.right-after.left)},
       {"boundary","Posted keys target only the owned test window; no SendInput or system setting changes. Not a natural/historical reproduction."}};
+  }
+  QJsonArray originReport() {
+    std::lock_guard lock(mutex_);QJsonArray result;
+    for(const auto &v:sizeOrigins_) {
+      QJsonArray ips,inputs,parents;
+      for(int i=0;i<v.count;++i)ips.append(QString::number(reinterpret_cast<std::uintptr_t>(v.ip[i]),16));
+      for(unsigned i=0;i<v.inputCount;++i){const auto &q=v.inputs[i];inputs.append(QJsonObject{
+        {"atMs",q.at},{"time",static_cast<qint64>(q.time)},{"message",static_cast<int>(q.message)},
+        {"hwnd",QString::number(q.hwnd,16)},{"wParam",QString::number(q.wp,16)},{"lParam",QString::number(q.lp,16)},
+        {"extra",QString::number(q.extra,16)},{"device",static_cast<int>(q.device)},{"origin",static_cast<int>(q.origin)},
+        {"sourceError",static_cast<qint64>(q.error)},{"sequence",static_cast<qint64>(q.sequence)},
+        {"x",static_cast<int>(q.point.x)},{"y",static_cast<int>(q.point.y)}});}
+      for(unsigned i=0;i<v.parentCount;++i)parents.append(dispatchJson(v.parents[i]));
+      result.append(QJsonObject{{"message",dispatchJson(v.message)},{"tid",static_cast<qint64>(v.tid)},
+        {"device",static_cast<int>(v.device)},{"origin",static_cast<int>(v.origin)},{"sourceError",static_cast<qint64>(v.error)},
+        {"ips",ips},{"recentRemovedInputs",inputs},{"nativeParents",parents}});
+    }
+    return result;
   }
   QJsonObject report() {
     std::lock_guard lock(mutex_);QJsonArray native,qt,publications;
@@ -203,7 +260,7 @@ public:
       {"depthOverflow",static_cast<qint64>(depthOverflow_)},{"unmatchedReturns",static_cast<qint64>(unmatched_)},
       {"slowRecordOverflow",static_cast<qint64>(slowOverflow_)},{"publicationOverflow",static_cast<qint64>(publicationOverflow_)},
       {"posePublications",publications},{"publicationColumns",QJsonArray{"atMs","revision","clip","seconds","posePayloadHash","exactPayloadVersion"}},
-      {"calibration",calibration_},{"resizeControl",resize_},{"pendingNativeDepth",static_cast<int>(state_.nativeDepth)},{"pendingQtDepth",static_cast<int>(state_.qtDepth)},{"boundary","Hooks observe this GUI thread only; WCT may lack names for unsupported objects. Pose hash is diagnostic correlation, not an equality proof."}};
+      {"originOverflow",static_cast<qint64>(originOverflow_)},{"renderCalibration",renderCalibration_},{"calibration",calibration_},{"resizeControl",resize_},{"pendingNativeDepth",static_cast<int>(state_.nativeDepth)},{"pendingQtDepth",static_cast<int>(state_.qtDepth)},{"boundary","Hooks observe this GUI thread only; WCT may lack names for unsupported objects. Pose hash is diagnostic correlation, not an equality proof."}};
   }
 private:
   static LRESULT CALLBACK calibrationProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
@@ -211,12 +268,35 @@ private:
       const auto wait=WaitForSingleObject(mutex,5000);if(wait==WAIT_OBJECT_0)ReleaseMutex(mutex);return wait;}
     return DefWindowProcW(hwnd,message,wp,lp);
   }
+  static LRESULT CALLBACK getMessageHook(int code,WPARAM wp,LPARAM lp) {
+    const DWORD prior=GetLastError();auto *probe=active.load();
+    if(code==HC_ACTION&&wp==PM_REMOVE&&probe){const auto &m=*reinterpret_cast<const MSG*>(lp);
+      if((m.message>=WM_MOUSEFIRST&&m.message<=WM_MOUSELAST)||(m.message>=WM_KEYFIRST&&m.message<=WM_KEYLAST)||
+          m.message==WM_NCLBUTTONDOWN||m.message==WM_SYSCOMMAND) {
+        InputRecord q;q.at=probe->now();q.time=m.time;q.message=m.message;q.hwnd=reinterpret_cast<std::uintptr_t>(m.hwnd);
+        q.wp=m.wParam;q.lp=m.lParam;q.point=m.pt;q.extra=GetMessageExtraInfo();INPUT_MESSAGE_SOURCE source{};
+        if(GetCurrentInputMessageSource(&source)){q.device=source.deviceType;q.origin=source.originId;}else q.error=GetLastError();
+        std::lock_guard lock(probe->mutex_);q.sequence=++probe->inputSequence_;
+        probe->inputs_[(q.sequence-1)%probe->inputs_.size()]=q;
+      }
+    }
+    SetLastError(prior);return CallNextHookEx(nullptr,code,wp,lp);
+  }
   static LRESULT CALLBACK beforeHook(int code,WPARAM wp,LPARAM lp) {
     const DWORD priorError=GetLastError();auto *probe=active.load();
     if(code==HC_ACTION&&probe){const auto &m=*reinterpret_cast<const CWPSTRUCT*>(lp);
       Dispatch d;d.start=probe->now();d.message=m.message;d.window=reinterpret_cast<std::uintptr_t>(m.hwnd);
       d.wparam=static_cast<std::uint64_t>(m.wParam);d.lparam=static_cast<std::uint64_t>(m.lParam);d.sendFlags=InSendMessageEx(nullptr);
+      SizeOrigin origin;const bool size=m.message==WM_SYSCOMMAND&&(m.wParam&0xfff0)==SC_SIZE;
+      if(size){origin.tid=GetCurrentThreadId();origin.count=CaptureStackBackTrace(0,64,origin.ip,nullptr);INPUT_MESSAGE_SOURCE source{};
+        if(GetCurrentInputMessageSource(&source)){origin.device=source.deviceType;origin.origin=source.originId;}else origin.error=GetLastError();}
       std::lock_guard lock(probe->mutex_);d.sequence=++probe->serial_;++probe->nativeCount_;
+      if(size){origin.message=d;origin.inputCount=static_cast<unsigned>(std::min<std::uint64_t>(probe->inputSequence_,16));
+        for(unsigned i=0;i<origin.inputCount;++i)origin.inputs[i]=probe->inputs_[(probe->inputSequence_-origin.inputCount+i)%16];
+        origin.parentCount=std::min<unsigned>(probe->state_.nativeDepth,8);
+        for(unsigned i=0;i<origin.parentCount;++i)origin.parents[i]=probe->state_.native[i];
+        if(probe->sizeOrigins_.size()<probe->sizeOrigins_.capacity())probe->sizeOrigins_.push_back(origin);else ++probe->originOverflow_;
+      }
       if(probe->state_.nativeDepth<32)probe->state_.native[probe->state_.nativeDepth]=d;else ++probe->depthOverflow_;
       ++probe->state_.nativeDepth;}
     SetLastError(priorError);return CallNextHookEx(nullptr,code,wp,lp);
@@ -238,14 +318,16 @@ private:
   void close() {
     if(control_){DestroyWindow(control_);control_=nullptr;}
     if(atom_){UnregisterClassW(L"FormaView.ForensicCalibration",GetModuleHandleW(nullptr));atom_=0;}
+    if(getMessage_){UnhookWindowsHookEx(getMessage_);getMessage_=nullptr;}
     if(before_){UnhookWindowsHookEx(before_);before_=nullptr;}
     if(after_){UnhookWindowsHookEx(after_);after_=nullptr;}
     if(active.load()==this)active=nullptr;
   }
-  Clock::time_point origin_;DWORD gui_{};HHOOK before_{},after_{};HWND control_{};ATOM atom_{};
+  Clock::time_point origin_;DWORD gui_{};HHOOK before_{},after_{},getMessage_{};HWND control_{};ATOM atom_{};
   std::mutex mutex_;Snapshot state_;
   std::uint64_t serial_{},nativeCount_{},qtCount_{},depthOverflow_{},unmatched_{},slowOverflow_{},publicationOverflow_{};
   std::uint64_t contentVersion_{};std::vector<float> previousPalette_;std::vector<std::array<double,16>> previousWorlds_;
+  std::array<InputRecord,16> inputs_{};std::uint64_t inputSequence_{},originOverflow_{};std::vector<SizeOrigin> sizeOrigins_;QJsonObject renderCalibration_;
   std::vector<Dispatch> nativeSlow_,qtSlow_;std::vector<Publication> publications_;QJsonObject calibration_,resize_;
 };
 class Application:public QGuiApplication {
