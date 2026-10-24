@@ -1786,15 +1786,28 @@ void ModelSession::poll() {
 }
 void ModelSession::attachRenderWindow(QQuickWindow *window) {
   if(gpuWindow_==window)return;
-  disconnect(renderTickConnection_);gpuWindow_=window;
-  if(window)renderTickConnection_=connect(window,&QQuickWindow::frameSwapped,this,[this] {
+  disconnect(renderTickConnection_);disconnect(renderTickSequenceConnection_);
+  gpuWindow_=window;renderTickSequence_.reset();
+  if(!window)return;
+  const auto sequence=std::make_shared<std::atomic<std::uint64_t>>(0);
+  renderTickSequence_=sequence;
+  // Render thread touches only a shared atomic, never GUI/session state.
+  renderTickSequenceConnection_=connect(window,&QQuickWindow::frameSwapped,this,[sequence] {
+    sequence->fetch_add(1,std::memory_order_relaxed);
+  },Qt::DirectConnection);
+  renderTickConnection_=connect(window,&QQuickWindow::frameSwapped,this,[this,sequence,handled=std::uint64_t{}]() mutable {
+    if(renderTickSequence_!=sequence)return; // Queued work from a replaced window.
+    const auto newest=sequence->load(std::memory_order_relaxed);
+    if(newest==handled)return;
+    handled=newest;
     if(playing_ && gpuEnabled_ && !gpuDisabled_ && gpuSkinActive() && gpuGeometry_) {
-      // One GUI-thread sample after each swap: the render loop supplies the
-      // cadence and backpressure. No queued pose backlog or 16ms phase beat.
+      // Native modal loops may present the same pose repeatedly. Consume only
+      // the latest swap epoch, rather than evaluating every queued old tick.
       animTimer_.stop();tickAnimation();
     }
   },Qt::QueuedConnection);
 }
+
 bool ModelSession::gpuSkinActive() const {
   return document_ && (document_->gpuSkinDomain() ||
                        (pairMeshVisible_ && document_->pairPreviewDomain()));

@@ -6860,6 +6860,40 @@ private slots:
       QCOMPARE(compareFixedDecoder(bad,bad).value("verdict").toString(),QString("insufficient"));
     }
   }
+  void modelGpuTickBacklog() {
+    // The legacy desktop suite deliberately selects CPU for its CPU oracles.
+    // Scope this new GPU-specific contract without changing other cases.
+    const bool hadSkinning=qEnvironmentVariableIsSet("FORMAVIEW_SKINNING");
+    const auto oldSkinning=qgetenv("FORMAVIEW_SKINNING");
+    const auto restoreSkinning=qScopeGuard([&]{if(hadSkinning)qputenv("FORMAVIEW_SKINNING",oldSkinning);else qunsetenv("FORMAVIEW_SKINNING");});
+    qunsetenv("FORMAVIEW_SKINNING");
+    // Real Anke, deterministic delivery boundary: render notifications can
+    // accumulate during a native modal resize, without a new model pose.
+    const auto target=qEnvironmentVariable("FORMAVIEW_PSK_TARGET"),animation=qEnvironmentVariable("FORMAVIEW_PSK_PSA");
+    QVERIFY(QFileInfo::exists(target));QVERIFY(QFileInfo::exists(animation));
+    ModelSession session;QQuickWindow first,second;
+    const auto cleanup=qScopeGuard([&]{session.attachRenderWindow(nullptr);session.clear();first.hide();second.hide();first.releaseResources();second.releaseResources();});
+    session.enableGpuSkinning(true);session.open(target);
+    QTRY_VERIFY_WITH_TIMEOUT(session.inspectable(),30000);
+    session.attachExternalAnimation(animation);
+    QTRY_VERIFY_WITH_TIMEOUT(!session.externalBusy()&&session.animated()&&session.frame()&&session.frame()->geometry,30000);
+    session.attachRenderWindow(&first);session.setLoop(true);session.togglePlay();QVERIFY(session.playing());
+    QSignalSpy changes(&session,&ModelSession::frameChanged);
+    const auto burst=[&](QQuickWindow &window,int count){for(int i=0;i<count;++i)QMetaObject::invokeMethod(&window,"frameSwapped",Qt::DirectConnection);};
+    burst(first,128);QThread::msleep(20);
+    QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
+    const int burstPoses=changes.count();evidence_["gpuTickBacklogPoses"]=burstPoses;
+    QCOMPARE(burstPoses,1); // Previously 128 unpresented pose evaluations.
+    changes.clear();burst(first,32);session.attachRenderWindow(&second);
+    QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
+    QCOMPARE(changes.count(),0); // Already queued callbacks from old window expire.
+    burst(second,32);QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
+    QCOMPARE(changes.count(),1);QVERIFY(session.playing());
+    session.togglePlay();changes.clear();burst(second,32);QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
+    QCOMPARE(changes.count(),0); // Paused playback must remain paused.
+    session.togglePlay();changes.clear();burst(second,16);QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
+    QCOMPARE(changes.count(),1);QVERIFY(session.frameError().isEmpty());
+  }
   void modelMorphStepEndpoint() {
     const auto directory=qEnvironmentVariable("FORMAVIEW_R13_STEP");QVERIFY(!directory.isEmpty());
     const auto document=readModelDocument(directory+"/step.gltf",{});

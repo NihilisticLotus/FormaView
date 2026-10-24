@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <atomic>
 #include "formaview/render_item.hpp"
 #include "model_document.hpp"
 #include "formaview/fbx.hpp"
@@ -281,7 +282,8 @@ private:
   ModelFrames frames_;
   bool gpuEnabled_{}, gpuDisabled_{};
   QPointer<QQuickWindow> gpuWindow_;
-  QMetaObject::Connection renderTickConnection_;
+  QMetaObject::Connection renderTickConnection_, renderTickSequenceConnection_;
+  std::shared_ptr<std::atomic<std::uint64_t>> renderTickSequence_;
   QByteArray gpuKey_;
   // Presentation of resident GPU geometry: shown draws and highlight, recomputed
   // only when the selection changes, never per pose.

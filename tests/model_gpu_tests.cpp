@@ -31,6 +31,7 @@
 #include <iostream>
 #include <cmath>
 #include <limits>
+#include "model_forensics.hpp"
 using namespace formaview::render;
 namespace {
 void require(bool value,const char *message) { if(!value)throw std::runtime_error(message); }
@@ -124,10 +125,11 @@ void openSample(ModelSession &session,const QString &path,const QStringList &ext
   }
 }
 // GUI-thread stall watchdog (diagnostic): stacks are captured with the thread suspended, resolved later.
-struct WaitNode {DWORD type{},status{},pid{},tid{};};
+struct WaitNode {DWORD type{},status{},pid{},tid{},waitTime{},contextSwitches{};QString objectName;};
 struct StallSample {double ms{};double stalledMs{};int count{};void *ip[40]{};
- DWORD waitError{},waitCount{};BOOL waitCycle{};WaitNode waitNodes[WCT_MAX_NODE_COUNT]{};};
-struct Watch {std::atomic<long long> beat{0};std::atomic<bool> run{true};std::vector<StallSample> samples;};
+ DWORD waitError{},waitCount{},suspendError{};BOOL waitCycle{};WaitNode waitNodes[WCT_MAX_NODE_COUNT]{};
+ double captureMs{},resumedMs{},waitStartMs{},waitEndMs{},renderCaptureMs{},renderResumedMs{};int renderCount{};void *renderIp[40]{};DWORD renderId{},renderError{};long long heartbeat{};std::uint64_t waitCandidate{};QJsonObject waitObject;std::shared_ptr<model_forensics::Snapshot> dispatch;};
+struct Watch {std::atomic<long long> beat{0};std::atomic<bool> run{true};std::vector<StallSample> samples;model_forensics::Probe *probe{};std::atomic<DWORD> *renderThread{};};
 long long beatNow() {return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 int unwindStack(CONTEXT context,void **out,int capacity) {
   int count=0;
@@ -147,32 +149,62 @@ void watchdogLoop(HANDLE gui,Watch *watch,std::chrono::steady_clock::time_point 
   const auto waitSessionError=waitSession?0:GetLastError();
   const auto closeWait=qScopeGuard([&]{if(waitSession)CloseThreadWaitChainSession(waitSession);});
   const auto guiId=GetThreadId(gui);
+  const auto ntWait=reinterpret_cast<const unsigned char*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtWaitForSingleObject"));
+  const bool knownWaitStub=ntWait&&ntWait[0]==0x4c&&ntWait[1]==0x8b&&ntWait[2]==0xd1&&ntWait[3]==0xb8&&ntWait[18]==0x0f&&ntWait[19]==0x05;
   while(watch->run.load()) {
     Sleep(10);
     const auto beat=watch->beat.load();if(!beat)continue;
     const double age=(beatNow()-beat)/1e6;
     if(age<60){taken=0;continue;}
     if(taken>=80 || watch->samples.size()==watch->samples.capacity())continue;
-    StallSample sample;sample.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-origin).count();sample.stalledMs=age;
+    StallSample sample;sample.heartbeat=beat;sample.ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-origin).count();sample.stalledMs=age;
+    model_forensics::Snapshot dispatch;
+    const auto since=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-origin).count();};
+    sample.captureMs=since();
     if(SuspendThread(gui)!=static_cast<DWORD>(-1)) {
       CONTEXT context{};context.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER;
-      if(GetThreadContext(gui,&context))sample.count=unwindStack(context,sample.ip,40);
+      if(GetThreadContext(gui,&context)) {
+        sample.count=unwindStack(context,sample.ip,40);
+        if(watch->probe&&knownWaitStub&&context.Rip==reinterpret_cast<std::uintptr_t>(ntWait)+20)sample.waitCandidate=context.R10;
+      }
+      if(watch->probe)dispatch=watch->probe->snapshot();
       ResumeThread(gui);
-    }
+    }else sample.suspendError=GetLastError();
+    sample.resumedMs=since();
+    if(watch->probe)sample.dispatch=std::make_shared<model_forensics::Snapshot>(dispatch);
+    if(sample.waitCandidate)sample.waitObject=model_forensics::waitObject(reinterpret_cast<HANDLE>(sample.waitCandidate));
     // Query only AFTER resuming: a suspended GUI thread can hold locks needed
     // by WCT itself. Flags=0 follows this process and reports the first foreign
     // thread without probing that process. Failure is evidence, never bypassed.
+    // Capture render thread separately, after GUI resume. Never suspend both.
+    sample.renderCaptureMs=since();
+    if(watch->probe&&watch->renderThread&&(sample.renderId=watch->renderThread->load())!=0) {
+      HANDLE render=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,sample.renderId);
+      if(render) {
+        if(SuspendThread(render)!=static_cast<DWORD>(-1)) {
+          CONTEXT context{};context.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER;
+          if(GetThreadContext(render,&context))sample.renderCount=unwindStack(context,sample.renderIp,40);
+          else sample.renderError=GetLastError();
+          ResumeThread(render);
+        } else sample.renderError=GetLastError();
+        CloseHandle(render);
+      } else sample.renderError=GetLastError();
+    }
+    sample.renderResumedMs=since();
     sample.waitError=waitSessionError;
+    sample.waitStartMs=since();
     if(waitSession){
       WAITCHAIN_NODE_INFO nodes[WCT_MAX_NODE_COUNT]{};DWORD count=WCT_MAX_NODE_COUNT;
       if(GetThreadWaitChain(waitSession,0,0,guiId,&count,nodes,&sample.waitCycle)){
         sample.waitCount=std::min<DWORD>(count,WCT_MAX_NODE_COUNT);
         for(DWORD i=0;i<sample.waitCount;++i){auto &out=sample.waitNodes[i];const auto &in=nodes[i];
           out.type=in.ObjectType;out.status=in.ObjectStatus;
-          if(in.ObjectType==WctThreadType){out.pid=in.ThreadObject.ProcessId;out.tid=in.ThreadObject.ThreadId;}}
+          if(in.ObjectType==WctThreadType){out.pid=in.ThreadObject.ProcessId;out.tid=in.ThreadObject.ThreadId;out.waitTime=in.ThreadObject.WaitTime;out.contextSwitches=in.ThreadObject.ContextSwitches;}
+          else if(watch->probe)out.objectName=QString::fromWCharArray(in.LockObject.ObjectName,static_cast<int>(wcsnlen_s(in.LockObject.ObjectName,WCT_OBJNAME_LENGTH)));}
       }else sample.waitError=GetLastError();
     }
-    watch->samples.push_back(sample);++taken;
+    sample.waitEndMs=since();
+    watch->samples.push_back(std::move(sample));++taken;
   }
 }
 QString describeAddress(void *address) {
@@ -180,8 +212,12 @@ QString describeAddress(void *address) {
   wchar_t path[MAX_PATH]{};if(module)GetModuleFileNameW(module,path,MAX_PATH);
   QString text=module?QFileInfo(QString::fromWCharArray(path)).fileName():QStringLiteral("?");
   alignas(SYMBOL_INFOW) char buffer[sizeof(SYMBOL_INFOW)+512*sizeof(wchar_t)]{};auto *symbol=reinterpret_cast<SYMBOL_INFOW*>(buffer);symbol->SizeOfStruct=sizeof(SYMBOL_INFOW);symbol->MaxNameLen=512;DWORD64 displacement=0;
-  if(SymFromAddrW(GetCurrentProcess(),reinterpret_cast<DWORD64>(address),&displacement,symbol))text+="!"+QString::fromWCharArray(symbol->Name)+"+0x"+QString::number(displacement,16);
-  else text+="+0x"+QString::number(reinterpret_cast<std::uintptr_t>(address)-reinterpret_cast<std::uintptr_t>(module),16);
+  text+="+0x"+QString::number(reinterpret_cast<std::uintptr_t>(address)-reinterpret_cast<std::uintptr_t>(module),16);
+  if(SymFromAddrW(GetCurrentProcess(),reinterpret_cast<DWORD64>(address),&displacement,symbol)){
+    IMAGEHLP_MODULEW64 info{};info.SizeOfStruct=sizeof(info);
+    const bool pdb=SymGetModuleInfoW64(GetCurrentProcess(),reinterpret_cast<DWORD64>(address),&info)&&info.SymType==SymPdb;
+    text+=(pdb?" [pdb!":" [unverified-symbol!")+QString::fromWCharArray(symbol->Name)+"+0x"+QString::number(displacement,16)+"]";
+  }
   return text;
 }
 // Watchdog validation only (FORMAVIEW_LIFECYCLE_INJECT_STALL=1): a known, named 300 ms GUI-thread block.
@@ -193,13 +229,15 @@ bool systemModule(const QString &frame) {
 }
 QJsonObject summarizeStalls(const std::vector<StallSample> &samples) {
   SymSetOptions(SYMOPT_UNDNAME|SYMOPT_DEFERRED_LOADS|SYMOPT_LOAD_LINES);
-  SymInitializeW(GetCurrentProcess(),L"E:\\CodexProject\\asset-preview-planning\\development\\build\\M07-loop\\Release;E:\\Qt\\6.12.0\\msvc2022_64\\bin",TRUE);
+  QString symbolPath=QCoreApplication::applicationDirPath()+";E:/Qt/6.12.0/msvc2022_64/bin";
+  const auto extraSymbols=qEnvironmentVariable("FORMAVIEW_FORENSICS_SYMBOLS");if(!extraSymbols.isEmpty())symbolPath+=";"+extraSymbols;
+  const auto wideSymbolPath=symbolPath.toStdWString();SymInitializeW(GetCurrentProcess(),wideSymbolPath.c_str(),TRUE);
   std::map<void*,QString> cache;
   const auto name=[&](void *ip){auto it=cache.find(ip);if(it==cache.end())it=cache.emplace(ip,describeAddress(ip)).first;return it->second;};
-  QJsonArray stalls;std::map<QString,int> owners,leaves;
+  QJsonArray stalls,diagnosticSamples;std::map<QString,int> owners,leaves;
   std::size_t i=0;
   while(i<samples.size()) {
-    std::size_t j=i;while(j+1<samples.size() && samples[j+1].ms-samples[j].ms<200)++j;
+    std::size_t j=i;while(j+1<samples.size() && samples[j+1].heartbeat==samples[i].heartbeat)++j;
     QJsonObject stall{{"startMs",samples[i].ms-samples[i].stalledMs},{"observedSamples",static_cast<int>(j-i+1)},{"maxStalledMs",samples[j].stalledMs}};
     std::map<QString,int> groupOwners;QJsonArray stacks;
     for(std::size_t k=i;k<=j;++k) {
@@ -207,6 +245,21 @@ QJsonObject summarizeStalls(const std::vector<StallSample> &samples) {
       for(int f=0;f<samples[k].count;++f){const auto frame=name(samples[k].ip[f]);if(!systemModule(frame)){owner=frame;break;}}
       if(samples[k].count)leaves[name(samples[k].ip[0])]++;
       owners[owner]++;groupOwners[owner]++;
+      if(samples[k].dispatch){const auto &v=samples[k];QJsonArray allFrames,allWait,renderFrames;
+        for(int f=0;f<v.renderCount;++f)renderFrames.append(name(v.renderIp[f]));
+        for(int f=0;f<v.count;++f)allFrames.append(name(v.ip[f]));
+        for(DWORD f=0;f<v.waitCount;++f){const auto &node=v.waitNodes[f];allWait.append(QJsonObject{
+          {"type",static_cast<int>(node.type)},{"status",static_cast<int>(node.status)},
+          {"pid",static_cast<qint64>(node.pid)},{"tid",static_cast<qint64>(node.tid)},
+          {"objectName",node.objectName},{"threadWaitTime",static_cast<qint64>(node.waitTime)},
+          {"contextSwitches",static_cast<qint64>(node.contextSwitches)}});}
+        diagnosticSamples.append(QJsonObject{{"ms",v.ms},{"stalledMs",v.stalledMs},
+          {"heartbeatNs",QString::number(v.heartbeat)},{"waitObject",v.waitObject},{"captureMs",v.captureMs},{"resumedMs",v.resumedMs},{"waitStartMs",v.waitStartMs},{"waitEndMs",v.waitEndMs},
+          {"suspendError",static_cast<qint64>(v.suspendError)},{"waitError",static_cast<qint64>(v.waitError)},
+          {"waitCycle",v.waitCycle!=FALSE},{"dispatch",model_forensics::snapshotJson(*v.dispatch)},
+          {"waitChain",allWait},{"frames",allFrames},{"renderTid",static_cast<qint64>(v.renderId)},{"renderError",static_cast<qint64>(v.renderError)},
+          {"renderCaptureMs",v.renderCaptureMs},{"renderResumedMs",v.renderResumedMs},{"renderFrames",renderFrames}});
+      }
       if(k==i || k==(i+j)/2 || k==j){QJsonArray frames,chain;
         for(int f=0;f<std::min(samples[k].count,16);++f)frames.append(name(samples[k].ip[f]));
         for(DWORD f=0;f<samples[k].waitCount;++f){const auto &v=samples[k].waitNodes[f];chain.append(QJsonObject{
@@ -220,7 +273,7 @@ QJsonObject summarizeStalls(const std::vector<StallSample> &samples) {
   }
   QJsonObject ownerJson,leafJson;for(const auto &[key,count]:owners)ownerJson[key]=count;for(const auto &[key,count]:leaves)leafJson[key]=count;
   SymCleanup(GetCurrentProcess());
-  return {{"stalls",stalls},{"samples",static_cast<int>(samples.size())},{"firstNonSystemFrameHistogram",ownerJson},{"leafHistogram",leafJson}};
+  return {{"stalls",stalls},{"samples",static_cast<int>(samples.size())},{"firstNonSystemFrameHistogram",ownerJson},{"leafHistogram",leafJson},{"diagnosticSamples",diagnosticSamples}};
 }
 // Process-level resource row for lifecycle trends (private bytes, handles, GPU bytes).
 QJsonObject usageRow(const QString &label,qint64 ms,std::uint64_t owned,std::uint64_t processGpu,std::uint64_t releases) {
@@ -233,7 +286,7 @@ double percentile(std::vector<double> v,double p) {if(v.empty())return -1;std::s
 }
 int main(int argc,char **argv) {
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
-  QGuiApplication app(argc,argv);const auto args=app.arguments();
+  model_forensics::Application app(argc,argv);const auto args=app.arguments();
   if(args.size()<3){std::cerr<<"model_gpu_tests SAMPLE OUTPUT.json [seconds] [cpu|numeric]";return 2;}
   QJsonObject report;try {
     const auto path=args[1];const double duration=args.size()>3?args[3].toDouble():10;
@@ -292,14 +345,14 @@ int main(int argc,char **argv) {
       const auto phase=qEnvironmentVariable("FORMAVIEW_LIFECYCLE","open");
       const int repeats=std::max(1,qEnvironmentVariable("FORMAVIEW_LIFECYCLE_REPEATS","10").toInt());
       report["phase"]=phase;report["repeats"]=repeats;
-      struct Live {std::mutex mutex;std::uint64_t owned{},process{},releases{},revision{},swaps{},uploadedMax{};bool gpu{};std::vector<double> intervals,swapTimes;std::vector<std::array<double,2>> slow;std::vector<std::array<double,5>> heavy;std::chrono::steady_clock::time_point last{},origin{};};
+      struct Live {std::atomic<DWORD> renderThread{0};std::mutex mutex;std::uint64_t owned{},process{},releases{},revision{},swaps{},uploadedMax{};bool gpu{};std::vector<double> intervals,swapTimes;struct Presented{double at{},seconds{};std::uint64_t revision{};int clip{-1};};std::vector<Presented> presents;bool forensic{};std::uint64_t presentOverflow{};int latestClip{-1};double latestSeconds{};std::vector<std::array<double,2>> slow;std::vector<std::array<double,5>> heavy;std::chrono::steady_clock::time_point last{},origin{};};
       auto live=std::make_shared<Live>();
       ModelSession session;QQuickWindow window;window.setTitle("FormaView GPU lifecycle");window.resize(1280,720);
       const bool foreground=qEnvironmentVariable("FORMAVIEW_PERF_FOREGROUND")=="1";report["foregroundCondition"]=foreground;
       if(foreground)window.setFlag(Qt::WindowStaysOnTopHint);
       auto item=std::make_unique<ModelView>(window.contentItem());item->setSize({1280,720});item->setSession(&session);
-      item->observe=[live](Observation o){std::lock_guard lock(live->mutex);if(o.released){++live->releases;live->owned=0;return;}live->owned=o.owned_gpu_bytes;live->process=o.process_gpu_bytes;live->revision=o.frame_revision;live->gpu=o.gpu_skinning;live->uploadedMax=std::max(live->uploadedMax,o.uploaded_bytes);if(live->origin.time_since_epoch().count() && (o.prepare_ms>3 || o.record_ms>3 || o.uploaded_bytes>100000))live->heavy.push_back({std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-live->origin).count(),o.prepare_ms,o.record_ms,static_cast<double>(o.uploaded_bytes),o.gpu_skinning?1.:0.});};
-      QObject::connect(&window,&QQuickWindow::frameSwapped,&window,[live]{std::lock_guard lock(live->mutex);const auto now=std::chrono::steady_clock::now();++live->swaps;const bool timed=live->origin.time_since_epoch().count()>0;const double at=timed?std::chrono::duration<double,std::milli>(now-live->origin).count():0;if(live->last.time_since_epoch().count()){const double gap=std::chrono::duration<double,std::milli>(now-live->last).count();live->intervals.push_back(gap);if(timed && gap>50)live->slow.push_back({at,gap});}if(timed)live->swapTimes.push_back(at);live->last=now;},Qt::DirectConnection);
+      item->observe=[live](Observation o){live->renderThread=GetCurrentThreadId();std::lock_guard lock(live->mutex);if(o.released){++live->releases;live->owned=0;return;}live->owned=o.owned_gpu_bytes;live->process=o.process_gpu_bytes;live->revision=o.frame_revision;live->latestClip=o.clip;live->latestSeconds=o.seconds;live->gpu=o.gpu_skinning;live->uploadedMax=std::max(live->uploadedMax,o.uploaded_bytes);if(live->origin.time_since_epoch().count() && (o.prepare_ms>3 || o.record_ms>3 || o.uploaded_bytes>100000))live->heavy.push_back({std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-live->origin).count(),o.prepare_ms,o.record_ms,static_cast<double>(o.uploaded_bytes),o.gpu_skinning?1.:0.});};
+      QObject::connect(&window,&QQuickWindow::frameSwapped,&window,[live]{std::lock_guard lock(live->mutex);const auto now=std::chrono::steady_clock::now();++live->swaps;const bool timed=live->origin.time_since_epoch().count()>0;const double at=timed?std::chrono::duration<double,std::milli>(now-live->origin).count():0;if(live->last.time_since_epoch().count()){const double gap=std::chrono::duration<double,std::milli>(now-live->last).count();live->intervals.push_back(gap);if(timed && gap>50)live->slow.push_back({at,gap});}if(timed){live->swapTimes.push_back(at);if(live->forensic){if(live->presents.size()<live->presents.capacity())live->presents.push_back({at,live->latestSeconds,live->revision,live->latestClip});else ++live->presentOverflow;}}live->last=now;},Qt::DirectConnection);
       QJsonArray rows;QElapsedTimer total;total.start();
       const auto sample=[&](const QString &label){std::lock_guard lock(live->mutex);rows.append(usageRow(label,total.elapsed(),live->owned,live->process,live->releases));};
       const auto pause=[&](int ms){QElapsedTimer t;t.start();while(t.elapsed()<ms){QCoreApplication::processEvents();QThread::msleep(1);}};
@@ -554,8 +607,29 @@ int main(int argc,char **argv) {
         const double speeds[]={1.0,2.0,.5,1.0};
         const auto origin=std::chrono::steady_clock::now();{std::lock_guard lock(live->mutex);/* Intervals recorded since the window first showed, i.e. while the model loaded, before the soak clock starts. */QJsonArray loadGaps;int loadOver100=0;for(double v:live->intervals){if(v>100)++loadOver100;if(v>50)loadGaps.append(v);}report["loadPhaseIntervals"]=static_cast<int>(live->intervals.size());report["loadPhaseOver100Ms"]=loadOver100;report["loadPhaseOver50Ms"]=loadGaps;live->origin=origin;live->swapTimes.clear();live->intervals.clear();live->last={};}
         const auto since=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-origin).count();};
+        std::unique_ptr<model_forensics::Probe> diagnostics;QMetaObject::Connection poseConnection;
+        if(qEnvironmentVariable("FORMAVIEW_LIFECYCLE_FORENSICS")=="1"){
+          const auto capacity=static_cast<std::size_t>(std::clamp(duration*200.0+10000.0,10000.0,500000.0));
+          diagnostics=std::make_unique<model_forensics::Probe>(origin,capacity);
+          poseConnection=QObject::connect(&session,&ModelSession::frameChanged,&session,[&]{diagnostics->publish(session.frame());});
+          diagnostics->publish(session.frame());
+          std::lock_guard lock(live->mutex);live->forensic=true;live->presents.reserve(capacity);
+        }
+        const auto disconnectPose=qScopeGuard([&]{if(diagnostics)QObject::disconnect(poseConnection);});
+        QTimer calibration;calibration.setSingleShot(true);
+        if(qEnvironmentVariable("FORMAVIEW_FORENSICS_CALIBRATE")=="1"){
+          require(diagnostics&&duration>=30,"Forensic calibration requires enabled diagnostics and >=30 seconds");
+          QObject::connect(&calibration,&QTimer::timeout,&window,[&]{diagnostics->calibrateMutex();});calibration.start(15000);
+        }
+        QTimer resizeControl;resizeControl.setSingleShot(true);
+        if(qEnvironmentVariable("FORMAVIEW_FORENSICS_RESIZE")=="1") {
+          require(diagnostics&&duration>=60,"Resize control requires diagnostics and >=60 seconds");
+          QObject::connect(&resizeControl,&QTimer::timeout,&window,[&]{diagnostics->resizeControl(reinterpret_cast<HWND>(window.winId()));});resizeControl.start(30000);
+        }
+        const bool stimulus=qEnvironmentVariable("FORMAVIEW_FORENSICS_STIMULUS")=="1";
+        report["forensicStimulus"]=stimulus;qint64 nextStimulus=5000;int stimulusIndex=0;
         const bool injectStall=qEnvironmentVariable("FORMAVIEW_LIFECYCLE_INJECT_STALL")=="1";bool injected=false;report["injectedStall"]=injectStall;
-        Watch watch;watch.samples.reserve(8000);
+        Watch watch;watch.samples.reserve(8000);watch.probe=diagnostics.get();watch.renderThread=&live->renderThread;
         HANDLE guiThread=nullptr;DuplicateHandle(GetCurrentProcess(),GetCurrentThread(),GetCurrentProcess(),&guiThread,THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,0);
         std::thread watchdog(watchdogLoop,guiThread,&watch,origin);bool watchStopped=false;
         const auto stopWatch=qScopeGuard([&]{if(!watchStopped){watch.run=false;if(watchdog.joinable())watchdog.join();}});
@@ -567,6 +641,13 @@ int main(int argc,char **argv) {
           if(pumped>20)events.append(QJsonObject{{"ms",pumpStart},{"type","processEvents"},{"callMs",pumped}});
           QThread::msleep(2);
           const auto now=run.elapsed();
+          if(stimulus&&now>=nextStimulus){
+            const UINT messages[]={WM_GETTEXTLENGTH,WM_NCHITTEST,WM_THEMECHANGED};
+            const auto message=messages[stimulusIndex++%3];const auto hwnd=reinterpret_cast<HWND>(window.winId());
+            POINT point{10,10};ClientToScreen(hwnd,&point);
+            timedAction("controlledNativeMessage",[&]{SendMessageW(hwnd,message,0,message==WM_NCHITTEST?MAKELPARAM(point.x,point.y):0);});
+            nextStimulus+=5000;
+          }
           if(now>=nextSample){timedAction("sample",[&]{sample("soak "+QString::number(now/1000));});nextSample+=5000;}
           if(now>=nextClip){++tick;timedAction("setClipIndex",[&]{session.setClipIndex(tick%rotate);});if(tick%3==0)timedAction("seek",[&]{const auto info=session.clipInfo();session.seek(info.value("start").toDouble()+(info.value("end").toDouble()-info.value("start").toDouble())*((tick%7)/7.0));});nextClip+=10000;}
           if(now>=nextSpeed){timedAction("setSpeed",[&]{session.setSpeed(speeds[(now/20000)%4]);});nextSpeed+=20000;}
@@ -575,12 +656,18 @@ int main(int argc,char **argv) {
         }
         watch.run=false;watchdog.join();watchStopped=true;if(guiThread)CloseHandle(guiThread);
         report["stallWatchdog"]=summarizeStalls(watch.samples);
+        if(diagnostics)report["forensics"]=diagnostics->report();
         session.setSpeed(1.0);session.togglePlay();
         {std::lock_guard lock(live->mutex);const auto sorted=live->intervals;report["swapIntervals"]=static_cast<int>(sorted.size());report["swapP50Ms"]=percentile(sorted,.5);report["swapP95Ms"]=percentile(sorted,.95);report["swapP99Ms"]=percentile(sorted,.99);int over=0;for(double v:sorted)if(v>100)++over;report["swapOver100Ms"]=over;report["onGpu"]=live->gpu;
           QJsonArray swaps,slowRows,heavyRows;for(double v:live->swapTimes)swaps.append(std::round(v*1000)/1000);
           for(const auto &row:live->slow)slowRows.append(QJsonObject{{"endMs",row[0]},{"intervalMs",row[1]}});
           for(const auto &row:live->heavy)heavyRows.append(QJsonObject{{"ms",row[0]},{"prepareMs",row[1]},{"recordMs",row[2]},{"uploadedBytes",row[3]},{"gpu",row[4]>0}});
-          report["swapTimesMs"]=swaps;report["slowSwaps"]=slowRows;report["heavyRenders"]=heavyRows;report["events"]=events;}
+          report["swapTimesMs"]=swaps;report["slowSwaps"]=slowRows;report["heavyRenders"]=heavyRows;report["events"]=events;
+          if(diagnostics){auto forensic=report["forensics"].toObject();QJsonArray presents;
+            for(const auto &p:live->presents)presents.append(QJsonArray{p.at,static_cast<qint64>(p.revision),p.clip,p.seconds});
+            forensic["presentedPoses"]=presents;forensic["presentColumns"]=QJsonArray{"atMs","revision","clip","seconds"};
+            forensic["presentOverflow"]=static_cast<qint64>(live->presentOverflow);report["forensics"]=forensic;}
+        }
         require(liveGpu(),"Soak ended off the GPU path");
         session.clear();pause(500);sample("cleared");
       } else if(phase=="exit") {
