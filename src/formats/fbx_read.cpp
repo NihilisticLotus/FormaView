@@ -128,6 +128,118 @@ struct FbxDocument::Impl {
 };
 FbxDocument::FbxDocument(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 const FbxData &FbxDocument::data() const noexcept { return impl_->data; }
+transform::Evidence FbxDocument::transform_evidence(std::stop_token stop) const {
+  cancelled(stop);
+  transform::Evidence out;
+  out.sha256 = impl_->data.source.identity.sha256;
+  out.adapterVersion = "ufbx-0.23.1/r13-evidence-3";
+  const auto &scene = *impl_->scene;
+  if (scene.nodes.count > transform::Policy{}.maxNodes)
+    return out; // Incomplete, never silently truncate the full node domain.
+  const auto &settings = scene.settings;
+  const char *coordinateProps[] = {"UnitScaleFactor", "CoordAxis", "CoordAxisSign",
+      "UpAxis", "UpAxisSign", "FrontAxis", "FrontAxisSign"};
+  if (std::all_of(std::begin(coordinateProps), std::end(coordinateProps),
+                  [&](const char *key) { return ufbx_find_prop(&settings.props, key); })) {
+    transform::Coordinates c;
+    c.metresPerUnit = settings.unit_meters;
+    const ufbx_coordinate_axis axes[] = {settings.axes.right, settings.axes.up, settings.axes.front};
+    bool known = true;
+    for (std::size_t i = 0; i < 3; ++i) {
+      const auto axis = static_cast<int>(axes[i]);
+      if (axis < 0 || axis >= 6) { known = false; break; }
+      c.axes[i] = (axis / 2 + 1) * (axis % 2 ? -1 : 1);
+    }
+    if (known) out.coordinates = c;
+  }
+  const auto vector = [](ufbx_vec3 v) -> transform::Vec3 { return {v.x,v.y,v.z}; };
+  const auto quaternion = [](ufbx_quat q) -> transform::Quat { return {q.x,q.y,q.z,q.w}; };
+  out.nodes.reserve(scene.nodes.count);
+  for (const auto *node : scene.nodes) {
+    cancelled(stop);
+    transform::Node n;
+    n.fileIndex = node->typed_id;
+    if (node->parent) n.parent = node->parent->typed_id;
+    const auto &t = node->local_transform;
+    n.restLocal = transform::Trs{vector(t.translation), quaternion(t.rotation), vector(t.scale)};
+    n.syntheticRoot = node->is_root;
+    if (node->inherit_scale_node) n.inheritScaleParent = node->inherit_scale_node->typed_id;
+    // The pinned reader's documented FBX defaults are part of its semantics:
+    // missing pivot/offset/pre/post = zero, order = XYZ. Do not infer a
+    // canonical meaning for coordinate conversion or synthetic scale helpers.
+    if (!node->has_adjust_transform && !node->has_root_adjust_transform &&
+        !node->is_scale_helper && !node->is_geometry_transform_helper &&
+        node->rotation_order < UFBX_ROTATION_ORDER_SPHERIC) {
+      transform::Evaluation e;
+      e.rotationSpace = node->use_rotation_space;
+      e.rotationOrder = static_cast<std::uint8_t>(node->use_rotation_space ? node->rotation_order : UFBX_ROTATION_ORDER_XYZ);
+      e.inheritance = static_cast<std::uint8_t>(node->inherit_mode);
+      const auto v = [&](const char *key) {
+        const auto *p = ufbx_find_prop(&node->props,key);
+        return p ? p->value_vec3 : ufbx_zero_vec3;
+      };
+      if (node->use_rotation_space) {
+        e.preRotation = quaternion(ufbx_euler_to_quat(v("PreRotation"), UFBX_ROTATION_ORDER_XYZ));
+        e.postRotation = quaternion(ufbx_euler_to_quat(v("PostRotation"), UFBX_ROTATION_ORDER_XYZ));
+      }
+      e.rotationPivot = vector(v("RotationPivot")); e.scalingPivot = vector(v("ScalingPivot"));
+      e.rotationOffset = vector(v("RotationOffset")); e.scalingOffset = vector(v("ScalingOffset"));
+      n.evaluation = e;
+    }
+    out.nodes.push_back(n);
+  }
+  out.fullNodeDomain = true;
+  out.bindings.emplace();
+  const auto matrix = [](const ufbx_matrix &m) {
+    transform::Matrix a{};
+    for (std::size_t c=0;c<4;++c) for (std::size_t r=0;r<3;++r) a[c*4+r]=m.cols[c].v[r];
+    a[15]=1; return a;
+  };
+  std::size_t seenSkins=0;
+  for (const auto *mesh : scene.meshes) {
+    for (const auto *skin : mesh->skin_deformers) {
+      ++seenSkins;
+      if (skin->skinning_method != UFBX_SKINNING_METHOD_LINEAR || mesh->instances.count == 0) {
+        out.bindings.reset(); return out;
+      }
+      for (const auto *instance : mesh->instances) {
+        cancelled(stop);
+        // A declared BindPose must independently contain the mesh instance
+        // and every joint. Never substitute node_to_world/current pose.
+        const ufbx_pose *witness=nullptr;
+        for (const auto *pose : scene.poses) {
+          cancelled(stop);
+          if (!pose->is_bind_pose || !ufbx_get_bone_pose(pose,instance)) continue;
+          bool complete=true;
+          for (const auto *cluster : skin->clusters) {
+            cancelled(stop);
+            if (!cluster->bone_node || !ufbx_get_bone_pose(pose,cluster->bone_node)) {complete=false;break;}
+          }
+          if (!complete) continue;
+          if (witness) {out.bindings.reset(); return out;} // Ambiguous bind epochs.
+          witness=pose;
+        }
+        if (!witness || instance->geometry_transform_helper || instance->has_adjust_transform ||
+            instance->has_root_adjust_transform) {out.bindings.reset();return out;}
+        const auto *meshPose=ufbx_get_bone_pose(witness,instance);
+        const auto geometryWorld=ufbx_matrix_mul(&meshPose->bone_to_world,&instance->geometry_to_node);
+        for (const auto *cluster : skin->clusters) {
+          cancelled(stop);
+          if (out.bindings->size()+2 > transform::Policy{}.maxBindings) {out.bindings.reset();return out;}
+          const auto *jointPose=ufbx_get_bone_pose(witness,cluster->bone_node);
+          const auto geometryToBone=ufbx_matrix_mul(&cluster->mesh_node_to_bone,&instance->geometry_to_node);
+          // Check BOTH independently stored joint witnesses against the mesh
+          // BindPose. This detects conflicting cluster links and fallback data.
+          out.bindings->push_back({cluster->bone_node->typed_id,matrix(jointPose->bone_to_world),matrix(geometryToBone),matrix(geometryWorld),instance->typed_id,0});
+          out.bindings->push_back({cluster->bone_node->typed_id,matrix(cluster->bind_to_world),matrix(geometryToBone),matrix(geometryWorld),instance->typed_id,1});
+        }
+      }
+    }
+  }
+  // Unattached deformers are not silently omitted from the complete domain.
+  if (seenSkins != scene.skin_deformers.count) out.bindings.reset();
+  return out;
+}
 FbxDocument FbxDocument::read(const std::filesystem::path &path,
                               const ReadOptions &options) {
   return read_impl(path, options, false);

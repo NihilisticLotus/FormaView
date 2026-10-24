@@ -8,6 +8,7 @@ FocusScope {
     property bool uv: false
     property bool showGrid: true
     property bool showAxes: true
+    property bool wireframe: false
     property var initialCamera: ({})
     property bool ready: false
     signal cameraSaved(var state)
@@ -21,6 +22,7 @@ FocusScope {
         representation: root.uv ? 1 : 0
         showGrid: !root.uv && root.showGrid
         showAxes: !root.uv && root.showAxes
+        wireframe: !root.uv && root.wireframe
         onCameraChanged: state => { if (root.ready) root.cameraSaved(state) }
         activeFocusOnTab: true
         Accessible.role: Accessible.Pane
@@ -28,6 +30,7 @@ FocusScope {
         Keys.onPressed: event => {
             if (event.key === Qt.Key_F) { viewport.fit(true); event.accepted = true }
             else if (event.key === Qt.Key_Home) { viewport.fit(); event.accepted = true }
+            else if (event.key === Qt.Key_Space && !root.uv && root.session && root.session.animated) { root.session.togglePlay(); event.accepted = true }
         }
         MouseArea {
             anchors.fill: parent

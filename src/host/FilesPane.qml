@@ -68,13 +68,14 @@ Rectangle {
             id: filterButton
             objectName: "filterButton"
             Layout.maximumWidth: root.width - 20; Layout.leftMargin: 10; Layout.rightMargin: 10
-            text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC"][root.controller.typeFilter] : "")
+            text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC",Theme.t("全部", "All", "全部")][root.controller.typeFilter] : "")
             hint: text
             onClicked: filters.open()
             AppPopupMenu {
                 id: filters
                 y: filterButton.height
-                AppMenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 0; onTriggered: root.controller.filter(search.text, 0, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("可预览文件（默认）", "Previewable files (default)", "可預覽檔案（預設）"); checkable: true; checked: root.controller.typeFilter === 0; onTriggered: root.controller.filter(search.text, 0, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 5; onTriggered: root.controller.filter(search.text, 5, root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("图片 / 纹理", "Images / Textures", "影像 / 紋理"); checkable: true; checked: root.controller.typeFilter === 1; onTriggered: root.controller.filter(search.text, 1, root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("模型", "Models", "模型"); checkable: true; checked: root.controller.typeFilter === 2; onTriggered: root.controller.filter(search.text, 2, root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("骨骼动画", "Skeletal animation", "骨骼動畫"); checkable: true; checked: root.controller.typeFilter === 3; onTriggered: root.controller.filter(search.text, 3, root.controller.sortOrder) }

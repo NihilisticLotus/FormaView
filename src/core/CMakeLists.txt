@@ -1,4 +1,4 @@
-add_library(formaview_core STATIC contracts.cpp capabilities.cpp scheduler.cpp telemetry.cpp skeletal.cpp sha256.cpp preview.cpp)
+add_library(formaview_core STATIC contracts.cpp capabilities.cpp scheduler.cpp telemetry.cpp skeletal.cpp skeleton_compare.cpp animation_post.cpp sha256.cpp preview.cpp)
 add_library(FormaView::Core ALIAS formaview_core)
 target_include_directories(formaview_core PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(formaview_core PUBLIC cxx_std_20)
@@ -8,3 +8,9 @@ if(WIN32)
     set_source_files_properties(file_access_win.cpp PROPERTIES COMPILE_DEFINITIONS "NOMINMAX;WIN32_LEAN_AND_MEAN")
     target_link_libraries(formaview_core PRIVATE ole32 advapi32)
 endif()
+
+# R13 evidence kernel is not linked into the host until adapters are accepted.
+add_library(formaview_transform_validation STATIC transform_validation.cpp)
+target_include_directories(formaview_transform_validation PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_compile_features(formaview_transform_validation PUBLIC cxx_std_20)
+target_link_libraries(formaview_transform_validation PRIVATE formaview_options)

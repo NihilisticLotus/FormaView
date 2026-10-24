@@ -59,8 +59,64 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
   joints_.clear();
   details_.clear();
   source_.clear();
-  if (!document || mesh < 0 ||
-      mesh >= static_cast<int>(document->meshes.size()))
+  if (!document)
+    return;
+  if (document->skeletonOnly) {
+    // Animation documents (standalone PSA, animation-only FBX) expose the
+    // bone hierarchy directly. Raw unpaired records keep their verbatim
+    // order; the document warnings already mark the hierarchy unverified.
+    QHash<QString, int> duplicates;
+    for (const auto &name : document->boneNames)
+      ++duplicates[name];
+    QHash<QString, QStandardItem *> items;
+    std::map<QString, std::unique_ptr<QStandardItem>> owners;
+    for (int i = 0; i < static_cast<int>(document->boneNames.size()); ++i) {
+      const auto id = QStringLiteral("bone/%1").arg(i);
+      auto label = document->boneNames[static_cast<std::size_t>(i)];
+      if (label.isEmpty())
+        label = QStringLiteral("—");
+      if (duplicates.value(label) > 1)
+        label += QStringLiteral(" · #") + QString::number(i);
+      auto item = std::make_unique<QStandardItem>(label);
+      item->setData(id, NodeKey);
+      item->setData(i, JointIndex);
+      item->setData(false, InPalette);
+      item->setData(QVariant::fromValue(qulonglong{0}), InfluencePoints);
+      const auto parent = document->boneParents[static_cast<std::size_t>(i)];
+      details_.insert(
+          id, QVariantMap{{"id", id},
+                          {"name", document->boneNames[static_cast<std::size_t>(i)]},
+                          {"boneIndex", i},
+                          {"parentIndex", parent},
+                          {"inPalette", false}});
+      items.insert(id, item.get());
+      owners[id] = std::move(item);
+    }
+    std::vector<std::unique_ptr<QStandardItem>> roots;
+    for (int i = 0; i < static_cast<int>(document->boneNames.size()); ++i) {
+      const auto id = QStringLiteral("bone/%1").arg(i);
+      const auto parent = document->boneParents[static_cast<std::size_t>(i)];
+      auto *target = parent >= 0 && parent < static_cast<int>(document->boneNames.size())
+                         ? items.value(QStringLiteral("bone/%1").arg(parent))
+                         : nullptr;
+      if (target && target != items.value(id))
+        target->appendRow(owners.at(id).release());
+      else
+        roots.push_back(std::move(owners.at(id)));
+    }
+    QList<QStandardItem *> rows;
+    rows.reserve(static_cast<qsizetype>(roots.size()));
+    for (auto &root : roots)
+      rows.append(root.release());
+    source_.invisibleRootItem()->appendRows(rows);
+    for (auto it = items.cbegin(); it != items.cend(); ++it)
+      nodes_.insert(it.key(), source_.indexFromItem(it.value()));
+    for (int i = 0; i < static_cast<int>(document->boneNames.size()); ++i)
+      joints_.insert(i, source_.indexFromItem(
+                            items.value(QStringLiteral("bone/%1").arg(i))));
+    return;
+  }
+  if (mesh < 0 || mesh >= static_cast<int>(document->meshes.size()))
     return;
   const auto &skins = document->meshes[static_cast<std::size_t>(mesh)].skins;
   if (binding < 0 || binding >= static_cast<int>(skins.size()))

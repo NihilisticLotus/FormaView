@@ -1,8 +1,11 @@
+#include <span>
 #include "formaview/file_access.hpp"
+#include "formaview/gltf_anim.hpp"
 #include "model_document.hpp"
 #include "model_metadata.hpp"
 #include "model_texture.hpp"
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
@@ -10,6 +13,7 @@
 #include <cgltf.h>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -178,6 +182,45 @@ const cgltf_accessor *attribute(const cgltf_attribute *attributes,
       return attributes[i].data;
   return nullptr;
 }
+// Row-major Matrix4 -> translation/rotation/scale for partially animated
+// nodes: an animation channel overriding only some components keeps the
+// file's static value for the rest. Lossy only for sheared matrix nodes,
+// which glTF animation targets do not carry in practice.
+[[nodiscard]] skeletal::Transform decomposeTrs(const formaview::Matrix4 &m) {
+  skeletal::Transform t;
+  t.translation = {m[3], m[7], m[11]};
+  const auto sx = std::hypot(m[0], m[4], m[8]), sy = std::hypot(m[1], m[5], m[9]),
+             sz = std::hypot(m[2], m[6], m[10]);
+  t.scale = {sx > 1e-12 ? sx : 1.0, sy > 1e-12 ? sy : 1.0,
+             sz > 1e-12 ? sz : 1.0};
+  const double r[9] = {m[0] / t.scale.x, m[4] / t.scale.x, m[8] / t.scale.x,
+                       m[1] / t.scale.y, m[5] / t.scale.y, m[9] / t.scale.y,
+                       m[2] / t.scale.z, m[6] / t.scale.z, m[10] / t.scale.z};
+  const double trace = r[0] + r[4] + r[8];
+  skeletal::Quat q;
+  if (trace > 0) {
+    const auto s = std::sqrt(trace + 1.0) * 2;
+    q = {(r[5] - r[7]) / s, (r[6] - r[2]) / s, (r[1] - r[3]) / s, 0.25 * s};
+  } else if (r[0] > r[4] && r[0] > r[8]) {
+    const auto s = std::sqrt(1.0 + r[0] - r[4] - r[8]) * 2;
+    q = {0.25 * s, (r[3] + r[1]) / s, (r[6] + r[2]) / s, (r[5] - r[7]) / s};
+  } else if (r[4] > r[8]) {
+    const auto s = std::sqrt(1.0 + r[4] - r[0] - r[8]) * 2;
+    q = {(r[3] + r[1]) / s, 0.25 * s, (r[7] + r[5]) / s, (r[6] - r[2]) / s};
+  } else {
+    const auto s = std::sqrt(1.0 + r[8] - r[0] - r[4]) * 2;
+    q = {(r[6] + r[2]) / s, (r[7] + r[5]) / s, 0.25 * s, (r[1] - r[3]) / s};
+  }
+  const auto norm = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (norm > 1e-12) {
+    q.x /= norm;
+    q.y /= norm;
+    q.z /= norm;
+    q.w /= norm;
+  }
+  t.rotation = q;
+  return t;
+}
 } // namespace
 
 std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
@@ -246,6 +289,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
     fail("glTF validation failed");
   Accessors access{budget, {}};
   std::vector<QMatrix4x4> worlds(raw->nodes_count);
+  std::vector<std::uint32_t> meshNodes; // node index per mesh (morph drive)
   std::vector<int> degrees(raw->nodes_count);
   std::vector<std::size_t> order;
   order.reserve(raw->nodes_count);
@@ -374,6 +418,12 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
       m.cornerMaterial.resize(count);
       std::vector<QVector3D> localPositions;
       std::vector<QVector3D> localNormals;
+      const float *staticWeights = node.weights ? node.weights : node.mesh->weights;
+      const cgltf_size staticWeightsCount =
+          node.weights ? node.weights_count : node.mesh->weights_count;
+      std::vector<ModelMorphTarget> morphTargets(primitive.targets_count);
+      for (std::size_t t = 0; t < primitive.targets_count; ++t)
+        morphTargets[t].positionDeltas.resize(count);
       localPositions.reserve(count);
       localNormals.reserve(count);
       for (std::size_t i = 0; i < count; ++i) {
@@ -387,11 +437,8 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                (*normalValues)[i * 3 + 2]};
         }
         for (std::size_t t = 0; t < primitive.targets_count; ++t) {
-          const auto weights = node.weights ? node.weights : node.mesh->weights;
-          const auto weightsCount =
-              node.weights ? node.weights_count : node.mesh->weights_count;
-          if (t >= weightsCount || weights[t] == 0)
-            continue;
+          const float staticWeight =
+              t < staticWeightsCount ? staticWeights[t] : 0.f;
           const auto *delta = attribute(primitive.targets[t].attributes,
                                         primitive.targets[t].attributes_count,
                                         cgltf_attribute_type_position);
@@ -399,9 +446,13 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
             const auto &values = access.read(delta);
             if (delta->count != count || delta->type != cgltf_type_vec3)
               fail("glTF morph target shape mismatch");
-            v +=
-                QVector3D(values[i * 3], values[i * 3 + 1], values[i * 3 + 2]) *
-                weights[t];
+            const QVector3D d(values[i * 3], values[i * 3 + 1],
+                              values[i * 3 + 2]);
+            // Deltas are always retained: animated weights may drive a target
+            // whose static default is zero. The default only shapes the
+            // loaded mesh when nonzero.
+            morphTargets[t].positionDeltas[i] = {d.x(), d.y(), d.z()};
+            if (staticWeight != 0) v += d * staticWeight;
           }
           const auto *normalDelta =
               attribute(primitive.targets[t].attributes,
@@ -412,13 +463,29 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                 normalDelta->type != cgltf_type_vec3)
               fail("glTF morph normal shape mismatch");
             const auto &values = access.read(normalDelta);
-            n +=
-                QVector3D(values[i * 3], values[i * 3 + 1], values[i * 3 + 2]) *
-                weights[t];
+            const QVector3D d(values[i * 3], values[i * 3 + 1],
+                              values[i * 3 + 2]);
+            morphTargets[t].normalDeltas.resize(count);
+            morphTargets[t].normalDeltas[i] = {d.x(), d.y(), d.z()};
+            if (staticWeight != 0) n += d * staticWeight;
           }
+        }
+        if (normalValues) {
+          // Unmorphed base normal: undo the static weighted deltas applied
+          // above (local space, matching pointNormals).
+          QVector3D base = n;
+          for (std::size_t t = 0; t < primitive.targets_count; ++t)
+            if (morphTargets[t].normalDeltas.size() == count)
+              base -= QVector3D(morphTargets[t].normalDeltas[i].x,
+                                morphTargets[t].normalDeltas[i].y,
+                                morphTargets[t].normalDeltas[i].z) *
+                      (t < staticWeightsCount ? staticWeights[t] : 0.f);
+          m.morphBaseNormals.push_back({base.x(), base.y(), base.z()});
         }
         localPositions.push_back(v);
         localNormals.push_back(n);
+        m.animationPositions.push_back({v.x(), v.y(), v.z()});
+        m.animationNormals.push_back(n);
         m.points.push_back(worlds[ni].map(v));
         if (normalValues) {
           if (normal->type != cgltf_type_vec3 || normal->count != count)
@@ -726,11 +793,614 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
             m.alphas[i] *= values[i * stride + 3];
         }
       }
+      m.morphTargets = std::move(morphTargets);
+      meshNodes.push_back(static_cast<std::uint32_t>(ni));
       result->meshes.push_back(std::move(m));
     }
   }
-  for (const auto &lease : inputs.leases)
+  // M07 native animation: the file's own clips drive its own nodes and
+  // meshes. Channels address this file's node indices directly — no mapping,
+  // no attached external state; unsupported paths stay flagged, never
+  // reinterpreted. Extraction shape checks mirror the verified core reader
+  // (src/formats/gltf_anim.cpp) while reusing this file's leased inputs.
+  auto anims = std::make_shared<formaview::gltf::GltfAnimationData>();
+  anims->node_count = static_cast<std::uint32_t>(raw->nodes_count);
+  if (raw->animations_count > 0) {
+    std::vector<std::size_t> clipKeys;
+    for (std::size_t c = 0; c < raw->animations_count; ++c) {
+      check(stop);
+      const auto &animation = raw->animations[c];
+      formaview::gltf::AnimationClip clip;
+      clip.name = name(animation.name).toStdString();
+      std::size_t keys = 0;
+      for (std::size_t k = 0; k < animation.channels_count; ++k) {
+        const auto &channel = animation.channels[k];
+        if (!channel.target_node) {
+          anims->warnings.push_back("Animation channel without target node");
+          continue;
+        }
+        if (!channel.sampler || !channel.sampler->input ||
+            !channel.sampler->output)
+          fail("Animation sampler without accessors");
+        formaview::gltf::AnimationChannel parsed;
+        parsed.node_index =
+            static_cast<std::uint32_t>(channel.target_node - raw->nodes);
+        std::uint32_t expected = 0;
+        switch (channel.target_path) {
+        case cgltf_animation_path_type_translation:
+          parsed.path = formaview::gltf::TrackPath::Translation;
+          expected = 3;
+          break;
+        case cgltf_animation_path_type_rotation:
+          parsed.path = formaview::gltf::TrackPath::Rotation;
+          expected = 4;
+          break;
+        case cgltf_animation_path_type_scale:
+          parsed.path = formaview::gltf::TrackPath::Scale;
+          expected = 3;
+          break;
+        case cgltf_animation_path_type_weights:
+          // Animated morph weights are supported for meshes (linear/step);
+          // cubic-spline and weights on non-mesh nodes stay flagged.
+          if (channel.target_node->mesh &&
+              channel.target_node->mesh->primitives_count > 0 &&
+              channel.sampler->interpolation !=
+                  cgltf_interpolation_type_cubic_spline) {
+            parsed.path = formaview::gltf::TrackPath::Weights;
+          } else {
+            parsed.path = formaview::gltf::TrackPath::Unsupported;
+            anims->warnings.push_back(
+                channel.sampler->interpolation ==
+                        cgltf_interpolation_type_cubic_spline
+                    ? "Cubic-spline morph weights not supported; channel "
+                      "retained as flagged"
+                    : "Unsupported animation path (weights) retained as "
+                      "flagged");
+          }
+          break;
+        default:
+          parsed.path = formaview::gltf::TrackPath::Unsupported;
+          anims->warnings.push_back(
+              "Unsupported animation path retained as flagged");
+          break;
+        }
+        switch (channel.sampler->interpolation) {
+        case cgltf_interpolation_type_step:
+          parsed.interpolation = formaview::gltf::Interpolation::Step;
+          break;
+        case cgltf_interpolation_type_cubic_spline:
+          parsed.interpolation = formaview::gltf::Interpolation::CubicSpline;
+          break;
+        default:
+          parsed.interpolation = formaview::gltf::Interpolation::Linear;
+          break;
+        }
+        const auto &input = *channel.sampler->input;
+        const auto &output = *channel.sampler->output;
+        if (input.type != cgltf_type_scalar)
+          fail("Animation times must be scalar");
+        const auto components =
+            static_cast<std::uint32_t>(cgltf_num_components(output.type));
+        if (!components)
+          fail("Unsupported glTF accessor type");
+        if (parsed.path != formaview::gltf::TrackPath::Unsupported &&
+            parsed.path != formaview::gltf::TrackPath::Weights &&
+            components != expected)
+          fail("Animation value type does not match target path");
+        const auto multiplier = parsed.interpolation == formaview::gltf::Interpolation::CubicSpline ? 3u : 1u;
+        const auto targets = (parsed.path == formaview::gltf::TrackPath::Unsupported ||
+                               parsed.path == formaview::gltf::TrackPath::Weights) && channel.target_node->mesh &&
+                                     channel.target_node->mesh->primitives_count > 0
+                                 ? channel.target_node->mesh->primitives[0].targets_count : 1u;
+        if (!input.count || !targets || input.count > 2500000 / multiplier / targets ||
+            output.count > 2500000 || output.count != input.count * multiplier * targets)
+          fail("Animation key count mismatch");
+        if (channel.target_node->has_matrix && parsed.path != formaview::gltf::TrackPath::Unsupported)
+          fail("Animated glTF nodes must use TRS, not a matrix");
+        budget.reserve((input.count + output.count * components) *
+                       sizeof(double));
+        const auto &times = access.read(&input);
+        const auto &values = access.read(&output);
+        parsed.components = components;
+        parsed.times.reserve(times.size());
+        for (double t : times) {
+          if (!std::isfinite(t) || t < 0 || (!parsed.times.empty() && t <= parsed.times.back()))
+            fail("Animation times must be finite, nonnegative and strictly increasing");
+          parsed.times.push_back(t);
+        }
+        parsed.values.reserve(values.size());
+        for (double v : values) {
+          if ((parsed.values.size() & 1023) == 0) check(stop);
+          if (!std::isfinite(v)) fail("Non-finite animation value");
+          parsed.values.push_back(v);
+        }
+        if (!parsed.times.empty()) {
+          clip.start = clip.channels.empty()
+                           ? parsed.times.front()
+                           : std::min(clip.start, parsed.times.front());
+          clip.end = clip.channels.empty()
+                         ? parsed.times.back()
+                         : std::max(clip.end, parsed.times.back());
+        }
+        keys = std::max(keys, input.count);
+        clip.channels.push_back(std::move(parsed));
+      }
+      anims->clips.push_back(std::move(clip));
+      clipKeys.push_back(keys);
+      if (anims->clips.back().channels.empty())
+        anims->warnings.push_back("Animation clip without usable channels");
+    }
+    if (!anims->clips.empty() && anims->node_count > 0) {
+      result->animNodeParents.resize(raw->nodes_count);
+      result->animNodeLocals.resize(raw->nodes_count);
+      std::vector<skeletal::Transform> staticTrs(raw->nodes_count);
+      for (std::size_t i = 0; i < raw->nodes_count; ++i) {
+        const auto &node = raw->nodes[i];
+        result->animNodeParents[i] =
+            node.parent
+                ? static_cast<std::int32_t>(node.parent - raw->nodes)
+                : std::int32_t{-1};
+        float local[16];
+        cgltf_node_transform_local(&node, local);
+        auto &m = result->animNodeLocals[i];
+        for (int r = 0; r < 4; ++r)
+          for (int col = 0; col < 4; ++col)
+            m[static_cast<std::size_t>(r * 4 + col)] = local[col * 4 + r];
+        // Partial channels must preserve authored signed/zero scale. Matrix
+        // decomposition is neither unique nor lossless for those TRS values.
+        if (node.has_matrix)
+          staticTrs[i] = decomposeTrs(m);
+        else {
+          staticTrs[i].translation = {node.translation[0], node.translation[1], node.translation[2]};
+          staticTrs[i].rotation = {node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]};
+          staticTrs[i].scale = {node.scale[0], node.scale[1], node.scale[2]};
+        }
+      }
+      for (std::size_t c = 0; c < anims->clips.size(); ++c) {
+        const auto &clip = anims->clips[c];
+        const auto keys = clipKeys.at(c);
+        ModelAnimationClip entry;
+        entry.name = QString::fromStdString(clip.name);
+        entry.start = clip.start;
+        entry.end = clip.end;
+        // glTF stores real seconds without a frame rate; the densest key
+        // count gives the display/step mapping only (evaluation stays in
+        // seconds).
+        entry.fps = keys > 1 && clip.end > clip.start
+                        ? (static_cast<double>(keys) - 1) / (clip.end - clip.start)
+                        : 30.0;
+        entry.lastFrame = keys > 0 ? static_cast<int>(keys) - 1 : 0;
+        result->animationClips.push_back(entry);
+        result->clips.push_back(QVariantMap{
+            {"name", entry.name},
+            {"start", entry.start},
+            {"end", entry.end},
+            {"fps", entry.fps},
+            {"lastFrame", entry.lastFrame}});
+      }
+      result->localAt =
+          [anims, staticTrs,
+           staticLocals = result->animNodeLocals](std::size_t clip,
+                                                  double seconds) {
+            const auto pose = formaview::gltf::evaluate_clip(*anims, clip,
+                                                             seconds);
+            auto locals = staticLocals;
+            for (std::size_t i = 0; i < pose.size() && i < locals.size(); ++i) {
+              const auto &o = pose[i];
+              if (!(o.translation || o.rotation || o.scale))
+                continue;
+              auto trs = staticTrs[i];
+              if (o.translation)
+                trs.translation = o.local.translation;
+              if (o.rotation)
+                trs.rotation = o.local.rotation;
+              if (o.scale)
+                trs.scale = o.local.scale;
+              locals[i] = skeletal::matrix(trs);
+            }
+            return locals;
+          };
+      result->worldAt =
+          [localAt = result->localAt,
+           parents = result->animNodeParents](std::size_t clip, double seconds) {
+            return chainWorlds(localAt(clip, seconds), parents);
+          };
+      bool anyWeights = false;
+      for (const auto &clipData : anims->clips)
+        for (const auto &ch : clipData.channels)
+          if (ch.path == formaview::gltf::TrackPath::Weights) anyWeights = true;
+      if (anyWeights && !result->meshes.empty()) {
+        for (auto &mesh : result->meshes)
+          if (!mesh.morphTargets.empty()) mesh.morphAnimated = true;
+        auto targetCounts = std::make_shared<std::vector<std::size_t>>();
+        for (const auto &mesh : result->meshes)
+          targetCounts->push_back(mesh.morphTargets.size());
+        result->morphWeightsAt =
+            [anims, meshNodes, targetCounts](std::size_t clip, double seconds) {
+              std::vector<std::vector<double>> weights(targetCounts->size());
+              if (clip >= anims->clips.size() || !std::isfinite(seconds))
+                return weights;
+              for (const auto &channel : anims->clips[clip].channels) {
+                if (channel.path != formaview::gltf::TrackPath::Weights ||
+                    channel.times.empty() || channel.values.empty() ||
+                    channel.components == 0)
+                  continue;
+                for (std::size_t mi = 0; mi < targetCounts->size(); ++mi) {
+                  if (mi >= meshNodes.size() || (*targetCounts)[mi] == 0 ||
+                      channel.node_index != meshNodes[mi])
+                    continue;
+                  // Weights channels store one value per target per key, but
+                  // the accessor type is SCALAR: derive the per-key stride.
+                  const auto perKey = channel.values.size() / channel.times.size();
+                  const auto count = std::min<std::size_t>((*targetCounts)[mi],
+                                                           perKey);
+                  auto &out = weights[mi];
+                  out.assign(count, 0.0);
+                  if (channel.times.size() == 1) {
+                    for (std::size_t t = 0; t < count; ++t)
+                      out[t] = channel.values[t % channel.values.size()];
+                    break;
+                  }
+                  // hi stays at size-2 so hi+1 is always a real key; the
+                  // clamped u holds the last key at/past the clip end.
+                  std::size_t hi = 0;
+                  while (hi + 2 < channel.times.size() &&
+                         channel.times[hi + 1] <= seconds)
+                    ++hi;
+                  const double span = channel.times[hi + 1] - channel.times[hi];
+                  const double u =
+                      channel.interpolation ==
+                              formaview::gltf::Interpolation::Step
+                          ? 0.0
+                          : std::clamp((seconds - channel.times[hi]) / span,
+                                       0.0, 1.0);
+                  for (std::size_t t = 0; t < count; ++t) {
+                    const double lo = channel.values[hi * perKey + t];
+                    const double hiV = channel.values[(hi + 1) * perKey + t];
+                    out[t] = lo + (hiV - lo) * u;
+                  }
+                  break;
+                }
+              }
+              return weights;
+            };
+      }
+      result->nativeAnimated = true;
+      if (result->meshes.empty()) {
+        // Animation-only glTF previews as skeleton lines like standalone PSA.
+        result->skeletonOnly = true;
+        result->boneParents = result->animNodeParents;
+        result->boneNames.reserve(raw->nodes_count);
+        for (std::size_t i = 0; i < raw->nodes_count; ++i)
+          result->boneNames.push_back(name(raw->nodes[i].name));
+      }
+      for (const auto &warning : anims->warnings)
+        result->warnings.append(QString::fromStdString(warning));
+    }
+  }
+  // Snapshot only bounded transform metadata. Do not retain cgltf pointers or
+  // duplicate animation/geometry buffers, and account for the snapshot allocation.
+  namespace tv = skeletal::transform;
+  auto evidence = std::make_shared<tv::Evidence>();
+  evidence->format = tv::Format::Gltf;
+  evidence->adapterVersion = "cgltf/r13-evidence-2";
+  QCryptographicHash identity(QCryptographicHash::Sha256);
+  identity.addData(QByteArrayLiteral("FormaView/glTF/evidence/1:"));
+  for (const auto &lease : inputs.leases) {
     lease.require_unchanged(lease.snapshot());
+    // Fixed-width ordered content hashes include external buffers. Main JSON
+    // SHA alone is not an identity proof when a .bin changes independently.
+    identity.addData(QByteArray::fromStdString(lease.snapshot().content_sha256));
+  }
+  evidence->sha256 = identity.result().toHex().toStdString();
+  if (raw->nodes_count <= tv::Policy{}.maxNodes) {
+    budget.reserve(raw->nodes_count * sizeof(tv::Node));
+    evidence->nodes.reserve(raw->nodes_count);
+    evidence->coordinates = tv::Coordinates{1,{1,2,3}}; // glTF 2.0 normative convention.
+    std::vector<bool> matrixAnimated(raw->nodes_count,false);
+    for (const auto &animation : std::span(raw->animations,raw->animations_count))
+      for (const auto &channel : std::span(animation.channels,animation.channels_count))
+        if (channel.target_node) matrixAnimated[static_cast<std::size_t>(channel.target_node-raw->nodes)]=true;
+    for (std::size_t i=0;i<raw->nodes_count;++i) {
+      check(stop);
+      const auto &node=raw->nodes[i];
+      tv::Node n; n.fileIndex=static_cast<std::uint32_t>(i);
+      if (node.parent) n.parent=static_cast<std::size_t>(node.parent-raw->nodes);
+      // Keep a static matrix in its source representation. The format forbids
+      // matrix+TRS and animation targeting a matrix node.
+      if (node.has_matrix && !node.has_translation && !node.has_rotation && !node.has_scale && !matrixAnimated[i]) {
+        tv::Matrix m{};for(std::size_t j=0;j<16;++j)m[j]=node.matrix[j];
+        bool orthogonal=true;
+        for(std::size_t c=0;c<3;++c)for(std::size_t d=c+1;d<3;++d) {
+          double dot=0,cc=0,dd=0;for(std::size_t r=0;r<3;++r){dot+=m[c*4+r]*m[d*4+r];cc+=m[c*4+r]*m[c*4+r];dd+=m[d*4+r]*m[d*4+r];}
+          if(cc==0||dd==0||!std::isfinite(dot)||std::abs(dot)>4*std::numeric_limits<float>::epsilon()*std::sqrt(cc*dd))orthogonal=false;
+        }
+        if(orthogonal)n.restMatrix=m;
+      } else if (!node.has_matrix) {
+        tv::Trs t;
+        for (std::size_t j=0;j<3;++j) {
+          t.translation[j]=node.has_translation?node.translation[j]:0;
+          t.scale[j]=node.has_scale?node.scale[j]:1;
+        }
+        if (node.has_rotation) for (std::size_t j=0;j<4;++j) t.rotation[j]=node.rotation[j];
+        // glTF declares unit quaternions. Account only for float decoding:
+        // projection must round each component back to the ORIGINAL float.
+        // Anything outside that exact rounding cell remains insufficient.
+        double norm=0;for(double q:t.rotation)norm+=q*q;
+        if(std::isfinite(norm)&&norm>0) {
+          auto canonical=t.rotation;bool roundTrip=true;
+          for(std::size_t j=0;j<4;++j){canonical[j]/=std::sqrt(norm);if(static_cast<float>(canonical[j])!=static_cast<float>(t.rotation[j]))roundTrip=false;}
+          if(roundTrip)t.rotation=canonical;
+        }
+        n.restLocal=t;
+      }
+      n.evaluation=tv::Evaluation{}; // glTF TRS uses standard parent multiplication.
+      evidence->nodes.push_back(n);
+    }
+    evidence->fullNodeDomain=true;
+    if (raw->skins_count==0) evidence->bindings.emplace();
+    // Native glTF proof: enumerate source IBM operators, without inventing a
+    // bind-world pose. Cross-file core compares them under the node mapping.
+    evidence->nativeSkinBindings.emplace();
+    std::vector<bool> seen(raw->skins_count,false);
+    bool complete=true;
+    for(std::size_t i=0;i<raw->nodes_count && complete;++i) {
+      check(stop);const auto &node=raw->nodes[i];if(!node.skin)continue;
+      if(!node.mesh){complete=false;break;}
+      seen[static_cast<std::size_t>(node.skin-raw->skins)]=true;
+      const auto *inverse=node.skin->inverse_bind_matrices;
+      if(inverse&&(inverse->type!=cgltf_type_mat4||inverse->component_type!=cgltf_component_type_r_32f||inverse->normalized||inverse->count<node.skin->joints_count)){complete=false;break;}
+      const auto *values=inverse?&access.read(inverse):nullptr;
+      for(std::size_t j=0;j<node.skin->joints_count;++j) {
+        check(stop);
+        if(evidence->nativeSkinBindings->size()>=tv::Policy{}.maxBindings){complete=false;break;}
+        budget.reserve(sizeof(tv::NativeSkinBinding));
+        tv::NativeSkinBinding binding;binding.instance=i;binding.joint=static_cast<std::size_t>(node.skin->joints[j]-raw->nodes);
+        if(values)for(std::size_t k=0;k<16;++k)binding.inverseBind[k]=(*values)[j*16+k];
+        else binding.inverseBind={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+        evidence->nativeSkinBindings->push_back(binding);
+      }
+    }
+    if(!complete||std::find(seen.begin(),seen.end(),false)!=seen.end())evidence->nativeSkinBindings.reset();
+  }
+  // Fixed-decoder identity mapping only. Preserve raw defaults (including
+  // non-unit quaternions); this is separate from the normative format proof.
+  bool decoderComplete=evidence->fullNodeDomain && evidence->nativeSkinBindings.has_value()
+      && raw->extensions_used_count==0 && anims->warnings.empty()
+      && anims->clips.size()==raw->animations_count;
+  auto snapshot=std::make_shared<ModelDecoderSnapshot>();
+  auto append=[&](const auto &value) {
+    budget.reserve(sizeof(value));
+    snapshot->metadata.append(reinterpret_cast<const char*>(&value),sizeof(value));
+  };
+  append(raw->nodes_count);
+  for(std::size_t i=0;i<raw->nodes_count && decoderComplete;++i) {
+    check(stop);const auto &n=raw->nodes[i];
+    auto nodeName=name(n.name);budget.reserve(sizeof(QString)+static_cast<std::size_t>(nodeName.size())*sizeof(QChar));
+    snapshot->nodeNames.push_back(std::move(nodeName));
+    const auto parent=n.parent?static_cast<std::int64_t>(n.parent-raw->nodes):std::int64_t{-1};append(parent);
+    append(n.has_matrix);append(n.has_translation);append(n.has_rotation);append(n.has_scale);
+    for(float v:n.matrix){decoderComplete &= std::isfinite(v);append(v);}
+    for(float v:n.translation){decoderComplete &= std::isfinite(v);append(v);}
+    for(float v:n.rotation){decoderComplete &= std::isfinite(v);append(v);}
+    for(float v:n.scale){decoderComplete &= std::isfinite(v);append(v);}
+    float local[16];cgltf_node_transform_local(&n,local);
+    for(float v:local){decoderComplete &= std::isfinite(v);append(v);}
+  }
+  for(std::size_t c=0;c<anims->clips.size() && decoderComplete;++c) {
+    if(anims->clips[c].channels.size()!=raw->animations[c].channels_count)decoderComplete=false;
+    std::set<std::pair<std::uint32_t,int>> targets;
+    for(const auto &channel:anims->clips[c].channels) {
+      check(stop);
+      if(channel.path==gltf::TrackPath::Weights || channel.path==gltf::TrackPath::Unsupported
+          || channel.node_index>=raw->nodes_count || raw->nodes[channel.node_index].has_matrix
+          || !targets.emplace(channel.node_index,static_cast<int>(channel.path)).second)decoderComplete=false;
+    }
+  }
+  if(decoderComplete) {
+    append(evidence->nativeSkinBindings->size());
+    for(const auto &binding:*evidence->nativeSkinBindings) {
+      check(stop);append(binding.instance);append(binding.joint);
+      for(double v:binding.inverseBind){decoderComplete &= std::isfinite(v);append(v);}
+    }
+    if(decoderComplete){snapshot->sourceSha=QString::fromStdString(evidence->sha256);
+      snapshot->animations=anims;result->decoderSnapshot=std::move(snapshot);}
+  }
+  result->transformEvidence = [evidence=std::shared_ptr<const tv::Evidence>(evidence)](std::stop_token token) {
+    check(token);
+    return *evidence;
+  };
   check(stop);
   return result;
+}
+
+
+namespace {
+struct DecoderNodeView { std::int64_t parent{}; QByteArray local; };
+struct DecoderView {
+  std::vector<DecoderNodeView> nodes;
+  std::map<std::pair<std::size_t,std::size_t>,QByteArray> bindings;
+};
+// Parse our own bounded, version-local metadata, never native pointers/padding.
+// Reject trailing bytes and duplicate binding identities rather than hiding corruption.
+bool decoderView(const ModelDecoderSnapshot &s, DecoderView &out, std::stop_token stop) {
+  qsizetype offset=0;
+  auto read=[&](auto &value){if(sizeof(value)>static_cast<std::size_t>(s.metadata.size()-offset))return false;
+    std::memcpy(&value,s.metadata.constData()+offset,sizeof(value));offset+=sizeof(value);return true;};
+  std::size_t n=0;if(!read(n)||n>65536||!s.animations||n!=s.animations->node_count)return false;
+  constexpr qsizetype localBytes=4*sizeof(cgltf_bool)+42*sizeof(float);
+  out.nodes.reserve(n);
+  for(std::size_t i=0;i<n;++i){
+    if(stop.stop_requested())return false;
+    DecoderNodeView node;if(!read(node.parent)||node.parent < -1||node.parent>=static_cast<std::int64_t>(n)
+      ||s.metadata.size()-offset<localBytes)return false;
+    node.local=s.metadata.mid(offset,localBytes);offset+=localBytes;out.nodes.push_back(std::move(node));
+  }
+  std::vector<unsigned char> state(n);
+  for(std::size_t i=0;i<n;++i){
+    if(stop.stop_requested())return false;
+    auto j=static_cast<std::int64_t>(i);
+    while(j>=0&&state[j]==0){state[j]=1;j=out.nodes[j].parent;}
+    if(j>=0&&state[j]==1)return false;
+    j=static_cast<std::int64_t>(i);while(j>=0&&state[j]==1){state[j]=2;j=out.nodes[j].parent;}
+  }
+  std::size_t bindings=0;if(!read(bindings)||bindings>262144)return false;
+  for(std::size_t i=0;i<bindings;++i){
+    if(stop.stop_requested())return false;
+    std::size_t instance=0,joint=0;if(!read(instance)||!read(joint)||instance>=n||joint>=n||s.metadata.size()-offset<128)return false;
+    if(!out.bindings.emplace(std::make_pair(instance,joint),s.metadata.mid(offset,128)).second)return false;offset+=128;
+  }
+  return offset==s.metadata.size();
+}
+}
+
+QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot> &a,
+    const std::shared_ptr<const ModelDecoderSnapshot> &b, std::stop_token stop,
+    const FixedDecoderOptions &options) {
+  QVariantMap report{{"domain","fixedDecoderProgram"},{"version",3},{"promotionEnabled",false},
+    {"scope","mapped complete decoded program; transforms only; same process implementation"}};
+  // Callers may only tighten the built-in limits.
+  const auto channelBudget=std::min<std::size_t>(options.channelBudget,1048576);
+  const auto scalarBudget=std::min<std::size_t>(options.scalarBudget,67108864);
+  auto finish=[&](const char *v,const char *r){report.insert("verdict",v);report.insert("reason",r);return report;};
+  if(stop.stop_requested())return finish("cancelled","cancelled");
+  if(!a||!b||!a->animations||!b->animations)return finish("insufficient","missingEvidence");
+  report.insert("sourceSha",a->sourceSha);report.insert("targetSha",b->sourceSha);
+  report.insert("snapshotVersion","cgltf-current-process-decoder-v2");
+  DecoderView av,bv;
+  if(!decoderView(*a,av,stop)||!decoderView(*b,bv,stop))
+    return stop.stop_requested()?finish("cancelled","cancelled"):finish("insufficient","invalidSnapshot");
+  const auto n=av.nodes.size();if(n!=bv.nodes.size())return finish("insufficient","mappingConflict");
+  std::vector<std::size_t> map(n);std::iota(map.begin(),map.end(),0);
+  const bool contract=!options.explicitMapping.empty();
+  if(contract) {
+    // A supplied contract is a statement by the caller, never repaired or completed here.
+    if(options.explicitMapping.size()!=n)return finish("insufficient","invalidExplicitMapping");
+    std::vector<unsigned char> used(n);
+    for(std::size_t i=0;i<n;++i){const auto j=options.explicitMapping[i];
+      if(j>=n||used[j])return finish("insufficient","invalidExplicitMapping");used[j]=1;map[i]=j;}
+  } else {
+    bool named=a->nodeNames.size()==n&&b->nodeNames.size()==n;
+    std::map<QString,std::size_t> ids;std::set<QString> seen;
+    if(named)for(std::size_t i=0;i<n;++i){
+      if(stop.stop_requested())return finish("cancelled","cancelled");
+      if(b->nodeNames[i].isEmpty()||!ids.emplace(b->nodeNames[i],i).second){named=false;break;}
+    }
+    if(named)for(std::size_t i=0;i<n;++i){const auto it=ids.find(a->nodeNames[i]);
+      if(a->nodeNames[i].isEmpty()||it==ids.end()||!seen.insert(a->nodeNames[i]).second){named=false;break;}map[i]=it->second;}
+    if(!named){if(a->metadata!=b->metadata)return finish("insufficient","mappingConflict");std::iota(map.begin(),map.end(),0);}
+  }
+  bool identity=true;QByteArray mappingBytes(contract?"explicit-bijection-v3:":"full-node-bijection-v2:");QVariantList pairs;
+  // Parent topology is never relaxed. A differing default only records the node: the
+  // exact-default conclusion stays insufficient, and may be explained by forced overrides below.
+  std::vector<unsigned char> defaultDiffers(n);std::size_t differing=0;
+  for(std::size_t i=0;i<n;++i){
+    if(stop.stop_requested())return finish("cancelled","cancelled");
+    const auto j=map[i];identity &= i==j;
+    const auto &u=av.nodes[i],&v=bv.nodes[j];
+    if((u.parent<0)!=(v.parent<0)||(u.parent>=0&&map[u.parent]!=static_cast<std::size_t>(v.parent)))
+      return finish("insufficient","mappedDefaultOrParentConflict");
+    if(u.local!=v.local){defaultDiffers[i]=1;++differing;}
+    mappingBytes+=QByteArray::number(i)+":"+QByteArray::number(j)+";";
+    pairs.append(QVariantMap{{"source",static_cast<uint>(i)},{"target",static_cast<uint>(j)}});
+  }
+  if(av.bindings.size()!=bv.bindings.size())return finish("insufficient","mappedBindingConflict");
+  for(const auto &[key,value]:av.bindings){
+    if(stop.stop_requested())return finish("cancelled","cancelled");
+    const auto it=bv.bindings.find({map[key.first],map[key.second]});
+    if(it==bv.bindings.end()||it->second!=value)return finish("insufficient","mappedBindingConflict");
+  }
+  report.insert("nodes",static_cast<uint>(n));
+  report.insert("mapping",contract?"explicitBijection":identity?"fullIdentity":"fullNameBijection");
+  report.insert("mappedPairs",pairs);
+  report.insert("mappingSha",QString::fromLatin1(QCryptographicHash::hash(mappingBytes,QCryptographicHash::Sha256).toHex()));
+  const auto &x=*a->animations,&y=*b->animations;
+  // Coverage means identical externally supplied local overrides, not equality
+  // of the authored curves. Defaults/parent/IBM above must be exact, including
+  // unoverridden components and the separate static-local branch.
+  // unionMask: path groups present in any clip. forced: groups carrying a well-formed,
+  // non-empty channel in EVERY clip. animatedAll: every clip overrides at least one group,
+  // so the static local branch is never evaluated for that node.
+  struct Coverage{std::vector<unsigned> unionMask,forced;std::vector<unsigned char> animatedAll;};
+  std::size_t channels=0;
+  auto cover=[&](const gltf::GltfAnimationData &data,Coverage &out){
+    out.unionMask.assign(n,0);out.forced.assign(n,data.clips.empty()?0u:7u);out.animatedAll.assign(n,data.clips.empty()?0:1);
+    std::vector<unsigned> valid(n);
+    for(const auto &clip:data.clips){
+      std::set<std::pair<std::uint32_t,int>> targets;std::fill(valid.begin(),valid.end(),0u);
+      for(const auto &c:clip.channels){
+        if(stop.stop_requested()||++channels>channelBudget||c.node_index>=n)return false;
+        unsigned bit=0;
+        switch(c.path){case gltf::TrackPath::Translation:bit=1;break;case gltf::TrackPath::Rotation:bit=2;break;case gltf::TrackPath::Scale:bit=4;break;default:return false;}
+        if(c.components!=(bit==2?4u:3u)||!targets.emplace(c.node_index,static_cast<int>(c.path)).second)return false;
+        out.unionMask[c.node_index]|=bit;
+        const std::size_t per=static_cast<std::size_t>(c.components)*(c.interpolation==gltf::Interpolation::CubicSpline?3u:1u);
+        if(!c.times.empty()&&c.values.size()==c.times.size()*per)valid[c.node_index]|=bit;
+      }
+      for(std::size_t i=0;i<n;++i){out.forced[i]&=valid[i];if(!valid[i])out.animatedAll[i]=0;}
+    }
+    return true;};
+  Coverage ca,cb;
+  if(!cover(x,ca)||!cover(y,cb))return stop.stop_requested()?finish("cancelled","cancelled"):
+      finish("insufficient",channels>channelBudget?"budgetExceeded":"invalidChannels");
+  QVariantList coverage;int components=0;
+  for(std::size_t i=0;i<n;++i){const auto mask=ca.unionMask[i]&cb.unionMask[map[i]];if(!mask)continue;
+    components+=static_cast<int>((mask&1)!=0)+static_cast<int>((mask&2)!=0)+static_cast<int>((mask&4)!=0);
+    coverage.append(QVariantMap{{"source",static_cast<uint>(i)},{"target",static_cast<uint>(map[i])},{"mask",mask}});
+  }
+  if(!differing) {
+    report.insert("commonCoverage",QVariantMap{{"verdict",components?"sameCommonOverrides":"insufficient"},
+      {"reason",components?"exactMappedDefaultsParentsAndBindings":"noCommonChannels"},
+      {"condition","identical finite local TRS overrides with identical presence flags on listed paths; all other components remain default"},
+      {"authoredActionsEquivalent",false},{"clipPairAligned",false},{"aggregation","unionPerInputThenIntersection"},{"promotionEnabled",false},{"componentCount",components},{"paths",coverage}});
+  } else {
+    // Differing defaults can only be explained away where the evaluator provably never reads
+    // them: the node is overridden in every clip of both inputs, and every differing T/R/S group
+    // carries a well-formed channel in every clip of both inputs. Anything else stays observable.
+    struct Group{qsizetype offset,length;unsigned bit;};
+    constexpr Group groups[]{{80,12,1},{92,16,2},{108,12,4}};
+    const QByteArray noMatrix(4,'\0');
+    QVariantList dead;bool allDead=true;
+    for(std::size_t i=0;i<n&&allDead;++i){
+      if(!defaultDiffers[i])continue;
+      if(stop.stop_requested())return finish("cancelled","cancelled");
+      const auto j=map[i];const auto &u=av.nodes[i].local,&v=bv.nodes[j].local;
+      bool ok=ca.animatedAll[i]&&cb.animatedAll[j]&&u.left(4)==noMatrix&&v.left(4)==noMatrix;
+      unsigned deadGroups=0;
+      if(ok)for(const auto &g:groups){
+        if(u.mid(g.offset,g.length)==v.mid(g.offset,g.length))continue;
+        if((ca.forced[i]&cb.forced[j]&g.bit)==g.bit)deadGroups|=g.bit;else{ok=false;break;}
+      }
+      if(!ok){allDead=false;break;}
+      dead.append(QVariantMap{{"source",static_cast<uint>(i)},{"target",static_cast<uint>(j)},{"deadGroups",deadGroups}});
+    }
+    const bool proven=allDead&&components>0;
+    report.insert("forcedOverrideCoverage",QVariantMap{{"verdict",proven?"sameCommonOverridesDeadDefaults":"insufficient"},
+      {"reason",!allDead?"defaultObservable":components?"deadDefaultsUnobservable":"noCommonChannels"},
+      {"condition","parents and bindings exact; every differing default group is overridden by a well-formed channel in every clip of both inputs and its node is overridden in every clip; identical supplied overrides on listed paths"},
+      {"authoredActionsEquivalent",false},{"clipPairAligned",false},{"aggregation","unionPerInputThenIntersection"},{"promotionEnabled",false},
+      {"componentCount",components},{"paths",coverage},{"deadDefaults",dead}});
+    return finish("insufficient","mappedDefaultOrParentConflict");
+  }
+  std::size_t count=0;
+  auto equal=[&](const std::vector<double> &u,const std::vector<double> &v){if(u.size()!=v.size())return false;
+    for(std::size_t i=0;i<u.size();++i){if((i%4096)==0&&stop.stop_requested())return false;
+      if(++count>scalarBudget||std::memcmp(&u[i],&v[i],sizeof(double))!=0)return false;}return true;};
+  bool same=x.clips.size()==y.clips.size();
+  for(std::size_t c=0;c<x.clips.size()&&same;++c){
+    const auto &u=x.clips[c],&v=y.clips[c];
+    if(u.start!=v.start||u.end!=v.end||u.channels.size()!=v.channels.size()){same=false;break;}
+    std::map<std::pair<std::uint32_t,int>,const gltf::AnimationChannel*> target;
+    for(const auto &q:v.channels)target.emplace(std::make_pair(q.node_index,static_cast<int>(q.path)),&q);
+    for(const auto &p:u.channels){
+      if(stop.stop_requested())return finish("cancelled","cancelled");
+      const auto it=target.find({static_cast<std::uint32_t>(map[p.node_index]),static_cast<int>(p.path)});
+      if(it==target.end()){same=false;break;}const auto &q=*it->second;
+      if(p.interpolation!=q.interpolation||p.components!=q.components||!equal(p.times,q.times)||!equal(p.values,q.values)){same=false;break;}
+    }
+  }
+  report.insert("comparedScalars",static_cast<qulonglong>(count));
+  if(stop.stop_requested())return finish("cancelled","cancelled");
+  if(count>scalarBudget)return finish("insufficient","budgetExceeded");
+  return same?finish("equivalent","exactMappedDecodedProgram"):finish("insufficient","differentProgram");
 }

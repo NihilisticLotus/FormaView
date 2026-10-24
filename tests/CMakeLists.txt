@@ -93,3 +93,8 @@ foreach(case IN ITEMS reading pose errors pairing limits)
         set_tests_properties(skeletal_${case} PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${compiler_bin}")
     endif()
 endforeach()
+
+add_executable(formaview_transform_validation_tests transform_validation_tests.cpp)
+target_link_libraries(formaview_transform_validation_tests PRIVATE formaview_transform_validation formaview_options)
+add_test(NAME transform_validation COMMAND formaview_transform_validation_tests)
+set_tests_properties(transform_validation PROPERTIES TIMEOUT 30)

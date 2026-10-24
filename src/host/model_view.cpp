@@ -1,18 +1,40 @@
 #include "model_view.hpp"
 #include <QtMath>
+#include <QCoreApplication>
+#include <QQuickWindow>
 #include <algorithm>
 #include <cmath>
 
-ModelView::ModelView(QQuickItem *parent) : Item(parent) { setSampleCount(4); }
+ModelView::ModelView(QQuickItem *parent) : Item(parent) {
+  setSampleCount(4);
+  presented_=std::make_shared<std::atomic<std::shared_ptr<const formaview::render::Frame>>>();
+  submitted_=std::make_shared<std::atomic<std::shared_ptr<const formaview::render::Frame>>>();
+  frameSubmitted=[snapshot=submitted_](auto frame) { snapshot->store(std::move(frame)); };
+  connect(this,&QQuickItem::windowChanged,this,&ModelView::bindPresentedWindow);
+  bindPresentedWindow(window());
+}
+void ModelView::bindPresentedWindow(QQuickWindow *value) {
+  disconnect(swapConnection_);
+  if(session_)session_->attachRenderWindow(value);
+  if(value)swapConnection_=connect(value,&QQuickWindow::frameSwapped,this,[submitted=submitted_,presented=presented_] {
+    presented->store(submitted->load());
+  },Qt::DirectConnection);
+}
 void ModelView::setSession(ModelSession *value) {
   if (session_ == value)
     return;
   if (session_)
     disconnect(session_, nullptr, this, nullptr);
   session_ = value;
+  if (session_) { session_->enableGpuSkinning(true); session_->attachRenderWindow(window()); }
+  const QPointer<ModelSession> weak=session_;
+  skinFailure=[weak](QString reason,std::shared_ptr<const formaview::render::Frame> failed) {
+    QMetaObject::invokeMethod(QCoreApplication::instance(),[weak,reason,failed] { if (weak) weak->gpuSkinningFailed(reason,failed); },Qt::QueuedConnection);
+  };
   if (session_) {
     connect(session_, &ModelSession::frameChanged, this, &ModelView::refresh);
     connect(session_, &ModelSession::documentChanged, this, [this] {
+      presented_->store({}); submitted_->store({});
       saved_[0] = {};
       saved_[1] = {};
       fit();
@@ -25,6 +47,7 @@ void ModelView::setSession(ModelSession *value) {
 void ModelView::refresh() {
   const bool uv = representation_ == 1 ||
                   (representation_ < 0 && session_ && session_->mode() == 1);
+  const auto previousGeometry=frame?frame->geometry:nullptr;
   setFrame(session_ ? (representation_ < 0 ? session_->frame()
                                            : session_->frameFor(uv))
                     : nullptr);
@@ -37,7 +60,8 @@ void ModelView::refresh() {
     pitch_ = state.pitch;
     distance_ = state.distance;
   }
-  if (automatic_ && session_ && session_->available())
+  if (automatic_ && session_ && session_->available() &&
+      !(previousGeometry && frame && previousGeometry==frame->geometry))
     fit(fitSelected_);
   else
     camera();
@@ -128,7 +152,7 @@ void ModelView::fit(bool selected) {
 void ModelView::pickAt(double x, double y) {
   if (session_ && width() > 0 && height() > 0)
     session_->pick(matrix_, {2 * x / width() - 1, 1 - 2 * y / height()},
-                   uvMode_);
+                   uvMode_,presented_->load());
 }
 void ModelView::restoreCamera(const QVariantMap &state) {
   if (state.isEmpty())

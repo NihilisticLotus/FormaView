@@ -1,4 +1,5 @@
 #include "model_session.hpp"
+#include "formaview/fbx.hpp"
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -6,7 +7,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaProperty>
 #include <QThread>
+#include <QUrl>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -101,17 +104,157 @@ int main(int argc, char **argv) {
            "unloading clears skeleton indices and details");
     }
     {
-      bool unsupported = false;
+      // M07: the animation-only FBX boundary is replaced by the skeleton
+      // preview document; the real source must load with clips and evaluate.
+      session.open(QString::fromUtf8("B:/Model/克劳德/An/Battle00/B_AAttack01_0.fbx"));
+      wait();
+      test(session.animated() && session.meshes().isEmpty(),
+           "animation-only session has no mesh capability");
+      for (int i = QObject::staticMetaObject.propertyCount();
+           i < session.metaObject()->propertyCount(); ++i) {
+        const auto property = session.metaObject()->property(i);
+        if (property.isReadable())
+          test(property.read(&session).isValid(), property.name());
+      }
+      test(session.uvBackground().isEmpty(),
+           "animation-only session has no UV background");
+      test(session.frame() && session.frame()->hasDisplayBounds,
+           "animation publishes camera-space display bounds");
+      for (const auto &vertex : session.frame()->vertices)
+        test(std::abs(vertex.x) < 2 && std::abs(vertex.y) < 2 &&
+                 std::abs(vertex.z) < 2,
+             "animation vertices use the model viewport normalized space");
+      session.selectBinding(-1);
+      session.removeTexture();
+      session.classifyMesh("not-a-mesh", 0, false);
+      session.restoreClassification();
+      test(session.meshes().isEmpty() && session.classification().isEmpty(),
+           "mesh-only commands do not create animation mesh state");
+      const auto clipStart = session.clipInfo().value("start").toDouble();
+      session.setLoop(false);
+      session.setSpeed(1);
+      QElapsedTimer clock;
+      clock.start();
+      session.togglePlay();
+      while (clock.elapsed() < 120) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+      }
+      if (session.playing())
+        session.togglePlay();
+      const auto wallSeconds = clock.nsecsElapsed() / 1e9;
+      const auto playedSeconds = session.time() - clipStart;
+      std::cout << "Animation clock: wall=" << wallSeconds
+                << "s, played=" << playedSeconds << "s\n";
+      test(playedSeconds > 0 && playedSeconds <= wallSeconds + .05,
+           "playback timer converts elapsed milliseconds to real seconds");
+      session.clear();
+      std::shared_ptr<ModelDocument> document;
+      QString failure;
       try {
-        readModelDocument(
+        document = readModelDocument(
             QString::fromUtf8("B:/Model/克劳德/An/Battle00/B_AAttack01_0.fbx"),
             {});
-      } catch (const formaview::skeletal::Failure &failure) {
-        unsupported =
-            QString::fromUtf8(failure.what()).startsWith("ANIMATION_ONLY_FBX:");
+      } catch (const formaview::skeletal::Failure &error) {
+        failure = error.what();
+      } catch (const std::exception &error) {
+        failure = error.what();
       }
-      test(unsupported, "actual animation-only FBX reports M07 capability "
-                        "boundary instead of corrupt mesh");
+      const QByteArray message =
+          failure.isEmpty()
+              ? QByteArrayLiteral(
+                    "actual animation-only FBX loads as M07 skeleton preview")
+              : failure.toUtf8();
+      test(bool(document) && document->skeletonOnly &&
+               !document->animationClips.empty() && document->worldAt,
+           message.constData());
+      if (document && document->worldAt) {
+        const auto source = formaview::skeletal::FbxDocument::read(
+            std::filesystem::path(L"B:/Model/克劳德/An/Battle00/B_AAttack01_0.fbx"));
+        const auto up = source.data().source.coordinates.up;
+        QVector3D axis;
+        switch (up) {
+        case formaview::Axis::PositiveX: axis = {1, 0, 0}; break;
+        case formaview::Axis::NegativeX: axis = {-1, 0, 0}; break;
+        case formaview::Axis::PositiveZ: axis = {0, 0, 1}; break;
+        case formaview::Axis::NegativeZ: axis = {0, 0, -1}; break;
+        case formaview::Axis::NegativeY: axis = {0, -1, 0}; break;
+        default: axis = {0, 1, 0}; break;
+        }
+        test((document->displayBasis.mapVector(axis) - QVector3D(0, 1, 0)).length() < 1e-5,
+             "animation FBX maps declared source up to display Y exactly once");
+        std::cout << "FBX source up enum: " << static_cast<int>(up) << '\n';
+        const auto worlds = document->worldAt(
+            0, document->animationClips.front().start);
+        test(worlds == source.evaluate(0, source.data().clips.front().start).world,
+             "display basis does not mutate FBX source world transforms");
+        test(worlds.size() == document->boneParents.size() &&
+                 !worlds.empty(),
+             "animation-only FBX evaluates world matrices at clip start");
+      }
+    }
+    {
+      const auto psa = QString::fromUtf8("B:/Model/鸣潮/WutheringWaves_Unpack/Game/Aki/Character/Role/Female121/Jueyuan/CommonAnim/AirSkill01_Start.psa");
+      const auto psk = QString::fromUtf8("B:/Model/鸣潮/WutheringWaves_Unpack/Game/Aki/Character/Role/Female121/Jueyuan/R2T1JueyuanMd10011/Model/R2T1JueyuanMd10011.psk");
+      auto configPath = psa;
+      configPath.chop(3);
+      configPath += "config";
+      const auto raw = readModelDocument(psa, {});
+      const auto paired = readModelDocument(psa, {}, psk, configPath);
+      test(raw->referencePath.isEmpty() && paired->referencePath == psk &&
+               paired->companionPath == configPath,
+           "PSA reference and companion are explicit, never automatically discovered");
+      test(raw->boneParents[2] == 0 && paired->boneParents[2] == 1,
+           "real PSA placeholder parents are replaced only by explicit PSK topology");
+      test(raw->animationClips[0].name == "AirSkill01_Start",
+           "PSA uses sequence name rather than group None");
+      const auto asset = formaview::skeletal::read_actor(std::filesystem::path(psa.toStdWString()));
+      const auto mesh = formaview::skeletal::read_actor(std::filesystem::path(psk.toStdWString()));
+      const auto binding = formaview::skeletal::pair(asset, mesh, 1e-4,
+          formaview::skeletal::PairingPolicy::ReferenceSkeleton);
+      QFile configFile(configPath);
+      test(configFile.open(QIODevice::ReadOnly), "explicit companion input exists");
+      const auto bytes = configFile.readAll();
+      const auto config = formaview::skeletal::read_psa_config(
+          std::span<const std::byte>(reinterpret_cast<const std::byte *>(bytes.constData()),
+                                     static_cast<std::size_t>(bytes.size())), asset);
+      for (const double t : {0., .1, .3}) {
+        const auto expected = formaview::skeletal::evaluate_paired(asset, binding, 0, t, &config);
+        const auto actual = paired->worldAt(0, t);
+        test(actual == expected.world, "host forwards PSK hierarchy and companion to paired source evaluator");
+        const auto frame = buildAnimationFrame(*paired, 0, t, 1);
+        test(frame->gridVertices == 84 && frame->guides.size() == 102,
+             "animation frames carry grid and three source axes");
+        const auto origin = -paired->center / paired->radius;
+        const auto &vertex = frame->guides[84];
+        test((QVector3D(vertex.x, vertex.y, vertex.z) - origin).length() < 1e-5,
+             "animation guides remain at normalized source origin while seeking");
+      }
+      session.open(psa); wait();
+      test(session.info().value("psa").toBool() &&
+               session.info().value("referencePath").toString().isEmpty(),
+           "unpaired PSA exposes provisional state");
+      session.setAnimationReference(QUrl::fromLocalFile(psk).toString()); wait();
+      session.setAnimationCompanion(QUrl::fromLocalFile(configPath).toString()); wait();
+      test(session.info().value("referencePath").toString() == psk &&
+               session.info().value("companionPath").toString() == configPath,
+           "PSA UI accepts file URLs and publishes reference state after async load");
+      session.setAnimationReference(""); wait();
+      test(session.info().value("referencePath").toString().isEmpty() &&
+               session.info().value("companionPath").toString().isEmpty(),
+           "clearing PSA pairing also removes companion");
+      // New session-memory contract: a companion without a reference is a
+      // warned, unapplied state - never an open failure, and never a silent
+      // substitution of reference-dependent channels.
+      bool safe = false;
+      try {
+        const auto document = readModelDocument(psa, {}, {}, configPath);
+        safe = document->referencePath.isEmpty() &&
+               document->companionPath.isEmpty() &&
+               document->warnings.join('|')
+                   .contains("NOT applied", Qt::CaseInsensitive);
+      } catch (const std::exception &) { safe = false; }
+      test(safe, "companion without a reference warns and is never applied");
     }
     session.open(fixtures.filePath("external.gltf"));
     wait();

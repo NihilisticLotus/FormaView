@@ -9,6 +9,9 @@ struct Vertex {
   skeletal::Vec3 position;
   skeletal::Vec2 uv;
   std::uint32_t point{}, wedge{};
+  // Unit skinned normal when the source provides point normals; otherwise
+  // zero and callers fall back to flat shading.
+  skeletal::Vec3 normal{};
 };
 struct MeshFrame {
   std::vector<Vertex> corners;
@@ -26,6 +29,7 @@ private:
   const skeletal::ActorAsset &source_;
   std::vector<Matrix4> inverse_bind_, matrices_;
   std::vector<skeletal::Vec3> points_;
+  std::vector<skeletal::Vec3> skinnedNormals_;
   MeshFrame frame_;
 };
 [[nodiscard]] MeshFrame

@@ -957,6 +957,132 @@
         "success": "icons/success/brand-diamond.svg"
       },
       "originalSha256": "d3b476fc623467c35f48694ae4ff7eff4f04e33e0ffacf4825a86f5b8282d8b2"
+    },
+    {
+      "id": "animation-play",
+      "upstreamName": "play",
+      "labelZhCN": "播放",
+      "page": "animation",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/animation-play.svg",
+        "muted": "icons/muted/animation-play.svg",
+        "disabled": "icons/disabled/animation-play.svg",
+        "on-action": "icons/on-action/animation-play.svg",
+        "danger": "icons/danger/animation-play.svg",
+        "warning": "icons/warning/animation-play.svg",
+        "success": "icons/success/animation-play.svg"
+      },
+      "originalSha256": "45e8580594dbcd8e5f666422a45d1ea28cab59cef21d6be043bd389452aa4f79"
+    },
+    {
+      "id": "animation-pause",
+      "upstreamName": "pause",
+      "labelZhCN": "暂停",
+      "page": "animation",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/animation-pause.svg",
+        "muted": "icons/muted/animation-pause.svg",
+        "disabled": "icons/disabled/animation-pause.svg",
+        "on-action": "icons/on-action/animation-pause.svg",
+        "danger": "icons/danger/animation-pause.svg",
+        "warning": "icons/warning/animation-pause.svg",
+        "success": "icons/success/animation-pause.svg"
+      },
+      "originalSha256": "b81c21561907b82bd0bb93e982c973280d5787446bf5471e983ed12c13ddaa90"
+    },
+    {
+      "id": "animation-step-back",
+      "upstreamName": "step-back",
+      "labelZhCN": "上一帧",
+      "page": "animation",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/animation-step-back.svg",
+        "muted": "icons/muted/animation-step-back.svg",
+        "disabled": "icons/disabled/animation-step-back.svg",
+        "on-action": "icons/on-action/animation-step-back.svg",
+        "danger": "icons/danger/animation-step-back.svg",
+        "warning": "icons/warning/animation-step-back.svg",
+        "success": "icons/success/animation-step-back.svg"
+      },
+      "originalSha256": "cabd5acb8687a378aedc39d4e9676af6d4fb226cb7096d19ef715cc019977005"
+    },
+    {
+      "id": "animation-step-forward",
+      "upstreamName": "step-forward",
+      "labelZhCN": "下一帧",
+      "page": "animation",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/animation-step-forward.svg",
+        "muted": "icons/muted/animation-step-forward.svg",
+        "disabled": "icons/disabled/animation-step-forward.svg",
+        "on-action": "icons/on-action/animation-step-forward.svg",
+        "danger": "icons/danger/animation-step-forward.svg",
+        "warning": "icons/warning/animation-step-forward.svg",
+        "success": "icons/success/animation-step-forward.svg"
+      },
+      "originalSha256": "0e7ae563a5a456bea5a1c47c37355d391e4cacc546a1ab76b55f0e567b137305"
+    },
+    {
+      "id": "ground-grid",
+      "upstreamName": "grid-3x3",
+      "labelZhCN": "地面网格",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/ground-grid.svg",
+        "muted": "icons/muted/ground-grid.svg",
+        "disabled": "icons/disabled/ground-grid.svg",
+        "on-action": "icons/on-action/ground-grid.svg",
+        "danger": "icons/danger/ground-grid.svg",
+        "warning": "icons/warning/ground-grid.svg",
+        "success": "icons/success/ground-grid.svg"
+      },
+      "originalSha256": "d78e49d7a7a70e98d551b6d2fd88f4fd256ffe3bef5cbb75907705cfff71213a"
+    },
+    {
+      "id": "origin-axes",
+      "upstreamName": "axis-3d",
+      "labelZhCN": "原点坐标轴",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/origin-axes.svg",
+        "muted": "icons/muted/origin-axes.svg",
+        "disabled": "icons/disabled/origin-axes.svg",
+        "on-action": "icons/on-action/origin-axes.svg",
+        "danger": "icons/danger/origin-axes.svg",
+        "warning": "icons/warning/origin-axes.svg",
+        "success": "icons/success/origin-axes.svg"
+      },
+      "originalSha256": "f4576e0a723c2c5bfab17c4e2337d9d9dbd8206bd38ed160c739203432b9af55"
+    },
+    {
+      "id": "frame-all",
+      "upstreamName": "scan",
+      "labelZhCN": "显示全部",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/frame-all.svg",
+        "muted": "icons/muted/frame-all.svg",
+        "disabled": "icons/disabled/frame-all.svg",
+        "on-action": "icons/on-action/frame-all.svg",
+        "danger": "icons/danger/frame-all.svg",
+        "warning": "icons/warning/frame-all.svg",
+        "success": "icons/success/frame-all.svg"
+      },
+      "originalSha256": "47b278112d9e40a4f0505ca0b11b85ad1c291a4159d6d833ade009e536c2f587"
     }
   ]
 }

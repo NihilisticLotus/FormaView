@@ -60,8 +60,8 @@ Rectangle {
         Loader {
             Layout.fillWidth: true; Layout.fillHeight: true
             active: root.modelActive; visible: active
-            onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller}) }
-            Component.onCompleted: { if (active) setSource("ModelPane.qml", {controller: root.controller}) }
+            onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }
+            Component.onCompleted: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }
         }
         Loader {
             Layout.fillWidth: true; Layout.fillHeight: true

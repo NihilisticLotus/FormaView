@@ -4,6 +4,7 @@ layout(location=1) in float influence;
 layout(location=2) in vec3 worldNormal;
 layout(location=3) in vec3 surfaceTint;
 layout(location=4) in vec3 surfaceCoverage;
+layout(location=5) in vec3 deformedPosition;
 layout(location=0) out vec4 color;
 layout(std140,binding=0) uniform Params { mat4 matrix; vec4 options; };
 layout(binding=1) uniform sampler2D sourceTexture;
@@ -23,7 +24,9 @@ void main(){
         color.a*=surfaceCoverage.x;
         if(surfaceCoverage.y>0.5 && surfaceCoverage.y<1.5 && color.a<surfaceCoverage.z) discard;
         if(surfaceCoverage.y<1.5)color.a=1;
-        float light=.3+.7*abs(dot(normalize(worldNormal),normalize(vec3(.4,.7,1))));
+        vec3 n=dot(worldNormal,worldNormal)>1e-20?worldNormal:cross(dFdx(deformedPosition),dFdy(deformedPosition));
+        if(dot(n,n)<1e-20)n=vec3(0,0,1);
+        float light=.3+.7*abs(dot(normalize(n),normalize(vec3(.4,.7,1))));
         if(options.z>0.5)color.rgb=displayValue(linearValue(color.rgb)*surfaceTint*light);
         else color.rgb*=surfaceTint*light;
     }

@@ -1,3 +1,5 @@
+#include "caption_evidence.hpp"
+#include "window_capture.hpp"
 #include "desktop.hpp"
 #include "window_chrome.hpp"
 #include "formaview/telemetry.hpp"
@@ -5,6 +7,7 @@
 #ifdef FORMAVIEW_MODEL_UI
 #include "model_session.hpp"
 #include "model_view.hpp"
+#include "model_document.hpp"
 #endif
 #ifdef FORMAVIEW_IMAGE_UI
 #include "image_jobs.hpp"
@@ -27,12 +30,14 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMimeData>
+#include <QMetaProperty>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QAbstractNativeEventFilter>
 #include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
@@ -44,6 +49,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <thread>
 namespace {
 bool workflowHeadless() {
   return qEnvironmentVariableIsSet("FORMAVIEW_TEST_HEADLESS");
@@ -207,8 +214,14 @@ class DesktopTests final : public QObject {
       result.append(visualItems(child, name));
     return result;
   }
+  QImage captureWindow(QQuickWindow *window) {
+    const auto image=captureExposedWindow(window);
+    if (image.isNull())
+      QTest::qFail("Window capture unavailable: require a live, exposed, initialized window",__FILE__,__LINE__);
+    return image;
+  }
   void save(const QString &name) {
-    const auto pixels=window_->grabWindow();
+    const auto pixels=captureWindow(window_);
     QVERIFY(pixels.save(root_ + "/" + name + ".png"));
     const auto geometry=window_->geometry();
     QJsonObject capture{{"name",name},{"logical_width",geometry.width()},{"logical_height",geometry.height()},
@@ -654,7 +667,7 @@ private slots:
     for (auto *candidate : QGuiApplication::allWindows())
       if (auto *popup = qobject_cast<QQuickWindow *>(candidate);
           popup && popup != window_ && popup->isVisible())
-        QVERIFY(popup->grabWindow().save(
+        QVERIFY(captureWindow(popup).save(
             root_ + "/06b-popup-" + QString::number(popupNumber++) + ".png"));
     evidence_["drawer_popup_type"] = drawer->property("popupType").toInt();
     QTest::keyClick(window_, Qt::Key_Escape);
@@ -870,15 +883,107 @@ private slots:
     QCOMPARE(desktop_->currentIndex(), 1);
     QTRY_VERIFY(idle());
   }
+  void windowCaptureLifecycle() {
+    QQuickWindow probe;
+    const auto retire=qScopeGuard([&]{probe.hide();probe.releaseResources();});
+    probe.resize(320,240);
+    QSignalSpy swaps(&probe,&QQuickWindow::frameSwapped);
+    probe.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    QTRY_VERIFY(swaps.count()>0);
+    QVERIFY(!captureExposedWindow(&probe).isNull());
+    probe.hide();
+    QVERIFY(captureExposedWindow(&probe).isNull());
+    probe.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    probe.showMinimized();
+    QTRY_COMPARE(probe.visibility(),QWindow::Minimized);
+    QVERIFY(captureExposedWindow(&probe).isNull());
+    probe.showNormal();
+    QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    QVERIFY(probe.close());
+    QVERIFY(!probe.handle());
+    QVERIFY(captureExposedWindow(&probe).isNull());
+    QVERIFY(!probe.handle()); // Guard must not recreate the native window.
+    probe.create();
+    QVERIFY(captureExposedWindow(&probe).isNull());
+    const auto before=swaps.count();
+    probe.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    QTRY_VERIFY(swaps.count()>before);
+    QVERIFY(!captureExposedWindow(&probe).isNull());
+  }
+  void nativeCaptionHitPurity() {
+#ifdef Q_OS_WIN
+    window_->showNormal();
+    window_->resize(1600,900);
+    QTest::qWait(100);
+    auto *chrome=window_->findChild<QObject *>("nativeWindowChrome");
+    auto *filter=dynamic_cast<QAbstractNativeEventFilter *>(chrome);
+    QVERIFY(filter);
+    auto *bar=item("topBar");QVERIFY(bar);
+    const auto pureClient=[&](const QPointF &scene) {
+      const auto hwnd=reinterpret_cast<HWND>(window_->winId());
+      POINT point{qRound(scene.x()*window_->devicePixelRatio()),qRound(scene.y()*window_->devicePixelRatio())};
+      if(!ClientToScreen(hwnd,&point))return false;
+      MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+      message.lParam=MAKELPARAM(point.x,point.y);
+      qintptr result=-999;
+      // A client control must be handled here, not delegated to Qt's
+      // expanded-caption hit test (which samples physical button state and
+      // synchronously dispatches mouse events/window actions).
+      return filter->nativeEventFilter("windows_generic_MSG",&message,&result)&&result==HTCLIENT;
+    };
+    int controls=0;
+    for(auto *control:bar->childItems())
+      if(control->isVisible()&&control->property("pressed").isValid()) {
+        ++controls;
+        QVERIFY2(pureClient(control->mapToScene(QPointF(control->width()/2,control->height()/2))),
+          "QML title-bar controls must return handled HTCLIENT without platform side effects");
+      }
+    QVERIFY(controls>0);
+    auto *menu=item("applicationMenuButton");QVERIFY(menu);
+    const auto dismiss=qScopeGuard([&]{QTest::keyClick(window_,Qt::Key_Escape);});
+    QVERIFY(QMetaObject::invokeMethod(menu,"clicked"));
+    QTRY_VERIFY(pureClient(bar->mapToScene(QPointF(400,bar->height()/2))));
+#else
+    QSKIP("Windows native hit purity");
+#endif
+  }
   void nativeWindowCaptionHitTesting() {
 #ifdef Q_OS_WIN
     window_->showNormal();
     window_->resize(1600, 900);
     QTest::qWait(60);
+    // Escape is delivered to a focused popup, not an inactive window.
+    // Exposure and popup visibility do not establish keyboard focus.
+    window_->requestActivate();
+    QTRY_VERIFY(window_->isActive());
     auto *bar = item("topBar");
     auto *menu = item("applicationMenuButton");
     QVERIFY(bar);
     QVERIFY(menu);
+    QObject *popup=nullptr;
+    for(auto *child:menu->children())
+      if(child->property("opened").isValid()) { popup=child;break; }
+    QVERIFY(popup);
+    QJsonArray focusTrace;
+    const auto recordFocus=[&](const char *stage) {
+      auto *focus=window_->activeFocusItem();
+      focusTrace.append(QJsonObject{{"stage",stage},{"windowActive",window_->isActive()},
+        {"focusClass",focus?focus->metaObject()->className():"null"},
+        {"focusName",focus?focus->objectName():QString()},
+        {"popupVisible",popup->property("visible").toBool()},
+        {"popupOpened",popup->property("opened").toBool()},
+        {"popupActiveFocus",popup->property("activeFocus").toBool()}});
+    };
+    bool captionPassed=false;
+    const auto focusEvidence=qScopeGuard([&] {
+      recordFocus("final");
+      evidence_["caption_popup_focus"]=focusTrace;
+      if(!captionPassed)
+        qWarning().noquote()<<"CAPTION_POPUP_FAILURE_EVIDENCE"<<QJsonDocument(focusTrace).toJson(QJsonDocument::Compact);
+    });
     const auto hit = [this](const QPointF &scene) {
       const auto hwnd = reinterpret_cast<HWND>(window_->winId());
       POINT point{qRound(scene.x() * window_->devicePixelRatio()),
@@ -897,7 +1002,12 @@ private slots:
     // A popup must receive the outside click rather than starting a window drag.
     QVERIFY(QMetaObject::invokeMethod(menu, "clicked"));
     QTRY_COMPARE(hit(caption()), LRESULT{HTCLIENT});
+    recordFocus("opened-before-focus-check");
+    QTRY_VERIFY(popup->property("opened").toBool());
+    QTRY_VERIFY(popup->property("activeFocus").toBool());
+    recordFocus("before-escape");
     QTest::keyClick(window_, Qt::Key_Escape);
+    recordFocus("after-escape");
     QTRY_COMPARE(hit(caption()), LRESULT{HTCAPTION});
     window_->showMaximized();
     QTRY_COMPARE(window_->visibility(), QWindow::Maximized);
@@ -908,8 +1018,206 @@ private slots:
     // Reinstalling after discovery of a preview window is harmless.
     installWindowChrome(window_);
     QCOMPARE(window_->findChildren<QObject *>("nativeWindowChrome").size(), 1);
+    captionPassed=true;
 #else
     QSKIP("Windows native caption handling");
+#endif
+  }
+  void nativeCaptionResizeHitPurity() {
+#ifdef Q_OS_WIN
+    QQuickWindow probe;
+    const auto retire=qScopeGuard([&]{probe.hide();probe.releaseResources();});
+    probe.setFlags(window_->flags());probe.resize(1280,800);probe.show();
+    installWindowChrome(&probe);
+    QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    auto *filter=dynamic_cast<QAbstractNativeEventFilter *>(probe.findChild<QObject *>("nativeWindowChrome"));
+    QVERIFY(filter);
+    const auto hwnd=reinterpret_cast<HWND>(probe.winId());RECT r{};
+    QVERIFY(GetWindowRect(hwnd,&r));
+    const int middleX=(r.left+r.right)/2,middleY=(r.top+r.bottom)/2;
+    const QList<QPair<QPoint,int>> cases={
+      {{r.left+1,r.top+1},HTTOPLEFT},{{middleX,r.top+1},HTTOP},
+      {{r.right-2,r.top+1},HTTOPRIGHT},{{r.left+1,middleY},HTLEFT},
+      {{r.right-2,middleY},HTRIGHT},{{r.left+1,r.bottom-2},HTBOTTOMLEFT},
+      {{middleX,r.bottom-2},HTBOTTOM},{{r.right-2,r.bottom-2},HTBOTTOMRIGHT}};
+    for(const auto &entry:cases){
+      MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+      message.lParam=MAKELPARAM(entry.first.x(),entry.first.y());qintptr hit=0;
+      QVERIFY2(filter->nativeEventFilter("windows_generic_MSG",&message,&hit),
+        "Resize hit queries must not reach Qt's stateful expanded-client fallback");
+      QCOMPARE(hit,qintptr(entry.second));
+      QCOMPARE(SendMessageW(hwnd,WM_NCHITTEST,0,message.lParam),LRESULT(entry.second));
+    }
+    RECT client{};QVERIFY(GetClientRect(hwnd,&client));POINT origin{};
+    QVERIFY(ClientToScreen(hwnd,&origin));const UINT dpi=GetDpiForWindow(hwnd);
+    const int height=GetSystemMetricsForDpi(SM_CXSIZEFRAME,dpi)+
+        GetSystemMetricsForDpi(SM_CXPADDEDBORDER,dpi)+GetSystemMetricsForDpi(SM_CYCAPTION,dpi);
+    const int width=int(height*1.5);
+    for(int i=1;i<=3;++i){
+      MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+      message.lParam=MAKELPARAM(origin.x+client.right-width*i,origin.y+height/2);qintptr hit=0;
+      QVERIFY2(filter->nativeEventFilter("windows_generic_MSG",&message,&hit),
+        "Adjacent caption rectangles must not leave a stateful one-pixel gap");
+      QVERIFY(hit==HTCLOSE||hit==HTMAXBUTTON||hit==HTMINBUTTON);
+    }
+    // Cover the entire caption/client seam, including pixels beyond the
+    // button rectangle. A point without a QML title region is ordinary client.
+    for(int y=height-2;y<=height+12;y+=2)
+      for(int x=client.right-width*3;x<client.right-width/2;x+=3){
+        MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+        message.lParam=MAKELPARAM(origin.x+x,origin.y+y);qintptr hit=0;
+        QVERIFY2(filter->nativeEventFilter("windows_generic_MSG",&message,&hit),
+          "The complete caption/client seam must bypass Qt's stateful fallback");
+        QVERIFY(hit==HTCLIENT||hit==HTCLOSE||hit==HTMAXBUTTON||hit==HTMINBUTTON);
+      }
+    probe.showMaximized();QTRY_VERIFY(IsZoomed(hwnd));
+    QVERIFY(GetWindowRect(hwnd,&r));origin={0,0};QVERIFY(ClientToScreen(hwnd,&origin));
+    if(r.top<origin.y){
+      MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+      message.lParam=MAKELPARAM((r.left+r.right)/2,r.top);qintptr hit=0;
+      QVERIFY(filter->nativeEventFilter("windows_generic_MSG",&message,&hit));
+      QCOMPARE(hit,qintptr(HTNOWHERE));
+    }
+#else
+    QSKIP("Windows resize hit purity");
+#endif
+  }
+  void nativeCaptionButtonsRelease() {
+#ifdef Q_OS_WIN
+    QQuickWindow probe;
+    const auto retireProbe=qScopeGuard([&] {
+      // Also runs on every QTRY/QVERIFY early return. Stop render/exposure
+      // work before tearing down the temporary native-window probe.
+      probe.hide();
+      probe.releaseResources();
+      window_->requestActivate();
+    });
+    probe.setFlags(window_->flags());
+    probe.resize(1280, 800);
+    probe.show();
+    probe.requestActivate();
+    installWindowChrome(&probe);
+    struct CloseGuard : QObject {
+      int closes{};
+      bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() != QEvent::Close) return false;
+        ++closes;
+        event->ignore();
+        return true;
+      }
+    } guard;
+    probe.installEventFilter(&guard);
+    QTest::qWait(100);
+    const auto hwnd = reinterpret_cast<HWND>(probe.winId());
+    auto *nativeChrome=dynamic_cast<QAbstractNativeEventFilter *>(probe.findChild<QObject *>("nativeWindowChrome"));
+    QVERIFY(nativeChrome);
+    const auto ownedHit=[&](QPoint point){
+      MSG message{};message.hwnd=hwnd;message.message=WM_NCHITTEST;
+      message.lParam=MAKELPARAM(point.x(),point.y());qintptr hit=0;
+      // A blank probe has no QML drag region. Candidate scans must not enter
+      // Qt's default hit test, which samples physical buttons and dispatches
+      // synchronous mouse/window actions. Verify the chosen center natively.
+      return nativeChrome->nativeEventFilter("windows_generic_MSG",&message,&hit)?int(hit):0;
+    };
+    CaptionEvidence evidence(hwnd);
+    const auto publishFailure=qScopeGuard([&]{
+      if(QTest::currentTestFailed())
+        qInfo().noquote()<<"CAPTION_FAILURE_EVIDENCE"<<evidence.json();
+    });
+    const auto buttonPoint = [&](int wanted) {
+      RECT rect{};
+      MONITORINFO monitor{}; monitor.cbSize=sizeof(monitor);
+      if (!GetWindowRect(hwnd,&rect) ||
+          !GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor))
+        return QPoint(-1,-1);
+      // Maximized HWND rectangles include invisible frame pixels outside the
+      // monitor. Choose the center of the visible native hit region, not its
+      // first border pixel; keep fractional display scaling intact.
+      const qreal scale=probe.devicePixelRatio();
+      const int left=std::max(int(monitor.rcMonitor.left),int(rect.right)-qCeil(180*scale));
+      const int right=std::min(int(monitor.rcMonitor.right),int(rect.right));
+      const int top=std::max(int(monitor.rcMonitor.top),int(rect.top));
+      const int bottom=std::min(int(monitor.rcMonitor.bottom),int(rect.top)+qCeil(48*scale));
+      QRect hits;
+      for (int y=top; y<bottom; y+=3)
+        for (int x=left; x<right; x+=3)
+          if (ownedHit(QPoint(x,y))==wanted)
+            hits=hits.united(QRect(x,y,1,1));
+      const auto center=hits.center();
+      if (hits.isEmpty() || SendMessageW(hwnd,WM_NCHITTEST,0,
+          MAKELPARAM(center.x(),center.y()))!=wanted)
+        return QPoint(-1,-1);
+      return center;
+    };
+    const auto down = [&](int hit, QPoint point) {
+      evidence.checkpoint("before-down",point,ownedHit(point));
+      // Native input passes the dispatcher filter as a queued message.
+      // SendMessage bypasses that filter and enters Windows' modal tracking.
+      PostMessageW(hwnd, WM_NCLBUTTONDOWN, hit, MAKELPARAM(point.x(),point.y()));
+      QTest::qWait(10);
+    };
+    const auto up = [&](QPoint screen) {
+      evidence.checkpoint("before-up",screen,ownedHit(screen));
+      POINT client{screen.x(),screen.y()};
+      ScreenToClient(hwnd,&client);
+      PostMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(client.x,client.y));
+      QTest::qWait(10);
+    };
+    for (const int hit : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
+      const auto point = buttonPoint(hit);
+      QVERIFY2(point != QPoint(-1,-1), qPrintable(QString("No native caption hit %1").arg(hit)));
+      down(hit, point);
+      QTest::qWait(50);
+      QCOMPARE(guard.closes, 0);
+      QVERIFY(!IsZoomed(hwnd) && !IsIconic(hwnd));
+      QCOMPARE(GetCapture(), hwnd);
+      // Dragging out and releasing cancels all three buttons.
+      RECT rect{};
+      GetWindowRect(hwnd,&rect);
+      up(QPoint(rect.left+300, rect.top+200));
+      QTest::qWait(30);
+      QCOMPARE(guard.closes, 0);
+      QVERIFY(!IsZoomed(hwnd) && !IsIconic(hwnd));
+      // Losing capture/cancelling must not leave an armed button.
+      down(hit, point);
+      SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
+      up(point);
+      QTest::qWait(30);
+      QCOMPARE(guard.closes, 0);
+      QVERIFY(!IsZoomed(hwnd) && !IsIconic(hwnd));
+    }
+    auto point = buttonPoint(HTMAXBUTTON);
+    QVERIFY(point != QPoint(-1,-1));
+    down(HTMAXBUTTON,point); up(point);
+    QTRY_VERIFY(IsZoomed(hwnd));
+    point = buttonPoint(HTMAXBUTTON);
+    QVERIFY(point != QPoint(-1,-1));
+    MONITORINFO monitor{};monitor.cbSize=sizeof(monitor);
+    QVERIFY(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor));
+    const POINT physical{point.x(),point.y()};
+    QVERIFY2(PtInRect(&monitor.rcMonitor,physical),
+      "Caption input must target a physically reachable point, not the invisible maximized frame");
+    down(HTMAXBUTTON,point);
+    QTest::qWait(30);
+    QVERIFY(IsZoomed(hwnd));
+    up(point);
+    QTRY_VERIFY(!IsZoomed(hwnd));
+    point = buttonPoint(HTMINBUTTON);
+    QVERIFY(point != QPoint(-1,-1));
+    down(HTMINBUTTON,point); up(point);
+    QTRY_VERIFY(IsIconic(hwnd));
+    probe.showNormal();
+    QTRY_VERIFY(!IsIconic(hwnd));
+    point = buttonPoint(HTCLOSE);
+    QVERIFY(point != QPoint(-1,-1));
+    down(HTCLOSE,point);
+    QTest::qWait(30);
+    QCOMPARE(guard.closes,0);
+    up(point);
+    QTRY_COMPARE(guard.closes,1);
+    probe.removeEventFilter(&guard);
+#else
+    QSKIP("Windows caption buttons");
 #endif
   }
   void paneFocusRecovery() {
@@ -1597,7 +1905,7 @@ private slots:
     const auto position =
         view->mapToScene(QPointF(view->width() / 2, view->height() / 2));
     auto centrePixel = [&] {
-      const auto frame = window_->grabWindow();
+      const auto frame = captureWindow(window_);
       const auto dpr = frame.devicePixelRatio();
       return frame.pixelColor(qRound(position.x() * dpr),
                               qRound(position.y() * dpr));
@@ -1822,7 +2130,7 @@ private slots:
       QVERIFY(view);
       const auto point =
           view->mapToScene({view->width() / 2, view->height() / 2});
-      const auto frame = window_->grabWindow();
+      const auto frame = captureWindow(window_);
       const auto colour =
           frame.pixelColor(qRound(point.x() * frame.devicePixelRatio()),
                            qRound(point.y() * frame.devicePixelRatio()));
@@ -1866,7 +2174,7 @@ private slots:
     auto *view = qobject_cast<ImageView *>(item("imageViewport"));
     QVERIFY(view);
     const auto rectangle = view->imageRect();
-    const auto frame = window_->grabWindow();
+    const auto frame = captureWindow(window_);
     for (int y = 0; y < 2; ++y)
       for (int x = 0; x < 2; ++x) {
         const QPointF local(rectangle.x() + (x + .5) * view->zoom(),
@@ -1889,7 +2197,7 @@ private slots:
     QCOMPARE(session->pixel()["tileY"].toInt(), -1);
     QCOMPARE(session->pixel()["x"].toInt(), 1);
     QCOMPARE(session->pixel()["y"].toInt(), 1);
-    const auto tiledFrame = window_->grabWindow();
+    const auto tiledFrame = captureWindow(window_);
     const auto tilePoint =
         view->mapToScene(negativeTile) * tiledFrame.devicePixelRatio();
     QCOMPARE(
@@ -2411,7 +2719,7 @@ private slots:
     QJsonArray frames;
     auto capture = [&](const QString &name) {
       QTest::qWait(100);
-      const auto image = window_->grabWindow();
+      const auto image = captureWindow(window_);
       QVERIFY(image.save(root_ + "/" + name + ".png"));
       QJsonObject frame{{"name", name}, {"logical_width", window_->width()}, {"logical_height", window_->height()}, {"dpr", window_->devicePixelRatio()}, {"physical_width", image.width()}, {"physical_height", image.height()}, {"source", source}, {"font", QGuiApplication::font().family()}};
       for (const auto *region : {"topBar", "statusBar", "filesPane", "previewPane", "inspectorPane", "conversionSources", "conversionContent", "conversionEncoding", "conversionFooter"})
@@ -3142,7 +3450,7 @@ private slots:
           desktop_->setLanguage(language);
           QTest::qWait(80);
           const auto name = "review-" + page + "-" + QString::number(size.width()) + "-" + language;
-          QVERIFY(window_->grabWindow().save(root_ + "/" + name + ".png"));
+          QVERIFY(captureWindow(window_).save(root_ + "/" + name + ".png"));
         }
       }
       window_->resize(previousSize);
@@ -3938,7 +4246,7 @@ private slots:
     QVERIFY(selection.value("inPalette").toBool());
     QVERIFY(session->frame()->selectionVertices>0);
     QCOMPARE(view->cameraState(),camera);
-    const auto shot=window_->grabWindow();
+    const auto shot=captureWindow(window_);
     const auto viewTop=view->mapToScene({0,0})*window_->devicePixelRatio();
     const QRect viewPixels(viewTop.toPoint(),QSize(int(view->width()*window_->devicePixelRatio()),int(view->height()*window_->devicePixelRatio())));
     int orangePixels=0;
@@ -4397,7 +4705,7 @@ private slots:
       QTest::qWait(300);
       QVERIFY(view);
       const auto name = QFileInfo(path).completeBaseName();
-      QVERIFY(window_->grabWindow().save(root_ + "/model-" + name + ".png"));
+      QVERIFY(captureWindow(window_).save(root_ + "/model-" + name + ".png"));
       const auto frame = session->frame();
       const auto oldMesh = session->meshIndex(), oldBinding = session->bindingIndex();
       view->orbit(30, 20); view->panBy(10, -5); view->zoomBy(1.2); view->fit(true);
@@ -4408,7 +4716,7 @@ private slots:
         QVERIFY(session->frame()->lines);
         QVERIFY(!session->frame()->vertices.empty());
         QTest::qWait(120);
-        QVERIFY(window_->grabWindow().save(root_ + "/uv-" + name + ".png"));
+        QVERIFY(captureWindow(window_).save(root_ + "/uv-" + name + ".png"));
       }
       session->setMode(2);
       QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
@@ -4430,7 +4738,7 @@ private slots:
       QVERIFY(!session->frame()->textures.empty());
       QVERIFY(std::any_of(session->frame()->draws.begin(),session->frame()->draws.end(),[](const auto &d){return d.texture>=0;}));
       QTest::qWait(100);
-      QVERIFY(window_->grabWindow().save(root_ + "/texture-" + name + ".png"));
+      QVERIFY(captureWindow(window_).save(root_ + "/texture-" + name + ".png"));
       session->removeTexture();
       QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
       QCOMPARE(session->texturePath(),sourceTexturePath);
@@ -4481,6 +4789,2740 @@ private slots:
     evidence_["model_preview"] = reports;
   }
 #endif
+  void modelAnimationProperties_data() {
+    QTest::addColumn<QString>("sample");
+    QTest::newRow("psa") << qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE");
+    const auto fbx = qEnvironmentVariable("FORMAVIEW_ANIMATION_FBX_SAMPLE");
+    if (!fbx.isEmpty())
+      QTest::newRow("animation-only-fbx") << fbx;
+  }
+  void modelAnimationProperties() {
+    QFETCH(QString, sample);
+    if (sample.isEmpty())
+      QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE to a real PSA sample");
+    QVERIFY(QFileInfo::exists(sample));
+    // A QML binding may read any exposed property, including those on hidden
+    // mesh panels. Inspect a separate session on every notification so a C++
+    // exception is reported at its property rather than crossing the QML VM.
+    ModelSession session;
+    QSignalSpy animationNotifications(&session, &ModelSession::animChanged);
+    QStringList failures;
+    const auto readProperties = [&] {
+      for (int i = QObject::staticMetaObject.propertyCount();
+           i < session.metaObject()->propertyCount(); ++i) {
+        const auto property = session.metaObject()->property(i);
+        if (!property.isReadable())
+          continue;
+        try {
+          (void)property.read(&session);
+        } catch (const std::exception &error) {
+          failures.append(QString::fromLatin1(property.name()) + ": " +
+                          QString::fromUtf8(error.what()));
+        }
+      }
+    };
+    connect(&session, &ModelSession::changed, &session, readProperties);
+    connect(&session, &ModelSession::animChanged, &session, readProperties);
+    readProperties();
+    session.open(sample);
+    QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 20000);
+    QVERIFY2(session.inspectable(), qPrintable(session.error() + session.frameError()));
+    QVERIFY(session.animated());
+    QVERIFY(session.meshes().isEmpty());
+    QVERIFY(animationNotifications.count() >= 2); // Clear + landing notify.
+    QVERIFY2(failures.isEmpty(), qPrintable(failures.join('\n')));
+    QVERIFY(session.uvBackground().isEmpty());
+    QVERIFY(!session.canClearTexture());
+    // Mesh-only commands can still be invoked by a stale selection callback.
+    session.selectBinding(-1);
+    session.removeTexture();
+    session.classifyMesh("not-a-mesh", 0, false);
+    session.restoreClassification();
+    session.seek(session.clipInfo().value("end").toDouble());
+    const auto beforeClear = animationNotifications.count();
+    session.clear();
+    readProperties();
+    QVERIFY2(failures.isEmpty(), qPrintable(failures.join('\n')));
+    QVERIFY(!session.available());
+    QVERIFY(animationNotifications.count() > beforeClear);
+    QVERIFY(session.clipInfo().isEmpty());
+  }
+  void modelAnimationPlayback() {
+    // M07 integration: real animation sample through the product session -
+    // clips, inline playback, seek/step/clip switching and the timeline bar.
+    // Skipped unless FORMAVIEW_ANIMATION_SAMPLE points at a real PSA/FBX.
+    const auto sample =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+    if (!sample.exists()) {
+      QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE to a real animation sample");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      // Also forget the session reference memory so later tests in this
+      // process start from a clean pairing state.
+      if (!session->busy())
+        session->setAnimationReference(QString());
+      desktop_->clearAsset();
+    });
+    QSignalSpy qmlWarnings(engine_.get(), &QQmlEngine::warnings);
+    desktop_->openPath(sample.absoluteFilePath());
+    // Desktop routes the request asynchronously. !busy is also true before
+    // the model request starts, so it is not an arrival condition.
+    QTRY_COMPARE_WITH_TIMEOUT(session->path(), sample.absoluteFilePath(), 20000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() ||
+                                !session->error().isEmpty() ||
+                                !session->frameError().isEmpty(),
+                            20000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error() + session->frameError()));
+    QVERIFY(session->animated());
+    const auto reference = qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE");
+    if (!reference.isEmpty() && sample.suffix().compare("psa", Qt::CaseInsensitive) == 0) {
+      session->setAnimationReference(reference);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+      QVERIFY2(session->inspectable(), qPrintable(session->error()));
+      const auto companion = qEnvironmentVariable("FORMAVIEW_ANIMATION_COMPANION");
+      if (!companion.isEmpty()) {
+        session->setAnimationCompanion(companion);
+        QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+        QVERIFY2(session->inspectable(), qPrintable(session->error()));
+      }
+    }
+    QVERIFY(session->clips().size() >= 1);
+    const auto info = session->clipInfo();
+    QVERIFY(info.contains("start") && info.contains("lastFrame"));
+    QVERIFY(session->frame() && !session->frame()->vertices.empty());
+    QTRY_VERIFY(item("modelAnimationBarHost") &&
+                item("modelAnimationBarHost")->isVisible());
+    if (session->info().value("psa").toBool()) {
+      auto *menuButton = item("animPairingMenuButton");
+      QVERIFY(menuButton && menuButton->isVisible());
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          menuButton->mapToScene({menuButton->width() / 2, menuButton->height() / 2}).toPoint());
+      QTRY_VERIFY(item("animReference") && item("animReference")->isVisible());
+      QVERIFY(item("animReference")->isEnabled());
+      QCOMPARE(item("animCompanion")->isEnabled(), !session->info().value("referencePath").toString().isEmpty());
+      QTest::keyClick(window_, Qt::Key_Escape);
+      QTRY_VERIFY(!item("animReference") || !item("animReference")->isVisible());
+    }
+    QTRY_COMPARE(item("animScrubber")->property("from").toDouble(),
+                 info.value("start").toDouble());
+    QTRY_COMPARE(item("animScrubber")->property("to").toDouble(),
+                 info.value("end").toDouble());
+    QVERIFY(!item("animTime")->property("text").toString().contains("undefined"));
+    QCOMPARE(qmlWarnings.count(), 0);
+    // Inline playback advances real seconds and keeps publishing frames.
+    const auto revisionBefore =
+        session->frame() ? session->frame()->revision : std::uint64_t{0};
+    session->togglePlay();
+    QVERIFY(session->playing());
+    for (int i = 0; i < 40 && session->playing(); ++i)
+      QTest::qWait(25);
+    QVERIFY(session->time() > info.value("start").toDouble());
+    QVERIFY(session->frame() &&
+            session->frame()->revision > revisionBefore);
+    session->togglePlay();
+    QVERIFY(!session->playing());
+    const double paused = session->time();
+    QTest::qWait(60);
+    auto *guideView = qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(guideView);
+    QCOMPARE(session->frame()->gridVertices, std::uint32_t(84));
+    QCOMPARE(session->frame()->guides.size(), std::size_t(102));
+    const auto guideCamera = guideView->cameraState();
+    const auto clickGuide = [&](const char *name) {
+      auto *control = item(name);
+      QVERIFY(control && control->isVisible());
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          control->mapToScene({control->width() / 2, control->height() / 2}).toPoint());
+      QTest::qWait(80);
+    };
+    const auto viewportPixels = [&] {
+      const auto snapshot = captureWindow(window_);
+      const auto scale = snapshot.width() / double(window_->width());
+      const auto top = guideView->mapToScene(QPointF());
+      return snapshot.copy(QRect(int(top.x() * scale), int(top.y() * scale),
+                                 int(guideView->width() * scale), int(guideView->height() * scale)));
+    };
+    QVERIFY(guideView->gridVisible() && guideView->axesVisible());
+    const auto guidesOn = viewportPixels();
+    clickGuide("modelGroundGrid");
+    QVERIFY(!guideView->gridVisible() && guideView->axesVisible());
+    const auto axesOnly = viewportPixels();
+    QVERIFY2(guidesOn != axesOnly, "grid toggle must change actual animation viewport pixels");
+    clickGuide("modelOriginAxes");
+    QVERIFY(!guideView->gridVisible() && !guideView->axesVisible());
+    QVERIFY2(axesOnly != viewportPixels(), "axes toggle must change actual animation viewport pixels");
+    QCOMPARE(guideView->cameraState(), guideCamera);
+    clickGuide("modelGroundGrid");
+    clickGuide("modelOriginAxes");
+    const auto image = captureWindow(window_);
+    auto *animatedView = item("modelViewport");
+    QVERIFY(animatedView);
+    const auto top = animatedView->mapToScene(QPointF(0, 0));
+    auto *animationBar = item("modelAnimationBarHost");
+    QVERIFY(animationBar);
+    QVERIFY(animationBar->property("radius").toDouble() > 0);
+    const auto barTop = animationBar->mapToScene(QPointF(0, 0)).y();
+    const double scaleX = double(image.width()) / window_->width();
+    const double scaleY = double(image.height()) / window_->height();
+    const auto region = QRectF(top, QSizeF(animatedView->width(),
+        std::max(0.0, std::min(animatedView->height(), barTop - top.y()))));
+    QRect skeletonPixels;
+    int visibleSkeletonPixels = 0;
+    for (int y = std::max(0, int(region.top() * scaleY));
+         y < std::min(image.height(), int(region.bottom() * scaleY)); ++y)
+      for (int x = std::max(0, int(region.left() * scaleX));
+           x < std::min(image.width(), int(region.right() * scaleX)); ++x) {
+        const auto colour = image.pixelColor(x, y);
+        if (colour.red() > 130 && colour.green() > 70 &&
+            colour.red() > colour.green() * 1.05 &&
+            colour.blue() < colour.green() * .9) {
+          ++visibleSkeletonPixels;
+          skeletonPixels = skeletonPixels.united(QRect(x, y, 1, 1));
+        }
+      }
+    QVERIFY2(visibleSkeletonPixels > 10 && skeletonPixels.width() > 20 &&
+                 skeletonPixels.height() > 20,
+             "Animation must produce a visible skeleton, not an empty viewport or one clipped line");
+    evidence_["animation_skeleton_pixels"] = visibleSkeletonPixels;
+    const auto oldLanguage = desktop_->language();
+    const auto oldSize = window_->size();
+    for (const auto &language : {QStringLiteral("zh-CN"), QStringLiteral("en"),
+                                 QStringLiteral("zh-TW")}) {
+      desktop_->setLanguage(language);
+      for (const auto &size : {QSize(1600, 900), QSize(1280, 800)}) {
+        window_->resize(size);
+        QTest::qWait(100);
+        auto *pane = item("modelPane");
+        auto *grid = item("modelGroundGrid");
+        QVERIFY(pane && grid);
+        const auto toolbarY = grid->mapToItem(pane, QPointF()).y();
+        for (const auto *name : {"modelGroundGrid", "modelOriginAxes", "modelFocus", "modelFrameAll"}) {
+          auto *button = item(name);
+          QVERIFY2(button && button->isVisible(), name);
+          const auto point = button->mapToItem(pane, QPointF());
+          QVERIFY2(qAbs(point.y() - toolbarY) < 1, name);
+          QVERIFY2(point.x() >= 0 && point.x() + button->width() <= pane->width() + 1, name);
+        }
+        auto *bar = item("modelAnimationBarHost");
+        QVERIFY(bar);
+        for (const auto *name : {"animControls", "animTime", "animScrubber", "animStart", "animEnd"}) {
+          auto *control = item(name);
+          QVERIFY2(control, name);
+          const auto point = control->mapToItem(bar, QPointF(0, 0));
+          QVERIFY2(point.x() >= -1 && point.y() >= -1 &&
+                       point.x() + control->width() <= bar->width() + 1 &&
+                       point.y() + control->height() <= bar->height() + 1,
+                   name);
+        }
+        QVERIFY(item("animEnd")->property("text").toString().contains(
+            QString::number(info.value("end").toDouble(), 'f', 3)));
+        save("m07-animation-" + language + "-" + QString::number(size.width()));
+      }
+    }
+    window_->resize(oldSize);
+    desktop_->setLanguage(oldLanguage);
+    QTest::qWait(80);
+    QCOMPARE(session->time(), paused); // Pause freezes the presented time.
+    // Seek clamps to the clip domain; step and clip switching keep state.
+    session->seek(1e9);
+    QCOMPARE(session->time(), info.value("end").toDouble());
+    session->seek(-1.0);
+    QCOMPARE(session->time(), info.value("start").toDouble());
+    session->seek(paused);
+    session->stepFrame(1);
+    QVERIFY(session->time() > info.value("start").toDouble());
+    if (session->clips().size() > 1) {
+      const auto before = session->clipIndex();
+      session->setClipIndex(before == 0 ? 1 : 0);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+      QVERIFY(session->clipIndex() != before);
+      QCOMPARE(session->time(), session->clipInfo().value("start").toDouble());
+    }
+    session->setSpeed(2.0);
+    QCOMPARE(session->speed(), 2.0);
+    session->setLoop(false);
+    QVERIFY(!session->loop());
+    // The viewport space key toggles playback for animated documents.
+    auto *viewport = item("modelViewport");
+    QVERIFY(viewport);
+    viewport->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Space);
+    QVERIFY(session->playing());
+    QTest::keyClick(window_, Qt::Key_Space);
+    QVERIFY(!session->playing());
+    // Frame never mutates source data: reopening yields the same digest.
+    const auto firstDigest = session->info().value("sha256").toString();
+    desktop_->clearAsset();
+    desktop_->openPath(sample.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 20000);
+    QCOMPARE(session->info().value("sha256").toString(), firstDigest);
+    desktop_->clearAsset();
+    QCoreApplication::processEvents();
+    QCOMPARE(qmlWarnings.count(), 0);
+  }
+  void modelPsaSessionReferenceMemory() {
+    // M07 session reference memory + per-PSA companion auto-match:
+    // one explicit PSK choice is retried for every later PSA in this
+    // process; each file re-verifies compatibility and rejects with a
+    // warning instead of silently applying a wrong skeleton. Companions
+    // are discovered per file (same dir, same base name) and never
+    // inherited from the previous file.
+    const auto sampleA =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+    const auto reference =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE"));
+    if (!sampleA.exists() || !reference.exists() ||
+        sampleA.suffix().compare("psa", Qt::CaseInsensitive) != 0) {
+      QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE (PSA) and "
+            "FORMAVIEW_ANIMATION_REFERENCE (PSK)");
+      return;
+    }
+    const auto sampleB =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_PSA_B"));
+    const auto incompatible =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_PSA_INCOMPATIBLE"));
+    const auto companionA =
+        QFileInfo(sampleA.dir().filePath(sampleA.completeBaseName() + ".config"));
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      session->setAnimationReference(QString());
+      desktop_->clearAsset();
+    });
+    // Reopening the same file keeps path()/inspectable() true with the
+    // previous document, and the busy window can live entirely inside one
+    // event-processing burst: count documentChanged landings instead.
+    QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+    const auto openAndWait = [&](const QFileInfo &file) {
+      const auto before = documentLoaded.count();
+      desktop_->openPath(file.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          documentLoaded.count() > before && !session->busy() &&
+              (session->inspectable() || !session->error().isEmpty()),
+          20000);
+      QVERIFY2(session->inspectable(),
+               qPrintable(session->error() + session->frameError()));
+      QVERIFY(session->animated());
+    };
+    const auto paired = [&] {
+      return session->info().value("referencePath").toString();
+    };
+    const auto companion = [&] {
+      return session->info().value("companionPath").toString();
+    };
+    const auto rejected = [&] {
+      return session->info().value("referenceRejected").toBool();
+    };
+
+    // 1. First open without a session reference: unpaired raw preview. A
+    // discovered companion cannot apply without a reference and says so.
+    openAndWait(sampleA);
+    QVERIFY(paired().isEmpty());
+    QVERIFY(!rejected());
+    if (companionA.exists())
+      QVERIFY(session->warnings().join('|').contains("NOT applied", Qt::CaseInsensitive));
+
+    // 2. One explicit choice pairs A and applies A's own companion
+    // automatically (no manual companion selection).
+    session->setAnimationReference(reference.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error()));
+    QCOMPARE(paired(), reference.absoluteFilePath());
+    QCOMPARE(companion(),
+             companionA.exists() ? companionA.absoluteFilePath() : QString{});
+
+    // 3. Same-folder PSA B reuses the session reference and applies B's own
+    // companion - never A's.
+    if (sampleB.exists() && sampleB.isDir() == false &&
+        sampleB.suffix().compare("psa", Qt::CaseInsensitive) == 0) {
+      openAndWait(sampleB);
+      QCOMPARE(paired(), reference.absoluteFilePath());
+      const auto companionB =
+          QFileInfo(sampleB.dir().filePath(sampleB.completeBaseName() + ".config"));
+      QCOMPARE(companion(),
+               companionB.exists() ? companionB.absoluteFilePath() : QString{});
+      if (companionA.exists() && companionB.exists())
+        QVERIFY(companion() != companionA.absoluteFilePath() ||
+                sampleA.absoluteFilePath() == sampleB.absoluteFilePath());
+
+      // 4. Back to A: still paired with A's companion.
+      openAndWait(sampleA);
+      QCOMPARE(paired(), reference.absoluteFilePath());
+      QCOMPARE(companion(),
+               companionA.exists() ? companionA.absoluteFilePath() : QString{});
+    }
+
+    // 5. An incompatible PSA warns, stays unpaired and previewable, and
+    // does not poison the session for compatible files.
+    if (incompatible.exists() &&
+        incompatible.suffix().compare("psa", Qt::CaseInsensitive) == 0) {
+      openAndWait(incompatible);
+      QVERIFY(paired().isEmpty());
+      QVERIFY(rejected());
+      QVERIFY(!session->info().value("referenceRejectReason").toString().isEmpty());
+      QVERIFY(session->warnings().join('|').contains("NOT applied", Qt::CaseInsensitive));
+      openAndWait(sampleA);
+      QCOMPARE(paired(), reference.absoluteFilePath());
+      QVERIFY(!rejected());
+    }
+
+    // 5b. An invalid companion (not a track config) only disables the
+    // config with a warning; the verified pairing itself stays applied.
+    {
+      // A binary non-config file (the PSA itself) must fail companion
+      // parsing; a key=value .props.txt without [RemoveTracks] is a valid
+      // empty config, so it does not count as invalid here.
+      if (true) {
+        const auto referenceBefore = paired();
+        session->setAnimationCompanion(sampleA.absoluteFilePath());
+        QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+        QVERIFY2(session->inspectable(), qPrintable(session->error()));
+        QCOMPARE(paired(), referenceBefore);
+        QVERIFY(companion().isEmpty());
+        QVERIFY(session->warnings().join('|')
+                    .contains("Track config NOT applied", Qt::CaseInsensitive));
+        // Back to the per-file auto companion on the next open.
+        openAndWait(sampleA);
+        QCOMPARE(companion(),
+                 companionA.exists() ? companionA.absoluteFilePath()
+                                     : QString{});
+      }
+    }
+
+    // 5c. An externally deleted reference is detected on the next open:
+    // every open re-reads and re-verifies the inputs, so a stale pairing is
+    // never reused. Uses a private copy; the read-only source stays intact.
+    {
+      const auto temporary = QFileInfo(
+          root_ + "/session-reference-copy.psk");
+      QFile::copy(reference.absoluteFilePath(), temporary.absoluteFilePath());
+      session->setAnimationReference(temporary.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+      QVERIFY2(session->inspectable(), qPrintable(session->error()));
+      QCOMPARE(paired(), temporary.absoluteFilePath());
+      QFile::remove(temporary.absoluteFilePath());
+      openAndWait(sampleA);
+      QVERIFY(paired().isEmpty());
+      QVERIFY(rejected());
+      // An explicit new choice restores the session for the remaining steps.
+      session->setAnimationReference(reference.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+      QVERIFY2(session->inspectable(), qPrintable(session->error()));
+      QCOMPARE(paired(), reference.absoluteFilePath());
+    }
+
+    // 6. A non-PSA asset in between does not disturb the session memory.
+    const auto fbx = QFileInfo(
+        qEnvironmentVariable("FORMAVIEW_ANIMATION_FBX"));
+    if (fbx.exists()) {
+      desktop_->openPath(fbx.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(session->path().isEmpty() ||
+                               !session->busy(), 20000);
+      openAndWait(sampleA);
+      QCOMPARE(paired(), reference.absoluteFilePath());
+    }
+
+    // 7. Explicit clear also forgets the session memory: the next open is
+    // unpaired and does not silently re-apply the reference.
+    session->setAnimationReference(QString());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error()));
+    QVERIFY(paired().isEmpty());
+    QVERIFY(!rejected());
+    openAndWait(sampleA);
+    QVERIFY(paired().isEmpty());
+    QVERIFY(!rejected());
+  }
+  void modelRootLockPlayback() {
+    // M07 root lock product flow: toggle locks the root (translation/rotation
+    // from the base, scale kept), off restores the source pose at the same
+    // time, bases switch, reference base only with verified pairing, and the
+    // session memory/pairing integration still holds.
+    const auto sample =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+    if (!sample.exists() ||
+        sample.suffix().compare("psa", Qt::CaseInsensitive) != 0) {
+      QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE to a real PSA");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      session->setRootLock(false);
+      session->setAnimationReference(QString());
+      desktop_->clearAsset();
+    });
+    const auto openAndWait = [&](const QFileInfo &file) {
+      QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+      const auto before = documentLoaded.count();
+      desktop_->openPath(file.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          documentLoaded.count() > before && !session->busy() &&
+              (session->inspectable() || !session->error().isEmpty()),
+          20000);
+      QVERIFY2(session->inspectable(),
+               qPrintable(session->error() + session->frameError()));
+    };
+    openAndWait(sample);
+    const auto candidates = session->rootCandidates();
+    QVERIFY(!candidates.isEmpty());
+
+    // Unpaired: reference base unavailable, auto-falls back / refuses.
+    QVERIFY(!session->rootLockInfo().value("referenceAvailable").toBool());
+    session->setRootBase(1);
+    QCOMPARE(session->rootBase(), 0);
+
+    // Enable first-frame lock: the frame must differ from the unlocked one
+    // for a root-motion clip, and the status reports locked.
+    if (candidates.size() > 1) {
+      QVERIFY(!session->rootLockInfo().value("on").toBool());
+      session->setRootIndex(
+          candidates.front().toMap().value("index").toInt());
+    }
+    session->seek(session->clipInfo().value("end").toDouble() * 0.5);
+    const auto unlocked = session->frame();
+    QVERIFY(unlocked);
+    session->setRootLock(true);
+    QVERIFY(session->rootLockInfo().value("on").toBool());
+    QCOMPARE(session->rootLockInfo().value("status").toString(),
+             QStringLiteral("locked"));
+    const auto locked = session->frame();
+    QVERIFY(locked && locked->revision > unlocked->revision);
+
+    // Zero base: root local translation becomes ~zero relative to the pose
+    // origin, so the locked pose differs from the first-frame lock.
+    session->setRootBase(2);
+    QCOMPARE(session->rootBase(), 2);
+    const auto zero = session->frame();
+    QVERIFY(zero && zero->revision > locked->revision);
+
+    // Off restores the source at the same time: equals the pre-lock frame.
+    session->setRootLock(false);
+    const auto restored = session->frame();
+    QVERIFY(restored);
+    QCOMPARE(restored->vertices.size(), unlocked->vertices.size());
+
+    // Paired: reference base becomes available.
+    const auto reference =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE"));
+    if (reference.exists()) {
+      session->setAnimationReference(reference.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
+      QVERIFY2(session->inspectable(), qPrintable(session->error()));
+      QVERIFY(session->rootLockInfo().value("referenceAvailable").toBool());
+      session->setRootBase(1);
+      QCOMPARE(session->rootBase(), 1);
+      session->setRootLock(true);
+      QCOMPARE(session->rootLockInfo().value("base").toString(),
+               QStringLiteral("reference"));
+      session->setRootLock(false);
+    }
+  }
+  void modelRootLockDegenerateHosts() {
+    // P2 review edge case: root lock must not guess a TRS decomposition.
+    // lockRootLocal faithfully locks only clean orthogonal positive-scale
+    // transforms (base rotation/translation, source per-axis scale). A
+    // mirrored, sheared or degenerate source or base must return the source
+    // unchanged, so the animation keeps its true motion instead of a
+    // corrupted mirror/shear lock.
+    const auto toMatrix = [](const QMatrix4x4 &q) {
+      formaview::Matrix4 m{};
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+          m[static_cast<std::size_t>(r * 4 + c)] = q(r, c);
+      return m;
+    };
+    const auto maxDiff = [](const formaview::Matrix4 &a,
+                            const formaview::Matrix4 &b) {
+      double worst = 0;
+      for (std::size_t i = 0; i < 16; ++i)
+        if (std::abs(a[i] - b[i]) > worst)
+          worst = std::abs(a[i] - b[i]);
+      return worst;
+    };
+    const auto columnLength = [](const formaview::Matrix4 &m, int column) {
+      return std::hypot(m[static_cast<std::size_t>(column)],
+                        m[static_cast<std::size_t>(4 + column)],
+                        m[static_cast<std::size_t>(8 + column)]);
+    };
+    QMatrix4x4 baseQ;
+    baseQ.translate(3, 4, 5);
+    baseQ.rotate(30.f, 0.f, 0.f, 1.f);
+    baseQ.scale(2.f, 2.f, 2.f);
+    const auto base = toMatrix(baseQ);
+
+    // Clean positive-scale source: the lock applies - base translation with
+    // the source's per-axis scale magnitudes.
+    QMatrix4x4 cleanQ;
+    cleanQ.translate(-1, 2, 0.5f);
+    cleanQ.rotate(77.f, 0.f, 1.f, 0.f);
+    cleanQ.scale(3.f, 1.f, 1.5f);
+    const auto clean = toMatrix(cleanQ);
+    const auto lockedClean = lockRootLocal(clean, base);
+    QVERIFY(maxDiff(lockedClean, clean) > 1e-3);
+    for (int column = 0; column < 3; ++column)
+      QVERIFY(std::abs(columnLength(lockedClean, column) -
+                       columnLength(clean, column)) <= 1e-9);
+    QVERIFY(std::abs(lockedClean[3] - base[3]) <= 1e-9);
+    QVERIFY(std::abs(lockedClean[7] - base[7]) <= 1e-9);
+    QVERIFY(std::abs(lockedClean[11] - base[11]) <= 1e-9);
+
+    // Mirrored source (negative X scale): refuse - keep the source.
+    QMatrix4x4 mirrorQ;
+    mirrorQ.rotate(15.f, 0.f, 0.f, 1.f);
+    mirrorQ.scale(-2.f, 2.f, 2.f);
+    const auto mirror = toMatrix(mirrorQ);
+    QVERIFY(maxDiff(lockRootLocal(mirror, base), mirror) <= 1e-12);
+
+    // Sheared source (non-orthogonal columns): refuse - keep the source.
+    formaview::Matrix4 shear{};
+    shear[0] = 1;
+    shear[4] = 0.4; // column 0 gains a Y component: not orthogonal.
+    shear[5] = 1;
+    shear[10] = 1;
+    shear[15] = 1;
+    shear[3] = 1;
+    shear[7] = -2;
+    shear[11] = 0.5;
+    QVERIFY(maxDiff(lockRootLocal(shear, base), shear) <= 1e-12);
+
+    // Zero-scale source column: refuse - keep the source.
+    formaview::Matrix4 zeroSource{};
+    zeroSource[0] = 2;
+    zeroSource[5] = 0;
+    zeroSource[10] = 1;
+    zeroSource[15] = 1;
+    zeroSource[3] = 4;
+    QVERIFY(maxDiff(lockRootLocal(zeroSource, base), zeroSource) <= 1e-12);
+
+    // Degenerate base (zero column): refuse - keep the source.
+    formaview::Matrix4 degenerateBase{};
+    degenerateBase[0] = 0;
+    degenerateBase[5] = 1;
+    degenerateBase[10] = 1;
+    degenerateBase[15] = 1;
+    QVERIFY(maxDiff(lockRootLocal(clean, degenerateBase), clean) <= 1e-12);
+  }
+  void modelGltfAnimationPlayback() {
+    // M07 native glTF animation: a glTF/GLB whose own clips drive its own
+    // skinned meshes previews with the standard animation bar — playback,
+    // seek, root lock and the UV inspection page — without any external
+    // attach, mapping or mutation of the file's bind data.
+    const auto sample = QFileInfo(
+        qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE"));
+    if (!sample.exists() ||
+        sample.suffix().compare("gltf", Qt::CaseInsensitive) != 0 &&
+            sample.suffix().compare("glb", Qt::CaseInsensitive) != 0) {
+      QSKIP("Set FORMAVIEW_GLTF_ANIMATION_SAMPLE to an animated glTF/GLB");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      session->setRootLock(false);
+      session->setMode(0);
+      desktop_->clearAsset();
+    });
+    QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+    const auto before = documentLoaded.count();
+    desktop_->openPath(sample.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        documentLoaded.count() > before && !session->busy() &&
+            (session->inspectable() || !session->error().isEmpty()),
+        60000);
+    QVERIFY2(session->inspectable(),
+             qPrintable(session->error() + session->frameError()));
+    QVERIFY(session->animated());
+    // Native clips are self-contained: no external attach is offered.
+    QVERIFY(!session->canAttachExternalAnimation());
+    QVERIFY(!session->externalInfo().value("driven").toBool());
+    QVERIFY(session->clips().size() >= 1);
+    const auto clip = session->clipInfo();
+    QVERIFY(clip.value("end").toDouble() > clip.value("start").toDouble());
+    QVERIFY(clip.value("fps").toDouble() > 0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty() &&
+            session->frameError().isEmpty(),
+        30000);
+
+    // Animated geometry, not just state: the mid-clip pose must differ from
+    // the first-frame pose on real motion clips.
+    const auto maxVertexDelta =
+        [](const std::shared_ptr<const formaview::render::Frame> &a,
+           const std::shared_ptr<const formaview::render::Frame> &b) {
+          if (!a || !b || a->vertices.size() != b->vertices.size() ||
+              a->vertices.empty())
+            return -1.0;
+          double delta = 0;
+          for (std::size_t i = 0; i < a->vertices.size(); ++i) {
+            const auto &va = a->vertices[i];
+            const auto &vb = b->vertices[i];
+            delta = std::max({delta, std::abs(double(va.x) - double(vb.x)),
+                              std::abs(double(va.y) - double(vb.y)),
+                              std::abs(double(va.z) - double(vb.z))});
+          }
+          return delta;
+        };
+    const auto firstFrame = session->frame();
+    session->seek(clip.value("start").toDouble() +
+                  (clip.value("end").toDouble() - clip.value("start").toDouble()) *
+                      0.5);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > firstFrame->revision,
+                             30000);
+    QVERIFY2(session->frameError().isEmpty(),
+             qPrintable(session->frameError()));
+    const auto midFrame = session->frame();
+    QVERIFY2(maxVertexDelta(firstFrame, midFrame) > 0.005,
+             qPrintable(QString("Mid-clip pose matches the first frame: %1")
+                            .arg(maxVertexDelta(firstFrame, midFrame))));
+
+    // Root lock on the native node domain: status, rebuilt frame and exact
+    // restore at the same time. Root-motion-free models lock without moving
+    // vertices; the restore comparison stays exact either way.
+    const auto candidates = session->rootCandidates();
+    QVERIFY(!candidates.isEmpty());
+    if (candidates.size() > 1)
+      session->setRootIndex(candidates.front().toMap().value("index").toInt());
+    session->setRootLock(true);
+    QCOMPARE(session->rootLockInfo().value("status").toString(),
+             QStringLiteral("locked"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > midFrame->revision,
+                             30000);
+    const auto lockedFrame = session->frame();
+    const auto lockDelta = maxVertexDelta(midFrame, lockedFrame);
+    session->setRootLock(false);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > lockedFrame->revision,
+                             30000);
+    QCOMPARE(maxVertexDelta(midFrame, session->frame()), 0.0);
+    qInfo() << "gltf root lock vertex delta" << lockDelta
+            << "root" << session->rootLockInfo().value("rootName").toString();
+
+    // Playback publishes advancing frames on the async skinning path.
+    session->setSpeed(1.0);
+    session->setLoop(true);
+    const auto revisionBefore = session->frame()->revision;
+    session->togglePlay();
+    QVERIFY(session->playing());
+    for (int i = 0; i < 30 && session->playing(); ++i)
+      QTest::qWait(25);
+    if (session->playing())
+      session->togglePlay();
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revisionBefore,
+                             30000);
+    QVERIFY2(session->frameError().isEmpty(),
+             qPrintable(session->frameError()));
+
+    // The UV inspection page keeps source UVs while the 3D pose animates.
+    session->setMode(1);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame() &&
+                                 !session->frame()->vertices.empty(),
+                             30000);
+    QVERIFY2(session->frameError().isEmpty(),
+             qPrintable(session->frameError()));
+    session->setMode(0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame() &&
+                                 !session->frame()->vertices.empty(),
+                             30000);
+  }
+  void modelGltfAnimationVariants() {
+    // M07 glTF variant matrix (handmade minimal samples): animation-only
+    // skeleton preview, skins without inverse bind matrices, cubic-spline
+    // and step interpolation semantics, and morph-weight channels that must
+    // stay explicitly unsupported while sibling TRS channels still drive.
+    const QDir variants(
+        qEnvironmentVariable("FORMAVIEW_GLTF_VARIANTS_DIR"));
+    if (!variants.exists()) {
+      QSKIP("Set FORMAVIEW_GLTF_VARIANTS_DIR to the handmade glTF samples");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    const auto openAndWait = [&](const QString &name) {
+      QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+      const auto before = documentLoaded.count();
+      desktop_->openPath(variants.filePath(name));
+      QTRY_VERIFY_WITH_TIMEOUT(
+          documentLoaded.count() > before && !session->busy() &&
+              (session->inspectable() || !session->error().isEmpty()),
+          20000);
+      QVERIFY2(session->inspectable(),
+               qPrintable(name + ": " + session->error()));
+    };
+    const auto maxVertexDelta =
+        [](const std::shared_ptr<const formaview::render::Frame> &a,
+           const std::shared_ptr<const formaview::render::Frame> &b) {
+          if (!a || !b || a->vertices.size() != b->vertices.size() ||
+              a->vertices.empty())
+            return -1.0;
+          double delta = 0;
+          for (std::size_t i = 0; i < a->vertices.size(); ++i) {
+            const auto &va = a->vertices[i];
+            const auto &vb = b->vertices[i];
+            delta = std::max({delta,
+                              std::abs(double(va.x) - double(vb.x)),
+                              std::abs(double(va.y) - double(vb.y)),
+                              std::abs(double(va.z) - double(vb.z))});
+          }
+          return delta;
+        };
+
+    // Animation-only: no meshes, skeleton-line preview with native clips.
+    openAndWait("anim-only.gltf");
+    QVERIFY(session->animated());
+    QVERIFY(session->clips().size() == 1);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(),
+        20000);
+    const auto animOnlyStart = session->frame();
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame()->revision > animOnlyStart->revision, 20000);
+    QVERIFY2(maxVertexDelta(animOnlyStart, session->frame()) > 0.001,
+             "animation-only skeleton lines must follow the clip");
+
+    // No inverse bind matrices: identity bind, skinning still applies.
+    openAndWait("no-ibm.gltf");
+    QVERIFY(session->animated());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(),
+        20000);
+    const auto ibmStart = session->frame();
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > ibmStart->revision,
+                             20000);
+    QVERIFY2(maxVertexDelta(ibmStart, session->frame()) > 0.001,
+             "identity-bind skinning must follow the bone");
+
+    // Cubic spline: evaluates without errors and produces motion.
+    openAndWait("cubic.gltf");
+    QVERIFY(session->animated());
+    const auto cubicStart = session->frame();
+    QVERIFY(cubicStart);
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > cubicStart->revision,
+                             20000);
+    QVERIFY2(session->frameError().isEmpty(),
+             qPrintable(session->frameError()));
+    QVERIFY(maxVertexDelta(cubicStart, session->frame()) > 0.001);
+
+    // Step: between two keys the pose equals the earlier key exactly; at
+    // the next key it changes (no interpolation).
+    openAndWait("step.gltf");
+    QVERIFY(session->animated());
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && session->frame()->vertices.size() > 0, 20000);
+    const auto stepAtKey = session->frame();
+    session->seek(1.5);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > stepAtKey->revision,
+                             20000);
+    QCOMPARE(maxVertexDelta(stepAtKey, session->frame()), 0.0);
+    const auto stepMid = session->frame();
+    session->seek(2.0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > stepMid->revision,
+                             20000);
+    QVERIFY2(maxVertexDelta(stepMid, session->frame()) > 0.001,
+             "the next STEP key must change the pose");
+
+    // Morph weights channel: SUPPORTED since 2026-10-23 (linear weights on a
+    // mesh node drive the preview); no unsupported-path warning remains, and
+    // the weights themselves must animate the mesh.
+    openAndWait("morph.gltf");
+    QVERIFY(session->animated());
+    QVERIFY2(!session->warnings().join(';').contains(
+                 "Unsupported animation path"),
+             qPrintable(session->warnings().join(';')));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(), 20000);
+    const auto morphStart = session->frame();
+    QVERIFY(morphStart);
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > morphStart->revision,
+                             20000);
+    QVERIFY(maxVertexDelta(morphStart, session->frame()) > 0.001);
+  }
+  void modelAnimationEdgeMatrix() {
+    // M07 edge-case matrix (Blender-made samples, self-authored): multiple
+    // skeleton roots, helper (non-bone) parents carrying motion, rigid
+    // node-animated meshes without skins, fully disjoint external skeletons
+    // refused, and multi-skin glTF driven natively.
+    const QDir samples(qEnvironmentVariable("FORMAVIEW_EDGE_SAMPLES_DIR"));
+    if (!samples.exists()) {
+      QSKIP("Set FORMAVIEW_EDGE_SAMPLES_DIR to the Blender-made samples");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      if (session->externalInfo().value("driven").toBool())
+        session->detachExternalAnimation();
+      desktop_->clearAsset();
+    });
+    const auto openAndWait = [&](const QString &name) {
+      QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+      const auto before = documentLoaded.count();
+      desktop_->openPath(samples.filePath(name));
+      QTRY_VERIFY_WITH_TIMEOUT(
+          documentLoaded.count() > before && !session->busy() &&
+              (session->inspectable() || !session->error().isEmpty()),
+          20000);
+      QVERIFY2(session->inspectable(),
+               qPrintable(name + ": " + session->error()));
+    };
+    const auto maxVertexDelta =
+        [](const std::shared_ptr<const formaview::render::Frame> &a,
+           const std::shared_ptr<const formaview::render::Frame> &b) {
+          if (!a || !b || a->vertices.size() != b->vertices.size() ||
+              a->vertices.empty())
+            return -1.0;
+          double delta = 0;
+          for (std::size_t i = 0; i < a->vertices.size(); ++i) {
+            const auto &va = a->vertices[i];
+            const auto &vb = b->vertices[i];
+            delta = std::max({delta,
+                              std::abs(double(va.x) - double(vb.x)),
+                              std::abs(double(va.y) - double(vb.y)),
+                              std::abs(double(va.z) - double(vb.z))});
+          }
+          return delta;
+        };
+
+    // Rigid node animation: a skinned-less mesh must follow its node.
+    openAndWait("rigid.gltf");
+    QVERIFY(session->animated());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(), 20000);
+    const auto rigidStart = session->frame();
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > rigidStart->revision,
+                             20000);
+    QVERIFY2(maxVertexDelta(rigidStart, session->frame()) > 0.001,
+             "rigid node-animated mesh must move with its node");
+
+    // Multi-skin glTF, natively animated: both meshes skin, and both
+    // weighted root chains appear as lock candidates.
+    openAndWait("multi-skin.gltf");
+    QVERIFY(session->animated());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(), 20000);
+    const auto multiSkinStart = session->frame();
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame()->revision > multiSkinStart->revision, 20000);
+    QVERIFY2(maxVertexDelta(multiSkinStart, session->frame()) > 0.001,
+             "multi-skin meshes must follow their clips");
+    const auto candidates = session->rootCandidates();
+    QVERIFY2(candidates.size() >= 2,
+             qPrintable(QString("expected multiple weighted roots, got %1")
+                        .arg(candidates.size())));
+    session->setRootIndex(candidates.front().toMap().value("index").toInt());
+    session->setRootLock(true);
+    QCOMPARE(session->rootLockInfo().value("status").toString(),
+             QStringLiteral("locked"));
+    session->setRootLock(false);
+
+    // Helper (non-bone) parent carrying motion: self-drive stays verified
+    // through the full node domain and the helper's animation shows.
+    openAndWait("helper-parent.fbx");
+    QVERIFY(session->canAttachExternalAnimation());
+    session->attachExternalAnimation(samples.filePath("helper-parent.fbx"));
+    QTRY_VERIFY_WITH_TIMEOUT((!session->externalBusy() && session->externalInfo().value("driven").toBool()) ||
+                                !session->externalInfo()
+                                     .value("notice")
+                                     .toString()
+                                     .isEmpty(),
+                             30000);
+    QCOMPARE(session->externalInfo().value("status").toString(),
+             QStringLiteral("verified"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame() && !session->frame()->vertices.empty(), 30000);
+    const auto helperStart = session->frame();
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame()->revision > helperStart->revision, 30000);
+    QVERIFY2(maxVertexDelta(helperStart, session->frame()) > 0.001,
+             "helper-parent animation must reach the skinned mesh");
+
+    // Disjoint external skeleton: the drive is refused with a reason, and
+    // the target document stays inspectable and un-driven.
+    openAndWait("pair-target.fbx");
+    QVERIFY(session->canAttachExternalAnimation());
+    session->attachExternalAnimation(
+        samples.filePath("pair-external-unmapped.fbx"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !session->externalBusy() &&
+            !session->externalInfo().value("status").toString().isEmpty(),
+        30000);
+    QCOMPARE(session->externalInfo().value("status").toString(),
+             QStringLiteral("refused"));
+    QVERIFY(!session->externalInfo().value("driven").toBool());
+    QVERIFY2(!session->externalInfo().value("notice").toString().isEmpty(),
+             "refusal must explain itself");
+    QVERIFY(session->inspectable());
+
+    // Multiple top-level armatures in one FBX: self-drive verifies and the
+    // root lock operates on the weighted chain.
+    openAndWait("multi-root.fbx");
+    QVERIFY(session->canAttachExternalAnimation());
+    session->attachExternalAnimation(samples.filePath("multi-root.fbx"));
+    QTRY_VERIFY_WITH_TIMEOUT((!session->externalBusy() && session->externalInfo().value("driven").toBool()) ||
+                                !session->externalInfo()
+                                     .value("notice")
+                                     .toString()
+                                     .isEmpty(),
+                             30000);
+    QCOMPARE(session->externalInfo().value("status").toString(),
+             QStringLiteral("verified"));
+    QVERIFY(!session->rootCandidates().isEmpty());
+    const auto multiRootStart = session->frame();
+    QVERIFY(multiRootStart);
+    session->seek(1.0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->frame()->revision > multiRootStart->revision, 30000);
+    QVERIFY(maxVertexDelta(multiRootStart, session->frame()) > 0.001);
+  }
+  void modelFbxNativeAnimation() {
+    const auto paths = qEnvironmentVariable("FORMAVIEW_NATIVE_FBX_SAMPLES").split(';', Qt::SkipEmptyParts);
+    QVERIFY2(!paths.empty(), "Set FORMAVIEW_NATIVE_FBX_SAMPLES to mesh+animation FBX files");
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    for (const auto &path : paths) {
+      try {
+      std::size_t nativeCount = 0;
+      {
+        const auto raw = formaview::skeletal::FbxDocument::read(std::filesystem::path(path.toStdWString()));
+        qInfo() << "native FBX inventory" << path << "meshes" << raw.data().meshes.size()
+                << "clips" << raw.data().clips.size() << "nodes" << raw.data().nodes.size();
+        QVERIFY(!raw.data().meshes.empty());
+        QVERIFY(!raw.data().clips.empty());
+        nativeCount = raw.data().clips.size();
+        const auto document = readModelDocument(path, {});
+        QVERIFY2(document->animated(), qPrintable(path + " must automatically expose native clips"));
+        QVERIFY(document->nativeAnimated);
+        QVERIFY(!document->skeletonOnly);
+        QVERIFY(document->gpuSkinDomain());
+        QVERIFY(document->canAttachExternal());
+        QCOMPARE(document->animationClips.size(), nativeCount);
+        for (std::size_t c = 0; c < nativeCount; ++c) {
+          QCOMPARE(document->animationClips[c].start, raw.data().clips[c].start);
+          QCOMPARE(document->animationClips[c].end, raw.data().clips[c].end);
+          for (double t : {raw.data().clips[c].start, (raw.data().clips[c].start+raw.data().clips[c].end)*.5}) {
+            QCOMPARE(document->localAt(c,t), raw.evaluate(c,t).local);
+            QCOMPARE(document->worldAt(c,t), raw.evaluate(c,t).world);
+          }
+        }
+      }
+      session->open(path);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable(), 120000);
+      QVERIFY(session->animated());
+      QVERIFY(session->canAttachExternalAnimation());
+      const auto nativeClips = session->clips();
+      QCOMPARE(nativeClips.size(), qsizetype(nativeCount));
+      const auto digest = session->sourceDataDigest();
+      session->setRootLock(false);
+      const auto nativeTime = (nativeClips.front().toMap().value("start").toDouble()+nativeClips.front().toMap().value("end").toDouble())*.5;
+      const auto initialRevision = session->frame()->revision;
+      session->seek(nativeTime);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > initialRevision, 30000);
+      const auto nativePose = session->frame();
+      // An explicitly attached copy remains an external source after native clips.
+      session->attachExternalAnimation(path);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 120000);
+      QVERIFY2(session->externalInfo().value("driven").toBool(), qPrintable(session->externalInfo().value("notice").toString()));
+      QCOMPARE(session->clips().size(), qsizetype(nativeCount*2));
+      QCOMPARE(session->clipIndex(), int(nativeCount));
+      for (qsizetype c=0; c<nativeClips.size(); ++c) QCOMPARE(session->clips()[c], nativeClips[c]);
+      QCOMPARE(session->sourceDataDigest(), digest);
+      const auto attachedRevision = session->frame()->revision;
+      session->setClipIndex(0);
+      session->seek(nativeTime);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > attachedRevision && !session->preparing(), 30000);
+      QVERIFY(session->frameError().isEmpty());
+      QCOMPARE(session->frame()->vertices.size(), nativePose->vertices.size());
+      for (std::size_t v=0; v<nativePose->vertices.size(); ++v) {
+        QCOMPARE(session->frame()->vertices[v].x, nativePose->vertices[v].x);
+        QCOMPARE(session->frame()->vertices[v].y, nativePose->vertices[v].y);
+        QCOMPARE(session->frame()->vertices[v].z, nativePose->vertices[v].z);
+      }
+      const auto roots = session->rootCandidates();
+      QVERIFY(!roots.isEmpty());
+      session->setRootIndex(roots.front().toMap().value("index").toInt());
+      session->setRootLock(true);
+      QVERIFY(session->rootLockInfo().value("rootMapped").toBool());
+      QCOMPARE(session->rootLockInfo().value("status").toString(), QString("locked"));
+      session->setRootLock(false);
+      session->detachExternalAnimation();
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->animated() && !session->externalInfo().value("driven").toBool(), 120000);
+      QCOMPARE(session->clips(), nativeClips);
+      QCOMPARE(session->sourceDataDigest(), digest);
+      session->clear();
+      } catch (const std::exception &e) {
+        QFAIL(qPrintable(path + ": " + QString::fromUtf8(e.what())));
+      }
+    }
+  }
+
+  void modelExternalAnimationDrive() {
+    // M07 external FBX animation driving a target FBX: the target keeps its
+    // own skeleton/skin/bind data verbatim (digest asserted), the mapping is
+    // name+chain based, playback publishes skinned frames, detach restores
+    // the static model.
+    const auto target =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+    const auto external =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!target.exists() || !external.exists() ||
+        target.suffix().compare("fbx", Qt::CaseInsensitive) != 0 ||
+        external.suffix().compare("fbx", Qt::CaseInsensitive) != 0) {
+      QSKIP("Set FORMAVIEW_ANIMATION_TARGET (skinned FBX) and "
+            "FORMAVIEW_ANIMATION_EXTERNAL (animated FBX)");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] {
+      if (session->externalInfo().value("driven").toBool())
+        session->detachExternalAnimation();
+      desktop_->clearAsset();
+    });
+    QSignalSpy documentLoaded(session, &ModelSession::documentChanged);
+    const auto openAndWait = [&](const QFileInfo &file) {
+      const auto before = documentLoaded.count();
+      desktop_->openPath(file.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          documentLoaded.count() > before && !session->busy() &&
+              (session->inspectable() || !session->error().isEmpty()),
+          30000);
+      QVERIFY2(session->inspectable(),
+               qPrintable(session->error() + session->frameError()));
+    };
+    openAndWait(target);
+    const auto expectedNative = formaview::skeletal::FbxDocument::read(std::filesystem::path(target.absoluteFilePath().toStdWString())).data().clips.size();
+    const auto nativeClips = session->clips();
+    QCOMPARE(nativeClips.size(), qsizetype(expectedNative));
+    QCOMPARE(session->animated(), expectedNative > 0);
+    QVERIFY(session->canAttachExternalAnimation());
+    // Product-surface check: the bar and its attach entry must be visible.
+    QTRY_VERIFY(item("modelAnimationBarHost") &&
+                item("modelAnimationBarHost")->isVisible());
+    QTRY_VERIFY(item("animExternalAttach") &&
+                item("animExternalAttach")->isVisible() &&
+                item("animExternalAttach")->isEnabled());
+    // Keep geometry checks independent from root-lock verification so each
+    // regression still runs if the other one fails.
+    const auto verifyExternalToolbar = [&]() {
+    const auto oldLanguage = desktop_->language();
+    const auto oldSize = window_->size();
+    const auto restoreToolbar = qScopeGuard([&] {
+      window_->resize(oldSize);
+      desktop_->setLanguage(oldLanguage);
+    });
+    for (const auto &language : {QStringLiteral("zh-CN"), QStringLiteral("en"), QStringLiteral("zh-TW")}) {
+      desktop_->setLanguage(language);
+      for (const auto &size : {QSize(1600, 900), QSize(1280, 800)}) {
+        window_->resize(size);
+        QTest::qWait(80);
+        auto *pane = item("modelPane");
+        auto *attach = item("animExternalAttach");
+        auto *lastTab = item("modelModeTab3");
+        QVERIFY(pane && attach && lastTab);
+        const auto position = attach->mapToItem(pane, QPointF());
+        const auto tabPosition = lastTab->mapToItem(pane, QPointF());
+        QVERIFY(position.x() >= tabPosition.x() + lastTab->width() - 1);
+        for (const auto *name : {"modelGroundGrid", "modelOriginAxes", "modelFocus", "modelFrameAll", "modelCompareSkeleton"}) {
+          auto *button = item(name);
+          QVERIFY(button && button->isVisible());
+          const auto point = button->mapToItem(pane, QPointF());
+          QVERIFY(qAbs(point.y() - position.y()) < 1);
+          QVERIFY(point.x() >= position.x() + attach->width() - 1);
+          QVERIFY2(point.x() + button->width() <= pane->width() + 1,
+                   qPrintable(QString("%1 %2 window=%3 pane=%4 right=%5")
+                       .arg(language, name).arg(size.width()).arg(pane->width()).arg(point.x() + button->width())));
+          if (QString::fromLatin1(name) != "modelCompareSkeleton") {
+            QVERIFY(button->property("text").toString().isEmpty());
+            QVERIFY(!button->property("iconName").toString().isEmpty());
+            QVERIFY(!button->property("hint").toString().isEmpty());
+            QVERIFY(button->width() <= 33);
+          }
+        }
+        save("external-toolbar-" + language + "-" + QString::number(size.width()));
+      }
+    }
+    };
+    verifyExternalToolbar();
+
+    // Digest the target's skeleton/skin identity before the drive: palettes
+    // (geometryToBone/bindWorld per bone) and per-point weights.
+    const auto skinDigest = [&]() {
+      QCryptographicHash hash(QCryptographicHash::Sha256);
+      hash.addData(session->sourceDataDigest());
+      // Serialize through the session info + a direct document walk via the
+      // exposed QVariant surface: bindings(), bones(), influences per point.
+      hash.addData(session->bindings().join('|').toUtf8());
+      hash.addData(session->bones().join('|').toUtf8());
+      for (const auto &meshName : session->meshes())
+        hash.addData(meshName.toUtf8());
+      for (const auto &influence : session->influences()) {
+        const auto map = influence.toMap();
+        hash.addData(map.value("bone").toString().toUtf8());
+        hash.addData(QByteArray::number(map.value("weight").toDouble(), 'g', 17));
+      }
+      hash.addData(session->info().value("sha256").toString().toUtf8());
+      return hash.result().toHex();
+    };
+    const auto before = skinDigest();
+
+    session->attachExternalAnimation(external.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT((!session->externalBusy() && session->externalInfo().value("driven").toBool()) ||
+                                 !session->externalInfo()
+                                      .value("notice")
+                                      .toString()
+                                      .isEmpty(),
+                             30000);
+    const auto info = session->externalInfo();
+    QVERIFY2(info.value("driven").toBool(),
+             qPrintable(info.value("notice").toString()));
+    QVERIFY(info.value("status").toString() == "verified" ||
+            info.value("status").toString() == "trial");
+    QVERIFY(session->clips().size() >= 1);
+    QVERIFY(session->frame() && !session->frame()->vertices.empty());
+    QTRY_VERIFY_WITH_TIMEOUT(item("animExternalAttach")->isEnabled(), 10000);
+
+    // Play and confirm advancing frames.
+    // Other cases deliberately leave speed=2 and loop=false. Isolate this
+    // short clip's playback and await the asynchronous mesh publication.
+    session->setSpeed(1.0);
+    session->setLoop(true);
+    const auto revisionBefore = session->frame()->revision;
+    session->togglePlay();
+    QVERIFY(session->playing());
+    for (int i = 0; i < 30 && session->playing(); ++i)
+      QTest::qWait(25);
+    if (session->playing())
+      session->togglePlay();
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revisionBefore ||
+                                 !session->frameError().isEmpty(), 10000);
+    QVERIFY2(session->frameError().isEmpty(), qPrintable(session->frameError()));
+    QVERIFY2(session->frame()->revision > revisionBefore,
+             qPrintable(QString("No frame: before=%1 after=%2 time=%3 root=%4 base=%5 on=%6")
+                 .arg(revisionBefore).arg(session->frame()->revision).arg(session->time())
+                 .arg(session->rootLockInfo().value("rootName").toString())
+                 .arg(session->rootBase()).arg(session->rootLockOn())));
+
+    // Target immutability: the whole bind/weight surface is unchanged.
+    QCOMPARE(skinDigest(), before);
+
+    // A second attach (same source) accumulates sources instead of hiding
+    // the entry: the button stays visible and the clip list grows. A third
+    // file queued IMMEDIATELY (multi-select semantics) also lands.
+    const auto clipsBefore = session->clips().size();
+    const auto external2 = QFileInfo(
+        qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL2"));
+    if (external2.exists()) {
+      const auto secondClipCount = formaview::skeletal::FbxDocument::read(std::filesystem::path(external2.absoluteFilePath().toStdWString())).data().clips.size();
+      const auto expectedClips = clipsBefore + (clipsBefore-nativeClips.size()) + qsizetype(secondClipCount);
+      session->attachExternalAnimation(external.absoluteFilePath());
+      session->attachExternalAnimation(external2.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !session->busy() && !session->externalBusy() &&
+              session->clips().size() == expectedClips,
+          30000);
+    } else {
+      session->attachExternalAnimation(external.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->externalBusy() &&
+                                   session->clips().size() == clipsBefore + (clipsBefore-nativeClips.size()),
+                               30000);
+    }
+    QVERIFY(item("animExternalAttach") && item("animExternalAttach")->isVisible());
+    QVERIFY(item("animExternalAttach")->isEnabled());
+    QCOMPARE(skinDigest(), before);
+
+    // Verify visible geometry, not just the UI's lock status. Keep the
+    // clock paused and compare the exact same source time with a fixed camera.
+    {
+      const auto source = formaview::skeletal::FbxDocument::read(
+          std::filesystem::path(external.absoluteFilePath().toStdWString()));
+      const auto targetDoc = readModelDocument(target.absoluteFilePath(), {});
+      const auto sample = source.data().clips.front();
+      const auto t = sample.start + (sample.end - sample.start) * 0.75;
+      const auto first = source.evaluate(0, sample.start);
+      const auto later = source.evaluate(0, t);
+      for (std::size_t i = 0; i < source.data().nodes.size(); ++i) {
+        const auto &node = source.data().nodes[i];
+        if (i < 8) {
+          double delta = 0;
+          for (std::size_t e = 0; e < 16; ++e)
+            delta = std::max(delta, std::abs(first.local[i][e] - later.local[i][e]));
+          qInfo() << "root investigation source" << i
+                  << QString::fromStdString(node.source.original_name)
+                  << "parent" << (node.parent ? int(*node.parent) : -1)
+                  << "bone" << node.bone << "local delta" << delta;
+        }
+      }
+      for (int i = 0; i < std::min(8, int(targetDoc->nodes.size())); ++i)
+        qInfo() << "root investigation target" << i
+                << targetDoc->nodes[i].toMap().value("name")
+                << "parent" << targetDoc->animNodeParents[i]
+                << "bone" << targetDoc->nodes[i].toMap().value("bone");
+      qInfo() << "root investigation candidates" << session->rootCandidates();
+      QCOMPARE(session->rootCandidates().size(), 1);
+      QCOMPARE(session->rootLockInfo().value("rootName").toString(), QStringLiteral("Trans"));
+      QVERIFY(session->rootLockInfo().value("rootMapped").toBool());
+      auto *view = qobject_cast<ModelView *>(item("modelViewport"));
+      QVERIFY(view);
+      view->orbit(0, 0); // Freeze camera to expose root motion in pixel comparisons.
+      const auto camera = view->cameraState();
+      const auto pixels = [&] {
+        const auto image = captureWindow(window_);
+        const auto scale = image.width() / double(window_->width());
+        const auto point = view->mapToScene({});
+        return image.copy(QRect(int(point.x()*scale), int(point.y()*scale),
+                                int(view->width()*scale), int(view->height()*scale)));
+      };
+      session->setClipIndex(int(nativeClips.size()));
+      QCOMPARE(session->clipInfo().value("name").toString(), QString::fromStdString(source.data().clips.front().source.original_name));
+      session->setRootLock(false);
+      session->setRootBase(0);
+      auto revision = session->frame()->revision;
+      session->seek(t);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 10000);
+      // Drain any prior frame and request t once more before taking baseline.
+      QTest::qWait(300);
+      revision = session->frame()->revision;
+      session->seek(t);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 10000);
+      const auto unlocked = session->frame();
+      QTest::qWait(80);
+      auto *bar = item("modelAnimationBarHost");
+      QVERIFY(bar);
+      for (const auto *name : {"animExternalStatus", "animExternalRemove", "animScrubber", "animRootStatus"}) {
+        auto *control = item(name);
+        QVERIFY(control);
+        const auto point = control->mapToItem(bar, QPointF());
+        QVERIFY2(point.x() >= -1 && point.x() + control->width() <= bar->width() + 1, name);
+      }
+      const auto unlockedPixels = pixels();
+      save("external-root-unlocked");
+      revision = unlocked->revision;
+      session->setRootLock(true);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 10000);
+      const auto locked = session->frame();
+      QCOMPARE(locked->vertices.size(), unlocked->vertices.size());
+      double maxDelta = 0;
+      for (std::size_t i = 0; i < locked->vertices.size(); ++i) {
+        const auto &a = unlocked->vertices[i];
+        const auto &b = locked->vertices[i];
+        maxDelta = std::max(maxDelta, double(QVector3D(a.x-b.x, a.y-b.y, a.z-b.z).length()));
+      }
+      qInfo() << "root investigation locked" << session->rootLockInfo()
+              << "time" << t << "max vertex displacement" << maxDelta;
+      QVERIFY2(maxDelta > 0.001, "Root lock must change real skinned model vertices at the same time");
+      QTest::qWait(80);
+      const auto lockedPixels = pixels();
+      QVERIFY(unlockedPixels != lockedPixels);
+      QCOMPARE(view->cameraState(), camera);
+      save("external-root-locked");
+      // An independent world-space correction from source matrices must
+      // describe the locked mesh (all weighted bones share Trans here).
+      const auto qmatrix = [](const formaview::Matrix4 &m) {
+        QMatrix4x4 q;
+        for (int r = 0; r < 4; ++r)
+          for (int c = 0; c < 4; ++c)
+            q(r, c) = float(m[std::size_t(r*4+c)]);
+        return q;
+      };
+      const auto correction = qmatrix(first.world[1]) * qmatrix(later.world[1]).inverted();
+      const auto inverseDisplay = targetDoc->displayBasis.inverted();
+      double correctionError = 0;
+      for (std::size_t i = 0; i < locked->vertices.size(); ++i) {
+        const auto &a = unlocked->vertices[i];
+        const auto &b = locked->vertices[i];
+        const auto raw = inverseDisplay.map(QVector3D(a.x,a.y,a.z) * targetDoc->radius + targetDoc->center);
+        const auto expected = (targetDoc->displayBasis.map(correction.map(raw)) - targetDoc->center) / targetDoc->radius;
+        correctionError = std::max(correctionError, double((expected - QVector3D(b.x,b.y,b.z)).length()));
+      }
+      qInfo() << "root independent world correction max error" << correctionError;
+      QVERIFY(correctionError < 0.00005);
+      revision = locked->revision;
+      session->setRootLock(false);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 10000);
+      const auto restored = session->frame();
+      QCOMPARE(restored->vertices.size(), unlocked->vertices.size());
+      for (std::size_t i = 0; i < restored->vertices.size(); ++i) {
+        QCOMPARE(restored->vertices[i].x, unlocked->vertices[i].x);
+        QCOMPARE(restored->vertices[i].y, unlocked->vertices[i].y);
+        QCOMPARE(restored->vertices[i].z, unlocked->vertices[i].z);
+      }
+      QTest::qWait(80);
+      QVERIFY(pixels() == unlockedPixels);
+      save("external-root-restored");
+      // Burst requests without pumping events guarantee a job is in flight.
+      // The final paused state must eventually land, without a playback tick.
+      revision = restored->revision;
+      session->seek(sample.start);
+      session->setRootLock(true);
+      session->setRootBase(2);
+      session->seek(t * 0.5);
+      session->setRootBase(0);
+      session->setRootLock(false);
+      session->seek(t);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 10000);
+      const auto coalesced = session->frame();
+      QCOMPARE(coalesced->vertices.size(), unlocked->vertices.size());
+      for (std::size_t i = 0; i < coalesced->vertices.size(); ++i) {
+        QCOMPARE(coalesced->vertices[i].x, unlocked->vertices[i].x);
+        QCOMPARE(coalesced->vertices[i].y, unlocked->vertices[i].y);
+        QCOMPARE(coalesced->vertices[i].z, unlocked->vertices[i].z);
+      }
+      evidence_["external_root_lock"] = QJsonObject{
+          {"time", t}, {"root", session->rootLockInfo().value("rootName").toString()},
+          {"rootMapped", session->rootLockInfo().value("rootMapped").toBool()},
+          {"maxVertexDisplacement", maxDelta}, {"independentCorrectionMaxError", correctionError},
+          {"sameCameraViewportPixelsChanged", unlockedPixels != lockedPixels},
+          {"unlockRestoresAllVertices", true}, {"pausedBurstLandsLatestState", true}};
+    }
+    // Root lock is available on the externally driven FBX document.
+    {
+      const auto candidates = session->rootCandidates();
+      QVERIFY(!candidates.isEmpty());
+      if (candidates.size() > 1)
+        session->setRootIndex(
+            candidates.front().toMap().value("index").toInt());
+      session->setRootLock(true);
+      QTRY_VERIFY_WITH_TIMEOUT(
+          session->rootLockInfo().value("on").toBool() &&
+              session->rootLockInfo().value("status").toString() ==
+                  QStringLiteral("locked"),
+          10000);
+      // The async frame pipeline still publishes after the lock toggle.
+      const auto lockedRevision = session->frame()->revision;
+      session->seek(session->clipInfo().value("end").toDouble() * 0.5);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > lockedRevision,
+                               10000);
+      QVERIFY(session->frameError().isEmpty());
+      session->setRootLock(false);
+    }
+
+    // Detach restores the original native/static model document.
+    session->detachExternalAnimation();
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 30000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->animated() == (expectedNative > 0) &&
+                                 session->canAttachExternalAnimation(),
+                             30000);
+    QCOMPARE(session->clips(), nativeClips);
+    QCOMPARE(skinDigest(), before);
+  }
+  void modelExternalAnimationMultiSelect() {
+    // One multi-select dialog submits every file at once (ModelPane loops
+    // attachExternalAnimation). None may be silently dropped: each file is
+    // either applied or reported, and clips follow the selection order.
+    const QFileInfo target(qEnvironmentVariable("FORMAVIEW_PSK_TARGET"));
+    const QFileInfo psa(qEnvironmentVariable("FORMAVIEW_PSK_PSA"));
+    if (!target.exists() || !psa.exists())
+      QSKIP("Set FORMAVIEW_PSK_TARGET/PSA to real ActorX inputs");
+    QStringList files;
+    for (const auto &entry : psa.dir().entryInfoList({"*.psa"}, QDir::Files, QDir::Name))
+      files.append(entry.absoluteFilePath());
+    QVERIFY2(files.size() > 8, "Multi-select regression needs more than the concurrent job budget");
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(target.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable(), 30000);
+    for (const auto &file : files)
+      session->attachExternalAnimation(QUrl::fromLocalFile(file).toString());
+    QVERIFY(session->externalBusy());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 600000);
+    const auto info = session->externalInfo();
+    qInfo().noquote() << "multi-select:" << files.size() << "files," << session->clips().size() << "clips";
+    const auto failed = info.value("failedFiles").toStringList();
+    QCOMPARE(info.value("requested").toInt(), files.size());
+    QCOMPARE(info.value("applied").toInt() + failed.size(), files.size());
+    QVERIFY2(info.value("applied").toInt() > 8, qPrintable(info.value("notice").toString()));
+    for (const auto &name : failed)
+      QVERIFY2(info.value("notice").toString().contains(name), qPrintable(name));
+    QVERIFY(session->animated());
+    QVERIFY(session->clips().size() >= info.value("applied").toInt());
+    // Selection order: the first file's first sequence opens the clip list.
+    const auto first = readModelDocument(files.front(), {}, target.absoluteFilePath(),
+        psa.dir().filePath(QFileInfo(files.front()).completeBaseName() + ".config"));
+    if (!failed.contains(QFileInfo(files.front()).fileName()))
+      QCOMPARE(session->clips().front().toMap().value("name"), first->clips[0].toMap().value("name"));
+    // FBX-target drive shares the queue but applies through its own holders.
+    const QFileInfo fbxTarget(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+    const QFileInfo fbxExternal(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!fbxTarget.exists() || !fbxExternal.exists())
+      return;
+    QStringList fbxFiles;
+    for (const auto &entry : fbxExternal.dir().entryInfoList({"*.fbx"}, QDir::Files, QDir::Name))
+      if (fbxFiles.size() < 12) fbxFiles.append(entry.absoluteFilePath());
+    QVERIFY(fbxFiles.size() > 8);
+    desktop_->openPath(fbxTarget.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable() && session->canAttachExternalAnimation(), 60000);
+    for (const auto &file : fbxFiles)
+      session->attachExternalAnimation(QUrl::fromLocalFile(file).toString());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 600000);
+    const auto fbxInfo = session->externalInfo();
+    qInfo().noquote() << "multi-select fbx:" << fbxFiles.size() << "files," << session->clips().size() << "clips";
+    QCOMPARE(fbxInfo.value("requested").toInt(), fbxFiles.size());
+    QCOMPARE(fbxInfo.value("applied").toInt() + fbxInfo.value("failedFiles").toStringList().size(), fbxFiles.size());
+    QVERIFY2(fbxInfo.value("applied").toInt() > 8, qPrintable(fbxInfo.value("notice").toString()));
+  }
+  void modelPskExternalAnimationDrive() {
+    const QFileInfo target(qEnvironmentVariable("FORMAVIEW_PSK_TARGET"));
+    const QFileInfo psa(qEnvironmentVariable("FORMAVIEW_PSK_PSA"));
+    const QFileInfo psa2(qEnvironmentVariable("FORMAVIEW_PSK_PSA2"));
+    const QFileInfo incompatible(qEnvironmentVariable("FORMAVIEW_PSK_INCOMPATIBLE"));
+    if (!target.exists() || !psa.exists() || !psa2.exists() || !incompatible.exists())
+      QSKIP("Set FORMAVIEW_PSK_TARGET/PSA/PSA2/INCOMPATIBLE to real ActorX inputs");
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(target.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable(), 30000);
+    QVERIFY(session->canAttachExternalAnimation());
+    QCOMPARE(session->externalInfo().value("format").toString(), QString("psa"));
+    QTRY_VERIFY(item("animExternalAttach") && item("animExternalAttach")->isVisible());
+    QVERIFY(item("animExternalAttach")->property("hint").toString().contains("PSA"));
+    auto *dialog = window_->findChild<QObject *>("externalAnimationDialog");
+    QVERIFY(dialog);
+    QVERIFY(dialog->property("nameFilters").toStringList().join(' ').contains("*.psa"));
+    const auto original = session->frame();
+    const auto hash = session->info().value("sha256");
+    const auto bones = session->bones();
+    const auto bindings = session->bindings();
+    session->attachExternalAnimation(incompatible.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 30000);
+    QVERIFY(!session->animated());
+    QCOMPARE(session->externalInfo().value("status").toString(), QString("refused"));
+    // item() intentionally returns only visible items. Bindings can settle
+    // after the async completion signal, and an invisible remove is null.
+    QTRY_VERIFY(item("animExternalStatus"));
+    QVERIFY(!item("animExternalRemove"));
+    QCOMPARE(session->frame()->vertices.size(), original->vertices.size());
+    // One dialog can queue multiple sources, each with its own config and
+    // animation order. The target remains the selected PSK throughout.
+    session->attachExternalAnimation(psa.absoluteFilePath());
+    session->attachExternalAnimation(psa2.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 30000);
+    QVERIFY2(session->animated(), qPrintable(session->externalInfo().value("notice").toString()));
+    session->setRootLock(false);
+    QCOMPARE(session->externalInfo().value("status").toString(), QString("verified"));
+    const int count = session->clips().size();
+    QVERIFY(count >= 2);
+    QTRY_VERIFY(item("animClip"));
+    QTRY_COMPARE(item("animClip")->property("currentIndex").toInt(), session->clipIndex());
+    QCOMPARE(item("animClip")->property("currentText").toString(), session->clipInfo().value("name").toString());
+    QCOMPARE(session->info().value("sha256"), hash);
+    QCOMPARE(session->bones(), bones);
+    QCOMPARE(session->bindings(), bindings);
+    QTRY_VERIFY(item("animExternalAttach")->isEnabled());
+    session->setLoop(true);
+    session->setSpeed(1.0);
+    const auto playRevision = session->frame()->revision;
+    session->togglePlay();
+    QVERIFY(session->playing());
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > playRevision && session->time() > 0.01, 10000);
+    session->togglePlay();
+    QVERIFY(!session->playing());
+    // Compare against the established PSA-first paired path, preserving the
+    // PSK model's normalization, at a nonzero time for BOTH sources.
+    const auto targetDoc = readModelDocument(target.absoluteFilePath(), {});
+    for (const auto &file : {psa, psa2}) {
+      const auto config = file.dir().filePath(file.completeBaseName() + ".config");
+      QVERIFY(QFileInfo::exists(config));
+      const auto paired = readModelDocument(file.absoluteFilePath(), {},
+                                            target.absoluteFilePath(), config);
+      QVERIFY(!paired->referenceRejected && paired->pairSource);
+      QVERIFY(!paired->companionPath.isEmpty());
+      int index = -1;
+      for (int i = 0; i < count; ++i)
+        if (session->clips()[i].toMap().value("name") == paired->clips[0].toMap().value("name"))
+          index = i;
+      QVERIFY(index >= 0);
+      session->setClipIndex(index);
+      const double seconds = paired->animationClips[0].start +
+          (paired->animationClips[0].end - paired->animationClips[0].start) * 0.43;
+      const auto revision = session->frame()->revision;
+      session->seek(seconds);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision, 30000);
+      paired->center = targetDoc->center;
+      paired->radius = targetDoc->radius;
+      const auto expected = buildAnimationFrame(*paired, 0, seconds, 1, true);
+      const auto actual = session->frame();
+      QCOMPARE(actual->vertices.size(), expected->vertices.size());
+      double error = 0, moved = 0;
+      for (std::size_t i = 0; i < actual->vertices.size(); ++i) {
+        const auto &a = actual->vertices[i];
+        const auto &b = expected->vertices[i];
+        error = std::max(error, static_cast<double>(QVector3D(a.x-b.x,a.y-b.y,a.z-b.z).length()));
+        if (i < original->vertices.size()) {
+          const auto &o = original->vertices[i];
+          moved = std::max(moved, static_cast<double>(QVector3D(a.x-o.x,a.y-o.y,a.z-o.z).length()));
+        }
+      }
+      qInfo() << "PSK drive" << file.fileName() << "pose max error" << error << "vertex change" << moved;
+      QVERIFY(error < 1e-5);
+      QVERIFY(moved > 0.01);
+      QVERIFY(session->frameError().isEmpty());
+      save("psk-drive-" + file.completeBaseName());
+    }
+    session->attachExternalAnimation(incompatible.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy(), 30000);
+    QCOMPARE(session->externalInfo().value("status").toString(), QString("refused"));
+    QCOMPARE(session->clips().size(), count);
+    QVERIFY(session->animated());
+    const auto roots = session->rootCandidates();
+    QVERIFY(!roots.isEmpty());
+    session->setRootIndex(roots.first().toMap().value("index").toInt());
+    session->setRootLock(true);
+    QVERIFY(session->rootLockInfo().value("rootMapped").toBool());
+    QCOMPARE(session->rootLockInfo().value("status").toString(), QString("locked"));
+    const auto rootRevision = session->frame()->revision;
+    session->setRootBase(1);
+    session->seek(session->clipInfo().value("end").toDouble() * 0.5);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > rootRevision, 10000);
+    QVERIFY(session->frameError().isEmpty());
+    session->setRootLock(false);
+    QCOMPARE(session->info().value("sha256"), hash);
+    session->detachExternalAnimation();
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable() && !session->animated(), 30000);
+    QVERIFY(session->canAttachExternalAnimation());
+    QCOMPARE(session->info().value("sha256"), hash);
+    QCOMPARE(session->bones(), bones);
+    QCOMPARE(session->frame()->vertices.size(), original->vertices.size());
+    for (std::size_t i = 0; i < original->vertices.size(); ++i) {
+      QCOMPARE(session->frame()->vertices[i].x, original->vertices[i].x);
+      QCOMPARE(session->frame()->vertices[i].y, original->vertices[i].y);
+      QCOMPARE(session->frame()->vertices[i].z, original->vertices[i].z);
+    }
+  }
+  void animatedInspectionControls_data() {
+    QTest::addColumn<bool>("actor");
+    QTest::newRow("fbx") << false;
+    QTest::newRow("psk") << true;
+  }
+  void animatedInspectionControls() {
+    QFETCH(bool, actor);
+    const QFileInfo target(qEnvironmentVariable(actor ? "FORMAVIEW_PSK_TARGET" : "FORMAVIEW_ANIMATION_TARGET"));
+    const QFileInfo animation(qEnvironmentVariable(actor ? "FORMAVIEW_PSK_PSA" : "FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!target.exists() || !animation.exists()) QSKIP("Set real PSK/PSA and FBX animation inputs");
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    window_->showNormal();
+    window_->resize(1600,900);
+    desktop_->openPath(target.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable(),30000);
+    const auto originalClips = session->clips();
+    const bool originalAnimated = session->animated();
+    session->attachExternalAnimation(animation.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy() && session->animated(),30000);
+    QVERIFY(session->externalInfo().value("driven").toBool());
+    session->setMode(0);
+    session->setRootLock(false);
+    session->setSpeed(1);
+    session->setLoop(true);
+    if (!session->playing()) session->togglePlay();
+    QTRY_VERIFY(item("animSpeed"));
+    auto *speed = item("animSpeed");
+    speed->forceActiveFocus();
+    QTest::keyClick(window_,Qt::Key_A,Qt::ControlModifier);
+    QTest::keyClick(window_,Qt::Key_0);
+    QTest::keyClick(window_,Qt::Key_Period);
+    QTest::qWait(200); // Many animation notifications while the value is partial.
+    QCOMPARE(speed->property("text").toString(),QString("0."));
+    QTest::keyClick(window_,Qt::Key_5);
+    QTest::keyClick(window_,Qt::Key_0);
+    QTest::qWait(150);
+    QCOMPARE(speed->property("text").toString(),QString("0.50"));
+    QTest::keyClick(window_,Qt::Key_Return);
+    QTRY_COMPARE(session->speed(),0.5);
+    QVERIFY(session->playing());
+    const auto started = session->time();
+    QTRY_VERIFY(session->time() != started);
+    for (const auto &text : {QString("0.1"), QString("8"), QString("0.0001"), QString("1e2")}) {
+      speed->forceActiveFocus();
+      QTest::keyClick(window_,Qt::Key_A,Qt::ControlModifier);
+      QInputMethodEvent input;
+      input.setCommitString(text);
+      QCoreApplication::sendEvent(speed,&input);
+      QCOMPARE(speed->property("text").toString(),text);
+      QTest::keyClick(window_,Qt::Key_Return);
+      QCOMPARE(session->speed(),text.toDouble());
+      QVERIFY(session->playing());
+    }
+    speed->setFocus(false);
+    QTRY_COMPARE(speed->property("text").toString(),QString("100.00"));
+    session->setSpeed(0.0001);
+    QTRY_COMPARE(speed->property("text").toString(),QString("0.0001"));
+    for (double invalid : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+      session->setSpeed(invalid);
+      QCOMPARE(session->speed(),0.0001);
+    }
+    session->setSpeed(std::numeric_limits<double>::max());
+    QTest::qSleep(1100); // Delayed tick: finite speed must not produce an infinite clock.
+    QCoreApplication::processEvents();
+    QVERIFY(std::isfinite(session->time()));
+    QVERIFY(session->time()>=session->clipInfo().value("start").toDouble());
+    QVERIFY(session->time()<=session->clipInfo().value("end").toDouble());
+    QVERIFY(session->playing());
+    session->setSpeed(0.5);
+    session->togglePlay();
+    const double seconds = session->clipInfo().value("start").toDouble() +
+        (session->clipInfo().value("end").toDouble()-session->clipInfo().value("start").toDouble())*.43;
+    auto revision = session->frame()->revision;
+    session->seek(seconds);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > revision,10000);
+    const auto pose = session->frameFor(false);
+    const auto source = readModelDocument(target.absoluteFilePath(),{});
+    const auto meshIndex = static_cast<std::size_t>(session->meshIndex());
+    const auto &mesh = source->meshes.at(meshIndex);
+    std::size_t offset = 0;
+    for (std::size_t i=0;i<meshIndex;++i) offset += source->meshes[i].triangles.size();
+    const auto clickControl = [&](const char *name) {
+      auto *control = item(name);
+      QVERIFY(control);
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,
+          control->mapToScene(QPointF(control->width()/2,control->height()/2)).toPoint());
+    };
+    clickControl("modelModeTab1");
+    QTRY_VERIFY_WITH_TIMEOUT(session->frameFor(true) && session->frameFor(true)->uv && session->mode()==1,10000);
+    QVERIFY(session->frameFor(true)->lines);
+    QVERIFY(!session->frameFor(true)->vertices.empty());
+    QCOMPARE(session->frameFor(false)->vertices.size(),mesh.triangles.size());
+    for (std::size_t i=0;i<mesh.triangles.size();i+=97) {
+      const auto &a=session->frameFor(false)->vertices[i];
+      const auto &b=pose->vertices.at(offset+i);
+      QCOMPARE(a.x,b.x); QCOMPARE(a.y,b.y); QCOMPARE(a.z,b.z);
+    }
+    const auto uv = session->frameFor(true);
+    revision = uv->revision;
+    session->seek(session->clipInfo().value("end").toDouble()*.71);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frameFor(true)->revision > revision,10000);
+    QCOMPARE(session->frameFor(true)->vertices.size(),uv->vertices.size());
+    for (std::size_t i=0;i<uv->vertices.size();i+=73) {
+      const auto &a=session->frameFor(true)->vertices[i], &b=uv->vertices[i];
+      QCOMPARE(a.x,b.x); QCOMPARE(a.y,b.y); QCOMPARE(a.u,b.u); QCOMPARE(a.v,b.v);
+    }
+    save(actor ? "psk-animation-uv" : "fbx-animation-uv");
+    session->selectBinding(0);
+    std::vector<int> counts(mesh.skins.at(0).bones.size());
+    for (const auto &weights : mesh.skins.at(0).weights)
+      for (const auto &w : weights) if (w.value>0) ++counts.at(w.bone);
+    const int bone = static_cast<int>(std::max_element(counts.begin(),counts.end())-counts.begin());
+    session->selectBone(bone);
+    clickControl("modelModeTab2");
+    session->seek(seconds);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frameFor(false)->heat && session->mode()==2,10000);
+    QTest::qWait(100);
+    const auto heat=session->frameFor(false);
+    QCOMPARE(heat->vertices.size(),mesh.triangles.size());
+    bool positive = false;
+    for (std::size_t i=0;i<mesh.triangles.size();++i) {
+      double weight=0;
+      const auto &sourceWeights = mesh.skins.at(0).weights.at(mesh.corners.at(mesh.triangles[i]));
+      for (const auto &w : sourceWeights)
+        if (w.bone==bone) weight+=w.value;
+      const auto &a=heat->vertices[i], &b=pose->vertices.at(offset+i);
+      if (sourceWeights.empty()) QVERIFY(std::isnan(a.weight));
+      else QVERIFY(std::abs(a.weight-weight)<1e-6);
+      positive |= weight>0;
+      QCOMPARE(a.x,b.x); QCOMPARE(a.y,b.y); QCOMPARE(a.z,b.z);
+    }
+    QVERIFY(positive);
+    save(actor ? "psk-animation-weights" : "fbx-animation-weights");
+    clickControl("modelModeTab0");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->frameFor(false)->heat,10000);
+    auto *view = qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(view);
+    view->orbit(0,0); // Fix the camera for the renderer comparison.
+    view->setGridVisible(false); view->setAxesVisible(false);
+    const auto pixels = [&]() {
+      QTest::qWait(100);
+      const auto image=captureWindow(window_);
+      const auto pos=view->mapToScene(QPointF());
+      const double scale=static_cast<double>(image.width())/window_->width();
+      return image.copy(qRound(pos.x()*scale),qRound(pos.y()*scale),
+                        qRound(view->width()*scale),qRound(view->height()*scale));
+    };
+    const auto solid=pixels();
+    clickControl("modelWireframe");
+    QTRY_VERIFY(view->wireframeVisible());
+    const auto wire=pixels();
+    QVERIFY(!wire.isNull() && wire!=solid);
+    save(actor ? "psk-animation-wireframe" : "fbx-animation-wireframe");
+    clickControl("modelWireframe");
+    QTRY_VERIFY(!view->wireframeVisible());
+    QCOMPARE(pixels(),solid);
+    // A burst of view/pose changes while a worker is active lands on the
+    // latest requested view, even paused.
+    session->setMode(1); session->setMode(2); session->setMode(0);
+    session->seek(seconds);
+    QTRY_VERIFY_WITH_TIMEOUT(session->frameFor(false) && !session->frameFor(false)->heat && !session->frameFor(true),10000);
+    QVERIFY(session->frameError().isEmpty());
+    session->detachExternalAnimation();
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable() && session->animated()==originalAnimated,30000);
+    QCOMPARE(session->clips(), originalClips);
+    // The same wireframe switch also works on the restored static model.
+    view = qobject_cast<ModelView *>(item("modelViewport"));
+    QVERIFY(view);
+    const auto staticSolid=pixels();
+    clickControl("modelWireframe");
+    QTRY_VERIFY(view->wireframeVisible());
+    QVERIFY(pixels()!=staticSolid);
+    clickControl("modelWireframe");
+    QTRY_VERIFY(!view->wireframeVisible());
+    QCOMPARE(pixels(),staticSolid);
+  }
+  void renderAnimatedTextureResidency() {
+    struct Metrics { std::atomic<std::uint64_t> uploaded[6]{}; std::atomic<bool> restored{}; std::atomic<std::uint64_t> restoredUpload{}; };
+    const auto metrics = std::make_shared<Metrics>();
+    QQuickWindow window;
+    window.resize(320,240);
+    auto renderer = std::make_unique<formaview::render::Item>(window.contentItem());
+    renderer->setSize(QSizeF(320,240));
+    renderer->observe = [metrics](formaview::render::Observation o) {
+      if (!o.released && o.frame_revision >= 100001 && o.frame_revision <= 100006 && o.uploaded_bytes)
+        metrics->uploaded[o.frame_revision-100001].store(o.uploaded_bytes);
+      if (o.resident_hit && o.frame_revision==100005) {
+        metrics->restoredUpload.store(o.uploaded_bytes); metrics->restored.store(true);
+      }
+    };
+    auto pixels=std::make_shared<formaview::render::Texture>();
+    pixels->width=pixels->height=4; pixels->rgba.assign(4*4*4,1.F);
+    auto frame=std::make_shared<formaview::render::Frame>();
+    frame->vertices={{-.5F,-.5F,0},{.5F,-.5F,0},{0,.5F,0}};
+    frame->rgba={1,1,1,1}; frame->textures={pixels}; frame->revision=100001;
+    frame->draws={{0,3,0,false,{}}};
+    renderer->setFrame(frame); window.show();
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[0].load()>0,10000);
+    const auto image=captureWindow(&window); QVERIFY(!image.isNull());
+    auto next=std::make_shared<formaview::render::Frame>(*frame); next->revision=100002;
+    renderer->setFrame(next);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[1].load()>0,10000);
+    QCOMPARE(captureWindow(&window),image);
+    const auto textureBytes=pixels->rgba.size()*sizeof(float);
+    QCOMPARE(metrics->uploaded[0].load()-metrics->uploaded[1].load(),textureBytes);
+    next=std::make_shared<formaview::render::Frame>(*next); next->revision=100003;
+    next->textures={std::make_shared<formaview::render::Texture>(*pixels)};
+    renderer->setFrame(next);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[2].load()>0,10000);
+    QCOMPARE(metrics->uploaded[2].load(),metrics->uploaded[0].load());
+    next=std::make_shared<formaview::render::Frame>(*next); next->revision=100004;
+    next->textures.clear(); next->draws[0].texture=-1;
+    renderer->setFrame(next);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[3].load()>0,10000);
+    QCOMPARE(metrics->uploaded[3].load(),metrics->uploaded[1].load());
+    auto cached=std::make_shared<formaview::render::Frame>(*frame);
+    cached->revision=100005; cached->cacheable=true;
+    renderer->setFrame(cached);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[4].load()>0,10000);
+    next=std::make_shared<formaview::render::Frame>(*cached);
+    next->revision=100006; next->cacheable=false;
+    renderer->setFrame(next);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->uploaded[5].load()>0,10000);
+    renderer->setFrame(cached);
+    QTRY_VERIFY_WITH_TIMEOUT(metrics->restored.load(),10000);
+    QCOMPARE(metrics->restoredUpload.load(),std::uint64_t{0});
+    renderer.reset(); window.hide(); window.releaseResources();
+  }
+  void modelReviewContracts() {
+    const QDir samples(qEnvironmentVariable("FORMAVIEW_REVIEW_SAMPLES"));
+    QVERIFY2(!qEnvironmentVariable("FORMAVIEW_REVIEW_SAMPLES").isEmpty(), "Set FORMAVIEW_REVIEW_SAMPLES");
+    for (const auto &name : {QString("negative-scale.gltf"), QString("zero-scale.gltf")}) {
+      const auto document = readModelDocument(samples.filePath(name), {});
+      QVERIFY(document->animated());
+      const auto local = document->localAt(0, .5).at(0);
+      QCOMPARE(local[0], name.startsWith("negative") ? -2.0 : 0.0);
+      QCOMPARE(local[5], 3.0);
+      QCOMPARE(local[10], 4.0);
+      QCOMPARE(local[3], .5);
+    }
+    {
+      const auto document = readModelDocument(samples.filePath("multi-morph.gltf"), {});
+      QVERIFY(document->animated());
+      // Weights channel supported since 2026-10-23: it starts at the static
+      // defaults (0.25,0.5) and animates to zero, so at t=0.5 the weights are
+      // (0.125,0.25) and the expected point is half the old static default.
+      QVERIFY2(!document->warnings.join(';').contains("Unsupported animation path"),
+               qPrintable(document->warnings.join(';')));
+      const auto frame = buildAnimationFrame(*document, 0, .5, 1);
+      const auto point = QVector3D(frame->vertices[0].x,frame->vertices[0].y,frame->vertices[0].z) * document->radius + document->center;
+      QVERIFY((point - QVector3D(.5,0,.375)).length() < 1e-5);
+    }
+    {
+      // A nonidentity display basis must be applied exactly once, even when
+      // the mesh has no skin weights. The expected source position is known.
+      auto document = readModelDocument(samples.filePath("negative-scale.gltf"), {});
+      document->displayBasis.rotate(-90,1,0,0);
+      for (auto &mesh : document->meshes)
+        for (auto &point : mesh.points) point = document->displayBasis.map(point);
+      document->center = {}; document->radius = 1;
+      const auto frame = buildAnimationFrame(*document, 0, .5, 1);
+      const auto &v = frame->vertices[1];
+      QVERIFY((QVector3D(v.x,v.y,v.z) - QVector3D(-1.5,0,0)).length() < 1e-5);
+      const auto &top = frame->vertices[2];
+      QVERIFY((QVector3D(top.x,top.y,top.z) - QVector3D(.5,0,-3)).length() < 1e-5);
+    }
+    {
+      formaview::Matrix4 identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+      std::vector<formaview::Matrix4> locals(20000, identity);
+      std::vector<std::int32_t> parents(20000);
+      for (int i=0;i<19999;++i) parents[i]=i+1;
+      parents.back()=-1;
+      QCOMPARE(chainWorlds(locals,parents).front(),identity);
+      parents.back()=0;
+      QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, (void)chainWorlds(locals,parents));
+    }
+    {
+      const auto path=samples.filePath("invalid-weights.gltf");
+      const auto document=readModelDocument(path,{});
+      QVERIFY(document->animated());
+      QVERIFY(document->warnings.join(';').contains("invalid source skin weights"));
+      QVERIFY(!document->meshes.front().skinDeformationValid);
+      QVERIFY(document->meshes.front().skins.front().weights[0][0].value<0);
+      QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, (void)buildAnimationFrame(*document,0,.5,1));
+      ModelSession invalid;
+      invalid.open(path);
+      QTRY_VERIFY_WITH_TIMEOUT(!invalid.busy() && invalid.animated(),10000);
+      invalid.togglePlay();
+      QTRY_VERIFY_WITH_TIMEOUT(!invalid.playing() && invalid.frameError().contains("Invalid source skin weights"),10000);
+      const auto error=invalid.frameError();
+      QTest::qWait(100); QCOMPARE(invalid.frameError(),error);
+    }
+    ModelSession session;
+    {
+      ModelDocument data;
+      data.meshes.resize(1);
+      data.meshes[0].skins.resize(1);
+      auto &skin = data.meshes[0].skins[0];
+      skin.weights = {{{0, 1.0}}};
+      skin.palette = {QVariantMap{{"bind", 1.0}}};
+      const auto original = modelSourceDigest(data);
+      skin.weights[0][0].value = .75;
+      QVERIFY(modelSourceDigest(data) != original);
+      skin.weights[0][0].value = 1.0;
+      QCOMPARE(modelSourceDigest(data), original);
+      skin.palette = {QVariantMap{{"bind", 2.0}}};
+      QVERIFY(modelSourceDigest(data) != original);
+    }
+    for (const auto &source : {qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"),
+                               qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL")}) {
+      QVERIFY(QFileInfo::exists(source));
+      session.open(source);
+      QTRY_VERIFY_WITH_TIMEOUT(!session.busy() && session.inspectable(), 30000);
+      const auto notifiedIdle=std::make_shared<bool>(false);
+      const auto comparisonSignal=QObject::connect(&session,&ModelSession::changed,&session,[&session,notifiedIdle] {
+        if (!session.compareBusy() && !session.compareResult().isEmpty()) *notifiedIdle=true;
+      });
+      session.compareSkeletonWith(source);
+      QTRY_VERIFY_WITH_TIMEOUT(!session.compareBusy(), 30000);
+      QVERIFY2(session.compareError().isEmpty(), qPrintable(session.compareError()));
+      QVERIFY(*notifiedIdle);
+      QObject::disconnect(comparisonSignal);
+      const auto result = session.compareResult();
+      QCOMPARE(result.value("structureVerdict").toString(), QString("structuralDirect"));
+      QCOMPARE(result.value("applicabilityVerdict").toString(), QString("directApplicable"));
+      QCOMPARE(result.value("missingInExternal").toInt(), 0);
+      QCOMPARE(result.value("externalOnly").toInt(), 0);
+      for (const auto &row : result.value("rows").toList())
+        QCOMPARE(row.toMap().value("status").toString(), QString("matched"));
+      session.clear();
+      QVERIFY(session.compareResult().isEmpty() && session.compareError().isEmpty());
+    }
+    const QDir edge(qEnvironmentVariable("FORMAVIEW_EDGE_SAMPLES_DIR"));
+    session.open(edge.filePath("multi-skin.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(!session.busy() && session.frame(), 30000);
+    session.selectMesh(0); session.classifyMesh("review", 0, false);
+    session.selectMesh(1); session.classifyMesh("review", 1, false);
+    session.setMode(0); session.requestLod(0);
+    const auto source = readModelDocument(edge.filePath("multi-skin.gltf"),{});
+    QTRY_COMPARE_WITH_TIMEOUT(session.frame()->vertices.size(), source->meshes[0].triangles.size(), 10000);
+    // Clear with a pose job in flight. No synchronous future wait and no
+    // obsolete frame/result may land into the next file.
+    session.seek(.8);
+    QElapsedTimer clearClock; clearClock.start(); session.clear();
+    qInfo() << "review clear ms" << clearClock.nsecsElapsed()/1e6;
+    session.open(samples.filePath("negative-scale.gltf"));
+    QTRY_VERIFY_WITH_TIMEOUT(!session.busy() && session.frame(), 10000);
+    QCOMPARE(session.path(), samples.filePath("negative-scale.gltf"));
+    QTest::qWait(150);
+    QVERIFY(session.frameError().isEmpty());
+    QCOMPARE(session.frame()->vertices.size(), std::size_t(3));
+    const auto revision=session.frame()->revision;
+    session.seek(.7); session.setMaterialOnly(true);
+    QTRY_VERIFY_WITH_TIMEOUT(session.frame()->revision!=revision,10000);
+    const auto frame=session.frame();
+    QVector3D centroid;
+    for (const auto &vertex : frame->vertices) centroid+=QVector3D(vertex.x,vertex.y,vertex.z)/3;
+    session.pick(QMatrix4x4{},QPointF(centroid.x(),centroid.y()));
+    QVERIFY2(!session.picked().isEmpty(),"Non-UV material edit must not leave the presented-state guard stale");
+  }
+  void modelSkeletonCompareFlow() {
+    // M07 skeleton comparison product flow: background compare of the
+    // current document against a chosen FBX with separate structure
+    // verdict, merged difference rows and a differences-only filter.
+    const auto current =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+    const auto other =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!current.exists() || !other.exists()) {
+      QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(current.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() ||
+                                 !session->error().isEmpty(),
+                             30000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error()));
+    QVERIFY(session->hasComparableSkeleton());
+    session->compareSkeletonWith(other.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy() &&
+                                 (session->compareResult().size() > 1 ||
+                                  !session->compareError().isEmpty()),
+                             30000);
+    QVERIFY2(session->compareError().isEmpty(),
+             qPrintable(session->compareError()));
+    const auto result = session->compareResult();
+    QVERIFY(result.contains("structureVerdict"));
+    QVERIFY(result.contains("applicabilityVerdict"));
+    QVERIFY(result.contains("matched"));
+    QVERIFY(result.value("bonesA").toInt() > 0);
+    QVERIFY(result.value("bonesB").toInt() > 0);
+    // Structure and applicability are separate verdicts: the applicability
+    // label must follow the structure outcome plus reference sufficiency.
+    const auto structure = result.value("structureVerdict").toString();
+    const auto applicability =
+        result.value("applicabilityVerdict").toString();
+    if (structure == "structuralDirect")
+      QVERIFY(applicability == "directApplicable" ||
+              applicability == "structureOnly");
+    else if (structure == "partial")
+      QCOMPARE(applicability, QStringLiteral("trialOnly"));
+    else if (structure == "ambiguous")
+      QCOMPARE(applicability, QStringLiteral("ambiguousMapping"));
+    else
+      QCOMPARE(applicability, QStringLiteral("notApplicable"));
+    const auto rows = result.value("rows").toList();
+    QVERIFY(rows.size() > 0);
+    QVERIFY(std::any_of(rows.cbegin(), rows.cend(), [](const QVariant &row) {
+      return row.toMap().value("status").toString() == "matched";
+    }));
+  }
+  void modelR13RealGltfEvidence() {
+    namespace tv=formaview::skeletal::transform;
+    const auto path=qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE");QVERIFY(QFileInfo::exists(path));
+    const auto document=readModelDocument(path,{});QVERIFY(document->transformEvidence);
+    const auto e=document->transformEvidence({});
+    QVERIFY(e.fullNodeDomain);QVERIFY(e.nativeSkinBindings.has_value());QVERIFY(!e.nativeSkinBindings->empty());
+    std::vector<tv::Pair> pairs;for(std::size_t i=0;i<e.nodes.size();++i)pairs.push_back({i,i});
+    const auto report=tv::validate(e,e,pairs);
+    QFile proof(root_+"/r13-real-gltf.json");QVERIFY(proof.open(QIODevice::WriteOnly));
+    proof.write(QJsonDocument(QJsonObject{{"path",path},{"sha256",QString::fromStdString(e.sha256)},
+      {"nodes",static_cast<int>(e.nodes.size())},{"bindings",static_cast<int>(e.nativeSkinBindings->size())},
+      {"verdict",static_cast<int>(report.verdict)},{"reason",static_cast<int>(report.reason)}}).toJson());proof.close();
+    // Independent source JSON audit (p27-quaternion-audit.json) found 226
+    // rotations outside the exact float rounding cell. Preserve rejection;
+    // do not expand the unit-quaternion budget to make a real asset pass.
+    int outside=0;double worstNorm=0;
+    for(const auto &node:e.nodes)if(node.restLocal) {
+      double norm=0;for(double q:node.restLocal->rotation)norm+=q*q;
+      worstNorm=std::max(worstNorm,std::abs(norm-1));if(std::abs(norm-1)>1e-10)++outside;
+    }
+    QCOMPARE(outside,226);QVERIFY(worstNorm>1e-6&&worstNorm<1.3e-6);
+    QCOMPARE(report.verdict,tv::Verdict::Insufficient);QCOMPARE(report.reason,tv::Reason::InvalidInput);
+    QCOMPARE(report.sourceNode,std::optional<std::size_t>{4});
+    QVERIFY(!report.targetNode.has_value());
+    qInfo()<<"R13 real glTF conservative rejection"<<outside<<"rotations; worst norm squared error"<<worstNorm;
+  }
+  void modelR13FixedDecoderCongruence() {
+    // A derived metadata-only envelope is a decoder control, not a second
+    // independent asset or a format compatibility proof. Preserve the strict
+    // rejection checked by modelR13RealGltfEvidence.
+    const auto path=qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE");
+    QFile input(path);QVERIFY(input.open(QIODevice::ReadOnly));
+    auto rawEnvelope=input.readAll();auto envelope=QJsonDocument::fromJson(rawEnvelope).object();input.close();
+    const auto originalGenerator=envelope.value("asset").toObject().value("generator").toString().toUtf8();
+    QVERIFY(!originalGenerator.isEmpty());QCOMPARE(rawEnvelope.count(originalGenerator),1);
+    rawEnvelope.replace(originalGenerator,"p33 exact textual metadata control");
+    auto asset=envelope.value("asset").toObject();
+    asset.insert("generator","p32 metadata-only congruence control");envelope.insert("asset",asset);
+    const auto folder=root_+"/fixed-decoder-control";QVERIFY(QDir().mkpath(folder));
+    const auto buffers=envelope.value("buffers").toArray();QCOMPARE(buffers.size(),1);
+    const auto uri=buffers[0].toObject().value("uri").toString();
+    QVERIFY(!uri.contains("/")&&!uri.contains("\\")&&!uri.contains(":"));
+    QVERIFY(QFile::copy(QFileInfo(path).absolutePath()+"/"+uri,folder+"/"+uri));
+    const auto variant=folder+"/variant.gltf";QFile control(variant);QVERIFY(control.open(QIODevice::WriteOnly));
+    control.write(rawEnvelope);control.close();
+    using Worlds=std::vector<formaview::Matrix4>;
+    struct Probe{std::size_t clip;double seconds;Worlds world;};std::vector<Probe> probes;
+    auto source=readModelDocument(path,{});QCOMPARE(source->animationClips.size(),std::size_t(120));
+    const auto originalEvidence=source->transformEvidence({});const auto staticLocals=source->animNodeLocals;
+    for(std::size_t i=0;i<source->animationClips.size();++i){const auto &c=source->animationClips[i];
+      for(double f:{0.,.371,1.}){const double t=c.start+(c.end-c.start)*f;probes.push_back({i,t,source->worldAt(i,t)});}}
+    const auto decoder=source->decoderSnapshot;
+    source.reset();auto target=readModelDocument(variant,{});
+    QCOMPARE(compareFixedDecoder(decoder,target->decoderSnapshot).value("verdict").toString(),QString("equivalent"));
+    std::stop_source cancelled;cancelled.request_stop();
+    QCOMPARE(compareFixedDecoder(decoder,target->decoderSnapshot,cancelled.get_token()).value("verdict").toString(),QString("cancelled"));
+    auto altered=std::make_shared<ModelDecoderSnapshot>(*target->decoderSnapshot);altered->metadata.append("different");
+    QCOMPARE(compareFixedDecoder(decoder,altered).value("verdict").toString(),QString("insufficient"));
+    const auto otherEvidence=target->transformEvidence({});QVERIFY(originalEvidence.sha256!=otherEvidence.sha256);
+    QVERIFY(staticLocals==target->animNodeLocals);
+    std::size_t matrices=0;for(const auto &p:probes){const auto actual=target->worldAt(p.clip,p.seconds);QVERIFY(p.world==actual);matrices+=actual.size();}
+    QCOMPARE(probes.size(),std::size_t(360));QCOMPARE(matrices,std::size_t(90000));
+    std::vector<formaview::skeletal::transform::Pair> mapping;for(std::size_t i=0;i<otherEvidence.nodes.size();++i)mapping.push_back({i,i});
+    const auto strict=formaview::skeletal::transform::validate(originalEvidence,otherEvidence,mapping);
+    QCOMPARE(strict.verdict,formaview::skeletal::transform::Verdict::Insufficient);
+    QCOMPARE(strict.reason,formaview::skeletal::transform::Reason::InvalidInput);
+    qInfo()<<"P32 fixed decoder 120 clips / 360 poses /"<<matrices<<"exact matrices; format rejection unchanged";
+    target.reset();
+    const auto reordered=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_REAL_REORDER"),{});
+    const auto reorderedProof=compareFixedDecoder(decoder,reordered->decoderSnapshot);
+    QCOMPARE(reorderedProof.value("verdict").toString(),QString("equivalent"));
+    QCOMPARE(reorderedProof.value("mapping").toString(),QString("fullNameBijection"));
+    QCOMPARE(reorderedProof.value("mappedPairs").toList().size(),qsizetype(250));
+    for(const auto &probe:probes){const auto actual=reordered->worldAt(probe.clip,probe.seconds);
+      QCOMPARE(actual.size(),probe.world.size());
+      for(std::size_t i=0;i<actual.size();++i)QVERIFY(actual[actual.size()-1-i]==probe.world[i]);}
+    qInfo()<<"P34 real reordered 120 clips / 360 poses / 90000 exact mapped matrices";
+
+  }
+  void modelR13FbxBindingEvidence() {
+    namespace tv=formaview::skeletal::transform;
+    const auto folder=qEnvironmentVariable("FORMAVIEW_R13_FBX");QVERIFY(!folder.isEmpty());
+    for(int mode=0;mode<4;++mode) {
+      const auto base=folder+"/inherit-"+QString::number(mode);
+      const auto a=formaview::skeletal::FbxDocument::read(std::filesystem::path((base+"-a.fbx").toStdWString()));
+      const auto b=formaview::skeletal::FbxDocument::read(std::filesystem::path((base+"-b.fbx").toStdWString()));
+      const auto ea=a.transform_evidence(),eb=b.transform_evidence();
+      QVERIFY(ea.sha256!=eb.sha256);QVERIFY(ea.bindings.has_value());QCOMPARE(ea.bindings->size(),std::size_t(4));
+      std::vector<tv::Pair> pairs;for(std::size_t i=0;i<ea.nodes.size();++i)pairs.push_back({i,i});
+      const auto r=tv::validate(ea,eb,pairs);
+      if(mode==1) {QCOMPARE(r.verdict,tv::Verdict::Incompatible);QCOMPARE(r.reason,tv::Reason::BindingConflict);}
+      else {QCOMPARE(r.verdict,tv::Verdict::Compatible);QCOMPARE(r.reason,tv::Reason::None);}
+    }
+    auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    desktop_->openPath(folder+"/inherit-0-a.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);
+    QVERIFY2(session->inspectable(),qPrintable(session->error()));
+    session->compareSkeletonWith(folder+"/inherit-0-b.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
+    QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
+    const auto report=session->compareResult();
+    QCOMPARE(report.value("applicabilityVerdict").toString(),QString("compatibleNotDrivable"));
+    QCOMPARE(report.value("transformValidation").toMap().value("verdict").toString(),QString("compatible"));
+    QCOMPARE(report.value("transformValidation").toMap().value("mapped").toInt(),4);
+    QFile proof(root_+"/r13-fbx-proof.json");QVERIFY(proof.open(QIODevice::WriteOnly));proof.write(QJsonDocument::fromVariant(report).toJson());
+    desktop_->clearAsset();
+    desktop_->openPath(folder+"/inherit-3-a.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->path()==folder+"/inherit-3-a.fbx" &&
+      (session->inspectable()||!session->error().isEmpty()),30000);
+    QVERIFY2(session->inspectable(),qPrintable(session->error()));
+    session->compareSkeletonWith(folder+"/inherit-3-b.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
+    QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
+    QCOMPARE(session->compareResult().value("applicabilityVerdict").toString(),QString("directApplicable"));
+    QVERIFY(session->compareResult().value("transformValidation").toMap().value("promotionEnabled").toBool());
+    QFile normal(root_+"/r13-fbx-normal-proof.json");QVERIFY(normal.open(QIODevice::WriteOnly));normal.write(QJsonDocument::fromVariant(session->compareResult()).toJson());
+    auto *pane=item("modelPane");QVERIFY(pane);pane->setProperty("showCompare",true);
+    QTest::qWait(100);QVERIFY(captureWindow(window_).save(root_+"/r13-fbx-normal.png"));
+    pane->setProperty("showCompare",false);
+    // p35: the conflicting pair publishes a located binding fault; verdict/reason stay as before.
+    desktop_->clearAsset();
+    desktop_->openPath(folder+"/inherit-1-a.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->path()==folder+"/inherit-1-a.fbx" &&
+      (session->inspectable()||!session->error().isEmpty()),30000);
+    QVERIFY2(session->inspectable(),qPrintable(session->error()));
+    session->compareSkeletonWith(folder+"/inherit-1-b.fbx");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
+    QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
+    const auto conflictReport=session->compareResult();
+    const auto conflict=conflictReport.value("transformValidation").toMap();
+    QCOMPARE(conflict.value("verdict").toString(),QString("incompatible"));
+    QCOMPARE(conflict.value("reason").toString(),QString("bindingConflict"));
+    QVERIFY(!conflict.value("promotionEnabled").toBool());
+    QVERIFY(conflictReport.value("applicabilityVerdict").toString()!=QString("directApplicable"));
+    const auto fault=conflict.value("bindingFault").toMap();
+    QVERIFY2(!fault.isEmpty(),"BindingConflict must publish a located fault");
+    QVERIFY(fault.value("fault").toString()!=QString("none"));
+    QVERIFY(fault.value("witness").toString()=="bindPose"||fault.value("witness").toString()=="clusterLink");
+    QFile faultProof(root_+"/r13-fbx-binding-fault.json");QVERIFY(faultProof.open(QIODevice::WriteOnly));
+    faultProof.write(QJsonDocument::fromVariant(conflict).toJson());
+  }
+  void modelR13DecoderReordered() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/reordered.gltf",{});
+    const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
+    QCOMPARE(proof.value("verdict").toString(),QString("equivalent"));
+    QCOMPARE(proof.value("mapping").toString(),QString("fullNameBijection"));
+    for(double t:{0.,.25,.5,.75,1.}) {
+      const auto x=a->worldAt(0,t),y=b->worldAt(0,t);QCOMPARE(x.size(),y.size());
+      for(std::size_t i=0;i<x.size();++i)QVERIFY(x[i]==y[x.size()-1-i]);
+    }
+    for(const auto &file:{"bad-default.gltf","bad-parent.gltf","ambiguous.gltf","bad-binding.gltf"}) {
+      const auto bad=readModelDocument(dir+"/"+file,{});
+      QCOMPARE(compareFixedDecoder(a->decoderSnapshot,bad->decoderSnapshot).value("verdict").toString(),QString("insufficient"));
+    }
+    auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});desktop_->openPath(dir+"/base.gltf");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);QVERIFY(session->inspectable());
+    session->compareSkeletonWith(dir+"/reordered.gltf");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&!session->compareResult().isEmpty(),30000);
+    QCOMPARE(session->compareResult().value("transformValidation").toMap().value("fixedDecoder").toMap().value("verdict").toString(),QString("equivalent"));
+  }
+  void modelR13DecoderCommonCoverage() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/different.gltf",{});
+    const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
+    QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
+    const auto common=proof.value("commonCoverage").toMap();
+    QCOMPARE(common.value("verdict").toString(),QString("sameCommonOverrides"));
+    QCOMPARE(common.value("componentCount").toInt(),1);
+    QVERIFY(!proof.value("promotionEnabled").toBool());
+    QVERIFY(a->worldAt(0,1)[1]!=b->worldAt(0,1)[3]);
+    // The condition is identical supplied overrides, not different authored
+    // key values. At the shared first key the actual local evaluators agree.
+    const auto x=a->worldAt(0,0),y=b->worldAt(0,0);
+    for(std::size_t i=0;i<x.size();++i)QVERIFY(x[i]==y[x.size()-1-i]);
+    for(const auto &file:{"bad-default.gltf","bad-parent.gltf","ambiguous.gltf","bad-binding.gltf"}) {
+      const auto bad=readModelDocument(dir+"/"+file,{});
+      QVERIFY(compareFixedDecoder(a->decoderSnapshot,bad->decoderSnapshot).value("commonCoverage").toMap().value("verdict").toString()!=QString("sameCommonOverrides"));
+    }
+    auto disjoint=std::make_shared<ModelDecoderSnapshot>(*b->decoderSnapshot);
+    auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*disjoint->animations);
+    data->clips[0].channels[0].path=formaview::gltf::TrackPath::Scale;disjoint->animations=data;
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,disjoint).value("commonCoverage").toMap().value("reason").toString(),QString("noCommonChannels"));
+    std::stop_source stopped;stopped.request_stop();
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot,stopped.get_token()).value("verdict").toString(),QString("cancelled"));
+
+  }
+  void modelR13DecoderExplicitMapping() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/reordered.gltf",{});
+    const auto named=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
+    QCOMPARE(named.value("verdict").toString(),QString("equivalent"));
+    std::vector<std::size_t> map(a->decoderSnapshot->nodeNames.size());
+    for(const auto &pair:named.value("mappedPairs").toList()){const auto p=pair.toMap();map[p.value("source").toUInt()]=p.value("target").toUInt();}
+    // Without names or an explicit contract the permutation is never guessed.
+    auto unnamed=std::make_shared<ModelDecoderSnapshot>(*b->decoderSnapshot);
+    for(auto &name:unnamed->nodeNames)name.clear();
+    auto proof=compareFixedDecoder(a->decoderSnapshot,unnamed);
+    QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
+    QCOMPARE(proof.value("reason").toString(),QString("mappingConflict"));
+    FixedDecoderOptions options;options.explicitMapping=map;
+    proof=compareFixedDecoder(a->decoderSnapshot,unnamed,{},options);
+    QCOMPARE(proof.value("verdict").toString(),QString("equivalent"));
+    QCOMPARE(proof.value("mapping").toString(),QString("explicitBijection"));
+    QCOMPARE(proof.value("mappedPairs").toList().size(),qsizetype(map.size()));
+    QVERIFY(!proof.value("promotionEnabled").toBool());
+    // Names are ignored once a contract is supplied: contradictory names change nothing.
+    auto misnamed=std::make_shared<ModelDecoderSnapshot>(*b->decoderSnapshot);
+    for(std::size_t i=0;i<misnamed->nodeNames.size();++i)misnamed->nodeNames[i]=QStringLiteral("x%1").arg(i);
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,misnamed,{},options).value("verdict").toString(),QString("equivalent"));
+    // A wrong but well-formed bijection is rejected by the same default/parent proof.
+    auto wrong=options;std::swap(wrong.explicitMapping[0],wrong.explicitMapping[1]);
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,unnamed,{},wrong).value("verdict").toString(),QString("insufficient"));
+    QVERIFY(compareFixedDecoder(a->decoderSnapshot,unnamed,{},wrong).value("reason").toString()!=QString("exactMappedDecodedProgram"));
+    // Malformed contracts are never repaired: duplicate, out of range, wrong size, empty entries.
+    for(int kind=0;kind<3;++kind) {
+      auto bad=options;
+      if(kind==0)bad.explicitMapping[1]=bad.explicitMapping[0];
+      else if(kind==1)bad.explicitMapping[0]=map.size()+10;
+      else bad.explicitMapping.pop_back();
+      proof=compareFixedDecoder(a->decoderSnapshot,unnamed,{},bad);
+      QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
+      QCOMPARE(proof.value("reason").toString(),QString("invalidExplicitMapping"));
+    }
+    // Duplicate names stay unresolved against a reordered file without a contract (identity fallback needs byte-identical metadata); a supplied identity contract is an explicit statement, not inference.
+    const auto amb=readModelDocument(dir+"/ambiguous.gltf",{});
+    QVERIFY(compareFixedDecoder(amb->decoderSnapshot,a->decoderSnapshot).value("verdict").toString()!=QString("equivalent"));
+    FixedDecoderOptions identity;for(std::size_t i=0;i<amb->decoderSnapshot->nodeNames.size();++i)identity.explicitMapping.push_back(i);
+    proof=compareFixedDecoder(amb->decoderSnapshot,amb->decoderSnapshot,{},identity);
+    QCOMPARE(proof.value("verdict").toString(),QString("equivalent"));
+    QCOMPARE(proof.value("mapping").toString(),QString("explicitBijection"));
+    auto swapped=identity;std::swap(swapped.explicitMapping[0],swapped.explicitMapping[1]);
+    QCOMPARE(compareFixedDecoder(amb->decoderSnapshot,amb->decoderSnapshot,{},swapped).value("verdict").toString(),QString("insufficient"));
+    std::stop_source stopped;stopped.request_stop();
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,unnamed,stopped.get_token(),options).value("verdict").toString(),QString("cancelled"));
+  }
+  void modelR13DecoderForcedOverrideDefaults() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/bad-default.gltf",{});
+    // bad-default differs only in the Joint translation default, and the sole clip overrides that exact group.
+    const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
+    QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
+    QCOMPARE(proof.value("reason").toString(),QString("mappedDefaultOrParentConflict"));
+    QVERIFY(!proof.contains("commonCoverage")); // the strict exact-default conclusion is unchanged
+    QVERIFY(!proof.value("promotionEnabled").toBool());
+    const auto forced=proof.value("forcedOverrideCoverage").toMap();
+    QCOMPARE(forced.value("verdict").toString(),QString("sameCommonOverridesDeadDefaults"));
+    QCOMPARE(forced.value("reason").toString(),QString("deadDefaultsUnobservable"));
+    QCOMPARE(forced.value("componentCount").toInt(),1);
+    QCOMPARE(forced.value("deadDefaults").toList().size(),qsizetype(1));
+    QVERIFY(!forced.value("authoredActionsEquivalent").toBool());
+    QVERIFY(!forced.value("clipPairAligned").toBool());
+    QVERIFY(!forced.value("promotionEnabled").toBool());
+    // Independent evidence that the dead default is not observable through the real evaluator.
+    const auto named=compareFixedDecoder(a->decoderSnapshot,a->decoderSnapshot);
+    QCOMPARE(named.value("verdict").toString(),QString("equivalent"));
+    const auto joint=std::find(b->decoderSnapshot->nodeNames.begin(),b->decoderSnapshot->nodeNames.end(),QStringLiteral("Joint"))-b->decoderSnapshot->nodeNames.begin();
+    const auto jointSource=std::find(a->decoderSnapshot->nodeNames.begin(),a->decoderSnapshot->nodeNames.end(),QStringLiteral("Joint"))-a->decoderSnapshot->nodeNames.begin();
+    for(double t:{0.,.3,.5,1.}) {
+      const auto x=a->worldAt(0,t),y=b->worldAt(0,t);QVERIFY(x[static_cast<std::size_t>(jointSource)]==y[static_cast<std::size_t>(joint)]);
+    }
+    // Negative controls: every case leaves the default observable and must not earn the dead-default conclusion.
+    const auto edit=[&](auto mutate){auto s=std::make_shared<ModelDecoderSnapshot>(*b->decoderSnapshot);mutate(*s);return s;};
+    const auto localOffset=[&](qsizetype node){return qsizetype(8)+node*192+8;};
+    const auto putFloat=[&](ModelDecoderSnapshot &s,qsizetype node,qsizetype field,float value){
+      std::memcpy(s.metadata.data()+localOffset(node)+field,&value,sizeof(value));};
+    const auto expectObservable=[&](const std::shared_ptr<ModelDecoderSnapshot> &changed,const char *label){
+      const auto r=compareFixedDecoder(a->decoderSnapshot,changed);
+      QVERIFY2(r.value("verdict").toString()==QString("insufficient"),label);
+      QVERIFY2(r.value("forcedOverrideCoverage").toMap().value("verdict").toString()!=QString("sameCommonOverridesDeadDefaults"),label);
+    };
+    expectObservable(edit([&](auto &s){putFloat(s,joint,92,.25f);}),"rotation default of an animated node is read by the evaluator");
+    expectObservable(edit([&](auto &s){putFloat(s,joint,108,2.f);}),"scale default is read by the evaluator");
+    const auto quaternion=std::find(b->decoderSnapshot->nodeNames.begin(),b->decoderSnapshot->nodeNames.end(),QStringLiteral("QuaternionFrame"))-b->decoderSnapshot->nodeNames.begin();
+    expectObservable(edit([&](auto &s){putFloat(s,quaternion,80,5.f);}),"unanimated node default differs");
+    expectObservable(edit([&](auto &s){
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*s.animations);
+      data->clips.push_back(formaview::gltf::AnimationClip{"idle",0,1,{}});s.animations=data;}),"a second clip that leaves the node unanimated reads its static local");
+    expectObservable(edit([&](auto &s){
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*s.animations);
+      data->clips[0].channels[0].path=formaview::gltf::TrackPath::Scale;s.animations=data;}),"the overriding group is no longer the differing group");
+    expectObservable(edit([&](auto &s){
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*s.animations);
+      data->clips[0].channels[0].times.clear();data->clips[0].channels[0].values.clear();s.animations=data;}),"an empty channel is skipped by the evaluator and forces nothing");
+    expectObservable(edit([&](auto &s){
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*s.animations);
+      data->clips[0].channels[0].values.pop_back();s.animations=data;}),"malformed channel shape does not force a group");
+    // Parent topology and bindings are never relaxed.
+    for(const auto &file:{"bad-parent.gltf","bad-binding.gltf"}) {
+      const auto bad=readModelDocument(dir+"/"+file,{});
+      const auto r=compareFixedDecoder(a->decoderSnapshot,bad->decoderSnapshot);
+      QCOMPARE(r.value("verdict").toString(),QString("insufficient"));
+      QVERIFY(!r.contains("forcedOverrideCoverage"));
+    }
+    // Identical defaults never claim the dead-default conclusion.
+    QVERIFY(!compareFixedDecoder(a->decoderSnapshot,a->decoderSnapshot).contains("forcedOverrideCoverage"));
+    std::stop_source stopped;stopped.request_stop();
+    QCOMPARE(compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot,stopped.get_token()).value("verdict").toString(),QString("cancelled"));
+  }
+  void modelR13DecoderPressure() {
+    namespace gl=formaview::gltf;
+    // Synthetic chain snapshots exercise cancellation and every budget without a huge fixture.
+    const auto build=[](std::size_t n,std::size_t bindings,std::size_t channelsPerNode){
+      auto s=std::make_shared<ModelDecoderSnapshot>();
+      QByteArray m;const auto put=[&](const auto &v){m.append(reinterpret_cast<const char*>(&v),sizeof(v));};
+      put(n);
+      for(std::size_t i=0;i<n;++i){const std::int64_t parent=i?static_cast<std::int64_t>(i-1):-1;put(parent);m.append(QByteArray(184,'\0'));
+        s->nodeNames.push_back(QStringLiteral("n%1").arg(i));}
+      put(bindings);
+      for(std::size_t k=0;k<bindings;++k){const std::size_t instance=k/n,joint=k%n;put(instance);put(joint);m.append(QByteArray(128,'\0'));}
+      s->metadata=m;s->sourceSha="synthetic";
+      auto data=std::make_shared<gl::GltfAnimationData>();data->node_count=static_cast<std::uint32_t>(n);
+      gl::AnimationClip clip;clip.name="c";clip.start=0;clip.end=1;
+      for(std::size_t i=0;i<n;++i)for(std::size_t p=0;p<channelsPerNode;++p){
+        gl::AnimationChannel c;c.node_index=static_cast<std::uint32_t>(i);c.path=static_cast<gl::TrackPath>(p);c.interpolation=gl::Interpolation::Linear;
+        c.components=p==1?4:3;c.times={0,1};c.values.assign(2*c.components,double(i%7)*.1);clip.channels.push_back(std::move(c));}
+      data->clips.push_back(std::move(clip));s->animations=data;return s;};
+    QElapsedTimer phase;phase.start();
+    const auto big=build(24000,0,3);const auto same=std::make_shared<ModelDecoderSnapshot>(*big);
+    QCOMPARE(compareFixedDecoder(big,same).value("verdict").toString(),QString("equivalent"));
+    int cancelled=0,finished=0;
+    QElapsedTimer full;full.start();
+    QCOMPARE(compareFixedDecoder(big,same).value("verdict").toString(),QString("equivalent"));
+    const auto fullMicros=std::max<qint64>(full.nsecsElapsed()/1000,1000);
+    for(int k=0;k<32;++k) {
+      std::stop_source source;
+      // Spread stop requests over 0..1.5x the measured uncancelled duration so both outcomes occur.
+      const auto delay=static_cast<qint64>(fullMicros*1.5*k/31.0);
+      std::thread requester([&]{std::this_thread::sleep_for(std::chrono::microseconds(delay));source.request_stop();});
+      const auto r=compareFixedDecoder(big,same,source.get_token());requester.join();
+      const auto verdict=r.value("verdict").toString();
+      QVERIFY2(verdict=="cancelled"||verdict=="equivalent",qPrintable(verdict+"/"+r.value("reason").toString()));
+      if(verdict=="cancelled"){++cancelled;QVERIFY(!r.contains("commonCoverage")||r.value("reason").toString()=="cancelled");}else ++finished;
+    }
+    QCOMPARE(cancelled+finished,32);
+    qInfo()<<"P35 pressure cancel stress: cancelled"<<cancelled<<"finished"<<finished<<"of 32 randomized stop times; full compare"<<fullMicros<<"us; setup+stress"<<phase.elapsed()<<"ms";
+    // Budgets are only ever tightened by callers; default limits stay in force.
+    const auto tiny=build(64,0,3);const auto tinyCopy=std::make_shared<ModelDecoderSnapshot>(*tiny);
+    FixedDecoderOptions tight;tight.channelBudget=100;
+    auto r=compareFixedDecoder(tiny,tinyCopy,{},tight);
+    QCOMPARE(r.value("verdict").toString(),QString("insufficient"));QCOMPARE(r.value("reason").toString(),QString("budgetExceeded"));
+    tight=FixedDecoderOptions{};tight.scalarBudget=500;
+    r=compareFixedDecoder(tiny,tinyCopy,{},tight);
+    QCOMPARE(r.value("verdict").toString(),QString("insufficient"));QCOMPARE(r.value("reason").toString(),QString("budgetExceeded"));
+    FixedDecoderOptions loose;loose.channelBudget=std::numeric_limits<std::size_t>::max();loose.scalarBudget=std::numeric_limits<std::size_t>::max();
+    QCOMPARE(compareFixedDecoder(tiny,tinyCopy,{},loose).value("verdict").toString(),QString("equivalent"));
+    qInfo()<<"P35 pressure budgets done at"<<phase.elapsed()<<"ms";
+    // Hard structural caps: nodes 65536 and bindings 262144.
+    const auto tooManyNodes=build(65537,0,0);
+    QCOMPARE(compareFixedDecoder(tooManyNodes,tooManyNodes).value("reason").toString(),QString("invalidSnapshot"));
+    const auto tooManyBindings=build(600,262145,0);
+    QCOMPARE(compareFixedDecoder(tooManyBindings,tooManyBindings).value("reason").toString(),QString("invalidSnapshot"));
+    const auto atLimit=build(600,262144,0);
+    QCOMPARE(compareFixedDecoder(atLimit,atLimit).value("verdict").toString(),QString("equivalent"));
+    qInfo()<<"P35 pressure structural caps done at"<<phase.elapsed()<<"ms";
+    // Trailing garbage, truncation and duplicate channel targets are corruption, never silently accepted.
+    auto trailing=std::make_shared<ModelDecoderSnapshot>(*tiny);trailing->metadata.append('x');
+    QCOMPARE(compareFixedDecoder(tiny,trailing).value("verdict").toString(),QString("insufficient"));
+    auto truncated=std::make_shared<ModelDecoderSnapshot>(*tiny);truncated->metadata.chop(3);
+    QCOMPARE(compareFixedDecoder(tiny,truncated).value("verdict").toString(),QString("insufficient"));
+    auto duplicate=std::make_shared<ModelDecoderSnapshot>(*tiny);
+    auto data=std::make_shared<gl::GltfAnimationData>(*duplicate->animations);data->clips[0].channels.push_back(data->clips[0].channels[0]);duplicate->animations=data;
+    QCOMPARE(compareFixedDecoder(tiny,duplicate).value("verdict").toString(),QString("insufficient"));
+  }
+  void modelR13DecoderStalePublication() {
+    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    for(int round=0;round<9;++round) {
+      desktop_->openPath(dir+"/base.gltf");
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);QVERIFY(session->inspectable());
+      session->compareSkeletonWith(dir+"/reordered.gltf");
+      QVERIFY(session->compareBusy());
+      switch(round%3) {
+        case 0:desktop_->clearAsset();break;
+        case 1:desktop_->openPath(dir+"/different.gltf");
+          // Desktop::openPath is asynchronous; the old document stays current (and may legitimately publish)
+          // until the new asset lands and clear() supersedes it. Assert only after the landing.
+          QTRY_VERIFY_WITH_TIMEOUT(session->path()==dir+"/different.gltf"&&(session->inspectable()||!session->error().isEmpty()),30000);
+          break;
+        default:QTest::qWait(round);desktop_->clearAsset();break;
+      }
+      QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy(),30000);
+      QVERIFY2(session->compareResult().isEmpty(),"a superseded comparison must not publish");
+      QVERIFY(session->compareError().isEmpty());
+    }
+    desktop_->openPath(dir+"/base.gltf");
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);QVERIFY(session->inspectable());
+    session->compareSkeletonWith(dir+"/reordered.gltf");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&!session->compareResult().isEmpty(),30000);
+    QCOMPARE(session->compareResult().value("transformValidation").toMap().value("fixedDecoder").toMap().value("verdict").toString(),QString("equivalent"));
+  }
+  void modelFbxDialectOracle() {
+    // Autodesk FBX SDK 2020.2 EvaluateGlobalTransform is the oracle (p35-dialect). 48 chains:
+    // 3 inheritance types x uniform/non-uniform root scale x plain/pivot+pre/post x +/- scale x 2 rotation orders.
+    const auto dir=qEnvironmentVariable("FORMAVIEW_FBX_DIALECT");QVERIFY(!dir.isEmpty());
+    QFile oracle(dir+"/oracle.txt");QVERIFY(oracle.open(QIODevice::ReadOnly));
+    QMap<QString,double> worst;QMap<QString,int> samples;QHash<QString,std::shared_ptr<formaview::skeletal::FbxDocument>> documents;
+    while(!oracle.atEnd()) {
+      const auto parts=QString::fromUtf8(oracle.readLine()).trimmed().split(' ',Qt::SkipEmptyParts);
+      if(parts.isEmpty())continue;
+      QCOMPARE(parts.size(),19);
+      const auto file=parts[0];const double seconds=parts[1].toDouble();
+      auto &document=documents[file];
+      if(!document)document=std::make_shared<formaview::skeletal::FbxDocument>(formaview::skeletal::FbxDocument::read(std::filesystem::path((dir+"/"+file).toStdWString())));
+      const auto pose=document->evaluate(0,seconds);std::size_t at=0;
+      while(at<document->data().nodes.size()&&QString::fromStdString(document->data().nodes[at].source.original_name)!=parts[2])++at;
+      QVERIFY(at<pose.world.size());
+      double error=0;for(int c=0;c<4;++c)for(int r=0;r<4;++r)error=std::max(error,std::abs(parts[3+c*4+r].toDouble()-pose.world[at][static_cast<std::size_t>(r*4+c)]));
+      worst[file]=std::max(worst.value(file),error);++samples[file];
+    }
+    QCOMPARE(worst.size(),qsizetype(48));
+    int matched=0,diverged=0;QJsonArray rows;
+    for(auto it=worst.cbegin();it!=worst.cend();++it) {
+      QCOMPARE(samples.value(it.key()),15);
+      // ufbx's componentwise-scale mode (SDK RrSs) disagrees with the SDK below a negative-scale parent.
+      // This pins the observed divergence as a characterization; it is not a correctness claim for that dialect.
+      const bool documented=it.key().contains("-RrSs-")&&it.key().contains("-negscale-");
+      if(documented){QVERIFY2(it.value()>1e-3,qPrintable(it.key()));++diverged;}
+      else{QVERIFY2(it.value()<=1e-7,qPrintable(it.key()+" "+QString::number(it.value())));++matched;}
+      rows.append(QJsonObject{{"file",it.key()},{"maxError",it.value()},{"documentedDivergence",documented}});
+    }
+    QCOMPARE(matched,40);QCOMPARE(diverged,8);
+    QFile proof(root_+"/fbx-dialect-oracle.json");QVERIFY(proof.open(QIODevice::WriteOnly));proof.write(QJsonDocument(rows).toJson());
+  }
+  void modelR13DecoderPublication() {
+    const auto file=qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf";
+    auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    desktop_->openPath(file);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);
+    QVERIFY(session->inspectable());session->compareSkeletonWith(file);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&!session->compareResult().isEmpty(),30000);
+    const auto proof=session->compareResult().value("transformValidation").toMap().value("fixedDecoder").toMap();
+    QCOMPARE(proof.value("verdict").toString(),QString("equivalent"));
+    QCOMPARE(proof.value("domain").toString(),QString("fixedDecoderProgram"));
+    QVERIFY(!proof.value("promotionEnabled").toBool());
+    const auto doc=readModelDocument(file,{});QVERIFY(doc->decoderSnapshot);
+    for(int kind=0;kind<8;++kind) {
+      auto changed=std::make_shared<ModelDecoderSnapshot>(*doc->decoderSnapshot);
+      auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*changed->animations);
+      QVERIFY(!data->clips.empty());QVERIFY(!data->clips[0].channels.empty());
+      auto &channel=data->clips[0].channels[0];QVERIFY(!channel.values.empty());QVERIFY(!channel.times.empty());
+      switch(kind) {
+        case 0:channel.values[0]+=1;break;
+        case 1:channel.times[0]+=.25;break;
+        case 2:channel.node_index+=1;break;
+        case 3:channel.components+=1;break;
+        case 4:channel.interpolation=channel.interpolation==formaview::gltf::Interpolation::Step?formaview::gltf::Interpolation::Linear:formaview::gltf::Interpolation::Step;break;
+        case 5:data->clips.pop_back();break;
+        case 6:changed->metadata.append("different parent/default/bind program");break;
+        case 7:data->node_count+=1;break;
+      }
+      changed->animations=data;
+      QCOMPARE(compareFixedDecoder(doc->decoderSnapshot,changed).value("verdict").toString(),QString("insufficient"));
+    }
+    QCOMPARE(compareFixedDecoder({},doc->decoderSnapshot).value("reason").toString(),QString("missingEvidence"));
+
+  }
+  void modelR13FormatComparison() {
+    namespace tv=formaview::skeletal::transform;
+    const auto folder=qEnvironmentVariable("FORMAVIEW_R13_SAMPLES");
+    QVERIFY(!folder.isEmpty());
+    const auto file=folder+"/reach-a.gltf", other=folder+"/reach-b.gltf";
+    QVERIFY(QFileInfo::exists(file));QVERIFY(QFileInfo::exists(other));
+    auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    desktop_->openPath(file);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable()||!session->error().isEmpty(),30000);
+    QVERIFY2(session->inspectable(),qPrintable(session->error()));
+    QVERIFY2(session->hasComparableSkeleton(),"glTF must expose its full-node comparison entry");
+    const auto a=readModelDocument(file,{}),b=readModelDocument(other,{});
+    const auto ea=a->transformEvidence({}),eb=b->transformEvidence({});
+    QVERIFY(ea.nativeSkinBindings.has_value());QCOMPARE(ea.nativeSkinBindings->size(),std::size_t(2));
+    QVERIFY(ea.nodes[3].restMatrix.has_value());QVERIFY(!ea.nodes[3].restLocal.has_value());
+    std::vector<tv::Pair> pairs;for(std::size_t i=0;i<ea.nodes.size();++i)pairs.push_back({i,i});
+    QCOMPARE(tv::validate(ea,eb,pairs).verdict,tv::Verdict::Compatible);
+    // Independent analytic oracle authored with the fixture, not product output.
+    QFile oracleFile(folder+"/oracle.json");QVERIFY(oracleFile.open(QIODevice::ReadOnly));
+    const auto files=QJsonDocument::fromJson(oracleFile.readAll()).object().value("files").toArray();
+    int compared=0;double maxError=0;
+    for(const auto &entry:files) {
+      const auto object=entry.toObject();const auto doc=readModelDocument(folder+"/"+object.value("file").toString(),{});
+      const auto evidence=doc->transformEvidence({});QVERIFY(evidence.nativeSkinBindings.has_value());
+      QCOMPARE(doc->meshes.size(),std::size_t(1));QCOMPARE(doc->meshes[0].raw.size(),std::size_t(8));
+      for(const auto &sample:object.value("samples").toArray()) {
+        const auto sampleObject=sample.toObject();const auto worlds=doc->worldAt(0,sampleObject.value("time").toDouble());
+        const auto expected=sampleObject.value("positions").toArray();QCOMPARE(expected.size(),8);
+        for(std::size_t v=0;v<8;++v) {
+          const auto &binding=evidence.nativeSkinBindings->at(v<4?0:1);
+          const auto &point=doc->meshes[0].raw[v];const double p[4]={point.x,point.y,point.z,1};
+          double local[4]{};for(int r=0;r<4;++r)for(int c=0;c<4;++c)local[r]+=binding.inverseBind[static_cast<std::size_t>(c*4+r)]*p[c];
+          const auto values=expected[static_cast<qsizetype>(v)].toArray();
+          for(int r=0;r<3;++r) {
+            double value=0;for(int c=0;c<4;++c)value+=worlds[binding.joint][static_cast<std::size_t>(r*4+c)]*local[c];
+            const double error=std::abs(value-values[r].toDouble());maxError=std::max(maxError,error);QVERIFY(error<=1e-7);++compared;
+          }
+        }
+      }
+    }
+    qInfo()<<"R13 analytic glTF coordinates"<<compared<<"max error"<<maxError;
+    const auto bad=readModelDocument(folder+"/wrong-bind.gltf",{})->transformEvidence({});
+    QCOMPARE(tv::validate(ea,bad,pairs).reason,tv::Reason::BindingConflict);
+    session->compareSkeletonWith(other);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
+    QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
+    const auto report=session->compareResult();
+    QCOMPARE(report.value("applicabilityVerdict").toString(),QString("compatibleNotDrivable"));
+    QCOMPARE(report.value("structureVerdict").toString(),QString("structuralDirect"));
+    QCOMPARE(report.value("transformValidation").toMap().value("verdict").toString(),QString("compatible"));
+    QFile proof(root_+"/r13-gltf-proof.json");QVERIFY(proof.open(QIODevice::WriteOnly));
+    proof.write(QJsonDocument::fromVariant(report).toJson());
+    session->compareSkeletonWith(folder+"/wrong-bind.gltf");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
+    QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
+    QCOMPARE(session->compareResult().value("applicabilityVerdict").toString(),QString("notApplicable"));
+  }
+  void modelTransformEvidenceAdapters() {
+    namespace tv = formaview::skeletal::transform;
+    const auto current=qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET");
+    QVERIFY(QFileInfo::exists(current));
+    const auto fbx=formaview::skeletal::FbxDocument::read(std::filesystem::path(current.toStdWString()));
+    const auto f=fbx.transform_evidence();
+    QCOMPARE(f.sha256,fbx.data().source.identity.sha256);
+    QCOMPARE(f.nodes.size(),fbx.data().nodes.size());
+    QVERIFY(f.fullNodeDomain);
+    QVERIFY2(std::all_of(f.nodes.begin(),f.nodes.end(),[](const auto &n){return n.evaluation.has_value();}), "R13 must represent native FBX inheritance and declared default rotation semantics");
+    QVERIFY(f.coordinates.has_value());
+    QCOMPARE(f.coordinates->metresPerUnit,fbx.data().metres_per_unit);
+    QVERIFY(!f.bindings.has_value()); // Cloud has skin; current pose is not bind proof.
+    for (std::size_t i=0;i<f.nodes.size();++i) {
+      QCOMPARE(f.nodes[i].fileIndex,static_cast<std::uint32_t>(i));
+      QVERIFY(f.nodes[i].restLocal.has_value());
+      QCOMPARE(f.nodes[i].parent.has_value(),fbx.data().nodes[i].parent.has_value());
+      if (f.nodes[i].parent) QCOMPARE(*f.nodes[i].parent,*fbx.data().nodes[i].parent);
+    }
+    std::stop_source cancelled; cancelled.request_stop();
+    QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, (void)fbx.transform_evidence(cancelled.get_token()));
+    QTemporaryDir temp(root_+"/r13-evidence-XXXXXX");
+    QVERIFY(temp.isValid());
+    const auto file=temp.filePath("mesh.gltf");
+    const auto binary=temp.filePath("mesh.bin");
+    const QByteArray json=R"({"asset":{"version":"2.0"},"buffers":[{"uri":"mesh.bin","byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"nodes":[{"name":"Root","mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    QFile jf(file); QVERIFY(jf.open(QIODevice::WriteOnly)); QCOMPARE(jf.write(json),json.size()); jf.close();
+    float positions[9]={0,0,0,1,0,0,0,1,0};
+    const auto writePositions=[&] {
+      QFile bf(binary); QVERIFY(bf.open(QIODevice::WriteOnly));
+      QCOMPARE(bf.write(reinterpret_cast<const char *>(positions),sizeof(positions)),qint64(sizeof(positions)));
+    };
+    writePositions();
+    const auto a=readModelDocument(file,{});
+    QVERIFY(a->transformEvidence);
+    const auto ea=a->transformEvidence({});
+    QVERIFY(ea.fullNodeDomain); QCOMPARE(ea.nodes.size(),std::size_t(1));
+    QVERIFY(ea.coordinates.has_value()); QCOMPARE(ea.coordinates->metresPerUnit,1.);
+    QVERIFY(ea.bindings.has_value()); QVERIFY(ea.bindings->empty());
+    QVERIFY(ea.nodes[0].evaluation.has_value());
+    const std::vector<tv::Pair> pairs{{0,0}};
+    QCOMPARE(tv::validate(ea,ea,pairs).verdict,tv::Verdict::Compatible);
+    // Same JSON, different external buffer: must not share an identity proof.
+    positions[3]=0.5f; writePositions();
+    const auto b=readModelDocument(file,{}); const auto eb=b->transformEvidence({});
+    QCOMPARE(a->hash,b->hash); QVERIFY(ea.sha256!=eb.sha256);
+    QCOMPARE(a->transformEvidence({}).sha256,ea.sha256); // Immutable snapshot.
+    QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, (void)a->transformEvidence(cancelled.get_token()));
+    // Static matrices retain their raw representation; no TRS decomposition.
+    const auto matrixJson=QByteArray(json).replace("\"mesh\":0}","\"mesh\":0,\"matrix\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}");
+    QVERIFY(matrixJson!=json);
+    QVERIFY(jf.open(QIODevice::WriteOnly|QIODevice::Truncate)); QCOMPARE(jf.write(matrixJson),matrixJson.size()); jf.close();
+    const auto matrixDoc=readModelDocument(file,{}); const auto matrixEvidence=matrixDoc->transformEvidence({});
+    QVERIFY(!matrixEvidence.nodes[0].restLocal.has_value());
+    QVERIFY(matrixEvidence.nodes[0].restMatrix.has_value());
+    QCOMPARE(tv::validate(matrixEvidence,matrixEvidence,pairs).verdict,tv::Verdict::Compatible);
+    QFile proof(root_+"/r13-adapter-proof.json"); QVERIFY(proof.open(QIODevice::WriteOnly));
+    proof.write(QJsonDocument(QJsonObject{{"fbxSha",QString::fromStdString(f.sha256)},
+        {"fbxNodes",static_cast<int>(f.nodes.size())},{"fbxUnits",f.coordinates->metresPerUnit},
+        {"gltfMainSha",a->hash},{"gltfEvidenceA",QString::fromStdString(ea.sha256)},
+        {"gltfEvidenceB",QString::fromStdString(eb.sha256)},
+        {"crossFileRealPositive",false}}).toJson());
+  }
+  void modelSkeletonCompareIdentityRule() {
+    // R13 conservative rule (CR04): identical source content is the only
+    // sufficient transform-identity proof, so a self-compare must reach
+    // directApplicable, and a structuralDirect compare against a different
+    // file must remain structureOnly - never directApplicable on structure
+    // alone.
+    const auto current =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+    const auto other =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!current.exists() || !other.exists()) {
+      QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    // QTRY_* macros expand to a plain `return;`, so this helper cannot
+    // return the result map itself.
+    const auto compare = [&](const QFileInfo &against, QVariantMap &out) {
+      session->compareSkeletonWith(against.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy() &&
+                                   (session->compareResult().size() > 1 ||
+                                    !session->compareError().isEmpty()),
+                               30000);
+      QVERIFY2(session->compareError().isEmpty(),
+               qPrintable(session->compareError()));
+      out = session->compareResult();
+    };
+    desktop_->openPath(current.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() ||
+                                 !session->error().isEmpty(),
+                             30000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error()));
+    QVERIFY(session->hasComparableSkeleton());
+    QVariantMap self;
+    compare(current, self);
+    QCOMPARE(self.value("structureVerdict").toString(),
+             QStringLiteral("structuralDirect"));
+    QCOMPARE(self.value("applicabilityVerdict").toString(),
+             QStringLiteral("directApplicable"));
+    const auto evidence = self.value("transformValidation").toMap();
+    QVERIFY2(!evidence.isEmpty(), "R13 worker must publish source-backed transform diagnostics");
+    QCOMPARE(evidence.value("verdict").toString(), QStringLiteral("compatible"));
+    QCOMPARE(evidence.value("reason").toString(), QStringLiteral("identity"));
+    QCOMPARE(evidence.value("sourceSha").toString(), evidence.value("targetSha").toString());
+    QVERIFY(!evidence.value("promotionEnabled").toBool());
+    QVERIFY(evidence.value("nodesA").toInt() > 0);
+    QVariantMap cross;
+    compare(other, cross);
+    // Different source content can never supply the transform-identity
+    // proof, whatever the structure outcome is (this pair compares as
+    // "partial" -> trialOnly).
+    QVERIFY2(cross.value("applicabilityVerdict").toString() !=
+                 QStringLiteral("directApplicable"),
+             "Cross-file compare must not claim direct applicability");
+    if (cross.value("structureVerdict").toString() == "structuralDirect")
+      QCOMPARE(cross.value("applicabilityVerdict").toString(),
+               QStringLiteral("structureOnly"));
+    QVERIFY(!cross.value("transformValidation").toMap().isEmpty());
+    QVERIFY(!cross.value("transformValidation").toMap().value("promotionEnabled").toBool());
+    QFile proof(root_+"/r13-comparison-proof.json"); QVERIFY(proof.open(QIODevice::WriteOnly));
+    proof.write(QJsonDocument(QJsonObject{{"self",QJsonObject::fromVariantMap(self)},
+                                        {"cross",QJsonObject::fromVariantMap(cross)}}).toJson());
+  }
+  void modelSkeletonCompareTiming() {
+    // M07 budget: skeleton compare is P95 <= 200 ms once data is ready; parse
+    // (worker), engine+rows (GUI thread) and end-to-end are recorded apart.
+    const auto current =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+    const auto other =
+        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    if (!current.exists() || !other.exists()) {
+      QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
+      return;
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(current.absoluteFilePath());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() ||
+                                 !session->error().isEmpty(),
+                             30000);
+    QVERIFY2(session->inspectable(), qPrintable(session->error()));
+    QVERIFY(session->hasComparableSkeleton());
+    std::vector<double> readMs, guiMs, totalMs;
+    int bonesA = 0, bonesB = 0;
+    constexpr int rounds = 20;
+    for (int i = 0; i < rounds; ++i) {
+      session->compareSkeletonWith(
+          (i % 2 ? other : current).absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy() &&
+                                   (session->compareResult().size() > 1 ||
+                                    !session->compareError().isEmpty()),
+                               30000);
+      QVERIFY2(session->compareError().isEmpty(),
+               qPrintable(session->compareError()));
+      const auto result = session->compareResult();
+      const auto timing = result.value("timing").toMap();
+      QVERIFY(timing.contains("guiCompareMs"));
+      readMs.push_back(timing.value("readMs").toDouble());
+      guiMs.push_back(timing.value("guiCompareMs").toDouble());
+      totalMs.push_back(timing.value("endToEndMs").toDouble());
+      bonesA = std::max(bonesA, result.value("bonesA").toInt());
+      bonesB = std::max(bonesB, result.value("bonesB").toInt());
+    }
+    const auto p95 = [](std::vector<double> v) {
+      std::sort(v.begin(), v.end());
+      return v[static_cast<std::size_t>(std::ceil(v.size() * 0.95)) - 1];
+    };
+    const auto pack = [&](const char *name, const std::vector<double> &v) {
+      return QJsonObject{{"stage", name}, {"p95Ms", p95(v)},
+                         {"maxMs", *std::max_element(v.begin(), v.end())}};
+    };
+    evidence_["skeleton_compare_timing"] = QJsonObject{
+        {"rounds", rounds}, {"bonesA", bonesA}, {"bonesB", bonesB},
+        {"parseWorker", pack("parseWorker", readMs)},
+        {"engineAndRowsGui", pack("engineAndRowsGui", guiMs)},
+        {"endToEnd", pack("endToEnd", totalMs)},
+        {"boundary", "GUI-thread engine+rows excludes parsing; end-to-end includes it. Not input latency."}};
+    QVERIFY2(p95(guiMs) <= 200.0, "Engine+rows P95 exceeds the 200 ms budget");
+  }
   void cleanupTestCase() {
     if (const auto mem = formaview::process_memory()) {
       evidence_["working_set_bytes"] =

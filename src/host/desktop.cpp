@@ -463,7 +463,7 @@ void Desktop::filter(const QString &text, int type, int order) {
   if (text != query_ || type != type_)
     scroll_ = 0;
   query_ = text.left(512);
-  type_ = std::clamp(type, 0, 4);
+  type_ = std::clamp(type, 0, 5);
   sort_ = std::clamp(order, 0, 3);
   emit changed();
   if (!source_)
@@ -478,13 +478,17 @@ void Desktop::filter(const QString &text, int type, int order) {
   start("filter", directory_, revision,
         [data, query, category, sort](std::stop_token stop, Result &out) {
           const auto types =
-              QStringList{"", "image", "model", "animation", "cache"};
+              QStringList{"", "image", "model", "animation", "cache", ""};
           for (const auto &entry : *data) {
             if (stop.stop_requested())
               return failure(formaview::ErrorCode::Cancelled, "Cancelled");
-            if (entry.name.contains(query, Qt::CaseInsensitive) &&
-                (entry.directory || category == 0 ||
-                 entry.kind == types[category]))
+            // Default (0) lists folders plus previewable files only;
+            // 5 is the explicit "every file" escape hatch.
+            const bool accepted =
+                entry.directory || category == 5 ||
+                (category == 0 ? entry.kind != QStringLiteral("other")
+                               : entry.kind == types[category]);
+            if (entry.name.contains(query, Qt::CaseInsensitive) && accepted)
               out.entries.push_back(entry);
           }
           auto collator = QCollator(QLocale(QLocale::English));
@@ -849,7 +853,9 @@ void Desktop::publish(Job &job) {
   } else {
     asset_ = job.result->asset;
 #ifdef FORMAVIEW_MODEL_UI
-    if (asset_["kind"] == "model")
+    // M07: standalone animation sources (PSA, animation-only FBX) preview in
+    // the model workspace as skeleton documents.
+    if (asset_["kind"] == "model" || asset_["kind"] == "animation")
       static_cast<ModelSession *>(model_.get())->open(job.path);
     else
       static_cast<ModelSession *>(model_.get())->clear();

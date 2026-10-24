@@ -1,4 +1,5 @@
 #pragma once
+#include "formaview/transform_validation.hpp"
 #include "formaview/skeletal.hpp"
 #include <memory>
 
@@ -78,6 +79,8 @@ public:
   [[nodiscard]] static FbxDocument read_obj(const std::filesystem::path &path,
                                             const ReadOptions &options = {});
   [[nodiscard]] const FbxData &data() const noexcept;
+  // Bounded source evidence, extracted on demand from the retained scene.
+  [[nodiscard]] transform::Evidence transform_evidence(std::stop_token stop = {}) const;
   [[nodiscard]] MatrixPose evaluate(std::size_t clip, double seconds,
                                     std::stop_token stop = {}) const;
 

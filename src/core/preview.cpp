@@ -15,6 +15,16 @@ Vec3 transform(const Matrix4 &m, Vec3 p) {
           m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7],
           m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]};
 }
+Vec3 rotate(const Matrix4 &m, Vec3 v) {
+  return {m[0] * v.x + m[1] * v.y + m[2] * v.z,
+          m[4] * v.x + m[5] * v.y + m[6] * v.z,
+          m[8] * v.x + m[9] * v.y + m[10] * v.z};
+}
+Vec3 normalizeOrZero(Vec3 v) {
+  const auto length = std::sqrt(dot(v, v));
+  return length > 1e-12 ? Vec3{v.x / length, v.y / length, v.z / length}
+                        : Vec3{};
+}
 void check(bool ok, const char *message) {
   if (!ok)
     throw skeletal::Failure(ErrorCode::InvalidArgument, message);
@@ -29,6 +39,11 @@ SkinEvaluator::SkinEvaluator(const skeletal::ActorAsset &source)
   }
   matrices_.resize(source.bones.size());
   points_.resize(source.mesh->points.size());
+  skinnedNormals_.assign(
+      source.mesh->normals.size() == source.mesh->points.size()
+          ? source.mesh->points.size()
+          : std::size_t{0},
+      Vec3{});
   frame_.corners.resize(source.mesh->faces.size() * 3);
 }
 const MeshFrame &SkinEvaluator::evaluate(std::span<const Matrix4> world,
@@ -79,6 +94,27 @@ const MeshFrame &SkinEvaluator::evaluate(std::span<const Matrix4> world,
       points[i] = result;
     } else
       points[i] = mesh.points[i];
+    // Smooth normals follow the same weighted rotation; the rotation part of
+    // the skin matrix is the rigid-bone normal transform.
+    if (i < skinnedNormals_.size()) {
+      Vec3 rotated{};
+      if (!mesh.point_weights[i].empty()) {
+        for (auto wi : mesh.point_weights[i]) {
+          const auto &w = mesh.weights[wi];
+          const auto n = rotate(matrices[w.bone], mesh.normals[i]);
+          rotated.x += n.x * w.value;
+          rotated.y += n.y * w.value;
+          rotated.z += n.z * w.value;
+        }
+        if (policy == WeightPolicy::Normalize) {
+          rotated.x /= sum;
+          rotated.y /= sum;
+          rotated.z /= sum;
+        }
+      } else
+        rotated = mesh.normals[i];
+      skinnedNormals_[i] = normalizeOrZero(rotated);
+    }
   }
   auto &result = frame_;
   std::size_t corner = 0;
@@ -87,8 +123,10 @@ const MeshFrame &SkinEvaluator::evaluate(std::span<const Matrix4> world,
       check(wi < mesh.wedges.size(), "Wedge out of range");
       const auto &w = mesh.wedges[wi];
       check(w.point < points.size(), "Point out of range");
-      result.corners[corner++] = {points[w.point], uv ? (*uv)[wi] : w.uv,
-                                  w.point, wi};
+      result.corners[corner++] = {
+          points[w.point], uv ? (*uv)[wi] : w.uv, w.point, wi,
+          w.point < skinnedNormals_.size() ? skinnedNormals_[w.point]
+                                          : Vec3{}};
     }
   return result;
 }

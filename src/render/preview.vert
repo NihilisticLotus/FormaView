@@ -10,5 +10,6 @@ layout(location=1) out float influence;
 layout(location=2) out vec3 worldNormal;
 layout(location=3) out vec3 surfaceTint;
 layout(location=4) out vec3 surfaceCoverage;
+layout(location=5) out vec3 deformedPosition;
 layout(std140,binding=0) uniform Params { mat4 matrix; vec4 options; };
-void main(){gl_Position=matrix*vec4(position,1);texcoord=uv;influence=weight;worldNormal=normal;surfaceTint=tint;surfaceCoverage=coverage;}
+void main(){deformedPosition=position; gl_Position=matrix*vec4(position,1);texcoord=uv;influence=weight;worldNormal=normal;surfaceTint=tint;surfaceCoverage=coverage;}

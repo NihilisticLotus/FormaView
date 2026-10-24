@@ -1,13 +1,19 @@
 #pragma once
+#include <chrono>
 #include "formaview/render_item.hpp"
 #include "model_document.hpp"
+#include "formaview/fbx.hpp"
 #include "model_scene.hpp"
 #include "model_skeleton.hpp"
+#include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
+#include <QQuickWindow>
+#include <QPointer>
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 #include <future>
+#include <deque>
 #include <list>
 #include <stop_token>
 
@@ -57,6 +63,27 @@ class ModelSession : public QObject {
   Q_PROPERTY(QString textureReference READ textureReference NOTIFY changed)
   Q_PROPERTY(QString textureError READ textureError NOTIFY changed)
   Q_PROPERTY(bool textureBusy READ textureBusy NOTIFY changed)
+  Q_PROPERTY(bool animated READ animated NOTIFY changed)
+  Q_PROPERTY(QVariantList clips READ clips NOTIFY changed)
+  Q_PROPERTY(int clipIndex READ clipIndex NOTIFY animChanged)
+  Q_PROPERTY(double time READ time NOTIFY animChanged)
+  Q_PROPERTY(bool playing READ playing NOTIFY animChanged)
+  Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY animChanged)
+  Q_PROPERTY(double speed READ speed WRITE setSpeed NOTIFY animChanged)
+  Q_PROPERTY(QVariantMap clipInfo READ clipInfo NOTIFY animChanged)
+  Q_PROPERTY(bool pairMeshVisible READ pairMeshVisible NOTIFY animChanged)
+  Q_PROPERTY(bool rootLockOn READ rootLockOn NOTIFY animChanged)
+  Q_PROPERTY(int rootBase READ rootBase WRITE setRootBase NOTIFY animChanged)
+  Q_PROPERTY(int rootIndex READ rootIndex NOTIFY animChanged)
+  Q_PROPERTY(QVariantList rootCandidates READ rootCandidates NOTIFY animChanged)
+  Q_PROPERTY(QVariantMap rootLockInfo READ rootLockInfo NOTIFY animChanged)
+  Q_PROPERTY(bool canAttachExternalAnimation READ canAttachExternalAnimation NOTIFY changed)
+  Q_PROPERTY(QVariantMap externalInfo READ externalInfo NOTIFY animChanged)
+  Q_PROPERTY(bool externalBusy READ externalBusy NOTIFY changed)
+  Q_PROPERTY(bool hasComparableSkeleton READ hasComparableSkeleton NOTIFY changed)
+  Q_PROPERTY(bool compareBusy READ compareBusy NOTIFY changed)
+  Q_PROPERTY(QVariantMap compareResult READ compareResult NOTIFY changed)
+  Q_PROPERTY(QString compareError READ compareError NOTIFY changed)
 public:
   explicit ModelSession(QObject *parent = nullptr);
   ~ModelSession() override;
@@ -120,10 +147,51 @@ public:
   QString textureError() const { return textureError_; }
   bool canClearTexture() const;
   bool textureBusy() const { return textureBusy_; }
+  bool animated() const { return document_ && document_->animated(); }
+  QVariantList clips() const {
+    return document_ ? document_->clips : QVariantList{};
+  }
+  int clipIndex() const { return clipIndex_; }
+  double time() const { return time_; }
+  bool playing() const { return playing_; }
+  bool loop() const { return loop_; }
+  double speed() const { return speed_; }
+  QVariantMap clipInfo() const;
+  Q_INVOKABLE void togglePlay();
+  Q_INVOKABLE void seek(double seconds);
+  Q_INVOKABLE void stepFrame(int frames);
+  Q_INVOKABLE void setClipIndex(int index);
+  Q_INVOKABLE void setLoop(bool value);
+  Q_INVOKABLE void setSpeed(double value);
+  bool pairMeshVisible() const { return pairMeshVisible_; }
+  Q_INVOKABLE void setPairMeshVisible(bool value);
+  bool rootLockOn() const { return rootLockOn_; }
+  int rootBase() const { return rootBase_; }
+  Q_INVOKABLE void setRootBase(int base);
+  int rootIndex() const { return rootIndex_; }
+  Q_INVOKABLE void setRootIndex(int index);
+  QVariantList rootCandidates() const;
+  QVariantMap rootLockInfo() const;
+  Q_INVOKABLE void setRootLock(bool value);
+  bool canAttachExternalAnimation() const {
+    return document_ && document_->canAttachExternal();
+  }
+  QVariantMap externalInfo() const;
+  bool externalBusy() const { return !externalJobs_.empty() || !externalQueue_.empty(); }
+  Q_INVOKABLE void attachExternalAnimation(const QString &url);
+  Q_INVOKABLE void detachExternalAnimation();
+  bool hasComparableSkeleton() const;
+  bool compareBusy() const { return !compareJobs_.empty(); }
+  QVariantMap compareResult() const { return compareResult_; }
+  QString compareError() const { return compareError_; }
+  QByteArray sourceDataDigest() const;
+  Q_INVOKABLE void compareSkeletonWith(const QString &url);
   Q_INVOKABLE void selectMaterial(int);
   Q_INVOKABLE void associateTexture(const QString &);
   Q_INVOKABLE void removeTexture();
   Q_INVOKABLE void open(const QString &);
+  Q_INVOKABLE void setAnimationReference(const QString &reference);
+  Q_INVOKABLE void setAnimationCompanion(const QString &companion);
   Q_INVOKABLE void clear();
   Q_INVOKABLE void cancel();
   Q_INVOKABLE void selectMesh(int);
@@ -132,10 +200,19 @@ public:
   Q_INVOKABLE void selectUV(int);
   Q_INVOKABLE void setMode(int);
   Q_INVOKABLE void setIsolated(bool);
-  void pick(const QMatrix4x4 &, QPointF normalized, bool uvView = false);
+  void enableGpuSkinning(bool enabled);
+  void attachRenderWindow(QQuickWindow *);
+  void gpuSkinningFailed(const QString &, std::shared_ptr<const formaview::render::Frame>);
+  void pick(const QMatrix4x4 &, QPointF normalized, bool uvView = false,
+      std::shared_ptr<const formaview::render::Frame> presented = {});
   std::shared_ptr<const formaview::render::Frame> frame() const {
     return frame_;
   }
+  // Verification oracles only: an attach may still extend this document in place.
+  std::shared_ptr<const ModelDocument> documentSnapshot() const { return document_; }
+  // True once the presented pose reflects the current view state (verification).
+  ModelRenderState renderStateForTest() const { return renderState(); }
+  bool renderedStateCurrent() const { return document_ && stateKey(renderState())==stateKey(renderedState_); }
   std::pair<QVector3D, float> focusBounds(bool selected) const;
   std::pair<QVector3D, float> uvBounds(bool reference = true) const;
   std::shared_ptr<const formaview::render::Frame> frameFor(bool uv) const {
@@ -143,6 +220,7 @@ public:
   }
 signals:
   void changed();
+  void animChanged();
   void selectionChanged();
   void frameChanged();
   void documentChanged();
@@ -169,6 +247,7 @@ private:
     int uv{-1};
   };
   void startPending();
+  void openInputs(QString, QString, QString);
   struct FrameResult {
     ModelFrames frames;
     ModelRenderState state;
@@ -180,6 +259,8 @@ private:
     std::future<FrameResult> future;
   };
   void startFrame();
+  void tickAnimation();
+  void refreshAnimationFrame();
   ModelRenderState renderState() const;
   QByteArray stateKey(const ModelRenderState &) const;
   void cacheFrame();
@@ -187,6 +268,7 @@ private:
   void rebuild();
   void clearSelection();
   void updateSkeleton(bool resetHighlight = true);
+  const ModelMesh *selectedMesh() const;
   std::vector<bool> visibleMeshes() const;
   void chooseVisibleMesh();
   std::shared_ptr<ModelDocument> document_;
@@ -197,6 +279,44 @@ private:
   std::vector<TextureJob> textureJobs_;
   std::vector<FrameJob> frameJobs_;
   ModelFrames frames_;
+  bool gpuEnabled_{}, gpuDisabled_{};
+  QPointer<QQuickWindow> gpuWindow_;
+  QMetaObject::Connection renderTickConnection_;
+  QByteArray gpuKey_;
+  // Presentation of resident GPU geometry: shown draws and highlight, recomputed
+  // only when the selection changes, never per pose.
+  GpuView gpuView_;
+  QByteArray gpuViewKey_;
+  std::shared_ptr<const ModelGpuGeometry> gpuViewOwner_, gpuHighlightOwner_;
+  GpuHighlight gpuHighlight_;
+  QString gpuHighlightNode_;
+  QByteArray gpuStateKey(const ModelRenderState &) const;
+  QByteArray gpuViewKey(const ModelRenderState &) const;
+  std::shared_ptr<const ModelGpuGeometry> gpuGeometry_;
+  struct GpuJob {
+    quint64 generation;
+    QByteArray normKey, fullKey; // Residency key / complete state key
+    std::stop_source stop;
+    std::future<std::shared_ptr<const ModelGpuGeometry>> future;
+  };
+  std::optional<GpuJob> gpuJob_;
+  bool refreshGpuFrame();
+  void finishGpuGeometry();
+  struct PendingPick {
+    quint64 generation,poseRequest,request;
+    std::shared_ptr<const ModelDocument> document;
+    ModelRenderState state;
+    std::shared_ptr<const formaview::render::Frame> frame;
+    QMatrix4x4 view;QPointF normalized;
+  };
+  struct PickJob {
+    quint64 generation,poseRequest,request;
+    std::stop_source stop;std::future<ModelPickHit> future;
+  };
+  quint64 pickRequest_{};
+  std::optional<PendingPick> pendingPick_;
+  std::optional<PickJob> pickJob_;
+  void startGpuPick();void finishGpuPick();void applyPick(const ModelPickHit &,bool);
   ModelRenderState renderedState_;
   struct CachedFrame {
     QByteArray key;
@@ -209,7 +329,14 @@ private:
   bool globalFrameFailure_{};
   std::vector<std::map<int, ModelTextureLink>> textureLinks_;
   QTimer timer_;
+  QTimer animTimer_;
+  QElapsedTimer animClock_;
   QString path_, pending_, error_;
+  QString referencePath_, companionPath_;
+  // Session-level reference memory (process lifetime only, never persisted):
+  // the user's last explicit PSK choice, re-verified per PSA on every open.
+  QString sessionReferencePath_;
+  QString companionCandidate(const QString &psa) const;
   QString selectedNode_;
   QString skeletonNode_, highlightedNode_;
   int skeletonJoint_{-1};
@@ -222,6 +349,73 @@ private:
   QString textureError_;
   quint64 textureRequest_{};
   int mesh_{}, bone_{}, mode_{}, material_{};
+  int clipIndex_{};
+  double time_{};
+  bool playing_{}, loop_{true};
+  bool pairMeshVisible_{};
+  bool resumePlaybackOnLanding_{};
+  bool rootLockOn_{};
+  int rootBase_{}; // 0 first frame, 1 reference pose, 2 zero.
+  int rootIndex_{-1}; // -1 auto (unique root).
+  int rootBaseClip_{-1};
+  std::vector<formaview::Matrix4> rootBaseLocals_;
+  struct ExternalResult {
+    std::shared_ptr<formaview::skeletal::FbxDocument> holder;
+    std::shared_ptr<ModelDocument> actor;
+    QString error, path;
+  };
+  struct ExternalJob {
+    quint64 generation;
+    std::stop_source stop;
+    std::future<ExternalResult> future;
+  };
+  std::vector<ExternalJob> externalJobs_;
+  // Multi-select batches: files beyond the concurrent read budget wait here
+  // (never dropped); results apply in selection order with a per-file outcome.
+  std::deque<QString> externalQueue_;
+  int externalRequested_{}, externalApplied_{};
+  QStringList externalFailed_;
+  QString externalAppliedStatus_, externalAppliedNotice_;
+  void startExternalJob(const QString &path);
+  // GPU skinning applies to this document in its current view state.
+  bool gpuSkinActive() const;
+  struct CompareResult {
+    QVariantMap report;
+    QString error;
+    double readMs{}; // Worker: lease + parse + report, off the GUI thread.
+  };
+  struct CompareJob {
+    quint64 generation;
+    std::stop_source stop;
+    std::future<CompareResult> future;
+    std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
+  };
+  std::vector<CompareJob> compareJobs_;
+  // Heavy externally-driven mesh frames are built off the GUI thread; the
+  // generation token rejects stale results after switches/cancels.
+  struct AsyncFrame {
+    quint64 generation;
+    quint64 poseRequest;
+    int clip;
+    double time;
+    ModelRenderState state;
+    std::stop_source stop;
+    std::future<ModelFrames> future;
+  };
+  std::optional<AsyncFrame> asyncFrame_;
+  quint64 poseRequest_{};
+  bool pendingAnimationFrame_{};
+  void finishAsyncFrame();
+  QVariantMap compareResult_;
+  QString compareError_;
+  void applyExternalDrive(std::shared_ptr<formaview::skeletal::FbxDocument> holder,
+                          const QString &path);
+  void applyExternalActor(std::shared_ptr<ModelDocument> source,
+                          const QString &path);
+  const std::vector<formaview::Matrix4> *rootBaseFor(int clip);
+  std::vector<formaview::Matrix4> rootLockedWorlds();
+  int resolvedRoot() const;
+  double speed_{1};
   std::vector<int> bindingSelections_, uvSelections_;
   std::vector<ModelClassification> classes_;
   std::map<QString, int> levels_;

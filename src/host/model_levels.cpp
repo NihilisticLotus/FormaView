@@ -108,7 +108,9 @@ void ModelSession::setCollisionMode(int value) {
 }
 void ModelSession::classifyMesh(const QString &group, int level,
                                 bool collision) {
-  if (!document_ || level < 0 || level > 999 || group.size() > 120)
+  if (!selectedMesh() ||
+      static_cast<std::size_t>(mesh_) >= classes_.size() ||
+      level < 0 || level > 999 || group.size() > 120)
     return;
   auto &item = classes_.at(static_cast<std::size_t>(mesh_));
   item = {group.trimmed(), level, collision};
@@ -122,9 +124,9 @@ void ModelSession::classifyMesh(const QString &group, int level,
   emit changed();
 }
 void ModelSession::restoreClassification() {
-  if (!document_)
+  const auto *mesh = selectedMesh();
+  if (!mesh)
     return;
-  const auto &source =
-      document_->meshes.at(static_cast<std::size_t>(mesh_)).classification;
+  const auto &source = mesh->classification;
   classifyMesh(source.group, source.level, source.collision);
 }

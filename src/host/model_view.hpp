@@ -1,6 +1,7 @@
 #pragma once
 #include "model_session.hpp"
 #include <QPointer>
+#include <atomic>
 #include <QVector3D>
 #include <QtQml/qqmlregistration.h>
 struct RenderItemForeign {
@@ -20,12 +21,21 @@ class ModelView : public formaview::render::Item {
       bool showGrid READ gridVisible WRITE setGridVisible NOTIFY guidesChanged)
   Q_PROPERTY(
       bool showAxes READ axesVisible WRITE setAxesVisible NOTIFY guidesChanged)
+  Q_PROPERTY(bool wireframe READ wireframeVisible WRITE setWireframe NOTIFY wireframeChanged)
 public:
   explicit ModelView(QQuickItem *parent = nullptr);
   ModelSession *session() const { return session_; }
   int representation() const { return representation_; }
   bool gridVisible() const { return showGrid; }
   bool axesVisible() const { return showAxes; }
+  bool wireframeVisible() const { return wireframe; }
+  void setWireframe(bool value) {
+    if (wireframe == value)
+      return;
+    wireframe = value;
+    update();
+    emit wireframeChanged();
+  }
   void setGridVisible(bool value) {
     if (showGrid != value) {
       showGrid = value;
@@ -68,6 +78,7 @@ signals:
   void sessionChanged();
   void representationChanged();
   void guidesChanged();
+  void wireframeChanged();
   void cameraChanged(QVariantMap state);
 
 protected:
@@ -77,6 +88,9 @@ private:
   void refresh();
   void camera();
   QPointer<ModelSession> session_;
+  std::shared_ptr<std::atomic<std::shared_ptr<const formaview::render::Frame>>> presented_,submitted_;
+  QMetaObject::Connection swapConnection_;
+  void bindPresentedWindow(QQuickWindow *);
   QMatrix4x4 matrix_;
   QVector3D target_;
   double yaw_{25}, pitch_{12}, distance_{3.2};

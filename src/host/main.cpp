@@ -1,3 +1,4 @@
+#include "window_capture.hpp"
 #include "desktop.hpp"
 #include "desktop_trace.hpp"
 #include "window_chrome.hpp"
@@ -353,7 +354,7 @@ int main(int argc, char *argv[]) {
     static const QRegularExpression safeName("^[a-zA-Z0-9_-]{1,80}$");
     if (!safeName.match(name).hasMatch())
       return;
-    const auto captured = previewWindow->grabWindow();
+    const auto captured = captureExposedWindow(previewWindow);
     const auto path = previewRoot + "/" + name;
     const auto saved = captured.save(path + ".png");
     QJsonObject uiState;
