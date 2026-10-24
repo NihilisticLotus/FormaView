@@ -86,7 +86,7 @@ if(TARGET formaview_models)
         ModelPane.qml ModelInspector.qml ModelSkeletonPane.qml ModelBindingDetails.qml ModelViewport.qml ModelPointPanel.qml ModelLodPanel.qml ModelMatrix.qml ModelSourceDetails.qml)
 endif()
 if(TARGET formaview_image_conversion)
-    list(APPEND desktop_qml ImagePane.qml ImageInspector.qml PixelPanel.qml ExposureSpinBox.qml ConversionWorkspace.qml ConversionSettings.qml ConversionInputs.qml ConversionOverrides.qml ConversionResults.qml ConversionItemRow.qml ImageJobsPane.qml McpSettings.qml)
+    list(APPEND desktop_qml ImagePane.qml ImageInspector.qml PixelPanel.qml ExposureSpinBox.qml ConversionWorkspace.qml ConversionSettings.qml ConversionNaming.qml ModelExportSettings.qml ConversionInputs.qml ConversionOverrides.qml ConversionResults.qml ConversionItemRow.qml ImageJobsPane.qml McpSettings.qml)
 endif()
 qt_add_qml_module(formaview URI FormaView.Engineering
     OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/FormaView/Engineering

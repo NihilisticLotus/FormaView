@@ -91,12 +91,15 @@ private:
   explicit FbxDocument(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
+enum class FbxAxisPreset { Source, Maya, Houdini, Unreal, Max, Cinema4D, Blender, Unity };
 struct FbxWriteOptions {
   // Explicit convention only. Initial writer supports a verified
   // Z-up/X-forward, right-handed numerical space and centimetres. No implicit
   // axis guessing.
   Limits limits;
   std::stop_token stop;
+  FbxAxisPreset output_axes{FbxAxisPreset::Source};
+  double output_metres_per_unit{0.01};
   PairingPolicy pairing_policy{PairingPolicy::StrictRecords};
   const PsaConfig *psa_config{}; // Explicit companion, valid only with a paired
                                  // PSK reference.
@@ -119,5 +122,18 @@ FbxWriteResult write_fbx_clip(const ActorAsset &animation, std::size_t clip,
                               const std::filesystem::path &output,
                               const ActorAsset *paired_mesh = nullptr,
                               const FbxWriteOptions &options = {});
+// Pure ActorX model export; never creates an animation stack.
+void write_fbx_model(const ActorAsset &model, const std::filesystem::path &output,
+                     const FbxWriteOptions &options = {});
+// Bounded encoding for the shared output transaction; no temporary files.
+[[nodiscard]] std::vector<std::byte> encode_fbx_model(const ActorAsset &model,
+                                                     const FbxWriteOptions &options = {});
+[[nodiscard]] std::vector<std::byte> encode_fbx_clip(const ActorAsset &animation, std::size_t clip,
+    const ActorAsset *paired_mesh = nullptr, const FbxWriteOptions &options = {},
+    FbxWriteResult *result = nullptr);
+// One file, one independent animation stack per selected source clip.
+[[nodiscard]] std::vector<std::byte> encode_fbx_clips(const ActorAsset &animation,
+    std::span<const std::size_t> clips, const ActorAsset *paired_mesh = nullptr,
+    const FbxWriteOptions &options = {}, std::vector<FbxWriteResult> *results = nullptr);
 [[nodiscard]] std::string fbx_writer_version();
 } // namespace formaview::skeletal

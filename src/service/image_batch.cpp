@@ -1,4 +1,7 @@
 #include "formaview/image_batch.hpp"
+#ifdef FORMAVIEW_MODEL_EXPORT
+#include "formaview/model_export.hpp"
+#endif
 #include "formaview/scheduler.hpp"
 #include <QCryptographicHash>
 #include <QDir>
@@ -374,6 +377,23 @@ struct ImageBatchService::Impl {
           protected_inputs.push_back(std::move(fallback));
         }
       }
+#ifdef FORMAVIEW_MODEL_EXPORT
+      for (const auto &entry : entries) {
+        const auto request = entry.toObject()["request"].toObject();
+        const auto options = request["options"].toObject();
+        if (options["target"] != "fbx") continue;
+        for (const auto &auxiliary : model_export::auxiliary_inputs(request)) {
+          InputSnapshot fallback;
+          fallback.resolved_path = auxiliary;
+          try {
+            leases.push_back(InputLease::open(scope, fallback.resolved_path, limits.image.input_bytes, stop));
+            protected_inputs.push_back(leases.back().snapshot());
+          } catch (const skeletal::Failure &) {
+            protected_inputs.push_back(std::move(fallback));
+          }
+        }
+      }
+#endif
       qsizetype succeeded = 0, failed = 0, cancelled_count = 0;
       std::vector<std::filesystem::path> allocated_outputs;
       for (qsizetype index = 0; index < entries.size(); ++index) {
@@ -506,7 +526,12 @@ struct ImageBatchService::Impl {
              "Non-renaming batch destinations must be distinct");
       if (!request["options"].isObject())
         fail(ErrorCode::InvalidArgument, "Image options required");
-      (void)parse_image_options(request["options"].toObject());
+#ifdef FORMAVIEW_MODEL_EXPORT
+      if (model_export::handles(request))
+        model_export::validate_options(request["options"].toObject());
+      else
+#endif
+        (void)parse_image_options(request["options"].toObject());
       items.append(QJsonObject{{"index", static_cast<qint64>(i)},
                                {"request", request},
                                {"status", "pending"}});

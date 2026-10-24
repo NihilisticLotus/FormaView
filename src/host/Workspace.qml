@@ -95,7 +95,7 @@ Item {
             RowLayout {
                 objectName: "topBar"; anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: 160; spacing: 12
                 AppIcon { name: root.settingsVisible ? "general" : root.conversionVisible ? "conversion" : root.tasksVisible ? "tasks" : "assets"; size: 20 }
-                Label { font.pixelSize: 18; font.bold: true; color: Theme.text; text: root.settingsVisible ? Theme.t("设置", "Settings", "設定") : root.conversionVisible ? Theme.t("图片批量转换", "Batch image conversion", "影像批次轉換") : root.tasksVisible ? Theme.t("任务中心", "Task center", "工作中心") : Theme.t("资产工作区", "Asset workspace", "資產工作區") }
+                Label { font.pixelSize: 18; font.bold: true; color: Theme.text; text: root.settingsVisible ? Theme.t("设置", "Settings", "設定") : root.conversionVisible ? Theme.t("资产转换与导出", "Asset conversion and export", "資產轉換與匯出") : root.tasksVisible ? Theme.t("任务中心", "Task center", "工作中心") : Theme.t("资产工作区", "Asset workspace", "資產工作區") }
                 Label { Layout.fillWidth: true; visible: root.currentPage === "assets"; text: root.controller.directory.replace(/\\/g, "/").split("/").pop(); elide: Text.ElideMiddle; color: Theme.muted }
                 Item { visible: root.currentPage !== "assets"; Layout.fillWidth: true }
                 Tool { objectName: "globalFocusPreview"; visible: root.currentPage === "assets"; iconName: "fullscreen"; checked: root.focusMode; text: root.focusMode ? Theme.t("退出专注 · Esc", "Exit focus · Esc", "退出專注 · Esc") : Theme.t("专注预览", "Focus preview", "專注預覽"); onClicked: root.setFocusMode(!root.focusMode) }

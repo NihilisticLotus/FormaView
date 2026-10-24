@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <tuple>
 namespace sk = formaview::skeletal;
 namespace {
 std::string quoted(std::string_view s) {
@@ -68,6 +69,141 @@ void snapshot(const sk::FbxDocument &f, std::ostream &out) {
             << ",\"end\":" << c.end << '}';
     }
     out << "]}";
+}
+bool verify_clip(const std::filesystem::path &source, const std::filesystem::path &reference,
+                 const std::filesystem::path &companion, const std::filesystem::path &output,
+                 std::size_t clip, std::ostream &out) {
+    const auto a = sk::read_actor(source, options());
+    const auto m = sk::read_actor(reference, options());
+    const auto pairing = sk::pair(a, m, 1e-4, sk::PairingPolicy::ReferenceSkeleton);
+    if (!pairing.compatible || clip >= a.sequences.size())
+        throw std::runtime_error("Invalid animation reference or clip");
+    const auto size = std::filesystem::file_size(companion);
+    if (size > options().limits.input_bytes)
+        throw std::runtime_error("Config budget exceeded");
+    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+    std::ifstream file(companion, std::ios::binary);
+    if (!file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(size)))
+        throw std::runtime_error("Cannot read config");
+    const auto config = sk::read_psa_config(bytes, a, options());
+    const auto f = sk::FbxDocument::read(output);
+    const auto &d = f.data();
+    const auto &seq = a.sequences[clip];
+    if (d.clips.size() != 1 || d.clips[0].source.original_name != seq.source.original_name ||
+        std::abs(d.clips[0].start - seq.time.source_start_seconds) > 1e-8 ||
+        std::abs(d.clips[0].end - seq.time.source_end_seconds) > 1e-8)
+        throw std::runtime_error("Exported clip identity or timing differs");
+    std::map<std::string, std::size_t> nodes;
+    for (std::size_t i = 0; i < d.nodes.size(); ++i)
+        if (d.nodes[i].bone) nodes.emplace(d.nodes[i].source.original_name, i);
+    if (nodes.size() != a.bones.size()) throw std::runtime_error("Exported bone count differs");
+    double error{}, config_effect{};
+    for (std::int64_t frame = 0; frame <= static_cast<std::int64_t>(seq.frame_count) * 2; ++frame) {
+        const auto seconds = std::min(frame * .5 / seq.fps, seq.time.source_end_seconds);
+        const auto expected = sk::evaluate_paired(a, pairing, clip, seconds, &config);
+        const auto unmasked = sk::evaluate_paired(a, pairing, clip, seconds);
+        const auto actual = f.evaluate(0, std::clamp(seconds, d.clips[0].start, d.clips[0].end));
+        for (std::size_t j = 0; j < a.bones.size(); ++j) {
+            const auto &world = actual.world.at(nodes.at(a.bones[j].source.original_name));
+            for (const auto v : world)
+                if (!std::isfinite(v)) throw std::runtime_error("Nonfinite exported matrix");
+            error = std::max(error, difference(world, expected.world[j]));
+            config_effect = std::max(config_effect, difference(unmasked.world[j], expected.world[j]));
+        }
+    }
+    out << "{\"passed\":" << (error < 1e-3 ? "true" : "false")
+        << ",\"world_matrix_error\":" << error << ",\"config_effect\":" << config_effect
+        << ",\"mesh_count\":" << d.meshes.size() << ",\"config_sha256\":"
+        << quoted(config.source.identity.sha256) << '}';
+    return error < 1e-3;
+}
+bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &output, std::ostream &out) {
+    const auto back = sk::FbxDocument::read(output);
+    const auto &d = back.data();
+    const auto &m = *source.mesh;
+    bool ok = d.clips.empty() && d.meshes.size() == 1;
+    double error{}, geometry_error{}, bind_error{}, default_error{};
+    auto *category_error = &geometry_error;
+    const auto compare = [&](double a, double b) {
+        if (!std::isfinite(a) || !std::isfinite(b)) { ok = false; return; }
+        error = std::max(error, std::abs(a - b));
+        *category_error = std::max(*category_error, std::abs(a - b));
+    };
+    const auto scalar = [](const formaview::Buffer &b, std::size_t i) {
+        if (b.scalar != formaview::ScalarType::Float64 || (i + 1) * sizeof(double) > b.bytes.size())
+            throw std::runtime_error("Invalid independent readback buffer");
+        double v{};
+        std::memcpy(&v, b.bytes.data() + i * sizeof(double), sizeof(v));
+        return v;
+    };
+    if (!ok) throw std::runtime_error("Pure model output has unexpected mesh/animation count");
+    const auto &mesh = d.meshes[0];
+    const auto &g = mesh.geometry;
+    ok = g.positions.element_count == m.points.size() && g.face_sizes.size() == m.faces.size();
+    if (!ok) throw std::runtime_error("Pure model geometry counts differ");
+    for (std::size_t p = 0; p < m.points.size(); ++p) {
+        compare(scalar(g.positions, p * 3), m.points[p].x);
+        compare(scalar(g.positions, p * 3 + 1), m.points[p].y);
+        compare(scalar(g.positions, p * 3 + 2), m.points[p].z);
+    }
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        ok = ok && g.face_sizes[f] == 3 && mesh.face_materials[f] == m.faces[f].material;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const auto wedge = m.faces[f].wedges[2 - c];
+            const auto point = m.wedges[wedge].point;
+            const auto corner = f * 3 + c;
+            ok = ok && g.corner_points[corner] == point;
+            const auto &uv0 = g.corner_attributes.at("uv/0/UV0");
+            compare(scalar(uv0, corner * 2), m.wedges[wedge].uv.x);
+            compare(scalar(uv0, corner * 2 + 1), 1 - m.wedges[wedge].uv.y);
+            std::size_t set = 1;
+            for (const auto &[name, values] : m.extra_uvs) {
+                const auto &uv = g.corner_attributes.at("uv/" + std::to_string(set++) + "/" + name);
+                compare(scalar(uv, corner * 2), values[wedge].x);
+                compare(scalar(uv, corner * 2 + 1), 1 - values[wedge].y);
+            }
+            if (!m.normals.empty()) {
+                const auto &ns = g.corner_attributes.at("normal");
+                compare(scalar(ns, corner * 3), m.normals[point].x);
+                compare(scalar(ns, corner * 3 + 1), m.normals[point].y);
+                compare(scalar(ns, corner * 3 + 2), m.normals[point].z);
+            }
+        }
+    }
+    category_error = &default_error;
+    std::map<std::string, std::size_t> nodes;
+    for (std::size_t i = 0; i < d.nodes.size(); ++i)
+        if (d.nodes[i].bone) nodes.emplace(d.nodes[i].source.original_name, i);
+    ok = ok && nodes.size() == source.bones.size();
+    for (const auto &bone : source.bones) {
+        const auto &node = d.nodes.at(nodes.at(bone.source.original_name));
+        for (std::size_t k = 0; k < 16; ++k) compare(node.default_world[k], (*bone.bind_world)[k]);
+        if (bone.parent) ok = ok && node.parent == nodes.at(source.bones[*bone.parent].source.original_name);
+    }
+    using WeightKey = std::tuple<std::string, std::uint32_t, double>;
+    std::vector<WeightKey> expected, actual;
+    for (const auto &weight : m.weights)
+        expected.emplace_back(source.bones[weight.bone].source.original_name, weight.point, weight.value);
+    category_error = &bind_error;
+    for (const auto &skin : mesh.skins)
+        for (const auto &cluster : skin.clusters) {
+            const auto &name = d.nodes[cluster.bone_node].source.original_name;
+            const auto bone = std::find_if(source.bones.begin(), source.bones.end(), [&](const auto &b) { return b.source.original_name == name; });
+            if (bone == source.bones.end()) throw std::runtime_error("Unexpected output cluster");
+            for (std::size_t k = 0; k < 16; ++k) compare(cluster.bind_to_world[k], (*bone->bind_world)[k]);
+            for (std::size_t j = 0; j < cluster.points.size(); ++j)
+                actual.emplace_back(name, cluster.points[j], cluster.weights[j]);
+        }
+    std::sort(expected.begin(), expected.end()); std::sort(actual.begin(), actual.end());
+    // Match the established ActorX roundtrip tolerances by semantic domain.
+    ok = ok && expected == actual && geometry_error < 1e-8 && bind_error < 1e-4 && default_error < 1e-4;
+    out << "{\"passed\":" << (ok ? "true" : "false") << ",\"max_error\":" << error
+        << ",\"geometry_error\":" << geometry_error << ",\"bind_error\":" << bind_error << ",\"default_error\":" << default_error
+        << ",\"points\":" << m.points.size() << ",\"faces\":" << m.faces.size()
+        << ",\"weights\":" << actual.size() << ",\"bones\":" << nodes.size()
+        << ",\"uv_sets\":" << m.extra_uvs.size() + 1 << ",\"source_sha256\":" << quoted(source.source.identity.sha256)
+        << ",\"output_sha256\":" << quoted(d.source.identity.sha256) << '}';
+    return ok;
 }
 bool roundtrip(const sk::ActorAsset &a, const sk::ActorAsset *m, std::size_t clip,
                const std::filesystem::path &output, std::ostream &out,
@@ -286,6 +422,15 @@ int wmain(int argc, wchar_t **argv) {
 int main(int argc, char **argv) {
 #endif
     try {
+        if (argc == 8 && std::filesystem::path(argv[1]) == "--verify-actor-clip") {
+            std::ofstream out{std::filesystem::path(argv[7])};
+            if (!out) throw std::runtime_error("Cannot open report");
+            out << std::setprecision(17);
+            const auto index = std::filesystem::path(argv[6]).string();
+            if (index.empty() || index.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("Invalid clip index");
+            return verify_clip(argv[2], argv[3], argv[4], argv[5], std::stoull(index), out) ? 0 : 2;
+        }
         if (argc != 5 && argc != 7 && argc != 8)
             throw std::runtime_error("Usage: skeletal_probe input.psa|input.fbx pair.psk|- output-directory "
                                      "report.json [companion.config|- reference [fbx-budget-bytes]]");
@@ -325,6 +470,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (!a.animation) {
+            if (paired != "-") return verify_model(a, paired, out) ? 0 : 2;
             const auto &m = *a.mesh;
             out << "{\"bones\":" << a.bones.size() << ",\"points\":" << m.points.size()
                 << ",\"faces\":" << m.faces.size() << ",\"weights\":" << m.weights.size()

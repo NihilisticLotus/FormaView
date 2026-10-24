@@ -36,7 +36,12 @@ bool active(const QString &s) {
   return s == "queued" || s == "running" || s == "planning";
 }
 QString outputName(const QString &input, qsizetype index,
-                   const QString &target, QString name) {
+                   const QString &target, QString name, const QString &clip = {}) {
+  if (name.contains("{clip}")) {
+    if (clip.isEmpty()) throw skeletal::Failure(ErrorCode::InvalidArgument,
+        "{clip} needs one selected animation per output; use {name}-animations.{ext} for multiple stacks");
+    name.replace("{clip}", clip);
+  }
   name.replace("{name}", QFileInfo(input).completeBaseName());
   name.replace("{index}", QString::number(index + 1));
   name.replace("{ext}", target);
@@ -44,7 +49,7 @@ QString outputName(const QString &input, qsizetype index,
       name.contains('{') || name.contains('}'))
     throw skeletal::Failure(ErrorCode::InvalidArgument,
                             "Output template must be a filename using "
-                            "{name}, {index}, {ext}");
+                            "{name}, {clip}, {index}, {ext}");
   return name;
 }
 } // namespace
@@ -61,7 +66,8 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
       const auto overrides = itemOverrides.isEmpty() ? QVariantMap{}
                                                      : itemOverrides[i].toMap();
       names.append(outputName(inputs[i], i,
-          overrides.value("target", target).toString(), nameTemplate));
+          overrides.value("target", target).toString(), nameTemplate,
+          target == "fbx" ? tr("clip") : QString{}));
     }
   } catch (const skeletal::Failure &e) {
     return {{"error", QString::fromUtf8(e.what())}};
@@ -106,7 +112,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
   if (busy_)
     return;
   if (inputs.size() > 64) {
-    error_ = tr("Select up to 64 images");
+    error_ = tr("Select up to 64 inputs");
     emit changed();
     return;
   }
@@ -183,6 +189,64 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         inspect["input"] = inputs[i];
         inspect["subresource"] = itemOptions.value("subresource").toInt();
         const auto source = existing->request(inspect, stop);
+        if (itemOptions["target"] == "fbx") {
+          const auto content = itemOptions.take("export_content").toString("combined");
+          const auto organization = itemOptions.take("file_organization").toString("per-clip");
+          const auto paired = itemOptions.take("paired_file").toString();
+          const bool selection_explicit = itemOptions.contains("selected_clips");
+          const auto selection = itemOptions.take("selected_clips").toArray();
+          if (content != "model" && content != "combined" && content != "animation")
+            throw skeletal::Failure(ErrorCode::InvalidArgument, "Unknown export content");
+          if (organization != "per-clip" && organization != "multiple-stacks")
+            throw skeletal::Failure(ErrorCode::InvalidArgument, "Unknown file organization");
+          auto animation_source = source;
+          if (content == "combined" && !source["has_mesh"].toBool() &&
+              paired.isEmpty() && !source.contains("error"))
+            throw skeletal::Failure(ErrorCode::InvalidArgument,
+                "Model + animation export needs a paired reference model for PSA input");
+          if (content != "model" && !paired.isEmpty()) {
+            if (source["has_mesh"].toBool()) {
+              itemOptions["animation"] = paired;
+              auto inspect_animation = request("inspect");
+              inspect_animation["input"] = paired;
+              animation_source = existing->request(inspect_animation, stop);
+            } else itemOptions["reference"] = paired;
+          }
+          itemOptions["include_mesh"] = content != "animation";
+          if (content == "model") itemOptions.remove("pairing_policy");
+          QJsonArray clips;
+          if (content != "model")
+            for (const auto &v : animation_source["clips"].toArray())
+              if (!selection_explicit || selection.contains(v.toObject()["id"])) clips.append(v);
+          inputInfo.append(QVariantMap{{"input", inputs[i]}, {"clips", clips.toVariantList()},
+              {"error", animation_source["error"].toObject().toVariantMap()}});
+          if (content != "model" && clips.isEmpty() && !animation_source.contains("error")) {
+            if (selection_explicit) continue;
+            throw skeletal::Failure(ErrorCode::InvalidArgument,
+                "No source animation selected; choose model-only or pair a PSA animation");
+          }
+          if (content == "model" && !source["has_mesh"].toBool() && !source.contains("error"))
+            throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
+          const auto append_model = [&](QJsonObject parameters, const QString &clip_name) {
+            if (items.size() >= 64)
+              throw skeletal::Failure(ErrorCode::ResourceLimit, "Expanded plan exceeds 64 outputs; select fewer clips");
+            items.append(QJsonObject{{"input", inputs[i]},
+                {"output", QDir(outputRoots[0].toString()).filePath(outputName(inputs[i], items.size(), "fbx", nameTemplate, clip_name))},
+                {"options", parameters}, {"conflict", conflict}});
+          };
+          if (content == "model" || clips.isEmpty()) append_model(itemOptions, "model");
+          else if (organization == "multiple-stacks") {
+            QJsonArray ids;
+            for (const auto &v : clips) ids.append(v.toObject()["id"]);
+            itemOptions["clip_ids"] = ids;
+            append_model(itemOptions, clips.size() == 1 ? clips[0].toObject()["name"].toString() : QString{});
+          } else for (const auto &v : clips) {
+            auto parameters = itemOptions;
+            parameters["clip_id"] = v.toObject()["id"];
+            append_model(parameters, v.toObject()["name"].toString());
+          }
+          continue;
+        }
         inputInfo.append(QVariantMap{
             {"input", inputs[i]},
             {"channels",
@@ -222,6 +286,8 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
             {"options", itemOptions},
             {"conflict", conflict}});
       }
+      if (items.isEmpty() && !inputs.isEmpty())
+        throw skeletal::Failure(ErrorCode::InvalidArgument, "No selected source clips match the current inputs");
       if (items.isEmpty())
         response = {{"configured", true}};
       else {
@@ -273,8 +339,59 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
     emit changed();
   }
 }
+void ImageJobs::inspectModelInputs(const QStringList &inputs, const QVariantMap &scope, const QString &paired) {
+  if (busy_) return;
+  if (inputs.isEmpty() || inputs.size() > 64) {
+    error_ = tr("Select between 1 and 64 inputs"); emit changed(); return;
+  }
+  busy_ = true;
+  error_.clear();
+  modelSources_.clear();
+  const auto revision = revision_;
+  emit changed();
+  QPointer<ImageJobs> receiver(this);
+  TaskRequest task;
+  task.priority = Priority::Foreground;
+  task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
+  task.work = [receiver, inputs, scope, paired, revision](std::stop_token stop) {
+    QVariantList sources;
+    QString error;
+    try {
+      auto scope_json = QJsonObject::fromVariantMap(scope);
+      scope_json["policy_revision"] = "model-inspection";
+      const auto policy = parse_image_scope(scope_json);
+      for (const auto &input : inputs) {
+        auto q = request("inspect"); q["input"] = input;
+        auto source = execute_image_request(q, policy, {}, stop);
+        if (source["has_mesh"].toBool() && !paired.isEmpty()) {
+          q["input"] = paired;
+          source = execute_image_request(q, policy, {}, stop);
+        }
+        source["input_path"] = input;
+        source["animation_path"] = q["input"];
+        sources.append(source.toVariantMap());
+      }
+    } catch (const std::exception &e) { error = QString::fromUtf8(e.what()); }
+    if (receiver) QMetaObject::invokeMethod(receiver, [receiver, sources, error, revision] {
+      if (!receiver) return;
+      receiver->busy_ = false;
+      if (receiver->revision_ == revision) {
+        receiver->modelSources_ = sources;
+        receiver->error_ = error;
+      }
+      emit receiver->changed();
+    }, Qt::QueuedConnection);
+    return TaskResult{};
+  };
+  const auto submitted = control_.submit(std::move(task));
+  preparation_ = submitted.task;
+  if (!submitted.task) {
+    busy_ = false; error_ = QString::fromStdString(submitted.error->message); emit changed();
+  }
+}
 void ImageJobs::invalidatePlan() {
   ++revision_;
+  error_.clear();
   if (service_ && !planId_.isEmpty() && active(plan_["state"].toString()))
     cancel("plan", planId_);
   planId_.clear();

@@ -11,6 +11,9 @@
 #endif
 #ifdef FORMAVIEW_IMAGE_UI
 #include "image_jobs.hpp"
+#ifdef FORMAVIEW_MODEL_EXPORT
+#include "formaview/fbx.hpp"
+#endif
 #include "image_session.hpp"
 #include "image_view.hpp"
 #include <cstring>
@@ -2530,6 +2533,145 @@ private slots:
       QCOMPARE(desktop_->preferences().value("density").toString(), QString("standard"));
     }
   }
+
+
+#ifdef FORMAVIEW_MODEL_EXPORT
+  void modelExportGuiLifecycle() {
+    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to skeletal_tests fbx synthetic fixtures");
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    const auto source = fixtures + "/source.psk";
+    desktop_->navigate(fixtures);
+    QTRY_VERIFY(desktop_->directory() == fixtures && idle());
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle());
+    const auto index = static_cast<FileList *>(desktop_->files())->indexOf(source);
+    QVERIFY(index >= 0);
+    desktop_->select(index);
+    QTRY_VERIFY(idle());
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QTRY_VERIFY(item("modelExportContent"));
+    const auto cleanup = qScopeGuard([&] {
+      if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
+        QMetaObject::invokeMethod(conversion, "close");
+    });
+    const auto edit = [&](const char *name, const QString &text) {
+      auto *field = item(name); QVERIFY(field);
+      field->forceActiveFocus();
+      QVERIFY(QMetaObject::invokeMethod(field, "selectAll"));
+      QInputMethodEvent event; event.setCommitString(text);
+      QCoreApplication::sendEvent(field, &event);
+      QCOMPARE(field->property("text").toString(), text);
+    };
+    const auto choose = [&](const char *name, int value) {
+      auto *choice = item(name); QVERIFY(choice);
+      choice->forceActiveFocus();
+      QTest::keyClick(window_, Qt::Key_Home);
+      for (int n = 0; n < value; ++n) QTest::keyClick(window_, Qt::Key_Down);
+      QCOMPARE(choice->property("currentIndex").toInt(), value);
+    };
+    const auto click = [&](const char *name) {
+      auto *control = item(name); QVERIFY(control && control->isEnabled());
+      control->forceActiveFocus(); QTest::qWait(150);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          control->mapToScene({control->width()/2, control->height()/2}).toPoint());
+    };
+    const auto output = root_ + "/model-export";
+    QVERIFY(QDir().mkpath(output));
+    edit("conversionOutputRoot", output);
+    click("conversionNamingHelp");
+    QQuickWindow *help = nullptr;
+    QTRY_VERIFY([&] { for (auto *w : QGuiApplication::allWindows()) if (w->objectName() == "conversionNamingWindow") help = qobject_cast<QQuickWindow *>(w); return help != nullptr; }());
+    QCOMPARE(help->modality(), Qt::NonModal);
+    choose("modelExportContent", 0);
+    edit("modelExportPaired", fixtures + "/source.psa");
+    QVERIFY(help->isVisible());
+    QVERIFY(captureWindow(help).save(root_ + "/model-naming-help.png"));
+    help->close();
+    click("modelExportInspect");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && !service->modelSources().isEmpty(), 10000);
+    QCOMPARE(service->modelSources().front().toMap().value("clips").toList().size(), 2);
+    QJsonArray jobs;
+    for (int mode = 0; mode < 4; ++mode) {
+      if (mode) click("editConversionSettings");
+      choose("modelExportContent", mode == 0 ? 0 : mode == 2 ? 1 : 2);
+      if (mode == 1) {
+        choose("modelExportOrganization", 1);
+        choose("modelExportAxes", 3);
+        choose("modelExportUnit", 2);
+        QCOMPARE(item("conversionNamingTemplate")->property("text").toString(), QString("{name}-animations.{ext}"));
+      }
+      if (mode == 2) edit("conversionNamingTemplate", "{name}-model.{ext}");
+      if (mode == 3) {
+        choose("modelExportOrganization", 0);
+        choose("modelExportClipMode", 1);
+        click("modelExportClip");
+        edit("conversionNamingTemplate", "{name}-selected-{clip}.{ext}");
+      }
+      if (mode == 1) {
+        const auto originalSize = window_->size();
+        window_->resize(window_->minimumWidth(), window_->minimumHeight());
+        for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+          desktop_->setLanguage(language);
+          QTest::qWait(80);
+          QCOMPARE(item("modelExportContent")->property("currentIndex").toInt(), 2);
+          QCOMPARE(item("modelExportOrganization")->property("currentIndex").toInt(), 1);
+          QCOMPARE(item("modelExportAxes")->property("currentIndex").toInt(), 3);
+          QCOMPARE(item("modelExportUnit")->property("currentIndex").toInt(), 2);
+          QCOMPARE(item("conversionCategory")->property("currentIndex").toInt(), 1);
+          save("model-narrow-" + language);
+        }
+        desktop_->setLanguage("zh-CN");
+        window_->resize(originalSize);
+        QTest::qWait(80);
+      }
+      save("model-settings-" + QString::number(mode));
+      click("createImagePlan");
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+      const auto items = service->plan().value("items").toList();
+      save("model-preflight-" + QString::number(mode));
+      QCOMPARE(items.size(), mode == 0 ? 2 : 1);
+      for (const auto &v : items) {
+        const auto entry = v.toMap();
+        const auto request = entry.value("request").toMap();
+        QVERIFY(!QFile::exists(request.value("output").toString()));
+        const auto preflight = entry.value("preflight").toMap();
+        QCOMPARE(preflight.value("clips").toList().size(), mode == 2 ? 0 : mode == 1 ? 2 : 1);
+        QCOMPARE(preflight.value("root_motion").toString(), QString("source"));
+      }
+      if (auto *ack = item("acknowledgeImageLosses")) {
+        if (!ack->property("checked").toBool()) click("acknowledgeImageLosses");
+      }
+      click("submitImagePlan");
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
+      for (const auto &v : service->job().value("items").toList()) {
+        const auto entry = v.toMap();
+        const auto result = entry.value("result").toMap();
+        const auto file = result.value("committed_output", result.value("output")).toString();
+        const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(file.toStdWString()));
+        QCOMPARE(doc.data().clips.size(), mode == 2 ? 0u : mode == 1 ? 2u : 1u);
+        QCOMPARE(doc.data().meshes.empty(), mode == 1 || mode == 3);
+        if (mode == 1) {
+          QCOMPARE(doc.data().metres_per_unit, 1.0);
+          QVERIFY(doc.data().clips[0].source.original_name != doc.data().clips[1].source.original_name);
+          for (size_t c = 0; c < doc.data().clips.size(); ++c) {
+            const auto &clip = doc.data().clips[c];
+            QCOMPARE(clip.start, 0.0);
+            QVERIFY(clip.end > clip.start);
+            QVERIFY(!doc.evaluate(c, (clip.start + clip.end)/2).world.empty());
+          }
+        }
+      }
+      jobs.append(QJsonObject::fromVariantMap(service->job()));
+      // Return from Jobs to Preflight before the next edit.
+      auto *steps = item("conversionSteps"); QVERIFY(steps);
+      steps->setProperty("currentIndex", 1);
+    }
+    evidence_["model_export_gui"] = jobs;
+  }
+#endif
 
   void conversionEditorPlanBinding() {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());

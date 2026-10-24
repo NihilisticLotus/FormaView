@@ -81,6 +81,7 @@ public:
   QObject *model() const { return model_.get(); }
   QObject *imageJobs() const { return imageJobs_.get(); }
   Q_INVOKABLE QStringList selectedImages() const;
+  Q_INVOKABLE QStringList selectedModels() const;
   Q_INVOKABLE QString localFile(const QUrl &url) const {
     return url.isLocalFile() ? url.toLocalFile() : QString{};
   }

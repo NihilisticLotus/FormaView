@@ -2,6 +2,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -437,6 +438,101 @@ void fbx(const std::filesystem::path &directory) {
     o.coordinates = {formaview::Axis::PositiveZ, formaview::Axis::PositiveX, formaview::Handedness::Right,
                      0.01, "Synthetic numeric fixture"};
     const auto a = sk::read_actor(animation(), o), m = sk::read_actor(mesh(), o);
+    for (const auto &[name, data] : std::vector<std::pair<std::string, Bytes>>{
+             {"source.psk", mesh()}, {"source.pskx", mesh(true)}, {"source.psa", animation()}}) {
+        std::ofstream file(directory / name, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
+        check(static_cast<bool>(file), "Cannot write service test source fixture");
+    }
+    // Pure PSK and wide-index PSKX exports must preserve source data without fake animation.
+    for (const bool wide : {false, true}) {
+        const auto source = sk::read_actor(mesh(wide), o);
+        const auto path = directory / (wide ? "model-pskx.fbx" : "model-psk.fbx");
+        std::filesystem::remove(path);
+        sk::write_fbx_model(source, path);
+        const auto encoded = sk::encode_fbx_model(source);
+        const auto memory_path = directory / (wide ? "memory-pskx.fbx" : "memory-psk.fbx");
+        {
+            std::ofstream stream_file(memory_path, std::ios::binary);
+            stream_file.write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+        }
+        const auto memory_back = read_fbx_traced(memory_path);
+        check(memory_back.data().clips.empty() && memory_back.data().meshes.size() == 1, "Memory FBX encoding failed");
+        sk::FbxWriteOptions small_encoded;
+        small_encoded.limits.decoded_bytes = 10000;
+        reject([&] { (void)sk::encode_fbx_model(source, small_encoded); }, formaview::ErrorCode::ResourceLimit);
+        const auto back = read_fbx_traced(path);
+        const auto &d = back.data();
+        check(d.clips.empty() && d.meshes.size() == 1, "Pure model has animation or missing mesh");
+        const auto &geometry = d.meshes[0];
+        check(geometry.skins.size() == 1, "Pure model missing skin");
+        const auto scalar = [](const formaview::Buffer &b, std::size_t index) {
+            check(b.scalar == formaview::ScalarType::Float64 && (index + 1) * sizeof(double) <= b.bytes.size(), "Invalid readback attribute");
+            double value{};
+            std::memcpy(&value, b.bytes.data() + index * sizeof(double), sizeof(double));
+            return value;
+        };
+        const auto &g = geometry.geometry;
+        check(g.positions.element_count == source.mesh->points.size(), "Pure model point count");
+        for (std::size_t j = 0; j < source.mesh->points.size(); ++j) {
+            near(scalar(g.positions, j * 3), source.mesh->points[j].x, 0);
+            near(scalar(g.positions, j * 3 + 1), source.mesh->points[j].y, 0);
+            near(scalar(g.positions, j * 3 + 2), source.mesh->points[j].z, 0);
+        }
+        check(g.face_sizes.size() == source.mesh->faces.size(), "Pure model face count");
+        for (std::size_t f = 0; f < source.mesh->faces.size(); ++f) {
+            check(g.face_sizes[f] == 3 && geometry.face_materials[f] == source.mesh->faces[f].material, "Pure model topology/material");
+            for (std::size_t c = 0; c < 3; ++c) {
+                const auto wedge = source.mesh->faces[f].wedges[2 - c];
+                check(g.corner_points[f * 3 + c] == source.mesh->wedges[wedge].point, "Pure model corner mapping");
+                near(scalar(g.corner_attributes.at("uv/0/UV0"), (f * 3 + c) * 2), source.mesh->wedges[wedge].uv.x, 0);
+                near(scalar(g.corner_attributes.at("uv/0/UV0"), (f * 3 + c) * 2 + 1), 1 - source.mesh->wedges[wedge].uv.y, 0);
+                near(scalar(g.corner_attributes.at("normal"), (f * 3 + c) * 3 + 2), 1, 0);
+                near(scalar(g.corner_attributes.at("colour/0"), (f * 3 + c) * 4), 128.0 / 255, 1e-7);
+                for (const auto &[name, uv] : source.mesh->extra_uvs) {
+                    const auto &back_uv = g.corner_attributes.at("uv/1/" + name);
+                    near(scalar(back_uv, (f * 3 + c) * 2), uv[wedge].x, 0);
+                    near(scalar(back_uv, (f * 3 + c) * 2 + 1), 1 - uv[wedge].y, 0);
+                }
+            }
+        }
+
+        std::size_t count{};
+        for (const auto &cluster : geometry.skins[0].clusters) {
+            const auto name = d.nodes[cluster.bone_node].source.original_name;
+            const auto bone = std::find_if(source.bones.begin(), source.bones.end(),
+                [&](const auto &b) { return b.source.original_name == name; });
+            check(bone != source.bones.end(), "Pure model lost bone name");
+            for (std::size_t k = 0; k < 16; ++k) {
+                near(cluster.bind_to_world[k], (*bone->bind_world)[k], 1e-6);
+                near(d.nodes[cluster.bone_node].default_world[k], (*bone->bind_world)[k], 1e-6);
+            }
+            for (std::size_t j = 0; j < cluster.points.size(); ++j) {
+                const auto weight = std::find_if(source.mesh->weights.begin(), source.mesh->weights.end(),
+                    [&](const auto &w) { return w.point == cluster.points[j] && source.bones[w.bone].source.original_name == name; });
+                check(weight != source.mesh->weights.end(), "Pure model added influence");
+                near(cluster.weights[j], weight->value, 0);
+                ++count;
+            }
+        }
+        check(count == source.mesh->weights.size() && count == 6, "Pure model truncated influences");
+        reject([&] { sk::write_fbx_model(source, path); }, formaview::ErrorCode::Conflict);
+        std::stop_source stop;
+        stop.request_stop();
+        sk::FbxWriteOptions stopped;
+        stopped.stop = stop.get_token();
+        reject([&] { sk::write_fbx_model(source, directory / "cancel-model.fbx", stopped); }, formaview::ErrorCode::Cancelled);
+        auto static_source = source;
+        static_source.bones.clear();
+        static_source.mesh->weights.clear();
+        static_source.mesh->point_weights.clear();
+        const auto static_path = directory / (wide ? "static-pskx.fbx" : "static-psk.fbx");
+        std::filesystem::remove(static_path);
+        sk::write_fbx_model(static_source, static_path);
+        const auto static_back = read_fbx_traced(static_path);
+        check(static_back.data().clips.empty() && static_back.data().meshes.size() == 1 &&
+              static_back.data().meshes[0].skins.empty(), "Static model acquired skin or animation");
+    }
     auto placeholder_bytes = animation();
     const auto records = offset(placeholder_bytes, "BONENAMES");
     for (std::size_t j = 0; j < 7; ++j)
@@ -467,6 +563,50 @@ void fbx(const std::filesystem::path &directory) {
                 near(actual.world[static_cast<std::size_t>(it - nodes.begin())][k], expected.world[j][k],
                      1e-3);
         }
+    }
+    {
+        auto multi = a;
+        multi.sequences[1].fps = 30;
+        multi.sequences[1].time.source_end_seconds = multi.sequences[1].frame_count / 30.0;
+        const std::array<std::size_t, 2> selection{1, 0};
+        std::vector<sk::FbxWriteResult> audits;
+        sk::FbxWriteOptions multi_options;
+        multi_options.include_mesh = false;
+        const auto encoded = sk::encode_fbx_clips(multi, selection, &m, multi_options, &audits);
+        const auto file = directory / "independent-stacks.fbx";
+        std::ofstream stream(file, std::ios::binary);
+        stream.write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+        stream.close();
+        const auto back = read_fbx_traced(file);
+        const auto &data = back.data();
+        check(data.clips.size() == 2 && data.meshes.empty() && audits.size() == 2,
+              "Multiple independent stacks or skeleton-only output lost");
+        for (std::size_t i = 0; i < selection.size(); ++i) {
+            const auto selected = selection[i];
+            const auto &seq = multi.sequences[selected];
+            check(data.clips[i].source.original_name == seq.source.original_name, "Stack order/name changed");
+            near(data.clips[i].start, 0);
+            near(data.clips[i].end, seq.time.source_end_seconds, 1e-8);
+            for (int half = 0; half <= seq.frame_count * 2; ++half) {
+                const auto time = std::min(half * .5 / seq.fps, seq.time.source_end_seconds);
+                const auto expected = sk::evaluate(multi, selected, time);
+                const auto actual = back.evaluate(i, std::min(time, data.clips[i].end));
+                for (std::size_t j = 0; j < multi.bones.size(); ++j) {
+                    const auto it = std::find_if(data.nodes.begin(), data.nodes.end(), [&](const auto &n) {
+                        return n.bone && n.source.original_name == multi.bones[j].source.original_name;
+                    });
+                    check(it != data.nodes.end(), "Stack export lost a bone");
+                    for (std::size_t k = 0; k < 16; ++k)
+                        near(actual.world[static_cast<std::size_t>(it - data.nodes.begin())][k], expected.world[j][k], 1e-3);
+                }
+            }
+        }
+        reject([&] { (void)sk::encode_fbx_clips(a, {}); }, formaview::ErrorCode::InvalidArgument);
+        const std::array<std::size_t, 2> duplicate{0, 0};
+        reject([&] { (void)sk::encode_fbx_clips(a, duplicate); }, formaview::ErrorCode::InvalidArgument);
+        auto bounded = multi_options;
+        bounded.limits.elements = 6;
+        reject([&] { (void)sk::encode_fbx_clips(a, selection, &m, bounded); }, formaview::ErrorCode::ResourceLimit);
     }
     for (std::size_t clip = 0; clip < a.sequences.size(); ++clip) {
         const auto path = clip == 0 ? directory / std::filesystem::path(u8"骨骼动画-0.fbx")
@@ -658,6 +798,80 @@ void fbx(const std::filesystem::path &directory) {
     const auto unknown = sk::read_actor(animation());
     reject([&] { write_fbx_traced(unknown, 0, directory / "unknown-axes.fbx"); },
            formaview::ErrorCode::Unsupported);
+    for (const auto preset : {sk::FbxAxisPreset::Maya, sk::FbxAxisPreset::Houdini,
+                             sk::FbxAxisPreset::Unreal, sk::FbxAxisPreset::Max,
+                             sk::FbxAxisPreset::Cinema4D, sk::FbxAxisPreset::Blender,
+                             sk::FbxAxisPreset::Unity}) {
+        sk::FbxWriteOptions converted;
+        converted.output_axes = preset;
+        converted.output_metres_per_unit = 1;
+        const std::array<std::size_t, 2> clips{0, 1};
+        const auto encoded = sk::encode_fbx_clips(a, clips, &m, converted);
+        const auto file = directory / ("axes-" + std::to_string(static_cast<int>(preset)) + ".fbx");
+        std::ofstream stream(file, std::ios::binary);
+        stream.write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+        stream.close();
+        const auto back = read_fbx_traced(file);
+        const auto &d = back.data();
+        check(d.meshes.size() == 1 && d.clips.size() == 2, "Coordinate conversion changed scene counts");
+        near(d.metres_per_unit, 1);
+        const bool z_up = preset == sk::FbxAxisPreset::Unreal || preset == sk::FbxAxisPreset::Max || preset == sk::FbxAxisPreset::Blender;
+        const bool left = preset == sk::FbxAxisPreset::Unreal || preset == sk::FbxAxisPreset::Cinema4D || preset == sk::FbxAxisPreset::Unity;
+        check(d.source.coordinates.up == (z_up ? formaview::Axis::PositiveZ : formaview::Axis::PositiveY) &&
+              d.source.coordinates.handedness == (left ? formaview::Handedness::Left : formaview::Handedness::Right), "Target coordinate metadata differs");
+        const auto transformed = [&](const std::array<double, 3> &p) {
+            if (preset == sk::FbxAxisPreset::Unreal) return std::array<double, 3>{p[0] * .01, -p[1] * .01, p[2] * .01};
+            if (z_up) return std::array<double, 3>{-p[1] * .01, p[0] * .01, p[2] * .01};
+            return std::array<double, 3>{-p[1] * .01, p[2] * .01, (left ? p[0] : -p[0]) * .01};
+        };
+        const auto point = [](const formaview::Matrix4 &matrix, const std::array<double, 3> &p) {
+            std::array<double, 3> result{};
+            for (std::size_t row = 0; row < 3; ++row)
+                result[row] = matrix[row * 4] * p[0] + matrix[row * 4 + 1] * p[1] + matrix[row * 4 + 2] * p[2] + matrix[row * 4 + 3];
+            return result;
+        };
+        const auto &mesh_back = d.meshes[0];
+        std::size_t weight_count{};
+        for (const auto &c : mesh_back.skins[0].clusters) weight_count += c.weights.size();
+        check(weight_count == m.mesh->weights.size(), "Coordinate conversion lost influences");
+        for (std::size_t clip = 0; clip < a.sequences.size(); ++clip) {
+            for (const auto fraction : {0.0, .25, .5, .75, 1.0}) {
+                const auto seconds = a.sequences[clip].time.source_end_seconds * fraction;
+                const auto source_pose = sk::evaluate(a, clip, seconds);
+                const auto output_pose = back.evaluate(clip, std::min(seconds, d.clips[clip].end));
+                for (std::size_t j = 0; j < a.bones.size(); ++j) {
+                    const auto it = std::find_if(d.nodes.begin(), d.nodes.end(), [&](const auto &n) {
+                        return n.bone && n.source.original_name == a.bones[j].source.original_name;
+                    });
+                    check(it != d.nodes.end(), "Coordinate conversion lost bone");
+                    const auto expected = transformed(point(source_pose.world[j], {0, 0, 0}));
+                    const auto actual = point(output_pose.world[static_cast<std::size_t>(it - d.nodes.begin())], {0, 0, 0});
+                    for (std::size_t c = 0; c < 3; ++c) near(actual[c], expected[c], 1e-5);
+                }
+                // Compare normalized skinned source positions using every raw influence.
+                for (std::size_t p = 0; p < m.mesh->points.size(); ++p) {
+                    std::array<double, 3> actual{}, expected{}, vertex{};
+                    std::memcpy(vertex.data(), mesh_back.geometry.positions.bytes.data() + p * 3 * sizeof(double), 3 * sizeof(double));
+                    double total{};
+                    for (const auto &w : m.mesh->weights) if (w.point == p) {
+                        const auto v = m.mesh->points[p];
+                        const auto skinned = point(sk::multiply(source_pose.world[w.bone], sk::inverse(*m.bones[w.bone].bind_world)), {v.x, v.y, v.z});
+                        for (std::size_t c = 0; c < 3; ++c) expected[c] += w.value * skinned[c];
+                        total += w.value;
+                    }
+                    if (total == 0) continue;
+                    for (auto &v : expected) v /= total;
+                    expected = transformed(expected);
+                    for (const auto &cluster : mesh_back.skins[0].clusters)
+                        for (std::size_t w = 0; w < cluster.points.size(); ++w) if (cluster.points[w] == p) {
+                            const auto skinned = point(sk::multiply(output_pose.world[cluster.bone_node], cluster.geometry_to_bone), vertex);
+                            for (std::size_t c = 0; c < 3; ++c) actual[c] += cluster.weights[w] * skinned[c] / total;
+                        }
+                    for (std::size_t c = 0; c < 3; ++c) near(actual[c], expected[c], 1e-5);
+                }
+            }
+        }
+    }
     auto long_clip = a;
     long_clip.sequences.resize(1);
     long_clip.sequences[0].frame_count = 8000;

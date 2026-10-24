@@ -601,6 +601,15 @@ QStringList Desktop::selectedImages() const {
     result.push_back(asset_.value("path").toString());
   return result;
 }
+QStringList Desktop::selectedModels() const {
+  QStringList result;
+  for (const auto &path : files_.selection())
+    if (kind(path) == "model" || kind(path) == "animation") result.push_back(path);
+  result.sort(Qt::CaseInsensitive);
+  if (result.isEmpty() && (asset_.value("kind") == "model" || asset_.value("kind") == "animation"))
+    result.push_back(asset_.value("path").toString());
+  return result;
+}
 void Desktop::cancel(const QString &id) {
   for (auto &job : jobs_)
     if (QString::fromStdString(job.handle.snapshot().id.value) == id)

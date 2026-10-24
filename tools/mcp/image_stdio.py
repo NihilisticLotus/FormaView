@@ -249,5 +249,37 @@ async def retry_image_plan(job_id: str) -> dict[str, Any]:
     return await native_request({'version': 1, 'operation': 'retry_plan', 'id': job_id})
 
 
+@server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+async def inspect_model(input: str) -> dict[str, Any]:
+    """Inspect PSK/PSKX/PSA source structure and stable animation clip IDs for FBX export.
+
+    Does not inherit preview root lock. Query capabilities.model_export for actual formats.
+    """
+    return await native_request({'version': 1, 'operation': 'inspect', 'input': input})
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def create_model_export_plan(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Preflight FBX export through the shared durable job service, up to 64 explicit outputs.
+
+    Each item: input, output, conflict=skip/rename/overwrite, options.
+    options: target='fbx', coordinates='actorx-z-up-x-forward-rh-cm'.
+    Optional output_axes: source/maya/houdini/unreal/3ds-max/cinema4d/blender/unity;
+    output_unit: source/cm/m/mm/in. Defaults preserve explicit source convention.
+    PSK/PSKX alone exports a model. PSA requires clip_id from inspect_model.
+    Pair PSA with options.reference=PSK/PSKX, or PSK/PSKX with options.animation=PSA.
+    PSA automatically uses a same-directory, same-basename .config (requires
+    reference PSK/PSKX). Preflight reports applied rules and file snapshot;
+    added/changed/deleted configs invalidate the plan. Optional companion overrides
+    discovery explicitly. pairing_policy='strict-records' (default)
+    or explicitly 'reference-skeleton'; include_mesh=true by default.
+    Use clip_id for one clip, or clip_ids=[stable IDs] for multiple independent
+    Animation Stacks in one FBX (no concatenation). No retargeting or viewport root lock.
+    Use shared get_image_plan, submit_image_job, get_image_job, cancel_image_work,
+    retry_image_plan and list_image_jobs for the same plan/job IDs. Review losses before submit.
+    """
+    return await native_request({'version': 1, 'operation': 'create_plan', 'items': items})
+
+
 if __name__ == '__main__':
     server.run(transport='stdio')

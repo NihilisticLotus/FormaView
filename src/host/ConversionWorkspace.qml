@@ -6,16 +6,23 @@ FocusScope {
     id: root
     objectName: "conversionWorkspace"
     required property var controller
-    property var inputs: []
+    property var imageInputs: []
+    property var modelInputs: []
+    property bool modelMode: false
+    readonly property var inputs: modelMode ? modelInputs : imageInputs
     property string selectionSnapshot: ""
     property bool initialized: false
     readonly property var service: controller.imageJobs
+    readonly property bool modelAvailable: !!service.capabilities.model_export
     signal closed()
     function open(page): void {
         const selected = controller.selectedImages()
-        const snapshot = JSON.stringify(selected)
+        const models = controller.selectedModels()
+        const snapshot = JSON.stringify([selected, models])
         if (!initialized || snapshot !== selectionSnapshot) {
-            inputs = selected
+            imageInputs = selected
+            modelInputs = models
+            modelMode = modelAvailable && models.length > 0 && selected.length === 0
             selectionSnapshot = snapshot
             settings.inputRoot = controller.directory
             if (page === 0) service.invalidatePlan()
@@ -40,14 +47,19 @@ FocusScope {
                 PageTab { stepStyle: true; lastStep: true; text: Theme.t("3 任务", "3 Jobs", "3 工作") }
             }
             Item { Layout.fillWidth: true }
+            Choice { objectName: "conversionCategory"; Layout.preferredWidth: 220; currentIndex: root.modelMode ? 1 : 0
+                labels: root.modelAvailable ? [Theme.t("贴图转换", "Texture conversion", "貼圖轉換"), Theme.t("模型与动画导出", "Model and animation export", "模型與動畫匯出")] : [Theme.t("贴图转换", "Texture conversion", "貼圖轉換")]
+                onActivated: { root.modelMode = currentIndex === 1; root.service.invalidatePlan(); results.acknowledged = false; tabs.currentIndex = 0 }
+                Accessible.name: Theme.t("转换类别", "Conversion category", "轉換類別")
+            }
             Tool { objectName: "returnToPreview"; quiet: true; iconName: "return"; text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.close() }
         }
         Label { Layout.fillWidth: true; visible: !!root.service.error; wrapMode: Text.WrapAnywhere; color: Theme.error; text: root.service.error; textFormat: Text.PlainText }
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: tabs.currentIndex
             ConversionSettings {
-                id: settings; controller: root.controller; inputs: root.inputs
-                onChooseInputs: paths => root.inputs = paths
+                id: settings; controller: root.controller; inputs: root.inputs; modelMode: root.modelMode
+                onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.imageInputs = paths }
                 onEdited: { root.service.invalidatePlan(); results.acknowledged = false }
                 onBack: root.close()
                 onPreflight: (scope, options, nameTemplate, conflict) => { root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides()); tabs.currentIndex = 1 }

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <fbxsdk.h>
 #include <limits>
 #include <memory>
@@ -13,6 +14,60 @@
 
 namespace formaview::skeletal {
 namespace {
+// The product service exports to bounded memory and lets OutputTransaction own
+// the only filesystem publication. A killed preflight cannot leave SDK files.
+class ExportStream final : public FbxStream {
+public:
+    std::vector<std::byte> data;
+    ExportStream(std::uint64_t limit, std::stop_token stop)
+        : limit_(std::min<std::uint64_t>(limit, LONG_MAX)), stop_(stop) {}
+    EState GetState() override { return open_ ? eOpen : eClosed; }
+    bool Open(void *) override { open_ = true; position_ = 0; return true; }
+    bool Close() override { open_ = false; position_ = 0; return true; }
+    bool Flush() override { return !error_; }
+    int Write(const void *source, int size) override {
+        if (error_ || stop_.stop_requested() || size < 0 ||
+            static_cast<std::uint64_t>(size) > limit_ - position_) {
+            error_ = 1;
+            return 0;
+        }
+        try {
+            const auto end = position_ + static_cast<std::size_t>(size);
+            if (end > data.size()) data.resize(end);
+            if (size) std::memcpy(data.data() + position_, source, static_cast<std::size_t>(size));
+            position_ = end;
+            return size;
+        } catch (const std::bad_alloc &) { error_ = 1; return 0; }
+    }
+    int Read(void *destination, int size) const override {
+        if (size < 0 || position_ > data.size()) return 0;
+        const auto count = std::min(static_cast<std::size_t>(size), data.size() - position_);
+        if (count) std::memcpy(destination, data.data() + position_, count);
+        position_ += count;
+        return static_cast<int>(count);
+    }
+    int GetReaderID() const override { return -1; }
+    int GetWriterID() const override { return -1; }
+    void Seek(const FbxInt64 &offset, const FbxFile::ESeekPos &origin) override {
+        const auto base = origin == FbxFile::eBegin ? 0LL : origin == FbxFile::eEnd
+            ? static_cast<FbxInt64>(data.size()) : static_cast<FbxInt64>(position_);
+        if (offset < -base || offset > static_cast<FbxInt64>(limit_) - base) { error_ = 1; return; }
+        position_ = static_cast<std::size_t>(base + offset);
+    }
+    long GetPosition() const override { return static_cast<long>(position_); }
+    void SetPosition(long value) override {
+        if (value < 0 || static_cast<std::uint64_t>(value) > limit_) { error_ = 1; return; }
+        position_ = static_cast<std::size_t>(value);
+    }
+    int GetError() const override { return error_; }
+    void ClearError() override {} // Budget/cancellation errors are sticky.
+private:
+    std::uint64_t limit_;
+    std::stop_token stop_;
+    mutable std::size_t position_{};
+    bool open_{};
+    int error_{};
+};
 void cancelled(std::stop_token stop) {
     if (stop.stop_requested())
         throw Failure(ErrorCode::Cancelled, "FBX export cancelled");
@@ -51,32 +106,85 @@ void convention(const Coordinates &c) {
             ErrorCode::Unsupported,
             "Writer requires explicit verified Z-up/X-forward right-handed centimetre numerical convention");
 }
+FbxAxisSystem output_axes(FbxAxisPreset preset) {
+    using A = FbxAxisSystem;
+    switch (preset) {
+    case FbxAxisPreset::Source:
+        return A(A::eZAxis, static_cast<A::EFrontVector>(-A::eParityEven), A::eRightHanded);
+    case FbxAxisPreset::Maya:
+    case FbxAxisPreset::Houdini: return A::MayaYUp;
+    case FbxAxisPreset::Unreal:
+        return A(A::eZAxis, static_cast<A::EFrontVector>(-A::eParityEven), A::eLeftHanded);
+    case FbxAxisPreset::Max:
+    case FbxAxisPreset::Blender: return A::Max;
+    case FbxAxisPreset::Cinema4D:
+    case FbxAxisPreset::Unity:
+        return A(A::eYAxis, static_cast<A::EFrontVector>(-A::eParityOdd), A::eLeftHanded);
+    }
+    throw Failure(ErrorCode::InvalidArgument, "Invalid output axis preset");
+}
 } // namespace
 std::string fbx_writer_version() { return FBXSDK_VERSION_STRING; }
-FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::filesystem::path &output,
-                              const ActorAsset *paired, const FbxWriteOptions &options) {
+static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_clip, const std::filesystem::path &output,
+                              const ActorAsset *paired, const FbxWriteOptions &options, bool model_only,
+                              std::vector<std::byte> *encoded = nullptr,
+                              std::span<const std::size_t> clips = {},
+                              std::vector<FbxWriteResult> *clip_results = nullptr) {
     cancelled(options.stop);
-    if (!a.animation || clip >= a.sequences.size() || a.bones.empty())
-        throw Failure(ErrorCode::InvalidArgument, "Writer requires an ActorX animation clip");
+    if (!model_only && (!a.animation || first_clip >= a.sequences.size() || a.bones.empty()))
+        throw Failure(ErrorCode::InvalidArgument, "Writer requires an ActorX animation first_clip");
     convention(a.source.coordinates);
+    const auto target_axes = output_axes(options.output_axes);
+    if (!std::isfinite(options.output_metres_per_unit) || options.output_metres_per_unit <= 0 ||
+        options.output_metres_per_unit > 1e6 || options.output_metres_per_unit < 1e-9)
+        throw Failure(ErrorCode::InvalidArgument, "Invalid output length unit");
     if (!std::isfinite(options.max_world_matrix_error) || options.max_world_matrix_error <= 0 ||
         !std::has_single_bit(options.max_sample_subdivisions) || options.max_sample_subdivisions > 1024)
         throw Failure(ErrorCode::InvalidArgument, "Invalid FBX bake accuracy or subdivision limit");
-    const auto &seq = a.sequences[clip];
+    if (model_only && (a.animation || !a.mesh || !options.include_mesh || options.psa_config))
+        throw Failure(ErrorCode::InvalidArgument, "Model export requires a PSK mesh without animation options");
+    std::vector<std::size_t> selection;
+    if (!model_only) {
+        if (clips.empty()) selection.push_back(first_clip);
+        else selection.assign(clips.begin(), clips.end());
+    }
+    if (selection.size() > options.limits.clips)
+        throw Failure(ErrorCode::ResourceLimit, "Too many selected clips");
+    std::set<std::size_t> unique_clips;
+    for (const auto selected : selection)
+        if (selected >= a.sequences.size() || !unique_clips.insert(selected).second)
+            throw Failure(ErrorCode::InvalidArgument, "Clip indices must exist and be distinct");
+    if (clip_results) clip_results->clear();
+    const Sequence model_sequence{};
+    const auto &first_sequence = model_only ? model_sequence : a.sequences[first_clip];
+    for (const auto selected : selection) {
+    const auto &seq = a.sequences[selected];
     if (seq.frame_count <= 0 || !std::isfinite(seq.fps) || seq.fps <= 0 || !seq.uniform_key_deltas)
-        throw Failure(ErrorCode::Unsupported, "Invalid or unsupported clip timing");
+        throw Failure(ErrorCode::Unsupported, "Invalid or unsupported first_clip timing");
     const auto maximum_seconds = static_cast<double>(FBXSDK_TC_INFINITY) / FBXSDK_TC_SECOND;
     if (!std::isfinite(seq.time.source_end_seconds) || seq.time.source_end_seconds <= 0 ||
         seq.time.source_end_seconds >= maximum_seconds)
         throw Failure(ErrorCode::Unsupported, "Clip duration exceeds FBX tick range");
+    }
     const auto name_supported = [](const std::string &name) {
         return !name.empty() &&
                std::all_of(name.begin(), name.end(), [](unsigned char c) { return c >= 32 && c < 127; });
     };
-    if (!name_supported(seq.source.original_name))
-        throw Failure(ErrorCode::Unsupported,
-                      "ActorX writer currently requires ASCII names; source bytes are retained by reader");
-    const auto pairing = paired ? pair(a, *paired, 1e-4, options.pairing_policy) : Pairing{};
+    for (const auto selected : selection)
+        if (!name_supported(a.sequences[selected].source.original_name))
+            throw Failure(ErrorCode::Unsupported,
+                          "ActorX writer currently requires ASCII names; source bytes are retained by reader");
+    auto pairing = !model_only && paired ? pair(a, *paired, 1e-4, options.pairing_policy) : Pairing{};
+    if (model_only) {
+        paired = &a;
+        pairing.compatible = true;
+        for (std::size_t j = 0; j < a.bones.size(); ++j) {
+            if (!a.bones[j].default_local_valid || !a.bones[j].bind_world)
+                throw Failure(ErrorCode::Unsupported, "Model skeleton requires valid reference transforms");
+            pairing.animation_to_mesh.push_back(static_cast<std::uint32_t>(j));
+            pairing.parents.push_back(a.bones[j].parent);
+        }
+    }
     if (!paired && std::any_of(a.bones.begin(), a.bones.end(),
                                [](const auto &bone) { return !bone.default_local_valid; }))
         throw Failure(ErrorCode::Unsupported,
@@ -89,18 +197,26 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
             throw Failure(ErrorCode::InvalidArgument,
                           "PSK pairing failed: " +
                               (pairing.reasons.empty() ? std::string{} : pairing.reasons.front()));
-        (void)evaluate_paired(a, pairing, clip, 0, options.psa_config, options.stop);
+        for (const auto selected : selection)
+            (void)evaluate_paired(a, pairing, selected, 0, options.psa_config, options.stop);
     }
     std::set<std::string> names;
     for (const auto &b : a.bones)
         if (!name_supported(b.source.original_name) || !names.insert(b.source.original_name).second)
             throw Failure(ErrorCode::Unsupported,
                           "Writer requires nonempty unique ASCII bone names; reader retains source bytes");
-    const auto samples = static_cast<std::uint64_t>(seq.frame_count) + 1;
-    if (samples > options.limits.elements || a.bones.size() > options.limits.bones ||
-        samples > options.limits.decoded_bytes / (a.bones.size() * 9 * 256))
+    std::uint64_t initial_samples{};
+    for (const auto selected : selection) {
+        const auto count = static_cast<std::uint64_t>(a.sequences[selected].frame_count) + 1;
+        if (count > options.limits.elements - initial_samples)
+            throw Failure(ErrorCode::ResourceLimit, "Combined animation sample budget exceeded");
+        initial_samples += count;
+    }
+    auto total_curve_samples = initial_samples;
+    if (initial_samples > options.limits.elements || a.bones.size() > options.limits.bones ||
+        (!a.bones.empty() && initial_samples > options.limits.decoded_bytes / (a.bones.size() * 9 * 256)))
         throw Failure(ErrorCode::ResourceLimit, "FBX curve memory estimate exceeds export budget");
-    std::uint64_t estimate = samples * a.bones.size() * 9 * 256;
+    std::uint64_t estimate = initial_samples * a.bones.size() * 9 * 256;
     if (paired && options.include_mesh) {
         const auto &m = *paired->mesh;
         const auto mesh_estimate = m.points.size() * 512 + m.faces.size() * 2048 + m.weights.size() * 256;
@@ -121,12 +237,13 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
                               "Morph chunks are retained by reader but not supported by this writer");
     }
     (void)estimate; // Conservative cooperative admission, not an SDK allocator hard cap.
+    Temporary temporary;
+    if (!encoded) {
     if (std::filesystem::exists(output))
         throw Failure(ErrorCode::Conflict, "FBX output already exists");
     if (!std::filesystem::is_directory(output.parent_path()))
         throw Failure(ErrorCode::Io, "FBX output directory does not exist");
     // Reserve a unique sibling without racing another writer. SDK writes only this private file.
-    Temporary temporary;
     for (unsigned i = 0; i < 100; ++i) {
         auto candidate = output;
         candidate +=
@@ -141,6 +258,8 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
     }
     if (temporary.path.empty())
         throw Failure(ErrorCode::Io, "Cannot reserve FBX temporary output");
+    }
+    ExportStream stream(options.limits.decoded_bytes, options.stop);
     const auto destroy = [](FbxManager *p) {
         if (p)
             p->Destroy();
@@ -150,18 +269,18 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         throw Failure(ErrorCode::ResourceLimit, "FBX SDK manager allocation failed");
     auto *io = FbxIOSettings::Create(manager.get(), IOSROOT);
     manager->SetIOSettings(io);
-    auto *scene = FbxScene::Create(manager.get(), "FormaView ActorX clip");
+    auto *scene = FbxScene::Create(manager.get(), "FormaView ActorX first_clip");
     scene->GetGlobalSettings().SetSystemUnit(FbxSystemUnit::cm);
     scene->GetGlobalSettings().SetAxisSystem(FbxAxisSystem(
         FbxAxisSystem::eZAxis, static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
         FbxAxisSystem::eRightHanded));
     scene->GetGlobalSettings().SetTimeMode(FbxTime::eCustom);
-    scene->GetGlobalSettings().SetCustomFrameRate(seq.fps);
+    scene->GetGlobalSettings().SetCustomFrameRate(model_only ? 30 : first_sequence.fps);
     auto *info = FbxDocumentInfo::Create(manager.get(), "Source information");
-    info->mTitle = seq.source.original_name.c_str();
+    info->mTitle = model_only ? "ActorX model" : first_sequence.source.original_name.c_str();
     info->mAuthor = "FormaView";
     const auto provenance =
-        "ActorX bounded-error Euler bake. Original source samples and real seconds retained. "
+        "ActorX bounded-error Euler bake. Original source initial_samples and real seconds retained. "
         "Terminal hold at exclusive source end. PSA SHA256=" +
         a.source.identity.sha256 +
         "; reference PSK SHA256=" + (paired ? paired->source.identity.sha256 : "none") +
@@ -169,7 +288,7 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         (options.psa_config ? options.psa_config->source.identity.sha256 : "none") + "; pairing policy=" +
         (options.pairing_policy == PairingPolicy::ReferenceSkeleton ? "reference-skeleton"
                                                                     : "strict-records");
-    info->mComment = provenance.c_str();
+    info->mComment = model_only ? "ActorX source model; no animation generated" : provenance.c_str();
     scene->SetSceneInfo(info);
     std::vector<fbxsdk::FbxNode *> nodes;
     std::vector<FbxAMatrix> reference_rotations;
@@ -191,7 +310,7 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         n->LclTranslation.Set(FbxDouble3(t.translation.x, t.translation.y, t.translation.z));
         // Keep the static bone orientation out of the animated Euler channels.
         // ActorX rest orientations often lie on an XYZ singularity; animation
-        // relative to that rest basis requires far fewer accurate bake samples.
+        // relative to that rest basis requires far fewer accurate bake initial_samples.
         n->SetRotationActive(true);
         n->SetPreRotation(fbxsdk::FbxNode::eSourcePivot, r);
         n->LclRotation.Set(FbxDouble3(0, 0, 0));
@@ -204,6 +323,13 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         const auto parent = paired ? pairing.parents[j] : a.bones[j].parent;
         (parent ? nodes[*parent] : scene->GetRootNode())->AddChild(nodes[j]);
     }
+    FbxWriteResult result;
+    double scene_bake_fps{}, scene_end{};
+    for (const auto selected : selection) {
+    const auto clip = selected;
+    const auto &seq = a.sequences[clip];
+    const auto samples = static_cast<std::uint64_t>(seq.frame_count) + 1;
+    result = {};
     auto *stack = FbxAnimStack::Create(scene, seq.source.original_name.c_str());
     auto *layer = FbxAnimLayer::Create(scene, "BaseLayer");
     stack->AddMember(layer);
@@ -213,7 +339,11 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
     FbxTimeSpan span(begin, end);
     stack->SetLocalTimeSpan(span);
     stack->SetReferenceTimeSpan(span);
-    scene->GetGlobalSettings().SetTimelineDefaultTimeSpan(span);
+    scene_end = std::max(scene_end, seq.time.source_end_seconds);
+    FbxTime scene_stop;
+    scene_stop.SetSecondDouble(scene_end);
+    FbxTimeSpan scene_span(begin, scene_stop);
+    scene->GetGlobalSettings().SetTimelineDefaultTimeSpan(scene_span);
     std::vector<std::array<FbxAnimCurve *, 9>> curves(nodes.size());
     constexpr const char *channels[]{FBXSDK_CURVENODE_COMPONENT_X, FBXSDK_CURVENODE_COMPONENT_Y,
                                      FBXSDK_CURVENODE_COMPONENT_Z};
@@ -223,7 +353,6 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
             curves[j][c + 3] = nodes[j]->LclRotation.GetCurve(layer, channels[c], true);
             curves[j][c + 6] = nodes[j]->LclScaling.GetCurve(layer, channels[c], true);
         }
-    FbxWriteResult result;
     result.source_fps = seq.fps;
     const auto pose_at = [&](double seconds) {
         return paired ? evaluate_paired(a, pairing, clip, seconds, options.psa_config, options.stop)
@@ -237,7 +366,7 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         const auto subdivisions =
             *std::max_element(interval_subdivisions.begin(), interval_subdivisions.end());
         const auto sample_bytes = a.bones.size() * 9 * 256;
-        if (bake_samples > options.limits.elements ||
+        if (bake_samples - samples > options.limits.elements - total_curve_samples ||
             bake_samples - samples > (options.limits.decoded_bytes - estimate) / sample_bytes)
             throw Failure(ErrorCode::ResourceLimit,
                           "FBX bake accuracy exceeds export memory budget; previous subdivisions=" +
@@ -350,7 +479,12 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
             }
     }
     const auto metadata = [&](const char *name, double value) {
-        auto property = FbxProperty::Create(info, FbxDoubleDT, name);
+        auto property = FbxProperty::Create(stack, FbxDoubleDT, name);
+        if (selection.size() == 1) {
+            auto legacy = FbxProperty::Create(info, FbxDoubleDT, name);
+            legacy.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+            legacy.Set(value);
+        }
         property.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
         property.Set(value);
     };
@@ -362,7 +496,19 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
     // FBX importers may resample at the declared file rate before running any
     // import pipeline. Declare the finest bake grid, preserving the original
     // ActorX rate/count separately rather than allowing that resample to discard keys.
-    scene->GetGlobalSettings().SetCustomFrameRate(result.bake_fps);
+    auto source_id = FbxProperty::Create(stack, FbxStringDT, "FormaViewSourceClipID");
+    source_id.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+    source_id.Set(FbxString(seq.source.identity.stable_id().value.c_str()));
+    scene_bake_fps = std::max(scene_bake_fps, result.bake_fps);
+    scene->GetGlobalSettings().SetCustomFrameRate(scene_bake_fps);
+    estimate += (result.samples - samples) * a.bones.size() * 9 * 256;
+    total_curve_samples += result.samples - samples;
+    if (clip_results) clip_results->push_back(result);
+    } // Pure models contain no animation stacks or curves.
+    if (!selection.empty()) {
+        scene->SetCurrentAnimationStack(scene->GetSrcObject<FbxAnimStack>(0));
+        scene->GetAnimationEvaluator()->Reset();
+    }
     if (paired && options.include_mesh) {
         cancelled(options.stop);
         const auto &m = *paired->mesh;
@@ -382,7 +528,12 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
         auto *mats = mesh->CreateElementMaterial();
         mats->SetMappingMode(FbxLayerElement::eByPolygon);
         mats->SetReferenceMode(FbxLayerElement::eIndexToDirect);
+        auto *smoothing = mesh->CreateElementSmoothing();
+        smoothing->SetMappingMode(FbxLayerElement::eByPolygon);
+        smoothing->SetReferenceMode(FbxLayerElement::eDirect);
         for (const auto &face : m.faces) {
+            cancelled(options.stop);
+            smoothing->GetDirectArray().Add(static_cast<int>(face.smoothing));
             mesh->BeginPolygon(face.material);
             for (auto it = face.wedges.rbegin(); it != face.wedges.rend(); ++it)
                 mesh->AddPolygon(static_cast<int>(m.wedges[*it].point));
@@ -419,6 +570,7 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
                         FbxColor(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, c[3] / 255.0));
                 }
         }
+        if (!nodes.empty()) {
         auto *skin = fbxsdk::FbxSkin::Create(scene, "ActorXSkin");
         skin->SetSkinningType(fbxsdk::FbxSkin::eLinear);
         std::vector<std::uint32_t> mesh_to_animation(nodes.size());
@@ -450,26 +602,74 @@ FbxWriteResult write_fbx_clip(const ActorAsset &a, std::size_t clip, const std::
             throw Failure(ErrorCode::InvalidArgument,
                           "FBX SDK rejected bind pose: " + std::string(bind_status.GetErrorString()));
     }
+    }
+    cancelled(options.stop);
+    // Convert the entire hierarchy, curves, geometry, bind poses and clusters.
+    // ConvertScene alone cannot represent a handedness change.
+    if (target_axes != scene->GetGlobalSettings().GetAxisSystem())
+        target_axes.DeepConvertScene(scene);
+    const FbxSystemUnit target_unit(options.output_metres_per_unit * 100.0);
+    if (target_unit != scene->GetGlobalSettings().GetSystemUnit())
+        target_unit.ConvertScene(scene);
+    scene->GetAnimationEvaluator()->Reset();
+    cancelled(options.stop);
     auto *exporter = FbxExporter::Create(manager.get(), "FormaView exporter");
     auto stop = options.stop;
     exporter->SetProgressCallback(progress, &stop);
     const auto format = manager->GetIOPluginRegistry()->FindWriterIDByDescription("FBX binary (*.fbx)");
-    if (format < 0 || !exporter->Initialize(utf8(temporary.path).c_str(), format, io) ||
+    if (format < 0 || !(encoded ? exporter->Initialize(&stream, nullptr, format, io)
+                               : exporter->Initialize(utf8(temporary.path).c_str(), format, io)) ||
         !exporter->SetFileExportVersion(FBX_2014_00_COMPATIBLE))
         throw Failure(ErrorCode::Io, "FBX SDK initialize/version failed: " +
                                          std::string(exporter->GetStatus().GetErrorString()));
     if (!exporter->Export(scene)) {
         cancelled(stop);
+        if (stream.GetError())
+            throw Failure(ErrorCode::ResourceLimit, "FBX encoded output exceeded memory stream budget");
         throw Failure(ErrorCode::Io,
                       "FBX SDK export failed: " + std::string(exporter->GetStatus().GetErrorString()));
     }
     exporter->Destroy();
     cancelled(stop);
+    if (encoded) {
+        if (stream.GetError() || stream.data.empty())
+            throw Failure(ErrorCode::ResourceLimit, "FBX encoded output stream failed");
+        *encoded = std::move(stream.data);
+        return result;
+    }
     // MoveFileEx without REPLACE_EXISTING atomically refuses an output created meanwhile.
     if (!MoveFileExW(temporary.path.c_str(), output.c_str(), MOVEFILE_WRITE_THROUGH))
         throw Failure(std::filesystem::exists(output) ? ErrorCode::Conflict : ErrorCode::Io,
                       "Cannot commit FBX output");
     temporary.path.clear();
     return result;
+}
+FbxWriteResult write_fbx_clip(const ActorAsset &animation, std::size_t clip,
+                              const std::filesystem::path &output, const ActorAsset *paired,
+                              const FbxWriteOptions &options) {
+    return write_actor_fbx(animation, clip, output, paired, options, false);
+}
+void write_fbx_model(const ActorAsset &model, const std::filesystem::path &output,
+                     const FbxWriteOptions &options) {
+    (void)write_actor_fbx(model, 0, output, nullptr, options, true);
+}
+std::vector<std::byte> encode_fbx_model(const ActorAsset &model, const FbxWriteOptions &options) {
+    std::vector<std::byte> encoded;
+    (void)write_actor_fbx(model, 0, {}, nullptr, options, true, &encoded);
+    return encoded;
+}
+std::vector<std::byte> encode_fbx_clip(const ActorAsset &animation, std::size_t clip,
+    const ActorAsset *paired, const FbxWriteOptions &options, FbxWriteResult *result) {
+    std::vector<std::byte> encoded;
+    const auto bake = write_actor_fbx(animation, clip, {}, paired, options, false, &encoded);
+    if (result) *result = bake;
+    return encoded;
+}
+std::vector<std::byte> encode_fbx_clips(const ActorAsset &animation, std::span<const std::size_t> clips,
+    const ActorAsset *paired, const FbxWriteOptions &options, std::vector<FbxWriteResult> *results) {
+    if (clips.empty()) throw Failure(ErrorCode::InvalidArgument, "Select at least one animation clip");
+    std::vector<std::byte> encoded;
+    (void)write_actor_fbx(animation, clips.front(), {}, paired, options, false, &encoded, clips, results);
+    return encoded;
 }
 } // namespace formaview::skeletal

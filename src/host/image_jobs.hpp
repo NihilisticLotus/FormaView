@@ -20,6 +20,7 @@ class ImageJobs final : public QObject {
   Q_PROPERTY(QString endpoint READ endpoint NOTIFY changed)
   Q_PROPERTY(QVariantMap lastClient READ lastClient NOTIFY changed)
   Q_PROPERTY(QVariantList inputInfo READ inputInfo NOTIFY changed)
+  Q_PROPERTY(QVariantList modelSources READ modelSources NOTIFY changed)
   Q_PROPERTY(QVariantMap discovery READ discovery NOTIFY changed)
   Q_PROPERTY(int discoveryOffset READ discoveryOffset NOTIFY changed)
 public:
@@ -39,6 +40,8 @@ public:
   QString endpoint() const { return endpointName_; }
   QVariantMap lastClient() const { return lastClient_; }
   QVariantList inputInfo() const { return inputInfo_; }
+  QVariantList modelSources() const { return modelSources_; }
+  Q_INVOKABLE void inspectModelInputs(const QStringList &inputs, const QVariantMap &scope, const QString &paired);
   QVariantMap discovery() const { return discovery_; }
   int discoveryOffset() const { return discoveryOffset_; }
   Q_INVOKABLE void configureScope(const QVariantMap &scope);
@@ -74,6 +77,7 @@ private:
   QVariantMap scope_, plan_, job_;
   QVariantList jobs_;
   QVariantList inputInfo_;
+  QVariantList modelSources_;
   QString error_, planId_, jobId_, idempotency_;
   bool busy_{};
   quint64 revision_{};

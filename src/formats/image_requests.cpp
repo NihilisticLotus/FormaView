@@ -1,4 +1,7 @@
 #include "formaview/image_requests.hpp"
+#ifdef FORMAVIEW_MODEL_EXPORT
+#include "formaview/model_export.hpp"
+#endif
 #include <QCryptographicHash>
 #include <QImageReader>
 #include <QImageWriter>
@@ -337,6 +340,9 @@ QJsonObject image_capabilities() {
       {"api_version", 1},
       {"read_formats", reads},
       {"write_targets", writes},
+#ifdef FORMAVIEW_MODEL_EXPORT
+      {"model_export", model_export::capabilities()},
+#endif
       {"capabilities", QJsonArray{QJsonObject{{"id", "image.inspect"},
                                               {"input_formats", reads},
                                               {"operation", "inspect"}},
@@ -375,6 +381,15 @@ QJsonObject execute_image_request(
   if (operation != "inspect" && operation != "preflight" &&
       operation != "convert")
     invalid("Unsupported image operation");
+#ifdef FORMAVIEW_MODEL_EXPORT
+  if (model_export::handles(request)) {
+    skeletal::Limits model_limits;
+    model_limits.input_bytes = limits.input_bytes;
+    model_limits.decoded_bytes = limits.decoded_bytes;
+    return model_export::execute(request, scope, model_limits, stop, protected_inputs,
+                                 commit_observer, reserved_outputs, approved_output);
+  }
+#endif
   auto lease = InputLease::open(scope, path(string(request, "input")),
                                 limits.input_bytes, stop);
   const auto &input = lease.snapshot();
