@@ -222,24 +222,49 @@ void Scene::preload_media() {
     check();
     auto *t = scene->GetSrcObject<FbxFileTexture>(i);
     const auto name = key(t->GetFileName());
-    if (media.contains(name))
-      continue;
     const auto relative_name = key(t->GetRelativeFileName());
-    if (media.contains(relative_name)) {
-      media.insert(name, media[relative_name]);
-      continue;
+    QString payload_name = name;
+    std::optional<QByteArray> content;
+    if (media.contains(name))
+      content = media[name];
+    else if (media.contains(relative_name)) {
+      content = media[relative_name];
+      payload_name = relative_name;
     }
-    try {
-      const auto p = std::filesystem::path(name.toStdWString());
-      auto data = load(p.is_absolute() ? p : path.parent_path() / p);
-      reserve(static_cast<std::uint64_t>(data.size()));
-      media.insert(name, std::move(data));
-    } catch (const sk::Failure &e) {
-      if (e.error.code == ErrorCode::Cancelled ||
-          e.error.code == ErrorCode::ResourceLimit)
-        throw;
-      loss("external_texture_unavailable",
-           name + ": " + QString::fromUtf8(e.what()));
+    QStringList errors;
+    // FBX stores file paths, not URI-escaped glTF references. Try the producer's
+    // primary path first, then the relocated path beside the source FBX. Both
+    // go through the scoped loader, which also protects failed source paths.
+    for (const auto &candidate : {name, relative_name}) {
+      if (content)
+        break;
+      if (candidate.isEmpty())
+        continue;
+      try {
+        const auto p = std::filesystem::path(candidate.toStdWString());
+        content = load(p.is_absolute() ? p : path.parent_path() / p);
+        if (content->isEmpty()) {
+          content.reset();
+          invalid("Empty texture payload");
+        }
+        payload_name = candidate;
+      } catch (const sk::Failure &e) {
+        if (e.error.code == ErrorCode::Cancelled ||
+            e.error.code == ErrorCode::ResourceLimit)
+          throw;
+        errors.append(candidate + ": " + QString::fromUtf8(e.what()));
+      }
+    }
+    if (content) {
+      // Imported Texture and Video objects can retain different path aliases.
+      // Synchronize both SDK filenames to the same in-memory payload key so
+      // the write callback embeds the checked bytes without opening a file.
+      const auto stored = image(payload_name, content).toUtf8();
+      t->SetFileName(stored.constData());
+      t->SetRelativeFileName(stored.constData());
+    } else {
+      loss("external_texture_unavailable", errors.isEmpty()
+               ? "FBX texture has no file path" : errors.join("; "));
     }
   }
 }
@@ -559,7 +584,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
       {"overwrite", scope.allow_overwrite},
       {"output", QString::fromStdWString(output.path.wstring())},
       {"policy", QString::fromStdString(scope.policy_revision)},
-      {"implementation", "M08-scene-v2-reviewed"}};
+      {"implementation", "M08-scene-v3-media"}};
   const auto approval = QString::fromLatin1(
       QCryptographicHash::hash(
           QJsonDocument(approval_data).toJson(QJsonDocument::Compact),

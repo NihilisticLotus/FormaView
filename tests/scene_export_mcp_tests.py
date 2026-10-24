@@ -12,6 +12,7 @@ import time
 import uuid
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from scene_export_media_tests import external_fbx
 
 
 async def main():
@@ -104,13 +105,67 @@ async def main():
                 p=await call('create_model_export_plan',items=protected);p=await terminal('plan',p['plan_id'])
                 assert p['items'][0]['status']=='failed',p
                 assert not missing.exists()
+                # Relocated FBX media participates in cross-item protection,
+                # even when its original absolute filename no longer exists.
+                relative_texture=fixtures/'relative-texture.fbx'
+                relative_texture.write_bytes((fixtures/'pixel.png').read_bytes())
+                relative_owner=fixtures/'relative-owner.fbx'
+                external_fbx(relative_owner, fixtures/'old-location/pixel.png', relative_texture.name)
+                protected=[dict(items[0],output=str(relative_texture),conflict='overwrite'),
+                           dict(input=str(relative_owner),output=str(args.output/'relative-owner.fbx'),options=dict(target='fbx'))]
+                p=await call('create_model_export_plan',items=protected);p=await terminal('plan',p['plan_id'])
+                assert p['items'][0]['status']=='failed',p
+                assert relative_texture.read_bytes()==(fixtures/'pixel.png').read_bytes()
+                # Images and models share one durable job, result pagination and
+                # retry semantics. A changed model dependency must not undo the
+                # successful image or publish an unapproved model.
+                image_output=args.output/'mixed.png'
+                model_output=args.output/'mixed.fbx'
+                mixed=[dict(input=str(fixtures/'pixel.png'),output=str(image_output),
+                            options=dict(target='png',channels=[dict(source=c,destination=c) for c in 'RGBA'],
+                                         alpha_channel='A',source_alpha='straight',alpha_action='preserve')),
+                       dict(input=str(relative_owner),output=str(model_output),options=dict(target='fbx'))]
+                p=await call('create_image_plan',items=mixed);p=await terminal('plan',p['plan_id'])
+                assert p['state']=='ready',p
+                page=await call('get_image_plan',plan_id=p['id'],offset=0,limit=1)
+                assert page['total']==2 and page['next_offset']==1 and len(page['items'])==1,page
+                texture_bytes=relative_texture.read_bytes()
+                relative_texture.write_bytes(texture_bytes+b'changed after preflight')
+                try:
+                    q=await call('submit_image_job',plan_id=p['id'],approval_digest=p['approval_digest'],
+                                 acknowledge_losses=True,idempotency_key='mixed-partial')
+                    partial=await terminal('job',q['job_id'])
+                finally:
+                    relative_texture.write_bytes(texture_bytes)
+                assert partial['state']=='partially_succeeded',partial
+                assert [x['status'] for x in partial['items']]==['succeeded','failed'],partial
+                assert partial['items'][1]['error']['code']=='input_changed',partial
+                assert not model_output.exists()
+                image_hash=hashlib.sha256(image_output.read_bytes()).hexdigest()
+                assert image_hash==partial['items'][0]['result']['output_sha256']
+                info=await call('inspect_image',path=str(image_output))
+                assert 'error' not in info and info['total']==1,info
+                page=await call('get_image_job',job_id=q['job_id'],offset=1,limit=1)
+                assert page['total']==2 and page['next_offset'] is None and page['items'][0]['status']=='failed',page
+                retry=await call('retry_image_plan',job_id=q['job_id']);retry=await terminal('plan',retry['plan_id'])
+                assert retry['state']=='ready' and retry['total']==1,retry
+                assert retry['items'][0]['request']['input']==str(relative_owner),retry
+                q=await call('submit_image_job',plan_id=retry['id'],approval_digest=retry['approval_digest'],
+                             acknowledge_losses=True,idempotency_key='mixed-retry')
+                retried=await terminal('job',q['job_id']);assert retried['state']=='succeeded',retried
+                assert image_hash==hashlib.sha256(image_output.read_bytes()).hexdigest()
+                report=args.output/'mixed-readback.json'
+                subprocess.run([str(args.build/'tests/Release/formaview_scene_export_probe.exe'),str(model_output),str(report)],check=True,timeout=30)
+                actual=json.loads(report.read_text(encoding='utf-8'))
+                assert len(actual['meshes'])==1 and len(actual['media'])==1,actual
+                assert actual['media'][0]['sha256']==hashlib.sha256(relative_texture.read_bytes()).hexdigest(),actual
                 # Native cancellation uses the same plan ID exposed over MCP.
                 pending=[dict(items[2],output=str(args.output/('cancel-'+str(i)+'.fbx'))) for i in range(32)]
                 p=await call('create_model_export_plan',items=pending)
                 await call('cancel_image_work',kind='plan',work_id=p['plan_id'])
                 cancelled=await terminal('plan',p['plan_id']);assert cancelled['state']=='cancelled',cancelled
                 assert hashes=={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in hashes}
-                (args.output/'passed.json').write_text(json.dumps(dict(passed=True,outputs=len(job['items']),malformed_input_survival=True,changed_buffer=True,batch_source_protection=True,missing_texture_protection=True,cancellation=True)),encoding='utf-8')
+                (args.output/'passed.json').write_text(json.dumps(dict(passed=True,outputs=len(job['items']),malformed_input_survival=True,changed_buffer=True,batch_source_protection=True,missing_texture_protection=True,relative_texture_protection=True,mixed_partial_retry=True,pagination=True,cancellation=True)),encoding='utf-8')
                 print('Generic MCP exports passed:',len(job['items']))
     finally:
         (args.output/'mcp-records.json').write_text(json.dumps(records,ensure_ascii=False,indent=2),encoding='utf-8')

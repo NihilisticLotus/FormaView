@@ -201,8 +201,10 @@ async def create_image_plan(items: list[dict[str, Any]]) -> dict[str, Any]:
     """Queue immutable batch preflight; writes journal records but no destination images.
 
     Each item requires input, output, options and optional conflict=skip/rename/overwrite.
-    Options require target and explicit channels [{source,destination}]; preserve/reject-loss
-    defaults apply. Query get_image_plan until ready, review every page and its losses,
+    Image options require target and explicit channels [{source,destination}]; preserve/reject-loss
+    defaults apply. Mixed image/model plans are supported: model items use target='fbx'
+    and the options documented by create_model_export_plan, without image channels.
+    Query get_image_plan until ready, review every page and its losses,
     then submit the returned approval_digest. Up to 64 items per plan.
     """
     return await native_request({'version': 1, 'operation': 'create_plan', 'items': items})
