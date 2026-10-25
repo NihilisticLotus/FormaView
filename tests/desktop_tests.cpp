@@ -229,6 +229,28 @@ class DesktopTests final : public QObject {
           .arg(window ? window->height() : 0)), __FILE__, __LINE__);
     return image;
   }
+#ifdef FORMAVIEW_IMAGE_UI
+  void restorePageReviewUi() {
+    auto *workspace = item("workspace");
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    service->setMcpEnabled(false);
+    if (auto *settings = window_->findChild<QObject *>("mcpSettingsDialog")) {
+      // A hidden dirty draft can make close() open another modal. Reset it
+      // through the normal open path and cancel any pending leave callback.
+      if (auto *unsaved = window_->findChild<QObject *>("unsavedSettingsDialog"))
+        QMetaObject::invokeMethod(unsaved, "close");
+      workspace->setProperty("settingsVisible", false);
+      QMetaObject::invokeMethod(settings, "open", Q_ARG(QVariant, "general"));
+      QMetaObject::invokeMethod(settings, "close");
+    }
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("focusMode", false);
+    window_->resize(1600, 900);
+    desktop_->setLanguage("zh-CN");
+  }
+#endif
   void save(const QString &name) {
     const auto pixels=captureWindow(window_);
     QVERIFY(pixels.save(root_ + "/" + name + ".png"));
@@ -3979,6 +4001,61 @@ private slots:
     QTRY_VERIFY(!dialog || !dialog->property("visible").toBool());
 #endif
   }
+  void approvedPageReviewCleanup() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *workspace = item("workspace");
+    auto *settings = window_->findChild<QObject *>("mcpSettingsDialog");
+    auto *unsaved = window_->findChild<QObject *>("unsavedSettingsDialog");
+    QVERIFY(workspace && settings && unsaved && desktop_->imageJobs());
+    desktop_->setLanguage("zh-CN");
+    const auto preferences = desktop_->preferences();
+    const auto rescue = qScopeGuard([&] {
+      QMetaObject::invokeMethod(unsaved, "close");
+      settings->setProperty("afterLeave", QVariant::fromValue(QJSValue(QJSValue::NullValue)));
+      workspace->setProperty("settingsVisible", false);
+      workspace->setProperty("focusMode", false);
+    });
+    for (const bool modalAlreadyOpen : {false, true}) {
+      QVERIFY(QMetaObject::invokeMethod(settings, "open", Q_ARG(QVariant, "general")));
+      QTRY_VERIFY(settings->property("visible").toBool() && !settings->property("dirty").toBool());
+      const auto density = desktop_->preferences().value("density").toString();
+      auto *choice = item(density == "compact" ? "settingsDensityStandard" : "settingsDensityCompact");
+      QVERIFY(choice && QMetaObject::invokeMethod(choice, "clicked"));
+      QVERIFY(settings->property("dirty").toBool());
+      if (modalAlreadyOpen) {
+        // This also leaves a pending window-close callback, which cleanup
+        // must cancel rather than execute while discarding the draft.
+        QVERIFY(!window_->close());
+        QTRY_VERIFY(unsaved->property("opened").toBool());
+      }
+      workspace->setProperty("settingsVisible", false);
+      QVERIFY(settings->property("dirty").toBool());
+      const auto leaveEarly = [&] {
+        const auto cleanup = qScopeGuard([&] { restorePageReviewUi(); });
+        return; // Same scope unwinding as a QTest assertion before MCP setup.
+      };
+      leaveEarly();
+      QTRY_VERIFY(!unsaved->property("visible").toBool());
+      QVERIFY(!settings->property("dirty").toBool());
+      QVERIFY(!settings->property("visible").toBool());
+      QVERIFY(window_->isVisible());
+      QTRY_VERIFY(window_->isExposed());
+      QCOMPARE(desktop_->preferences(), preferences);
+      auto *focus = item("globalFocusPreview");
+      QVERIFY(focus && focus->isVisible());
+      QTest::qWait(100); // Allow the restored page's layout to polish before input.
+      QSignalSpy clicked(focus, SIGNAL(clicked()));
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          focus->mapToScene({focus->width()/2, focus->height()/2}).toPoint());
+      QCOMPARE(clicked.count(), 1);
+      QVERIFY(workspace->property("focusMode").toBool());
+      QVERIFY(QMetaObject::invokeMethod(focus, "clicked"));
+      QVERIFY(!workspace->property("focusMode").toBool());
+    }
+#else
+    QSKIP("Image UI is not compiled into this build");
+#endif
+  }
   void approvedPageReview() {
 #ifdef FORMAVIEW_IMAGE_UI
     auto *workspace = item("workspace");
@@ -3987,17 +4064,7 @@ private slots:
     QVERIFY(workspace && session && service);
     // QTest assertions return early. Leave the shared window in the same
     // normal-preview state on failure as on successful completion.
-    const auto restoreReviewUi = qScopeGuard([&] {
-      service->setMcpEnabled(false);
-      if (auto *settings = window_->findChild<QObject *>("mcpSettingsDialog"))
-        QMetaObject::invokeMethod(settings, "close");
-      workspace->setProperty("tasksVisible", false);
-      workspace->setProperty("settingsVisible", false);
-      workspace->setProperty("conversionVisible", false);
-      workspace->setProperty("focusMode", false);
-      window_->resize(1600, 900);
-      desktop_->setLanguage("zh-CN");
-    });
+    const auto restoreReviewUi = qScopeGuard([&] { restorePageReviewUi(); });
     workspace->setProperty("tasksVisible", false);
     workspace->setProperty("settingsVisible", false);
     workspace->setProperty("conversionVisible", false);
