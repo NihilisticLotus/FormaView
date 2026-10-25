@@ -1,5 +1,6 @@
 #pragma once
 #include "formaview/image_batch.hpp"
+#include "formaview/image_groups.hpp"
 #include "formaview/image_endpoint.hpp"
 #include "formaview/scheduler.hpp"
 #include <QObject>
@@ -23,6 +24,10 @@ class ImageJobs final : public QObject {
   Q_PROPERTY(QVariantList modelSources READ modelSources NOTIFY changed)
   Q_PROPERTY(QVariantMap discovery READ discovery NOTIFY changed)
   Q_PROPERTY(int discoveryOffset READ discoveryOffset NOTIFY changed)
+  Q_PROPERTY(QStringList sourcePaths READ sourcePaths NOTIFY sourcesChanged)
+  Q_PROPERTY(QStringList sourceRoots READ sourceRoots NOTIFY sourcesChanged)
+  Q_PROPERTY(bool importing READ importing NOTIFY sourcesChanged)
+  Q_PROPERTY(QVariantMap importResult READ importResult NOTIFY sourcesChanged)
 public:
   explicit ImageJobs(QObject *parent = nullptr);
   ~ImageJobs() override;
@@ -44,6 +49,16 @@ public:
   Q_INVOKABLE void inspectModelInputs(const QStringList &inputs, const QVariantMap &scope, const QString &paired);
   QVariantMap discovery() const { return discovery_; }
   int discoveryOffset() const { return discoveryOffset_; }
+  QStringList sourcePaths() const { return sourcePaths_; }
+  QStringList sourceRoots() const { return sourceRoots_; }
+  bool importing() const { return importing_; }
+  QVariantMap importResult() const { return importResult_; }
+  Q_INVOKABLE void setSourceInputs(const QStringList &);
+  Q_INVOKABLE void addSourceFiles(const QStringList &);
+  Q_INVOKABLE void addSourceFolder(const QString &, bool recursive);
+  Q_INVOKABLE void removeSource(const QString &);
+  Q_INVOKABLE void clearSources();
+  Q_INVOKABLE void cancelImport();
   Q_INVOKABLE void configureScope(const QVariantMap &scope);
   Q_INVOKABLE void discover(const QString &directory, bool recursive);
   Q_INVOKABLE void discoveryPage(int offset);
@@ -66,6 +81,7 @@ public:
   Q_INVOKABLE void cancelPreparation();
 signals:
   void changed();
+  void sourcesChanged();
 
 private:
   void dispatch(QJsonObject);
@@ -73,8 +89,10 @@ private:
   bool activeJobs() const;
   formaview::Scheduler control_;
   std::shared_ptr<formaview::imaging::ImageBatchService> service_;
+  std::shared_ptr<formaview::imaging::ImageTaskGroups> groups_;
   QTimer timer_;
   QVariantMap scope_, plan_, job_;
+  QJsonObject polledPlan_, polledJob_;
   QVariantList jobs_;
   QVariantList inputInfo_;
   QVariantList modelSources_;
@@ -90,4 +108,10 @@ private:
   QVariantMap discovery_;
   QString discoveryId_;
   int discoveryOffset_{};
+  QStringList sourcePaths_, sourceRoots_;
+  QVariantMap importResult_;
+  bool importing_{};
+  quint64 importRevision_{};
+  std::optional<formaview::TaskHandle> importTask_;
+  void importSources(QStringList, QString, bool);
 };

@@ -155,6 +155,7 @@ struct ImageBatchService::Impl {
   AccessScope scope;
   QString directory;
   ImageBatchLimits limits;
+  ImageBatchContext context;
   // Disk serialisation never holds the state mutex used by queries/cancel.
   std::mutex mutation, state;
   std::map<QString, std::shared_ptr<Record>> records;
@@ -164,9 +165,10 @@ struct ImageBatchService::Impl {
   Scheduler scheduler;
   bool closing{};
 
-  Impl(AccessScope s, std::filesystem::path dir, ImageBatchLimits l)
+  Impl(AccessScope s, std::filesystem::path dir, ImageBatchLimits l,
+       ImageBatchContext c)
       : scope(std::move(s)), directory(QString::fromStdWString(dir.wstring())),
-        limits(l), scheduler(scheduler_limits(l)) {
+        limits(l), context(std::move(c)), scheduler(scheduler_limits(l)) {
     if (!dir.is_absolute() || !limits.records || !limits.items ||
         limits.items > 64 || !limits.queue)
       fail(ErrorCode::InvalidArgument,
@@ -386,7 +388,7 @@ struct ImageBatchService::Impl {
       // Hold every readable batch input, including aliases, throughout all
       // commits. Failed opens still retain lexical path protection.
       std::vector<InputLease> leases;
-      std::vector<InputSnapshot> protected_inputs;
+      auto protected_inputs = context.protected_inputs;
       const auto protectFallback = [&](InputSnapshot fallback) {
         try {
           fallback.resolved_path = validated_local_path(fallback.resolved_path);
@@ -455,7 +457,7 @@ struct ImageBatchService::Impl {
       }
 #endif
       qsizetype succeeded = 0, failed = 0, cancelled_count = 0;
-      std::vector<std::filesystem::path> allocated_outputs;
+      auto allocated_outputs = context.reserved_outputs;
       for (qsizetype index = 0; index < entries.size(); ++index) {
         auto entry = entries[index].toObject();
         auto request = entry["request"].toObject();
@@ -625,10 +627,9 @@ struct ImageBatchService::Impl {
       fields(request, {"version", "operation", "directory", "recursive"});
       if (request.contains("recursive") && !request["recursive"].isBool())
         fail(ErrorCode::InvalidArgument, "Recursive discovery must be boolean");
-      static constexpr std::wstring_view extensions[] = {
-          L".png", L".jpg", L".jpeg", L".jpe",  L".jfif", L".bmp",
-          L".dib", L".gif", L".ico",  L".tif",  L".tiff", L".webp",
-          L".tga", L".dds", L".hdr",  L".rgbe", L".exr"};
+      const auto names = image_input_extensions();
+      std::vector<std::wstring_view> extensions;
+      for (const auto &name : names) extensions.push_back(name);
       const auto found = discover_files(
           scope,
           std::filesystem::path(text(request, "directory").toStdWString()),
@@ -799,9 +800,10 @@ struct ImageBatchService::Impl {
 };
 ImageBatchService::ImageBatchService(AccessScope scope,
                                      std::filesystem::path journal,
-                                     ImageBatchLimits limits)
+                                     ImageBatchLimits limits,
+                                     ImageBatchContext context)
     : impl_(std::make_unique<Impl>(std::move(scope), std::move(journal),
-                                   limits)) {}
+                                   limits, std::move(context))) {}
 ImageBatchService::~ImageBatchService() = default;
 bool ImageBatchService::has_active_work() const {
   const auto stats = impl_->scheduler.stats();

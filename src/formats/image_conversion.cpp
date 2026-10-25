@@ -141,9 +141,6 @@ prepare_image_conversion(const ImageDocument &document,
   // by name in the same transform options; never guessed from a suffix.
   if (has_alpha(source) && transform_options.alpha_channel.empty())
     invalid("Source A requires an explicit alpha policy/channel");
-  if (!transform_options.alpha_channel.empty() &&
-      transform_options.source_alpha == AlphaMode::Unknown)
-    invalid("Source alpha interpretation must be explicit");
   auto transformed = transform(source, transform_options, limits, stop);
   ImageConversionProduct result;
   result.input_sha256 = description.source.identity.sha256;

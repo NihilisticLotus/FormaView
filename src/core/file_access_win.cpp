@@ -167,9 +167,8 @@ std::wstring unique_name() {
   return std::wstring(L".formaview-") + value + L".tmp";
 }
 void check_target(const std::filesystem::path &path,
-                  const InputSnapshot &input) {
-  if (equal(path.wstring(), normal(input.resolved_path).wstring()))
-    fail(ErrorCode::Conflict, "Output cannot replace an input");
+                  const InputSnapshot &input,
+                  std::span<const InputSnapshot> others = {}) {
   Handle h(CreateFileW(
       extended(path).c_str(), FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -177,14 +176,32 @@ void check_target(const std::filesystem::path &path,
       nullptr));
   if (!h) {
     const auto e = GetLastError();
-    if (e == ERROR_FILE_NOT_FOUND)
+    if (e == ERROR_FILE_NOT_FOUND) {
+      const OutputInspection output{path, false, {}};
+      require_output_not_input(output, std::span(&input, 1));
+      require_output_not_input(output, others);
       return;
+    }
     fail(ErrorCode::Io, "Cannot inspect output destination", e);
   }
-  if (identity(info(h, false)) == input.file_identity)
-    fail(ErrorCode::Conflict, "Output is a hard link to an input");
+  const OutputInspection output{path, true, identity(info(h, false))};
+  require_output_not_input(output, std::span(&input, 1));
+  require_output_not_input(output, others);
 }
 } // namespace
+void require_output_not_input(const OutputInspection &output,
+                              std::span<const InputSnapshot> inputs) {
+  for (const auto &input : inputs) {
+    // InputSnapshot paths come from validated InputLease snapshots (or the
+    // validated fallback used for unreadable group members).
+    if (equal(output.path.native(),
+              input.resolved_path.lexically_normal().make_preferred().native()))
+      fail(ErrorCode::Conflict, "Output cannot replace an input");
+    if (output.exists && !input.file_identity.empty() &&
+        output.file_identity == input.file_identity)
+      fail(ErrorCode::Conflict, "Output is a hard link to an input");
+  }
+}
 std::filesystem::path validated_local_path(const std::filesystem::path &path) {
   return normal(path);
 }
@@ -488,9 +505,7 @@ OutputTransaction::OutputTransaction(
       conflict != ConflictPolicy::Overwrite)
     fail(ErrorCode::InvalidArgument, "Unknown conflict policy");
   p.parents = parents(p.requested.parent_path());
-  check_target(p.requested, input);
-  for (const auto &other : protected_inputs)
-    check_target(p.requested, other);
+  check_target(p.requested, input, protected_inputs);
   p.protected_inputs.assign(protected_inputs.begin(), protected_inputs.end());
   p.input = input;
   p.conflict = conflict;
@@ -573,9 +588,7 @@ FileCommit OutputTransaction::commit(
     cancel(stop);
     const auto &target = p.requested;
     (void)normal(target);
-    check_target(target, p.input);
-    for (const auto &other : p.protected_inputs)
-      check_target(target, other);
+    check_target(target, p.input, p.protected_inputs);
     const auto name = extended(target);
     const auto size = offsetof(FILE_RENAME_INFO, FileName) +
                       (name.size() + 1) * sizeof(wchar_t);

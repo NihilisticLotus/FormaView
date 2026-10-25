@@ -8,9 +8,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointer>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUuid>
 #include <algorithm>
+#include <set>
 
 namespace {
 using namespace formaview;
@@ -71,11 +73,126 @@ QString outputName(const QString &input, qsizetype index,
   return name;
 }
 } // namespace
+void ImageJobs::setSourceInputs(const QStringList &paths) {
+  cancelImport();
+  sourcePaths_.clear(); sourceRoots_.clear(); importResult_.clear();
+  emit sourcesChanged();
+  if (!paths.isEmpty()) addSourceFiles(paths);
+}
+void ImageJobs::cancelImport() {
+  ++importRevision_;
+  if (importTask_) importTask_->cancel();
+  importing_ = false;
+  emit sourcesChanged();
+}
+void ImageJobs::clearSources() {
+  cancelImport(); sourcePaths_.clear(); sourceRoots_.clear(); importResult_.clear();
+  invalidatePlan(); emit sourcesChanged();
+}
+void ImageJobs::removeSource(const QString &path) {
+  cancelImport(); sourcePaths_.removeAll(path);
+  sourceRoots_.removeIf([&](const QString &r) {
+    auto prefix = QDir::fromNativeSeparators(r).toCaseFolded();
+    if (!prefix.endsWith('/')) prefix += '/';
+    return std::none_of(sourcePaths_.cbegin(), sourcePaths_.cend(), [&](const QString &p) {
+      return QDir::fromNativeSeparators(p).toCaseFolded().startsWith(prefix);
+    });
+  });
+  importResult_.clear(); invalidatePlan(); emit sourcesChanged();
+}
+void ImageJobs::addSourceFiles(const QStringList &paths) { importSources(paths, {}, false); }
+void ImageJobs::addSourceFolder(const QString &folder, bool recursive) { importSources({}, folder, recursive); }
+void ImageJobs::importSources(QStringList paths, QString folder, bool recursive) {
+  cancelImport(); importing_ = true; importResult_.clear();
+  const auto revision = importRevision_;
+  const auto previous = sourcePaths_, roots = sourceRoots_;
+  QPointer<ImageJobs> receiver(this);
+  emit sourcesChanged();
+  TaskRequest task; task.priority = Priority::Foreground; task.resources = {1, 1, 0, 0};
+  task.work = [receiver, paths, folder, recursive, previous, roots, revision](std::stop_token stop) mutable {
+    QVariantMap result; QStringList merged = previous, mergedRoots = roots;
+    try {
+      const auto extensions = image_input_extensions();
+      std::set<std::wstring> allowed(extensions.begin(), extensions.end());
+      QStringList incomingRoots;
+      if (!folder.isEmpty()) {
+        const auto root = validated_local_path(std::filesystem::path(folder.toStdWString()));
+        AccessScope scope; scope.input_roots = {root};
+        std::vector<std::wstring_view> views;
+        for (const auto &v : extensions) views.push_back(v);
+        const auto found = discover_files(scope, root, recursive, views, stop);
+        for (const auto &p : found.files) paths.append(QString::fromStdWString(p.wstring()));
+        incomingRoots.append(QString::fromStdWString(root.wstring()));
+        result["ignored"] = static_cast<qulonglong>(found.ignored_files);
+        result["rejected"] = static_cast<qulonglong>(found.rejected_paths.size() + found.rejected_reparse_points.size());
+        QVariantList rejected;
+        for (const auto &entry : found.rejected_paths)
+          rejected.append(QVariantMap{{"path", QString::fromStdWString(entry.path.wstring())}, {"reason", QString::fromStdString(entry.error.message)}});
+        for (const auto &entry : found.rejected_reparse_points)
+          rejected.append(QVariantMap{{"path", QString::fromStdWString(entry.wstring())}, {"reason", "Reparse traversal is forbidden"}});
+        result["rejected_paths"] = rejected;
+      }
+      QStringList normalized;
+      for (const auto &p : paths) {
+        if (stop.stop_requested()) throw skeletal::Failure(ErrorCode::Cancelled, "Image import cancelled");
+        const auto path = validated_local_path(std::filesystem::path(p.toStdWString()));
+        const auto qpath = QDir::fromNativeSeparators(QString::fromStdWString(path.wstring()));
+        if (!allowed.contains((L"." + QFileInfo(qpath).suffix().toLower().toStdWString()))) {
+          result["ignored"] = result.value("ignored").toULongLong() + 1; continue;
+        }
+        normalized.append(qpath);
+        if (folder.isEmpty()) incomingRoots.append(QFileInfo(qpath).absolutePath());
+      }
+      std::sort(normalized.begin(), normalized.end(), [](const auto &a, const auto &b) {
+        const auto folded = QString::compare(a, b, Qt::CaseInsensitive);
+        return folded == 0 ? a < b : folded < 0;
+      });
+      QSet<QString> keys;
+      for (const auto &p : merged) keys.insert(QDir::fromNativeSeparators(p).toCaseFolded());
+      int duplicates = 0;
+      for (const auto &p : normalized) {
+        if (keys.contains(p.toCaseFolded())) { ++duplicates; continue; }
+        keys.insert(p.toCaseFolded()); merged.append(p);
+      }
+      if (merged.size() > 4096) throw skeletal::Failure(ErrorCode::ResourceLimit, "Conversion inputs exceed 4096 images");
+      if (!normalized.isEmpty()) mergedRoots.append(incomingRoots);
+      QStringList reduced;
+      std::sort(mergedRoots.begin(), mergedRoots.end(), [](const auto &a, const auto &b) { return a.size() < b.size(); });
+      for (auto r : mergedRoots) {
+        r = QDir::fromNativeSeparators(r); while (r.endsWith('/') && r.size() > 3) r.chop(1);
+        if (std::none_of(reduced.cbegin(), reduced.cend(), [&](const QString &existing) {
+          return r.compare(existing, Qt::CaseInsensitive) == 0 || r.startsWith(existing.endsWith('/') ? existing : existing + '/', Qt::CaseInsensitive);
+        })) reduced.append(r);
+      }
+      if (reduced.size() > 64) throw skeletal::Failure(ErrorCode::ResourceLimit, "Conversion inputs exceed 64 source folders");
+      mergedRoots = reduced;
+      result["added"] = merged.size() - previous.size(); result["duplicates"] = duplicates;
+      result["empty"] = normalized.isEmpty();
+    } catch (const skeletal::Failure &e) {
+      result = image_error_json(e).toVariantMap(); merged = previous; mergedRoots = roots;
+    } catch (const std::exception &e) {
+      result = image_error_json(skeletal::Failure(ErrorCode::Io, e.what())).toVariantMap(); merged = previous; mergedRoots = roots;
+    }
+    if (receiver) QMetaObject::invokeMethod(receiver, [receiver, revision, merged, mergedRoots, result] {
+      if (!receiver || receiver->importRevision_ != revision) return;
+      receiver->importing_ = false; receiver->importResult_ = result;
+      if (!result.contains("error")) {
+        const bool changed = receiver->sourcePaths_ != merged;
+        receiver->sourcePaths_ = merged; receiver->sourceRoots_ = mergedRoots;
+        if (changed) receiver->invalidatePlan();
+      }
+      emit receiver->sourcesChanged();
+    }, Qt::QueuedConnection);
+    return TaskResult{};
+  };
+  const auto submitted = control_.submit(std::move(task)); importTask_ = submitted.task;
+  if (!submitted.task) { importing_ = false; importResult_ = {{"error", QString::fromStdString(submitted.error->message)}}; emit sourcesChanged(); }
+}
 QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
                                     const QString &nameTemplate,
                                     const QString &target,
                                     const QVariantList &itemOverrides) const {
-  if (inputs.size() > 64 ||
+  if (inputs.size() > (target == "fbx" ? 64 : 4096) ||
       (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size()))
     return {{"error", tr("Input and per-item options do not match")}};
   QStringList names;
@@ -101,9 +218,11 @@ ImageJobs::~ImageJobs() {
   control_.shutdown();
   endpoint_.reset();
   retiredEndpoints_.clear();
+  groups_.reset();
   service_.reset();
 }
 bool ImageJobs::activeJobs() const {
+  if (groups_ && groups_->has_active_work()) return true;
   if (!service_)
     return false;
   if (service_->has_active_work())
@@ -129,8 +248,8 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                           const QVariantList &itemOverrides) {
   if (busy_)
     return;
-  if (inputs.size() > 64) {
-    error_ = tr("Select up to 64 inputs");
+  if (inputs.size() > (options.value("target") == "fbx" ? 64 : 4096)) {
+    error_ = tr("Input count exceeds the conversion limit");
     emit changed();
     return;
   }
@@ -162,6 +281,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
   emit changed();
   const auto revision = revision_;
   auto existing = sameScope ? service_ : nullptr;
+  auto existingGroups = sameScope ? groups_ : nullptr;
   const auto base = qEnvironmentVariable(
       "FORMAVIEW_IMAGE_STATE_ROOT",
       QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) +
@@ -171,7 +291,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
   TaskRequest task;
   task.priority = Priority::Foreground;
   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
-  task.work = [receiver, existing, inputs, policy, requestedScope, options,
+  task.work = [receiver, existing, existingGroups, inputs, policy, requestedScope, options,
                nameTemplate, conflict, journalRoot, itemOverrides,
                revision](std::stop_token stop) mutable {
     QJsonObject response;
@@ -184,6 +304,13 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         existing = std::make_shared<ImageBatchService>(
             parse_image_scope(policy),
             std::filesystem::path(journalRoot.toStdWString()));
+      }
+      if (!existingGroups) {
+        const auto groupRoot = journalRoot + "-groups";
+        if (!QDir().mkpath(groupRoot))
+          throw skeletal::Failure(ErrorCode::Io, "Cannot create conversion group journal");
+        existingGroups = std::make_shared<ImageTaskGroups>(
+            parse_image_scope(policy), std::filesystem::path(groupRoot.toStdWString()));
       }
       const auto outputRoots = policy["output_roots"].toArray();
       if (outputRoots.size() != 1)
@@ -329,7 +456,8 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
       else {
         auto create = request("create_plan");
         create["items"] = items;
-        response = existing->request(create, stop);
+        response = items.size() > 64 ? existingGroups->request(create, stop)
+                                     : existing->request(create, stop);
       }
     } catch (const skeletal::Failure &e) {
       response = image_error_json(e);
@@ -340,7 +468,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
     if (receiver)
       QMetaObject::invokeMethod(
           receiver,
-          [receiver, existing, requestedScope, response, revision, inputInfo] {
+          [receiver, existing, existingGroups, requestedScope, response, revision, inputInfo] {
             if (!receiver)
               return;
             receiver->busy_ = false;
@@ -352,6 +480,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                 receiver->jobId_.clear();
               }
               receiver->service_ = existing;
+              receiver->groups_ = existingGroups;
               receiver->scope_ = requestedScope;
               receiver->timer_.start();
             }
@@ -452,11 +581,14 @@ void ImageJobs::dispatch(QJsonObject q) {
   timer_.start(); // poll() stops the timer once nothing is left to watch
   emit changed();
   const auto service = service_;
+  const auto groups = groups_;
   QPointer<ImageJobs> receiver(this);
   TaskRequest task;
   task.priority = Priority::Foreground;
-  task.work = [service, receiver, q](std::stop_token stop) {
-    const auto response = service->request(q, stop);
+  task.work = [service, groups, receiver, q](std::stop_token stop) {
+    const auto id = q.value("plan_id").toString(q.value("id").toString());
+    const auto response = groups && groups->contains(id) ? groups->request(q, stop)
+                                                        : service->request(q, stop);
     if (receiver)
       QMetaObject::invokeMethod(
           receiver,
@@ -506,7 +638,7 @@ void ImageJobs::cancel(const QString &kind, const QString &id) {
   auto q = request("cancel");
   q["kind"] = kind;
   q["id"] = id;
-  error_ = errorText(service_->request(q));
+  error_ = errorText(groups_ && groups_->contains(id) ? groups_->request(q) : service_->request(q));
   poll();
   emit changed();
 }
@@ -540,11 +672,27 @@ void ImageJobs::poll() {
     list["offset"] = listing["next_offset"];
     rows.append(service_->request(list)["items"].toArray().toVariantList());
   }
+  if (groups_) rows.append(groups_->request(request("list_jobs"))["items"].toArray().toVariantList());
   auto get = [&](const char *operation, const QString &id) {
     auto q = request(operation);
     q["id"] = id;
     q["limit"] = 100;
-    return service_->request(q).toVariantMap();
+    const bool grouped = groups_ && groups_->contains(id);
+    auto result = grouped ? groups_->request(q) : service_->request(q);
+    auto items = result["items"].toArray();
+    while (!grouped && !result["next_offset"].isNull() && !result.contains("error")) {
+      q["offset"] = result["next_offset"];
+      const auto page = service_->request(q);
+      for (const auto &item : page["items"].toArray()) items.append(item);
+      result["next_offset"] = page["next_offset"];
+      if (page.contains("error")) break;
+    }
+    result["items"] = items;
+    const bool isPlan = QByteArrayView(operation) == "get_plan";
+    auto &cached = isPlan ? polledPlan_ : polledJob_;
+    if (result == cached) return isPlan ? plan_ : job_;
+    cached = result;
+    return result.toVariantMap();
   };
   const auto plan =
       planId_.isEmpty() ? QVariantMap{} : get("get_plan", planId_);

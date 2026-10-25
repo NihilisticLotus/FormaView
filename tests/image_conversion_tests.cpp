@@ -92,6 +92,49 @@ void run(const std::filesystem::path &root) {
   rejects([&] { (void)prepare_image_conversion(doc, options); });
   options.transform.alpha_channel = "A";
   options.transform.source_alpha = AlphaMode::Straight;
+  {
+    auto unknown = options;
+    unknown.target = ImageTarget::Tga;
+    unknown.transform.source_alpha = AlphaMode::Unknown;
+    const auto encoded = prepare_image_conversion(doc, unknown);
+    write(root / "unknown-alpha.tga", encoded.encoded);
+    const auto tga = ImageDocument::open(root / "unknown-alpha.tga");
+    require(tga.description().alpha == AlphaMode::Unknown, "Unknown alpha must not become straight");
+    auto zero = encoded.encoded;
+    for (std::size_t p = 18 + 3; p < 18 + 8 * 8 * 4; p += 4) zero[p] = std::byte{0};
+    write(root / "zero-alpha.tga", zero);
+    const auto zeroDoc = ImageDocument::open(root / "zero-alpha.tga");
+    const auto zeroImage = zeroDoc.decode(0);
+    require(zeroImage.channels.size() == 4 &&
+                std::all_of(zeroImage.channels.back().samples.bytes.begin(), zeroImage.channels.back().samples.bytes.end(),
+                            [](auto v) { return v == std::byte{0}; }),
+            "All-zero source alpha must remain a real zero channel");
+    (void)prepare_image_conversion(zeroDoc, unknown);
+    const auto original = doc.decode(0), roundtrip = tga.decode(0);
+    require(roundtrip.channels.size() == original.channels.size(), "Unknown alpha channel retained");
+    for (std::size_t c = 0; c < original.channels.size(); ++c)
+      require(roundtrip.channels[c].name == original.channels[c].name &&
+                  roundtrip.channels[c].samples.bytes == original.channels[c].samples.bytes,
+              "Unknown alpha raw conversion changes channel samples");
+    auto drop = unknown;
+    drop.transform.alpha_action = AlphaAction::Drop;
+    drop.transform.channels.pop_back();
+    require(loss(prepare_image_conversion(tga, drop), "alpha_removed"), "Unknown alpha drop must report loss");
+    auto composite = drop; composite.transform.alpha_action = AlphaAction::Composite;
+    rejects([&] { (void)prepare_image_conversion(tga, composite); });
+    auto colour = unknown; colour.transform.meaning = ImageMeaning::Colour;
+    colour.transform.transfer = Transfer::LinearToSrgb;
+    rejects([&] { (void)prepare_image_conversion(tga, colour); });
+    auto pngUnknown = unknown; pngUnknown.target = ImageTarget::Png;
+    rejects([&] { (void)prepare_image_conversion(tga, pngUnknown); });
+    for (const auto mode : {AlphaMode::Straight, AlphaMode::Premultiplied}) {
+      auto tagged = unknown; tagged.transform.source_alpha = mode;
+      const auto bytes = prepare_image_conversion(tga, tagged).encoded;
+      write(root / "tagged-alpha.tga", bytes);
+      require(ImageDocument::open(root / "tagged-alpha.tga").description().alpha == mode, "Explicit alpha type retained");
+    }
+    std::cout << "PASS unknown alpha raw TGA, drop, typed tags and operation/PNG restrictions\n";
+  }
   auto reordered = options;
   std::reverse(reordered.transform.channels.begin(),
                reordered.transform.channels.end());

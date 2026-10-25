@@ -310,6 +310,22 @@ QJsonObject image_error_json(const skeletal::Failure &f) {
                                 {"details", details},
                                 {"retryable", f.error.retryable}}}};
 }
+std::vector<std::wstring> image_input_extensions() {
+  const auto readers = QImageReader::supportedImageFormats();
+  std::vector<std::wstring> result{L".tga", L".tif", L".tiff", L".webp", L".dds", L".hdr", L".rgbe", L".exr"};
+  for (const auto &[codec, extensions] : {
+      std::pair{"png", std::vector<std::wstring>{L".png"}},
+      std::pair{"jpeg", std::vector<std::wstring>{L".jpg", L".jpeg", L".jpe", L".jfif"}},
+      std::pair{"bmp", std::vector<std::wstring>{L".bmp", L".dib"}},
+      std::pair{"gif", std::vector<std::wstring>{L".gif"}},
+      std::pair{"ico", std::vector<std::wstring>{L".ico"}}}) {
+    if (readers.contains(codec) && (QByteArray(codec) != "ico" ||
+        (readers.contains("png") && readers.contains("bmp"))))
+      result.insert(result.end(), extensions.begin(), extensions.end());
+  }
+  std::sort(result.begin(), result.end());
+  return result;
+}
 QJsonObject image_capabilities() {
   const auto readers = QImageReader::supportedImageFormats();
   const auto writers = QImageWriter::supportedImageFormats();
@@ -336,9 +352,12 @@ QJsonObject image_capabilities() {
       continue;
     writes.append(format);
   }
+  QJsonArray extensions;
+  for (const auto &name : image_input_extensions()) extensions.append(QString::fromStdWString(name));
   return {
       {"api_version", 1},
       {"read_formats", reads},
+      {"read_extensions", extensions},
       {"write_targets", writes},
 #ifdef FORMAVIEW_MODEL_EXPORT
       {"model_export", model_export::capabilities()},
@@ -475,8 +494,7 @@ QJsonObject execute_image_request(
     throw skeletal::Failure(
         ErrorCode::Conflict,
         "Approved output name is occupied; run a new preflight");
-  for (const auto &other : protected_inputs)
-    (void)inspect_output(scope, output.path, other, conflict);
+  require_output_not_input(output, protected_inputs);
   auto product = prepare_image_conversion(document, options, limits, stop);
   QJsonArray losses;
   for (const auto &l : product.losses)

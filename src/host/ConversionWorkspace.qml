@@ -6,7 +6,7 @@ FocusScope {
     id: root
     objectName: "conversionWorkspace"
     required property var controller
-    property var imageInputs: []
+    readonly property var imageInputs: controller.imageJobs.sourcePaths
     property var modelInputs: []
     property bool modelMode: false
     readonly property var inputs: modelMode ? modelInputs : imageInputs
@@ -20,7 +20,7 @@ FocusScope {
         const models = controller.selectedModels()
         const snapshot = JSON.stringify([selected, models])
         if (!initialized || snapshot !== selectionSnapshot) {
-            imageInputs = selected
+            service.setSourceInputs(selected)
             modelInputs = models
             modelMode = modelAvailable && models.length > 0 && selected.length === 0
             selectionSnapshot = snapshot
@@ -59,7 +59,7 @@ FocusScope {
             Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: tabs.currentIndex
             ConversionSettings {
                 id: settings; controller: root.controller; inputs: root.inputs; modelMode: root.modelMode
-                onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.imageInputs = paths }
+                onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.service.addSourceFiles(paths) }
                 onEdited: { root.service.invalidatePlan(); results.acknowledged = false }
                 onBack: root.close()
                 onPreflight: (scope, options, nameTemplate, conflict) => { root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides()); tabs.currentIndex = 1 }

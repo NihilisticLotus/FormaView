@@ -1181,8 +1181,12 @@ private slots:
     QCOMPARE(hit(caption()), LRESULT{HTCAPTION});
     for (auto *control : bar->childItems()) {
       if (control->isVisible() && control->property("pressed").isValid())
-        QCOMPARE(hit(control->mapToScene(QPointF(control->width() / 2, control->height() / 2))),
-                 LRESULT{HTCLIENT});
+        // A DPI/size change can still have a pending layout polish. Verify
+        // the same client hit after that bounded settling period.
+        QTRY_VERIFY2(hit(control->mapToScene(QPointF(control->width() / 2, control->height() / 2))) == LRESULT{HTCLIENT},
+            qPrintable(QString("control=%1 x=%2 y=%3 width=%4 height=%5 dpr=%6")
+                .arg(control->objectName()).arg(control->x()).arg(control->y())
+                .arg(control->width()).arg(control->height()).arg(window_->devicePixelRatio())));
     }
     // A popup must receive the outside click rather than starting a window drag.
     QVERIFY(QMetaObject::invokeMethod(menu, "clicked"));
@@ -2852,7 +2856,10 @@ private slots:
     };
     const auto choose = [&](const char *name, int value) {
       auto *choice = item(name); QVERIFY(choice);
+      window_->requestActivate();
+      QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
       choice->forceActiveFocus();
+      QTRY_VERIFY(choice->hasActiveFocus());
       QTest::keyClick(window_, Qt::Key_Home);
       for (int n = 0; n < value; ++n) QTest::keyClick(window_, Qt::Key_Down);
       QCOMPARE(choice->property("currentIndex").toInt(), value);
@@ -3680,8 +3687,8 @@ private slots:
           QMetaObject::invokeMethod(dialog, "close");
       });
       item("conversionAdvancedSettings")->setProperty("checked", true);
-      QTRY_VERIFY(item("conversionInputRoot"));
-      item("conversionInputRoot")->setProperty("text", small_);
+      QTRY_VERIFY(!qobject_cast<ImageJobs *>(desktop_->imageJobs())->importing());
+      QVERIFY(!qobject_cast<ImageJobs *>(desktop_->imageJobs())->sourceRoots().isEmpty());
       item("conversionOutputRoot")->setProperty("text", output);
       item("conversionTarget")->setProperty("currentIndex", i);
       auto *advanced = item("conversionAdvanced");
@@ -3870,148 +3877,192 @@ private slots:
     QTRY_VERIFY(!dialog->property("visible").toBool());
 #endif
   }
+  void textureSettingsAndHelp() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(service);
+    const auto originalSize = window_->size();
+    const auto preferences = desktop_->preferences();
+    QString originalTemplate;
+    int originalPreset = -1;
+    const auto cleanup = qScopeGuard([&] {
+      if (originalPreset >= 0) {
+        if (auto *field = window_->findChild<QObject *>("conversionNamingTemplate")) field->setProperty("text", originalTemplate);
+        if (auto *preset = window_->findChild<QObject *>("conversionNamingPreset")) preset->setProperty("currentIndex", originalPreset);
+      }
+      if (auto *w = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(w, "close");
+      desktop_->preference("density", preferences.value("density"));
+      desktop_->setLanguage("zh-CN"); window_->resize(originalSize);
+    });
+    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0)));
+    auto *workspace = window_->findChild<QObject *>("conversionWorkspace"); QVERIFY(workspace);
+    workspace->setProperty("modelMode", false);
+    originalTemplate = item("conversionNamingTemplate")->property("text").toString();
+    originalPreset = item("conversionNamingPreset")->property("currentIndex").toInt();
+    service->setSourceInputs({small_ + "/唯一图片.png"});
+    QTRY_VERIFY(!service->importing());
+    const auto click = [&](const char *name) {
+      window_->requestActivate(); QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      auto *control = item(name); QVERIFY(control && control->isEnabled());
+      control->forceActiveFocus(); QTest::qWait(100);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, control->mapToScene({control->width()/2, control->height()/2}).toPoint());
+    };
+    auto *target = item("conversionTarget"); QVERIFY(target);
+    const auto targets = service->capabilities()["write_targets"].toList();
+    target->setProperty("currentIndex", targets.indexOf("png"));
+    QTRY_VERIFY(item("pngCompressionExplanation") && item("pngCompressionExplanation")->isVisible());
+    QVERIFY(item("pngCompressionExplanation")->property("text").toString().contains("0"));
+    click("conversionNamingHelp");
+    QPointer<QQuickWindow> help;
+    QTRY_VERIFY([&] { for (auto *w : QGuiApplication::allWindows()) if (w->objectName() == "conversionNamingWindow") help = qobject_cast<QQuickWindow *>(w); return help && help->isExposed(); }());
+    QCOMPARE(help->modality(), Qt::NonModal); QCOMPARE(help->transientParent(), window_);
+    QVERIFY(help->flags().testFlag(Qt::ExpandedClientAreaHint));
+#ifdef Q_OS_WIN
+    QVERIFY(help->findChild<QObject *>("nativeWindowChrome"));
+    const auto helpHandle = reinterpret_cast<HWND>(help->winId());
+    POINT p{qRound(70 * help->devicePixelRatio()), qRound(26 * help->devicePixelRatio())};
+    QVERIFY(ClientToScreen(helpHandle, &p));
+    QCOMPARE(SendMessageW(helpHandle, WM_NCHITTEST, 0, MAKELPARAM(p.x, p.y)), LRESULT(HTCAPTION));
+#endif
+    click("conversionNamingHelp");
+    int helpCount = 0;
+    for (auto *w : QGuiApplication::allWindows()) if (w->objectName() == "conversionNamingWindow") ++helpCount;
+    QCOMPARE(helpCount, 1);
+    window_->requestActivate(); QTRY_VERIFY(window_->isActive());
+    auto *pattern = item("conversionNamingTemplate"); QVERIFY(pattern); pattern->forceActiveFocus();
+    QVERIFY(QMetaObject::invokeMethod(pattern, "selectAll"));
+    QInputMethodEvent edit; edit.setCommitString("{index}-{name}.{ext}"); QCoreApplication::sendEvent(pattern, &edit);
+    QCOMPARE(pattern->property("text").toString(), QString("{index}-{name}.{ext}"));
+    QVERIFY(help->isVisible());
+    window_->resize(1280, 800);
+    for (const auto &density : {QString("standard"), QString("compact")}) {
+      desktop_->preference("density", density);
+      help->resize(density == "compact" ? QSize(440, 340) : QSize(580, 480));
+      for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+        desktop_->setLanguage(language); QTest::qWait(100);
+        const auto png = "texture-settings-" + density + '-' + language;
+        save(png);
+        QVERIFY(captureWindow(help).save(root_ + '/' + png + "-help.png"));
+        for (const auto *name : {"addConversionImages", "addConversionFolder"}) {
+          auto *button = item(name); QVERIFY(button && button->isVisible());
+          const auto box = button->mapRectToScene(button->boundingRect());
+          QVERIFY2(box.right() <= window_->width() && box.left() >= 0, name);
+        }
+      }
+    }
+    help->requestActivate(); QTRY_VERIFY(help->isActive());
+    QTest::keyClick(help, Qt::Key_Escape); QTRY_VERIFY(!help);
+    QCOMPARE(pattern->property("text").toString(), QString("{index}-{name}.{ext}"));
+    click("conversionNamingHelp");
+    QTRY_VERIFY([&] { for (auto *w : QGuiApplication::allWindows()) if (w->objectName() == "conversionNamingWindow") help = qobject_cast<QQuickWindow *>(w); return !help.isNull(); }());
+    QVERIFY(QMetaObject::invokeMethod(workspace, "close")); QTRY_VERIFY(!help);
+    QObject *about = nullptr;
+    for (auto *object : window_->findChildren<QObject *>())
+      if (object->property("title").toString() == "FormaView" && object->property("modal").isValid()) about = object;
+    QVERIFY(about && about->property("modal").toBool());
+    for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QVERIFY(QMetaObject::invokeMethod(about, "open")); QTRY_VERIFY(about->property("opened").toBool());
+      save("about-theme-" + language);
+      window_->requestActivate(); QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      QTest::keyClick(window_, Qt::Key_Escape); QTRY_VERIFY(!about->property("visible").toBool());
+    }
+#endif
+  }
   void imageDirectorySelection() {
 #ifdef FORMAVIEW_IMAGE_UI
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     QVERIFY(service && !service->mcpEnabled());
     const auto directory = small_ + "/discovery";
-    const auto listValue = [](const QVariant &value) {
-      return value.metaType() == QMetaType::fromType<QJSValue>()
-                 ? value.value<QJSValue>().toVariant().toList()
-                 : value.toList();
-    };
     QVERIFY(QDir().mkpath(directory + "/nested"));
-    for (int i = 0; i < 105; ++i)
-      QVERIFY(QFile::copy(
-          small_ + "/唯一图片.png",
-          directory +
-              QString("/image-%1.png").arg(i, 3, 10, QLatin1Char('0'))));
-    QVERIFY(QFile::copy(small_ + "/唯一图片.png",
-                        directory + "/nested/inside.png"));
+    for (int i = 0; i < 129; ++i)
+      QVERIFY(QFile::copy(small_ + "/唯一图片.png", directory + QString("/image-%1.png").arg(i, 3, 10, QLatin1Char('0'))));
+    QVERIFY(QFile::copy(small_ + "/唯一图片.png", directory + "/nested/inside.png"));
 #ifdef Q_OS_WIN
     const auto ambiguousPath = L"\\\\?\\" + QDir::toNativeSeparators(directory + "/trailing.png.").toStdWString();
     const auto ambiguous = CreateFileW(ambiguousPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    QVERIFY(ambiguous != INVALID_HANDLE_VALUE);
-    CloseHandle(ambiguous);
+    QVERIFY(ambiguous != INVALID_HANDLE_VALUE); CloseHandle(ambiguous);
 #endif
-    const auto output = root_ + "/discovery-output";
-    QVERIFY(QDir().mkpath(output));
-    const auto click = [&](const char *name) {
-      QTest::qWait(40); // Let changed delegate counts settle the scroll layout.
-      auto *control = item(name);
-      if (!control || !control->isEnabled() || !control->isVisible())
-        return false;
-      for (auto *parent = control->parentItem(); parent;
-           parent = parent->parentItem()) {
-        if (parent->metaObject()->indexOfProperty("contentY") < 0)
-          continue;
-        const auto y = control->mapToItem(parent, {0, 0}).y();
-        if (y < 0 || y + control->height() > parent->height())
-          parent->setProperty(
-              "contentY",
-              std::clamp(
-                  parent->property("contentY").toDouble() + y -
-                      (parent->height() - control->height()) / 2,
-                  0.,
-                  std::max(0., parent->property("contentHeight").toDouble() -
-                                   parent->height())));
-      }
-      QTest::qWait(30);
-      const auto point =
-          control->mapToScene({control->width() / 2, control->height() / 2})
-              .toPoint();
-      if (!QRect(QPoint(0, 0), window_->size()).contains(point))
-        return false;
-      QSignalSpy clicked(control, SIGNAL(clicked()));
-      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point);
-      if (clicked.count() != 1)
-        save(QString("missed-click-") + name);
-      return clicked.count() == 1;
-    };
-    QVERIFY(click("convertImagesButton"));
-    QTRY_VERIFY(item("conversionAdvancedSettings"));
-    if (!item("conversionAdvancedSettings")->property("checked").toBool())
-      QVERIFY(click("conversionAdvancedSettings"));
-    QTRY_VERIFY(item("conversionInputRoot"));
-    const auto closeConversion =
-        qScopeGuard([popup = QPointer<QObject>(
-                         window_->findChild<QObject *>("conversionWorkspace"))] {
-          if (popup)
-            QMetaObject::invokeMethod(popup, "close");
-        });
-    item("conversionInputRoot")->setProperty("text", directory);
+    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0)));
+    const auto closeConversion = qScopeGuard([&] {
+      if (auto *w = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(w, "close");
+      service->clearSources();
+    });
+    QTRY_VERIFY(item("addConversionImages") && item("addConversionImages")->isVisible());
+    QVERIFY(item("addConversionFolder")->isVisible());
+    QVERIFY(!item("conversionIncludeSubfolders")->property("checked").toBool());
+    auto *dialog = window_->findChild<QObject *>("conversionImageFileDialog");
+    QVERIFY(dialog); QCOMPARE(dialog->property("fileMode").toInt(), 1);
+    service->clearSources();
+    // No output directory or configured image service is needed to import.
+    service->addSourceFolder(directory, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QCOMPARE(service->sourcePaths().size(), 129);
+    QCOMPARE(service->sourceRoots().size(), 1);
+    QCOMPARE(service->importResult()["added"].toInt(), 129);
+#ifdef Q_OS_WIN
+    QCOMPARE(service->importResult()["rejected"].toInt(), 1);
+#endif
+    service->addSourceFiles({directory + "/image-000.png", directory + "/image-001.png"});
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QCOMPARE(service->sourcePaths().size(), 129);
+    QCOMPARE(service->importResult()["duplicates"].toInt(), 2);
+    service->addSourceFolder(directory, true);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QCOMPARE(service->sourcePaths().size(), 130);
+    QCOMPARE(service->sourceRoots().size(), 1);
+    service->addSourceFiles({small_ + "/唯一图片.png"});
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QCOMPARE(service->sourcePaths().size(), 131);
+    QCOMPARE(service->sourceRoots().size(), 1);
+    const auto baseline = service->sourcePaths();
+    service->addSourceFolder(directory, true); service->cancelImport();
+    QTest::qWait(100); QCOMPARE(service->sourcePaths(), baseline);
+    service->addSourceFolder(directory + "/missing", false);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QVERIFY(service->importResult().contains("error")); QCOMPARE(service->sourcePaths(), baseline);
+    QVERIFY(QDir().mkpath(directory + "/empty"));
+    service->addSourceFolder(directory + "/empty", false);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 10000);
+    QVERIFY(service->importResult()["empty"].toBool()); QCOMPARE(service->sourcePaths(), baseline);
+    service->removeSource(small_ + "/唯一图片.png");
+    QCOMPARE(service->sourcePaths().size(), 130);
+    service->removeSource(directory + "/nested/inside.png");
+    QCOMPARE(service->sourcePaths().size(), 129);
+    const auto output = root_ + "/discovery-output"; QVERIFY(QDir().mkpath(output));
     item("conversionOutputRoot")->setProperty("text", output);
-    QVERIFY(click("discoverInputsToggle"));
-    QTRY_VERIFY(item("discoverRecursive"));
-    item("discoverRecursive")->setProperty("checked", true);
-    QVERIFY(click("discoverImagesButton"));
-    QTRY_VERIFY_WITH_TIMEOUT(
-        !service->busy() && service->discovery().value("total").toInt() == 106,
-        15000);
-    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
-    QCOMPARE(service->discovery()["items"].toList().size(), 100);
-#ifdef Q_OS_WIN
-    const auto rejected = service->discovery().value("rejected_paths").toList();
-    QCOMPARE(rejected.size(), 1);
-    QVERIFY(rejected.front().toMap().value("path").toString().endsWith("trailing.png."));
-#endif
-    const auto snapshot = service->discovery()["id"].toString();
-    QVERIFY(click("discoveryNext"));
-    QCOMPARE(service->discoveryOffset(), 100);
-    QCOMPARE(service->discovery()["items"].toList().size(), 6);
-    QVERIFY(QFile::copy(small_ + "/唯一图片.png", directory + "/late.png"));
-    QVERIFY(click("discoveryPrevious"));
-    QCOMPARE(service->discovery()["id"].toString(), snapshot);
-    QCOMPARE(service->discovery()["total"].toInt(), 106);
-    auto *filter = item("discoveryFilter");
-    QVERIFY(filter);
-    const auto first =
-        service->discovery()["items"].toList()[0].toMap()["input"].toString();
-    filter->setProperty("text", QFileInfo(first).fileName());
-    QTRY_COMPARE(item("discoveryList")->property("count").toInt(), 1);
-    QVERIFY(click("selectDiscoveredPage"));
-    QCOMPARE(listValue(item("conversionInputs")->property("selected")).size(),
-             1);
-    filter->setProperty("text", "");
-    QTRY_COMPARE(item("discoveryList")->property("count").toInt(), 100);
-    QVERIFY(click("selectDiscoveredPage"));
-    QCOMPARE(listValue(item("conversionInputs")->property("selected")).size(),
-             64);
-    for (const auto &language :
-         {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
-      desktop_->setLanguage(language);
-      QTest::qWait(60);
-#ifdef Q_OS_WIN
-      auto *rejection = item("discoveryRejectedPaths");
-      QVERIFY(rejection && rejection->isVisible());
-      QVERIFY(rejection->property("value").toString().contains("trailing.png."));
-      const auto label = language == "en" ? QString("Skipped unsafe paths") : language == "zh-TW" ? QString("已略過不安全路徑") : QString("已跳过不安全路径");
-      QCOMPARE(rejection->property("label").toString(), label);
-      QVERIFY(!rejection->property("value").toString().contains("Ambiguous path component"));
-      const auto reason = language == "en" ? QString("trailing space/dot") : language == "zh-TW" ? QString("末尾空格/句點") : QString("末尾空格/句点");
-      QVERIFY(rejection->property("value").toString().contains(reason));
-      for (auto *parent = rejection->parentItem(); parent; parent = parent->parentItem()) {
-        if (parent->metaObject()->indexOfProperty("contentY") < 0) continue;
-        const auto y = rejection->mapToItem(parent, {0, 0}).y();
-        parent->setProperty("contentY", std::clamp(
-            parent->property("contentY").toDouble() + y - 24., 0.,
-            std::max(0., parent->property("contentHeight").toDouble() - parent->height())));
-      }
-      QTest::qWait(60);
-      const auto rejectionTop = rejection->mapToScene({0, 0});
-      QVERIFY(rejectionTop.y() >= 0 && rejectionTop.y() + rejection->height() <= window_->height());
-#endif
-      save("conversion-discovery-" + language);
+    service->preflight(service->sourcePaths(), {{"input_roots", service->sourceRoots()}, {"output_roots", QStringList{output}}}, {{"target", "tga"}}, "{index}-{name}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(service->plan()["state"] == "ready", reviewPreflightWaitMs);
+    QCOMPARE(service->plan()["total"].toInt(), 129);
+    QCOMPARE(service->plan()["batch_count"].toInt(), 3);
+    QVERIFY(QDir(output).entryList(QDir::Files).isEmpty());
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(service->job()["state"] == "succeeded", reviewPreflightWaitMs);
+    QCOMPARE(service->job()["items"].toList().size(), 129);
+    item("conversionSteps")->setProperty("currentIndex", 2);
+    QTRY_VERIFY(item("imageGroupProgress"));
+    QVERIFY(item("imageGroupProgress")->property("text").toString().contains("129 / 129"));
+    QVERIFY(QFileInfo::exists(output + "/129-image-128.tga"));
+    for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language); QTest::qWait(60);
+      save("conversion-import-" + language);
     }
     desktop_->setLanguage("zh-CN");
-    QVERIFY(click("useDiscoveredInputs"));
-    const QPointer<QObject> dialog(
-        window_->findChild<QObject *>("conversionWorkspace"));
-    QVERIFY(dialog);
-    QCOMPARE(listValue(dialog->property("inputs")).size(), 64);
-    QVERIFY(QDir(output).entryList(QDir::Files).isEmpty());
-    QTest::keyClick(window_, Qt::Key_Escape);
-    QTRY_VERIFY(!dialog || !dialog->property("visible").toBool());
+    service->clearSources();
+    QStringList boundary;
+    for (int i = 0; i < 4096; ++i) boundary.append(directory + QString("/limit-%1.png").arg(i));
+    service->addSourceFiles(boundary); QTRY_VERIFY(!service->importing());
+    QCOMPARE(service->sourcePaths().size(), 4096);
+    service->addSourceFiles({directory + "/limit-extra.png"}); QTRY_VERIFY(!service->importing());
+    QCOMPARE(service->sourcePaths().size(), 4096); QVERIFY(service->importResult().contains("error"));
+    service->clearSources();
+    QStringList roots;
+    for (int i = 0; i < 64; ++i) roots.append(directory + QString("/root-%1/image.png").arg(i));
+    service->addSourceFiles(roots); QTRY_VERIFY(!service->importing());
+    QCOMPARE(service->sourceRoots().size(), 64);
+    service->addSourceFiles({directory + "/root-extra/image.png"}); QTRY_VERIFY(!service->importing());
+    QCOMPARE(service->sourcePaths().size(), 64); QCOMPARE(service->sourceRoots().size(), 64);
+    QVERIFY(service->importResult().contains("error"));
 #endif
   }
   void approvedPageReviewCleanup() {
@@ -5142,6 +5193,7 @@ private slots:
   }
   void modelLodNativeFlow() {
     QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|invalid context).*"));
+    desktop_->setLanguage("zh-CN");
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
@@ -5172,6 +5224,16 @@ private slots:
     };
     click("modelModeTab3");
     QTRY_VERIFY(item("modelLodLevel2"));
+    const auto sourceClassification = session->classification();
+    for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      click("modelClassifyMesh"); QTRY_VERIFY(item("modelClassificationGroup"));
+      save("lod-classification-theme-" + language);
+      window_->requestActivate(); QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      QTest::keyClick(window_, Qt::Key_Escape); QTRY_VERIFY(!item("modelClassificationGroup"));
+      QCOMPARE(session->classification(), sourceClassification);
+    }
+    desktop_->setLanguage("zh-CN");
     click("modelLodLevel2");
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->lodLevels()[2].toMap().value("current").toBool(),10000);
     const auto levelFrame=session->frame();

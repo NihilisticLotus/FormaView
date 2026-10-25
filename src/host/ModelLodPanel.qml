@@ -46,7 +46,7 @@ Item {
         visible: !!root.session.classification.candidate
         text: root.session.classification.candidate || ""
     }
-    Tool { Layout.fillWidth: true; text: Theme.t("会话显示归类…", "Session display classification…", "工作階段顯示歸類…"); onClicked: correction.open() }
+    Tool { objectName: "modelClassifyMesh"; Layout.fillWidth: true; text: Theme.t("会话显示归类…", "Session display classification…", "工作階段顯示歸類…"); onClicked: correction.open() }
     Tool { Layout.fillWidth: true; text: Theme.t("恢复源归类", "Restore source classification", "還原來源歸類"); enabled: !!root.session.classification.corrected; onClicked: root.session.restoreClassification() }
     Label {
         Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.muted; font.pixelSize: Theme.noteText
@@ -57,18 +57,25 @@ Item {
         id: correction
         parent: Overlay.overlay; anchors.centerIn: parent
         width: Math.min(420, parent ? parent.width-32 : 420)
-        modal: true; title: Theme.t("本次显示归类", "Classification for this session", "本次顯示歸類")
-        standardButtons: Dialog.Ok|Dialog.Cancel
+        modal: true; focus: true; title: Theme.t("本次显示归类", "Classification for this session", "本次顯示歸類")
+        font.pixelSize: Theme.formText; padding: 24
+        background: Rectangle { color: Theme.raised; radius: Theme.dialogRadius; border.color: Theme.line }
+        footer: RowLayout {
+            spacing: 12
+            Item { Layout.fillWidth: true }
+            Tool { form: true; text: Theme.t("取消", "Cancel", "取消"); onClicked: correction.reject() }
+            Tool { form: true; primary: true; text: Theme.t("确定", "OK", "確定"); onClicked: correction.accept() }
+        }
         onOpened: { groupName.text=root.session.classification.group || ""; level.value=root.session.classification.level || 0; collision.checked=!!root.session.classification.collision }
         onAccepted: root.session.classifyMesh(groupName.text,level.value,collision.checked)
         contentItem: ColumnLayout {
             Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: Theme.t("组名留空表示普通网格。相同组名和等级可包含多个部件。", "Leave the group empty for ordinary geometry. A group and level may contain multiple parts.", "組名留空表示一般網格。相同組名及等級可包含多個部件。"); color: Theme.muted }
-            Field { id: groupName; Layout.fillWidth: true; maximumLength: 120; placeholderText: Theme.t("LOD 组名", "LOD group name", "LOD 組名") }
+            Field { id: groupName; objectName: "modelClassificationGroup"; form: true; Layout.fillWidth: true; maximumLength: 120; placeholderText: Theme.t("LOD 组名", "LOD group name", "LOD 組名") }
             RowLayout {
                 Label { text: "LOD"; color: Theme.text }
-                SpinBox { id: level; from: 0; to: 999; editable: true }
+                NumberField { id: level; form: true; from: 0; to: 999; editable: true }
             }
-            OptionCheck { id: collision; text: Theme.t("此网格作为碰撞几何显示", "Display this mesh as collision geometry", "此網格作為碰撞幾何顯示") }
+            OptionCheck { id: collision; font.pixelSize: Theme.formText; text: Theme.t("此网格作为碰撞几何显示", "Display this mesh as collision geometry", "此網格作為碰撞幾何顯示") }
         }
     }
 }

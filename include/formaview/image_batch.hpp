@@ -21,13 +21,19 @@ struct ImageBatchLimits {
   std::size_t records{128}, items{64}, queue{16};
   Limits image{512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256};
 };
+// GUI task groups hold these inputs for the whole group and reserve names
+// across child batches. This is an internal context, never a client option.
+struct ImageBatchContext {
+  std::vector<InputSnapshot> protected_inputs;
+  std::vector<std::filesystem::path> reserved_outputs;
+};
 // One owner per journal directory. Mutations may flush journal data and belong
 // on a control worker; get_plan/get_job/list_jobs/cancel only inspect memory.
 // Disconnecting a client does not own or cancel a batch.
 class ImageBatchService final {
 public:
   ImageBatchService(AccessScope, std::filesystem::path journal,
-                    ImageBatchLimits = {});
+                    ImageBatchLimits = {}, ImageBatchContext = {});
   ~ImageBatchService();
   ImageBatchService(const ImageBatchService &) = delete;
   ImageBatchService &operator=(const ImageBatchService &) = delete;

@@ -4,6 +4,7 @@ ApplicationWindow {
     id: root
     required property var controller
     width: 1600; height: 900
+    property real nativeCaptionInset: 160
     minimumWidth: 1280; minimumHeight: 800
     title: "FormaView"
     flags: Qt.Window | Qt.CustomizeWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint

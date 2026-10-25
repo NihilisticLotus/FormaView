@@ -7,6 +7,7 @@ namespace formaview::imaging {
 // Runtime catalog of the real image request service. Qt-backed formats are
 // advertised only when the required image handlers are available.
 [[nodiscard]] QJsonObject image_capabilities();
+[[nodiscard]] std::vector<std::wstring> image_input_extensions();
 // Versioned JSON boundary shared by local clients. inspect/preflight/convert
 // are blocking worker operations; transport must not run these on a UI thread.
 [[nodiscard]] AccessScope parse_image_scope(const QJsonObject &);

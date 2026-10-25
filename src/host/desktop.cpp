@@ -1,4 +1,6 @@
 #include "desktop.hpp"
+#include "window_chrome.hpp"
+#include <QQuickWindow>
 #ifdef FORMAVIEW_MODEL_UI
 #include "model_session.hpp"
 #endif
@@ -150,6 +152,9 @@ void FileList::select(int row, int modifiers) {
   }
   if (rowCount())
     emit dataChanged(index(0), index(rowCount() - 1), {Selected});
+}
+void Desktop::styleToolWindow(QObject *window) {
+  installWindowChrome(qobject_cast<QQuickWindow *>(window));
 }
 Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
 #ifdef FORMAVIEW_MODEL_UI

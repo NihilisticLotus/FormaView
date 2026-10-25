@@ -12,6 +12,7 @@ ColumnLayout {
     readonly property string firstOutput: (items.find(i => i.result && i.result.committed_output) || { result: {} }).result.committed_output || ""
     signal retry(string id)
     function count(state): int { return items.filter(i => i.status === state).length }
+    readonly property int finished: items.filter(i => ["succeeded", "failed", "skipped", "cancelled", "interrupted"].includes(i.status)).length
     function syncJobSelection(): void { jobChoice.currentIndex = service.jobs.findIndex(j => j.id === job.id) }
     spacing: 10
     Connections { target: root.service; function onChanged() { Qt.callLater(root.syncJobSelection) } }
@@ -23,6 +24,12 @@ ColumnLayout {
         Accessible.name: Theme.t("转换任务", "Conversion job", "轉換工作")
     }
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.text; text: Theme.state(root.job.state || "") + (root.job.cancellation_requested && root.active ? Theme.t(" · 取消中：等待当前可中断点", " · Cancelling: waiting for the current cancellation boundary", " · 取消中：等待目前可中斷點") : "") }
+    Label { objectName: "imageGroupProgress"; visible: !!root.job.id; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("已结束 %1 / %2 项 · %3 批", "%1 / %2 items finished · %3 batches", "已結束 %1 / %2 項 · %3 批").arg(root.finished).arg(root.items.length).arg(root.job.batch_count || 1) }
+    ProgressBar {
+        visible: !!root.job.id; Layout.fillWidth: true; from: 0; to: Math.max(1, root.items.length); value: root.finished
+        background: Rectangle { implicitHeight: 4; radius: 2; color: Theme.field }
+        contentItem: Item { implicitHeight: 4; Rectangle { width: parent.width * (root.finished / Math.max(1, root.items.length)); height: parent.height; radius: 2; color: Theme.accent } }
+    }
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("成功 %1 · 失败 %2 · 跳过 %3 · 取消 %4 · 中断 %5", "Success %1 · Failed %2 · Skipped %3 · Cancelled %4 · Interrupted %5", "成功 %1 · 失敗 %2 · 略過 %3 · 取消 %4 · 中斷 %5").arg(root.count("succeeded")).arg(root.count("failed")).arg(root.count("skipped")).arg(root.count("cancelled")).arg(root.count("interrupted")) }
     RowLayout {
         Layout.fillWidth: true; spacing: 24

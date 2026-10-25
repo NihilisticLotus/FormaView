@@ -5,6 +5,7 @@
 #include <QQmlContext>
 #include <QQmlProperty>
 #include <QPointer>
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -20,6 +21,10 @@ public:
     setObjectName(QStringLiteral("nativeWindowChrome"));
     overlay_ = QQmlProperty(window, QStringLiteral("Overlay.overlay"), qmlContext(window)).read().value<QQuickItem *>();
     qGuiApp->installNativeEventFilter(this);
+    updateCaptionInset();
+    connect(window, &QWindow::screenChanged, this, [this] {
+      QMetaObject::invokeMethod(this, [this] { updateCaptionInset(); }, Qt::QueuedConnection);
+    });
   }
   ~WindowChrome() override {
     if (qGuiApp)
@@ -75,6 +80,8 @@ public:
         return true;
       }
     }
+    if (msg->message == WM_DPICHANGED || msg->message == WM_SIZE || msg->message == WM_SHOWWINDOW)
+      QMetaObject::invokeMethod(this, [this] { updateCaptionInset(); }, Qt::QueuedConnection);
     if (msg->message != WM_NCHITTEST)
       return false;
     // All valid expanded-client queries are pure: delegating even a client
@@ -181,6 +188,26 @@ public:
     return true;
   }
 private:
+  void updateCaptionInset() {
+    if (!window_ || !window_->handle() ||
+        window_->metaObject()->indexOfProperty("nativeCaptionInset") < 0)
+      return;
+    const auto dpi = GetDpiForWindow(reinterpret_cast<HWND>(window_->winId()));
+    if (!dpi) return;
+    const auto thickness = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+                           GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    const auto height = thickness + GetSystemMetricsForDpi(SM_CYCAPTION, dpi);
+    const auto width = static_cast<int>(height * 1.5);
+    const auto flags = window_->flags();
+    const auto count = int(flags.testFlag(Qt::WindowCloseButtonHint)) +
+                       int(flags.testFlag(Qt::WindowMaximizeButtonHint)) +
+                       int(flags.testFlag(Qt::WindowMinimizeButtonHint));
+    // Native caption pixels follow Windows DPI, while QML may additionally
+    // use QT_SCALE_FACTOR. Reserve the painted/hit-tested native strip in
+    // QML coordinates, including a small gap beside the application menu.
+    window_->setProperty("nativeCaptionInset",
+        std::ceil(width * count / window_->devicePixelRatio()) + 8.);
+  }
   QPointer<QQuickWindow> window_;
   QPointer<QQuickItem> overlay_;
   int pressedCaption_{};

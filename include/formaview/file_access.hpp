@@ -60,6 +60,10 @@ struct OutputInspection {
   bool exists{};
   std::string file_identity;
 };
+// Compare one checked destination against cached input identities without
+// reopening that destination for each input. Transactions recheck at commit.
+void require_output_not_input(const OutputInspection &,
+                              std::span<const InputSnapshot>);
 struct OutputIntent {
   std::filesystem::path temporary, destination;
   std::string file_identity;

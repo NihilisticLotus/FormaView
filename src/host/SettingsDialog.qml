@@ -42,8 +42,9 @@ FocusScope {
         id: unsaved; objectName: "unsavedSettingsDialog"
         anchors.centerIn: Overlay.overlay; width: 440; modal: true; focus: true; padding: 24
         title: Theme.t("尚未保存的软件设置", "Unsaved app settings", "尚未儲存的軟體設定")
+        font.pixelSize: Theme.formText
         background: Rectangle { radius: Theme.dialogRadius; color: Theme.raised; border.color: Theme.line }
-        contentItem: Label { text: Theme.t("离开将放弃本次设置更改。", "Leaving will discard these settings changes.", "離開將放棄本次設定變更。"); color: Theme.text; wrapMode: Text.WordWrap }
+        contentItem: Label { font.pixelSize: Theme.formText; text: Theme.t("离开将放弃本次设置更改。", "Leaving will discard these settings changes.", "離開將放棄本次設定變更。"); color: Theme.text; wrapMode: Text.WordWrap }
         footer: RowLayout {
             spacing: 12
             Item { Layout.fillWidth: true }

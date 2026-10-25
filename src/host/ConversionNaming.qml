@@ -4,6 +4,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
+    required property var controller
     property bool modelMode: false
     property bool multipleStacks: false
     property alias nameTemplate: pattern.text
@@ -29,7 +30,7 @@ ColumnLayout {
             onActivated: { if (root.templates[currentIndex]) pattern.text = root.templates[currentIndex]; root.edited() }
             Accessible.name: Theme.t("命名预设", "Naming preset", "命名預設")
         }
-        Tool { form: true; objectName: "conversionNamingHelp"; text: Theme.t("命名规则 ⓘ", "Naming rules ⓘ", "命名規則 ⓘ"); onClicked: help.active = true }
+        Tool { form: true; objectName: "conversionNamingHelp"; text: Theme.t("命名规则 ⓘ", "Naming rules ⓘ", "命名規則 ⓘ"); onClicked: { help.active = true; if (help.item) { help.item.raise(); help.item.requestActivate() } } }
     }
     RowLayout {
         Layout.fillWidth: true
@@ -38,20 +39,22 @@ ColumnLayout {
     }
     Loader {
         id: help; active: false
-        sourceComponent: Window {
-            id: helpWindow; objectName: "conversionNamingWindow"; width: 480; height: 410; minimumWidth: 380; minimumHeight: 320
-            visible: true; flags: Qt.Tool; modality: Qt.NonModal; color: Theme.base
+        sourceComponent: AppToolWindow {
+            id: helpWindow; controller: root.controller; objectName: "conversionNamingWindow"; width: 580; height: root.modelMode ? 560 : 480; minimumWidth: 440; minimumHeight: 340
+            visible: true
             transientParent: root.Window.window
             title: Theme.t("命名规则", "Naming rules", "命名規則")
             onClosing: help.active = false
             ScrollView { id: helpScroll; anchors.fill: parent; anchors.margins: 24; contentWidth: availableWidth
                 ColumnLayout { width: helpScroll.availableWidth; spacing: 16
-                    Label { Layout.fillWidth: true; font.pixelSize: Theme.formHeading; color: Theme.text; text: helpWindow.title }
-                    Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("此窗口不会阻止主界面操作，可移动到旁边参照。", "This window stays nonmodal; move it aside while editing.", "此視窗不會阻止主介面操作，可移到旁邊參照。") }
-                    Readout { form: true; Layout.fillWidth: true; label: "{name} / {index} / {ext}"; value: Theme.t("源文件名（不含扩展名） / 从 1 开始的输出序号 / 目标扩展名", "Source basename / Output index from 1 / Target extension", "來源檔名（不含副檔名） / 從 1 開始的輸出序號 / 目標副檔名") }
-                    Readout { form: true; Layout.fillWidth: true; visible: root.modelMode; label: "{clip}"; value: Theme.t("单个源动作名；纯模型为 model。单文件包含多个动作时请用原名 + animations。", "Source clip name; model for model-only. Use name + animations for multiple clips in one file.", "單個來源動作名；純模型為 model。單檔包含多個動作時請用原名 + animations。") }
-                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.text; text: Theme.t("只允许文件名，不允许目录分隔符、未知变量和非法名称。重名按冲突策略处理；预检展示最终路径。", "Use filenames only: no separators, unknown tokens or invalid names. Preflight resolves collisions and shows final paths.", "只允許檔名，不允許目錄分隔符、未知變數和非法名稱。重名按衝突策略處理；預檢顯示最終路徑。") }
-                    Tool { text: Theme.t("关闭", "Close", "關閉"); onClicked: help.active = false }
+                    Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("可移动到旁边参照，同时继续编辑转换设置。", "Move this window aside while editing conversion settings.", "可移到旁邊參照，同時繼續編輯轉換設定。") }
+                    Readout { form: true; Layout.fillWidth: true; label: "{name}"; value: Theme.t("源文件名，不含扩展名。例如 T_Ring_066。", "Source filename without its extension, such as T_Ring_066.", "來源檔名，不含副檔名。例如 T_Ring_066。") }
+                    Readout { form: true; Layout.fillWidth: true; label: "{index}"; value: Theme.t("从 1 开始的输出序号，自动分批时连续编号。", "Output index starting at 1, continuous across automatic batches.", "從 1 開始的輸出序號，自動分批時連續編號。") }
+                    Readout { form: true; Layout.fillWidth: true; label: "{ext}"; value: root.modelMode ? Theme.t("目标格式扩展名：fbx。", "Target extension: fbx.", "目標格式副檔名：fbx。") : Theme.t("目标格式扩展名，例如 tga 或 png。", "Target extension, such as tga or png.", "目標格式副檔名，例如 tga 或 png。") }
+                    Readout { form: true; Layout.fillWidth: true; visible: root.modelMode; label: "{clip}"; value: Theme.t("单个源动作名；纯模型为 model。\n多个动作同文件时用 {name}-animations.{ext}。", "Source clip name; model for model-only.\nMultiple clips in one file: {name}-animations.{ext}.", "單個來源動作名；純模型為 model。\n多個動作同檔時用 {name}-animations.{ext}。") }
+                    Readout { form: true; Layout.fillWidth: true; label: Theme.t("示例", "Example", "範例"); value: root.modelMode ? "{name}-{clip}.{ext}\nCharacter-Walk.fbx" : "{name}-converted.{ext}\nT_Ring_066-converted.tga" }
+                    Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("只允许文件名，不允许目录分隔符、未知变量和非法名称。重名按冲突策略处理；预检展示最终路径。", "Use filenames only: no separators, unknown tokens or invalid names. Preflight resolves collisions and shows final paths.", "只允許檔名，不允許目錄分隔符、未知變數和非法名稱。重名按衝突策略處理；預檢顯示最終路徑。") }
+                    Tool { form: true; Layout.alignment: Qt.AlignRight; text: Theme.t("关闭", "Close", "關閉"); onClicked: helpWindow.close() }
                 }
             }
         }

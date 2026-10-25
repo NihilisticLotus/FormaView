@@ -84,7 +84,7 @@ Item {
             MouseArea {
                 id: titleDrag
                 objectName: "windowTitleDrag"
-                anchors.fill: parent; anchors.rightMargin: 160
+                anchors.fill: parent; anchors.rightMargin: Math.max(160, root.Window.window.nativeCaptionInset)
                 onPressed: root.Window.window.startSystemMove()
                 onDoubleClicked: {
                     const window = root.Window.window
@@ -93,7 +93,7 @@ Item {
                 }
             }
             RowLayout {
-                objectName: "topBar"; anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: 160; spacing: 12
+                objectName: "topBar"; anchors.fill: parent; anchors.leftMargin: 24; anchors.rightMargin: Math.max(160, root.Window.window.nativeCaptionInset); spacing: 12
                 AppIcon { name: root.settingsVisible ? "general" : root.conversionVisible ? "conversion" : root.tasksVisible ? "tasks" : "assets"; size: 20 }
                 Label { font.pixelSize: 18; font.bold: true; color: Theme.text; text: root.settingsVisible ? Theme.t("设置", "Settings", "設定") : root.conversionVisible ? Theme.t("资产转换与导出", "Asset conversion and export", "資產轉換與匯出") : root.tasksVisible ? Theme.t("任务中心", "Task center", "工作中心") : Theme.t("资产工作区", "Asset workspace", "資產工作區") }
                 Label { Layout.fillWidth: true; visible: root.currentPage === "assets"; text: root.controller.directory.replace(/\\/g, "/").split("/").pop(); elide: Text.ElideMiddle; color: Theme.muted }
@@ -243,8 +243,10 @@ Item {
     Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => navigation.focusDestination("conversion")) } }
     Dialog {
         id: about; anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
+        font.pixelSize: Theme.formText
+        background: Rectangle { color: Theme.raised; radius: Theme.dialogRadius; border.color: Theme.line }
         footer: DialogButtonBox {
-            Button { text: Theme.t("关闭", "Close", "關閉"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Tool { form: true; text: Theme.t("关闭", "Close", "關閉"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
             onRejected: about.reject()
         }
         title: "FormaView"
