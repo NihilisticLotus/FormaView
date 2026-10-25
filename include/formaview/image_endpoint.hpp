@@ -14,6 +14,9 @@ public:
   void stop();
   [[nodiscard]] bool idle() const;
   std::function<void(const QJsonObject &)> observedClient;
+  // Delivered on this object's thread after a state-changing request. Hosts
+  // can resume observation after becoming idle, including metadata-free clients.
+  std::function<void()> workChanged;
 
 private:
   struct Impl;

@@ -3404,6 +3404,9 @@ private slots:
     service->setMcpEnabled(true);
     QVERIFY(service->mcpEnabled());
     QVERIFY(service->lastClient().isEmpty());
+    // The host is idle before the external client starts. Its task list must
+    // still observe new MCP jobs without a user selection forcing poll().
+    QTest::qWait(250);
     const auto configuration = QJsonDocument::fromJson(
         service->mcpConfiguration(python, adapter).toUtf8());
     QCOMPARE(configuration.object()["mcpServers"]
@@ -3436,6 +3439,14 @@ private slots:
              QString("FormaView GUI integration"));
     QCOMPARE(service->lastClient()["protocol"].toString(),
              mcpResult["protocol"].toString());
+    const auto externalJobVisible = [&] {
+      const auto jobs = service->jobs();
+      return std::any_of(jobs.cbegin(), jobs.cend(), [&](const QVariant &row) {
+        return row.toMap().value("id").toString() ==
+               mcpResult["job_id"].toString();
+      });
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(externalJobVisible(), 3000);
     service->selectJob(mcpResult["job_id"].toString());
     QCOMPARE(service->job()["state"].toString(), QString("succeeded"));
     QCOMPARE(QImage(output + "/from-mcp.png").pixelColor(0, 0),

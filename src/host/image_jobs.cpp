@@ -614,6 +614,10 @@ void ImageJobs::setMcpEnabled(bool enabled) {
                     QString::number(QCoreApplication::applicationPid()) + '-' +
                     QUuid::createUuid().toString(QUuid::WithoutBraces);
     endpoint_ = std::make_unique<ImageEndpoint>(service_, endpointName_);
+    endpoint_->workChanged = [this] {
+      timer_.start();
+      poll();
+    };
     endpoint_->observedClient = [this](const QJsonObject &client) {
       lastClient_ = client.toVariantMap();
       lastClient_["observed_at"] =

@@ -107,7 +107,10 @@ struct ImageEndpoint::Impl {
                   if (QStringList{"get_plan", "get_job", "list_jobs",
                                   "get_discovery", "cancel"}
                           .contains(operation)) {
-                    respond(socket, service->request(request));
+                    const auto result = service->request(request);
+                    if (operation == "cancel" && owner->workChanged)
+                      owner->workChanged();
+                    respond(socket, result);
                     return;
                   }
                   QPointer<QLocalSocket> receiver(socket);
@@ -118,7 +121,10 @@ struct ImageEndpoint::Impl {
                     const auto result = s->request(request, stop);
                     QMetaObject::invokeMethod(
                         owner,
-                        [receiver, result] {
+                        [owner, receiver, result, operation = request.value("operation").toString()] {
+                          if (QStringList{"create_plan", "submit", "retry_plan", "discover"}
+                                  .contains(operation) && owner->workChanged)
+                            owner->workChanged();
                           if (receiver)
                             respond(receiver, result);
                         },
