@@ -1,6 +1,6 @@
 # FormaView
 
-Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.12.0 `msvc2022_64`（Quick）。入口提供三语言外壳、目录浏览、按需缩略图和任务状态。同时启用 `FORMAVIEW_BUILD_PROFESSIONAL` 与 `FORMAVIEW_BUILD_RASTER` 后，接入图片预览、批量转换和共用任务服务的 MCP；`--capabilities` 查询实际编入且处理器可用的图片能力。模型和动画预览仍待接入。
+Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.12.0 `msvc2022_64`（Quick）。入口提供三语言（简中/繁中/英文）外壳、目录与单文件浏览、按需缩略图和任务状态。启用专业与图片转换目标后接入图片预览（读取 PNG/JPEG/BMP/TGA/TIFF/WebP/GIF/ICO/DDS/HDR/EXR）、批量转换（写出 PNG/JPEG/BMP/TGA/TIFF/WebP/DDS/HDR/EXR）和共用任务服务的 MCP；启用模型目标后接入 FBX/OBJ/glTF/GLB/PSK/PSKX 的模型预览（UV、完整源权重、骨架与绑定、LOD/碰撞）、FBX/glTF/PSA 动画播放与骨架比较，以及到 FBX 的模型/动画导出（PSK/PSKX(+PSA)、OBJ、glTF/GLB、FBX 多动作拆分、PMX、VRM；PMX/VRM 仅作转换输入，无专业预览）。转换前一律预检，损失与错误以三语言说明显示并保留可复制的技术码。`--capabilities` 查询实际编入且处理器可用的能力。ABC 与视频不在本版范围内。功能运行目录见 `tools/package_runtime.ps1` 与 `tools/verify_runtime.ps1`（不是安装包）。
 
 可使用 `formaview.exe --open 文件或目录`，或在窗口中按 `Ctrl+O` 打开文件、`Ctrl+L` 编辑目录，方向键连续浏览、Ctrl／Shift 多选。图片视口支持通道、独立 Alpha、曝光、平铺、像素读数，`F` 适应窗口、`Z` 一个源像素对应一个屏幕物理像素。其他格式的文件读取检查不代表解析成功。转换使用源内容及显式设置，不继承视口状态；先预检、审阅损失再提交。MCP 默认关闭，在设置中应用输入/输出范围后启用，填入独立 Python 环境和适配器路径并复制配置给客户端；停止端点不会自动取消已提交任务。
 
@@ -40,7 +40,7 @@ ctest --preset asan
 
 可选骨骼验证目标：原生 ActorX 核心无需 Qt 或 SDK。设置 `FORMAVIEW_UFBX_ROOT` 为锁定版本的外置 ufbx 源码目录，可构建 FBX 读取库；设置 `FORMAVIEW_BUILD_FBX_WRITER=ON` 与 `FORMAVIEW_FBXSDK_ROOT` 可构建本机 FBX SDK 写出验证库。SDK 由使用者自行取得合法安装，不随源码提供。版本和校验值见 `cmake/dependencies.lock.json`；第三方通知在 `third_party/`。
 
-同时启用读写库后生成 `formaview_skeletal_probe` 测试工具，参数为输入、配对 PSK 或 `-`、已存在输出目录、报告路径。每片段分别生成纯骨架与配对网格 FBX，拒绝覆盖。`FORMAVIEW_TEST_ARTIFACT_ROOT` 指定外部测试输出目录后启用 FBX 数值测试。验证库尚未接入正式宿主或能力注册；不构成格式兼容性承诺。
+同时启用读写库后生成 `formaview_skeletal_probe` 测试工具，参数为输入、配对 PSK 或 `-`、已存在输出目录、报告路径。每片段分别生成纯骨架与配对网格 FBX，拒绝覆盖。`FORMAVIEW_TEST_ARTIFACT_ROOT` 指定外部测试输出目录后启用 FBX 数值测试。该探针是独立验证入口；产品内导出由共用任务服务（能力 `model.export_fbx`）提供，探针结果不构成格式兼容性承诺。
 
 对于使用 PSK 层级与参考姿势的 PSA，工具可追加两个参数：显式提供的 `.config` 路径（无配套文件时为 `-`）和 `reference`。此模式按唯一骨骼名称配对，纯骨架导出也使用 PSK 参考；保留 PSA 原始层级、姿势和键，不把记录差异当作文件损坏。`[RemoveTracks]` 的 `all`／`trans`／`rot` 使用 PSK 对应参考通道，配置内容与来源哈希保留。核心不自动扫描或访问相邻文件；默认严格记录检查仍可用于诊断。
 
@@ -48,7 +48,7 @@ PSA `BONENAMES` 中的全零四元数可作为缺失参考记录保留，`Bone::
 
 `formaview_skeletal_inventory` 接受 UTF-8 TSV 清单、新 JSONL 报告路径和可选停止文件路径。清单每行是 `输入路径<TAB>参考PSK或-<TAB>config或-`；逐项记录哈希、结构、姿势、预算拒绝与错误，创建停止文件可取消批次。报告拒绝覆盖；每文件失败保留在报告内，调用方须检查 `accepted` 字段，不能只看进程退出码。
 
-FBX 写出使用静态参考预旋转，并按世界矩阵误差细分超差的源帧区间；保留源关键时刻、真实秒和末尾保持。每个输出区间的三个内部时刻接受数值检查，超过精度、细分或预算限制时拒绝写出。文件帧率声明最细输出采样网格，原始帧率／帧数及实际输出采样率单独保存在 `FormaViewSourceFPS`／`FormaViewSourceFrames`／`FormaViewBakeFPS` 元数据中；不能把输出采样数当作原始 PSA 帧数。`FbxWriteResult` 返回细分、输出采样数和检查误差。验证工具还在独立的非网格时刻回读检查；这些实验性接口尚未接入正式导入流程。
+FBX 写出使用静态参考预旋转，并按世界矩阵误差细分超差的源帧区间；保留源关键时刻、真实秒和末尾保持。每个输出区间的三个内部时刻接受数值检查，超过精度、细分或预算限制时拒绝写出。文件帧率声明最细输出采样网格，原始帧率／帧数及实际输出采样率单独保存在 `FormaViewSourceFPS`／`FormaViewSourceFrames`／`FormaViewBakeFPS` 元数据中；不能把输出采样数当作原始 PSA 帧数。`FbxWriteResult` 返回细分、输出采样数和检查误差。验证工具还在独立的非网格时刻回读检查；产品导出通过同一写出库接入共用任务服务，并在预检中显示这些参数。
 
 Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_import.py` 适配器，使关键帧位置使用 `fps/fps_base`；默认 FBX 导入尚未取得相同验收结论。在 Blender Python 控制台将该目录加入 `sys.path`，然后调用 `from formaview_import import import_verified_fbx; import_verified_fbx(r'C:\path\clip.fbx')`，或执行 `blender --python tools/blender/formaview_import.py -- C:\path\clip.fbx`。脚本检查 Blender 版本、导入器签名和显式来源元数据，临时修正仅在本次导入内生效；不改安装文件、不重新定时。独立契约测试：`py -3 tests/blender_import_tests.py`。
 
@@ -58,7 +58,7 @@ Blender 4.5.x 的已验证导入流程需要仓库内 `tools/blender/formaview_i
 
 `formaview_professional_probe image|image-summary|abc|mesh 输入 外部输出目录` 输出数值核验材料；`image-summary` 仅输出通道哈希。启用 Qt 宿主时需要同版本 ShaderTools，另生成 `formaview_render_probe 外部输出目录 precision|image|mesh|abc [输入]` 技术窗口（ABC 渲染入口仅接收三角面）。渲染使用 Qt 6.8.3 QQuickRhiItem／D3D11／RGBA32F，与 Qt 私有 QRhi ABI 锁定；升级 Qt 必须重新验证。探针是独立验证入口；产品图片能力由共用图片服务报告。
 
-图片与 ABC 打开／解码接口是阻塞工作线程 API，须经有界调度器调用。保留源样本与独立显示缓冲；DDS 的 sRGB 数值保持编码域，`apply_srgb` 只对线性显示输入编码，不能重复应用。EXR 暂限普通非子采样通道和 tiled level 0，ABC 暂限 Ogawa 变换／多边形及主 UV／法线；Deep EXR、HDF5 和其他 schema 明确拒绝。预算限制已知载荷，第三方解码器内部临时分配与不可中断调用不构成硬实时上界。产品图片视口报告 GPU 分配失败；完整设备丢失恢复仍需专测，模型与 ABC 渲染仍为技术验证组件。
+图片与 ABC 打开／解码接口是阻塞工作线程 API，须经有界调度器调用。保留源样本与独立显示缓冲；DDS 的 sRGB 数值保持编码域，`apply_srgb` 只对线性显示输入编码，不能重复应用。EXR 暂限普通非子采样通道和 tiled level 0，ABC 暂限 Ogawa 变换／多边形及主 UV／法线；Deep EXR、HDF5 和其他 schema 明确拒绝。预算限制已知载荷，第三方解码器内部临时分配与不可中断调用不构成硬实时上界。产品图片视口报告 GPU 分配失败；完整设备丢失恢复仍需专测。ABC 渲染仅为历史技术验证组件，不属于本版产品能力。
 
 CPU图片转换库可另启用 `FORMAVIEW_BUILD_RASTER=ON`，需要锁定版本libtiff4.7.2、libwebp1.6.0、zlib1.3.2的外置静态安装前缀及QtGui；同时启用professional后构建 `FormaView::ImageConversion`。zlib使用config包的static组件；TIFF启用Deflate、LZW、PackBits，WebP包含demux/mux。版本、源包摘要和依赖许可分别见锁文件与third_party。ASan须使用重新instrument的三个静态库，Qt自身的二进制image handlers不在instrument范围内。
 

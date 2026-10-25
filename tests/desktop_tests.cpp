@@ -693,6 +693,107 @@ private slots:
     QTRY_COMPARE(desktop_->count(), 10024);
     QTRY_VERIFY(idle());
   }
+  void explainedLossAndErrorText() {
+    auto *explain = engine_->singletonInstance<QObject *>("FormaView.TestUI", "Explain");
+    QVERIFY(explain);
+    const auto table = [&](const char *name) {
+      return explain->property(name).value<QJSValue>().toVariant().toMap();
+    };
+    const auto call = [&](const char *method, const QString &a, const QString &b = {}) {
+      QString out;
+      if (std::strcmp(method, "lossText") == 0)
+        QMetaObject::invokeMethod(explain, method, Q_RETURN_ARG(QString, out), Q_ARG(QString, a), Q_ARG(QString, b));
+      else
+        QMetaObject::invokeMethod(explain, method, Q_RETURN_ARG(QString, out), Q_ARG(QVariant, a));
+      return out;
+    };
+    const auto hasCjk = [](const QString &s) {
+      return std::any_of(s.begin(), s.end(), [](QChar c) { return c.unicode() >= 0x3400 && c.unicode() <= 0x9fff; });
+    };
+    const auto losses = table("losses");
+    QVERIFY(losses.size() >= 50);
+    const auto codes = table("errorCodes");
+    QCOMPARE(codes.size(), 12);
+    for (const auto &[tableName, entries] : {std::pair{"losses", losses}, std::pair{"errorCodes", codes}})
+      for (auto it = entries.begin(); it != entries.end(); ++it) {
+        const auto row = it.value().toStringList();
+        QVERIFY2(row.size() == 3, qPrintable(it.key()));
+        QVERIFY2(hasCjk(row[0]) && hasCjk(row[2]), qPrintable(it.key()));
+        QVERIFY2(!row[1].isEmpty() && !hasCjk(row[1]), qPrintable(it.key()));
+        QVERIFY2(row[0] != row[1] && row[1] != row[2], qPrintable(it.key()));
+        // Every explanation says something beyond the technical code itself.
+        QVERIFY2(row[1].size() > 12, qPrintable(it.key()));
+        Q_UNUSED(tableName);
+      }
+    for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(30);
+      QString channel = call("lossText", "omitted_channel", "Source channel omitted: B");
+      QVERIFY2(channel.contains("B"), qPrintable(language + channel));
+      QVERIFY2(!channel.contains("omitted_channel") && !channel.contains("Source channel omitted:"), qPrintable(channel));
+      QCOMPARE(hasCjk(channel), language != "en");
+      const auto changed = call("errorText", "input_changed: Input changed after preflight");
+      QCOMPARE(hasCjk(changed), language != "en");
+      QVERIFY2(!changed.contains("Input changed after preflight"), qPrintable(changed));
+      QVERIFY2(call("errorText", "").isEmpty(), "empty stays empty");
+      // Unknown messages still get a localized headline; the raw text stays technical.
+      const auto unknown = call("errorText", "io: Weird upstream failure 42");
+      QCOMPARE(hasCjk(unknown), language != "en");
+      QVERIFY2(!unknown.contains("Weird"), qPrintable(unknown));
+      const auto fallback = call("errorText", "Something nobody mapped");
+      QCOMPARE(hasCjk(fallback), language != "en");
+      const auto jpeg = call("lossText", "lossy_codec", "JPEG recompression");
+      QCOMPARE(hasCjk(jpeg), language != "en");
+      QVERIFY2(jpeg.contains("JPEG"), qPrintable(jpeg));
+      const auto note = call("noteText", "Body: base colour has no usable UV set; source image reference retained without inventing coordinates");
+      QCOMPARE(hasCjk(note), language != "en");
+      QVERIFY2(note.contains("Body"), qPrintable(note));
+      const auto mapping = call("noteText", "Verified mapping: 12/14 bones");
+      QCOMPARE(hasCjk(mapping), language != "en");
+      QVERIFY2(mapping.contains("12/14"), qPrintable(mapping));
+      const auto batch = call("noteText", "Verified mapping: 3/4 bones · 1 of 2 file(s) NOT applied: other.fbx");
+      QVERIFY2(batch.contains("3/4") && batch.contains("other.fbx") && !batch.contains("NOT applied") == (language != "en"), qPrintable(batch));
+      const auto axes = call("noteText", "FBX · source axes preserved · 0.01 m/unit");
+      QCOMPARE(hasCjk(axes), language != "en");
+      QVERIFY2(axes.contains("0.01"), qPrintable(axes));
+    }
+    desktop_->setLanguage("zh-CN");
+  }
+  void convertOnlyInputsAndFutureFormats() {
+    const auto dir = root_ + "/convert-only-list";
+    QVERIFY(QDir().mkpath(dir));
+    for (const auto *name : {"a.pmx", "b.vrm", "c.abc", "e.fbx", "f.txt"}) {
+      QFile file(dir + "/" + name);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("x");
+    }
+    QImage(8, 8, QImage::Format_RGBA8888).save(dir + "/d.png");
+    desktop_->navigate(dir);
+    QTRY_COMPARE(desktop_->count(), 4); // pmx, vrm, fbx, png; ABC is not a previewable type in this release
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 2, 0);
+    QTRY_COMPARE(desktop_->count(), 3); // models plus conversion-only inputs
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 5, 0);
+    QTRY_COMPARE(desktop_->count(), 6);
+    QTRY_VERIFY(idle());
+    auto *model = desktop_->files();
+    int pmx = -1, abc = -1;
+    for (int row = 0; row < model->rowCount(); ++row) {
+      const auto name = model->index(row, 0).data(FileList::Name).toString();
+      if (name == "a.pmx") pmx = row;
+      if (name == "c.abc") abc = row;
+    }
+    QVERIFY(pmx >= 0 && abc >= 0);
+    desktop_->select(pmx);
+    QTRY_COMPARE(desktop_->asset().value("kind").toString(), QString("convert"));
+    QCOMPARE(desktop_->selectedModels(), QStringList{dir + "/a.pmx"});
+    desktop_->select(abc);
+    QTRY_COMPARE(desktop_->asset().value("name").toString(), QString("c.abc"));
+    QVERIFY(desktop_->selectedModels().isEmpty());
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle());
+  }
   void viewHistoryAndResourceRecovery() {
     desktop_->navigate(fixture_);
     QTRY_COMPARE(desktop_->count(), 10024);
@@ -821,7 +922,13 @@ private slots:
     QTRY_COMPARE(desktop_->directory(), small_);
     QTRY_COMPARE(desktop_->count(), 1);
     QTRY_VERIFY(idle());
+    // The location field is only populated while editing (folder navigation
+    // plan 2 shows breadcrumbs otherwise): opening it must show the new folder.
+    QTest::keyClick(window_, Qt::Key_L, Qt::ControlModifier);
+    QTRY_VERIFY((address = item("address")) && address->isVisible() && address->hasActiveFocus());
     QCOMPARE(address->property("text").toString(), small_);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!item("address") || !item("address")->isVisible());
     desktop_->navigate(fixture_);
     desktop_->filter("", 0, 0);
     QTRY_COMPARE(desktop_->count(), 10024);
@@ -2613,6 +2720,25 @@ private slots:
     service->preflight(sources, scope, {{"target", "fbx"}, {"export_content", "model"}}, "batch-{index}.{ext}", "skip");
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
     QCOMPARE(service->plan().value("items").toList().size(), 5);
+    // R08: the same preflight losses read in all three languages while the
+    // technical code stays available as a copyable second line.
+    item("conversionSteps")->setProperty("currentIndex", 1);
+    for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+      desktop_->setLanguage(language);
+      QTest::qWait(150);
+      const auto losses = visualItems(window_->contentItem(), "conversionItemLoss");
+      QVERIFY2(!losses.isEmpty(), "preflight shows loss rows");
+      for (auto *loss : losses) {
+        auto text = loss->property("explanation").toString();
+        text.remove(loss->property("detail").toString().section(": ", 0, 0)); // source names (e.g. morph names) are data, not wording
+        QVERIFY2(!text.isEmpty(), qPrintable(loss->property("code").toString()));
+        const bool cjk = std::any_of(text.begin(), text.end(), [](QChar c) { return c.unicode() >= 0x3400 && c.unicode() <= 0x9fff; });
+        QVERIFY2(cjk == (language != "en"), qPrintable(language + ": " + text));
+        QVERIFY2(loss->property("technical").toString().startsWith(loss->property("code").toString()), "technical code kept");
+      }
+      save("scene-batch-losses-" + language);
+    }
+    desktop_->setLanguage("zh-CN");
     service->submit(true); QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
     for (const auto &v : service->job().value("items").toList()) {
       const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(v.toMap().value("result").toMap().value("committed_output").toString().toStdWString()));
@@ -2713,7 +2839,8 @@ private slots:
       }
       save("model-settings-" + QString::number(mode));
       click("createImagePlan");
-      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
+          qPrintable(QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson(QJsonDocument::Compact) + " error=" + service->error().toUtf8()), 20000);
       const auto items = service->plan().value("items").toList();
       save("model-preflight-" + QString::number(mode));
       QCOMPARE(items.size(), mode == 0 ? 2 : 1);

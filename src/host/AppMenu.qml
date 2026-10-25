@@ -21,6 +21,7 @@ MenuBar {
     signal settings()
     signal unavailable()
     signal convert()
+    signal addAnimation()
     AppPopupMenu {
         title: Theme.t("文件", "File", "檔案")
         AppMenuItem { text: Theme.t("打开文件…", "Open file…", "開啟檔案…"); onTriggered: root.openFile() }
@@ -37,6 +38,7 @@ MenuBar {
         }
         AppMenuItem { text: Theme.t("刷新目录", "Refresh folder", "重新整理資料夾"); enabled: root.controller.directory.length>0; onTriggered: root.controller.refresh() }
         AppMenuItem { text: Theme.t("关闭文件", "Close file", "關閉檔案"); enabled: !!root.controller.asset.path; onTriggered: root.controller.clearAsset() }
+        AppMenuItem { objectName: "menuConvertSelected"; text: Theme.t("转换选定文件…（图片 / 模型）", "Convert selected files… (images / models)", "轉換選定檔案…（影像 / 模型）"); enabled: !!root.controller.imageJobs; onTriggered: root.convert() }
         MenuSeparator {}
         AppMenuItem { text: Theme.t("退出", "Quit", "結束"); onTriggered: Qt.quit() }
     }
@@ -53,7 +55,16 @@ MenuBar {
         AppMenuItem { text: Theme.t("源权重", "Source weights", "來源權重"); onTriggered: root.controller.model.setMode(2) }
         AppMenuItem { text: Theme.t("LOD / 碰撞", "LOD / Collision", "LOD / 碰撞"); onTriggered: root.controller.model.setMode(3) }
     }
-    AppPopupMenu { title: Theme.t("动画", "Animation", "動畫"); AppMenuItem { text: Theme.t("外部动画…", "External animation…", "外部動畫…"); onTriggered: root.unavailable() } }
+    AppPopupMenu {
+        id: animationMenu
+        title: Theme.t("动画", "Animation", "動畫")
+        readonly property bool hasModel: !!root.controller.model
+        AppMenuItem { objectName: "menuAnimationPlay"; text: Theme.t("播放 / 暂停（空格）", "Play / Pause (Space)", "播放 / 暫停（空白鍵）"); enabled: animationMenu.hasModel && root.controller.model.animated; onTriggered: root.controller.model.togglePlay() }
+        AppMenuItem { text: Theme.t("上一帧", "Previous frame", "上一格"); enabled: animationMenu.hasModel && root.controller.model.animated; onTriggered: root.controller.model.stepFrame(-1) }
+        AppMenuItem { text: Theme.t("下一帧", "Next frame", "下一格"); enabled: animationMenu.hasModel && root.controller.model.animated; onTriggered: root.controller.model.stepFrame(1) }
+        MenuSeparator {}
+        AppMenuItem { objectName: "menuAnimationAdd"; text: Theme.t("添加外部动画…", "Add external animation…", "新增外部動畫…"); enabled: animationMenu.hasModel && root.controller.model.canAttachExternalAnimation; onTriggered: root.addAnimation() }
+    }
     AppPopupMenu { title: Theme.t("图片", "Image", "影像")
         AppMenuItem { text: Theme.t("打开图片…", "Open image…", "開啟影像…"); enabled: !!root.controller.image; onTriggered: root.openFile() }
         AppMenuItem { text: Theme.t("转换选定图片…", "Convert selected images…", "轉換選定影像…"); enabled: !!root.controller.imageJobs; onTriggered: root.convert() }

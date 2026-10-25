@@ -17,7 +17,7 @@ Rectangle {
         }
         Label { color: Theme.muted; text: Theme.t("活动任务：", "Active tasks: ", "活動工作：")+root.controller.activeTasks }
         TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.fillWidth: true
-            PageTab { text: Theme.t("图片转换", "Image conversion", "影像轉換") }
+            PageTab { text: Theme.t("转换任务", "Conversion jobs", "轉換工作") }
             PageTab { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }
         }
         Loader {
@@ -41,7 +41,7 @@ Rectangle {
                     ColumnLayout { Layout.fillWidth: true
                         Label { text: row.modelData.operation === "scan" ? Theme.t("目录扫描", "Directory scan", "資料夾掃描") : row.modelData.operation === "filter" ? Theme.t("排序与筛选", "Sort and filter", "排序與篩選") : Theme.t("文件读取检查", "File access check", "檔案讀取檢查"); color: Theme.text; font.pixelSize: 16 }
                         Label { Layout.fillWidth: true; text: row.modelData.path; color: Theme.muted; font.pixelSize: 13; elide: Text.ElideMiddle }
-                        Label { visible: row.modelData.detail.length > 0; Layout.fillWidth: true; text: row.modelData.detail; color: Theme.error; wrapMode: Text.WrapAnywhere; font.pixelSize: 13 }
+                        ExplainedText { objectName: "taskDetail"; Layout.fillWidth: true; kind: "error"; raw: row.modelData.detail }
                     }
                     Label { text: Theme.state(row.modelData.state); color: row.modelData.state === "failed" ? Theme.error : Theme.text }
                     Tool { visible: !row.modelData.terminal; enabled: !row.modelData.cancelRequested; text: Theme.t("取消", "Cancel", "取消"); onClicked: root.controller.cancel(row.modelData.id) }

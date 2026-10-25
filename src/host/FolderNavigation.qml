@@ -105,7 +105,7 @@ RowLayout {
         color: Theme.field; radius: Theme.radius
         border.color: root.controller.error ? Theme.error : Theme.line
         ToolTip.visible: pathHover.hovered && !!root.controller.error
-        ToolTip.text: root.controller.error
+        ToolTip.text: Explain.errorText(root.controller.error) + "\n" + root.controller.error
         HoverHandler { id: pathHover }
         RowLayout {
             anchors.fill: parent; anchors.margins: 2; spacing: 0
@@ -240,7 +240,7 @@ RowLayout {
                     color: root.controller.folderMenu.error ? Theme.error : Theme.muted
                     wrapMode: Text.Wrap; font.pixelSize: Theme.compactText
                     ToolTip.visible: errorHover.hovered && !!root.controller.folderMenu.error
-                    ToolTip.text: root.controller.folderMenu.error || ""
+                    ToolTip.text: root.controller.folderMenu.error ? Explain.errorText(root.controller.folderMenu.error) + "\n" + root.controller.folderMenu.error : ""
                     HoverHandler { id: errorHover }
                 }
             }

@@ -48,8 +48,10 @@ QString kind(const QString &name) {
     return "model";
   if (suffix == "psa")
     return "animation";
-  if (suffix == "abc")
-    return "cache";
+  // PMX/VRM convert to FBX but have no professional preview in this release.
+  if (suffix == "pmx" || suffix == "vrm")
+    return "convert";
+  // ABC is a future-version format: listed only under "all types".
   return "other";
 }
 QString stateName(formaview::TaskState state) {
@@ -478,7 +480,7 @@ void Desktop::filter(const QString &text, int type, int order) {
   start("filter", directory_, revision,
         [data, query, category, sort](std::stop_token stop, Result &out) {
           const auto types =
-              QStringList{"", "image", "model", "animation", "cache", ""};
+              QStringList{"", "image", "model", "animation", "", ""};
           for (const auto &entry : *data) {
             if (stop.stop_requested())
               return failure(formaview::ErrorCode::Cancelled, "Cancelled");
@@ -487,7 +489,8 @@ void Desktop::filter(const QString &text, int type, int order) {
             const bool accepted =
                 entry.directory || category == 5 ||
                 (category == 0 ? entry.kind != QStringLiteral("other")
-                               : entry.kind == types[category]);
+                               : category == 2 ? entry.kind == types[2] || entry.kind == QStringLiteral("convert")
+                                               : entry.kind == types[category]);
             if (entry.name.contains(query, Qt::CaseInsensitive) && accepted)
               out.entries.push_back(entry);
           }
@@ -604,9 +607,9 @@ QStringList Desktop::selectedImages() const {
 QStringList Desktop::selectedModels() const {
   QStringList result;
   for (const auto &path : files_.selection())
-    if (kind(path) == "model" || kind(path) == "animation" || QStringList{"pmx", "vrm"}.contains(QFileInfo(path).suffix().toLower())) result.push_back(path);
+    if (const auto k = kind(path); k == "model" || k == "animation" || k == "convert") result.push_back(path);
   result.sort(Qt::CaseInsensitive);
-  if (result.isEmpty() && (asset_.value("kind") == "model" || asset_.value("kind") == "animation"))
+  if (result.isEmpty() && (asset_.value("kind") == "model" || asset_.value("kind") == "animation" || asset_.value("kind") == "convert"))
     result.push_back(asset_.value("path").toString());
   return result;
 }

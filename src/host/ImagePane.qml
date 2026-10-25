@@ -117,10 +117,14 @@ ColumnLayout {
             width: root.session.error ? Math.min(560, parent.width - 24) : Math.min(notice.implicitWidth + 24, parent.width - 24)
             height: notice.implicitHeight + 16
             color: Theme.panel; radius: Theme.radius; border.color: root.session.error ? Theme.error : Theme.line
-            Label {
-                id: notice; x: 12; y: 8; width: parent.width - 24
-                textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; color: root.session.error ? Theme.error : Theme.muted
-                text: root.session.error ? root.session.error + "\n" + Theme.t("仍显示：", "Still showing: ", "仍顯示：") + root.session.path : Theme.t("正在加载…", "Loading…", "正在載入…")
+            ColumnLayout {
+                id: notice; x: 12; y: 8; width: parent.width - 24; spacing: 4
+                ExplainedText { objectName: "imageErrorExplained"; Layout.fillWidth: true; kind: "error"; raw: root.session.error }
+                Label {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; color: root.session.error ? Theme.text : Theme.muted
+                    text: root.session.error ? Theme.t("仍显示：", "Still showing: ", "仍顯示：") + root.session.path : Theme.t("正在加载…", "Loading…", "正在載入…")
+                }
             }
         }
         Label { textFormat: Text.PlainText; anchors.centerIn: parent; width: parent.width - 40; visible: !!view.renderError; wrapMode: Text.WordWrap; color: Theme.error; text: Theme.t("图片无法在 GPU 上显示；源文件未更改。", "The GPU could not display this image; the source is unchanged.", "GPU 無法顯示此影像；來源檔案未變更。") + "\n" + view.renderError }

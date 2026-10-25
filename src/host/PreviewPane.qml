@@ -8,10 +8,14 @@ Rectangle {
     signal locate()
     signal toggleFocus()
     signal unavailable()
+    signal convert()
+    readonly property bool convertOnly: root.controller.asset.kind === "convert"
     property bool focused: false
     readonly property bool imageActive: !!controller.image && (controller.image.available || controller.image.busy || !!controller.image.error)
     readonly property bool modelActive: !!controller.model && (controller.model.available || controller.model.busy || !!controller.model.error)
     function focusLayoutControl() { imageFocus.forceActiveFocus() }
+    function addExternalAnimation(): void { const pane = modelPane; if (pane) pane.addExternalAnimation() }
+    readonly property var modelPane: modelLoader.item
     objectName: "previewPane"
     color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
     ColumnLayout {
@@ -36,7 +40,7 @@ Rectangle {
                 id: errorColumn
                 anchors.fill: parent; anchors.margins: 12
                 Label { Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: Theme.error; text: Theme.t("无法打开：", "Unable to open: ", "無法開啟：")+root.controller.requested }
-                Label { Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: Theme.text; text: root.controller.error; font.pixelSize: 13 }
+                ExplainedText { objectName: "previewOpenError"; Layout.fillWidth: true; kind: "error"; tone: Theme.text; raw: root.controller.error }
                 Label { Layout.fillWidth: true; visible: !!root.controller.asset.path; wrapMode: Text.WrapAnywhere; color: Theme.muted; text: Theme.t("当前仍显示：", "Still showing: ", "目前仍顯示：")+(root.controller.asset.name || "") }
                 RowLayout {
                     Tool { text: Theme.t("手动定位…", "Locate…", "手動定位…"); onClicked: root.locate() }
@@ -51,13 +55,15 @@ Rectangle {
             ColumnLayout {
                 anchors.centerIn: parent; width: Math.min(parent.width-48, 520); spacing: 16
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; text: root.controller.asset.path ? (root.controller.asset.suffix || Theme.t("文件", "File", "檔案")) : "FormaView"; color: Theme.text; font.pixelSize: 24 }
-                Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: Theme.muted; font.pixelSize: 14; text: root.controller.asset.path ? Theme.t("文件读取检查完成\n专业预览将在对应阶段接入", "File access checked\nProfessional preview is not connected yet", "檔案讀取檢查完成\n專業預覽將於對應階段接入") : Theme.t("打开文件或文件夹\n无需创建项目", "Open a file or folder\nNo project required", "開啟檔案或資料夾\n無需建立專案") }
+                Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: Theme.muted; font.pixelSize: 14; text: root.controller.asset.path ? (root.convertOnly ? Theme.t("此格式不提供预览，但可转换为 FBX\n转换时会列出无法等价保留的内容", "No preview for this format, but it can be converted to FBX\nContent that cannot be kept equivalently is listed before converting", "此格式不提供預覽，但可轉換為 FBX\n轉換時會列出無法等價保留的內容") : Theme.t("此格式暂不提供预览\n仍可查看文件信息或在资源管理器中定位", "No preview is available for this format\nYou can still inspect file details or locate it in Explorer", "此格式暫不提供預覽\n仍可檢視檔案資訊或在檔案總管中定位")) : Theme.t("打开文件或文件夹\n无需创建项目", "Open a file or folder\nNo project required", "開啟檔案或資料夾\n無需建立專案") }
                 RowLayout { Layout.alignment: Qt.AlignHCenter
-                    Tool { primary: true; iconName: "file"; text: Theme.t("打开文件…", "Open file…", "開啟檔案…"); onClicked: root.openFile() }
+                    Tool { visible: root.convertOnly; primary: true; objectName: "convertOnlyAction"; iconName: "preflight"; text: Theme.t("转换为 FBX…", "Convert to FBX…", "轉換為 FBX…"); onClicked: root.convert() }
+                    Tool { primary: !root.convertOnly; iconName: "file"; text: Theme.t("打开文件…", "Open file…", "開啟檔案…"); onClicked: root.openFile() }
                 }
             }
         }
         Loader {
+            id: modelLoader
             Layout.fillWidth: true; Layout.fillHeight: true
             active: root.modelActive; visible: active
             onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }

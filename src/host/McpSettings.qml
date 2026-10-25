@@ -38,7 +38,7 @@ ScrollView {
         }
         Tool { objectName: "mcpCopyConfig"; text: Theme.t("复制当前端点配置", "Copy current endpoint configuration", "複製目前端點設定"); enabled: root.service.mcpEnabled && !!python.text && !!adapter.text; onClicked: { const config = root.service.mcpConfiguration(python.text, adapter.text); if (config) root.controller.copy(config) } }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("仅复制配置，不修改客户端设置。当前端点随本次应用会话关闭；下一次启用后需复制新端点配置。", "Copies configuration without changing client settings. This endpoint belongs to the current app session; copy a new configuration after enabling it next time.", "僅複製設定，不修改用戶端設定。目前端點隨本次應用程式工作階段關閉；下次啟用後需複製新的端點設定。") }
-        Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: Theme.error; visible: !!root.service.error; text: root.service.error }
+        ExplainedText { objectName: "mcpServiceError"; Layout.fillWidth: true; kind: "error"; raw: root.service.error }
 
                 }
             }

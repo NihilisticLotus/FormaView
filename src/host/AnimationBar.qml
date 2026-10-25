@@ -148,9 +148,9 @@ Rectangle {
                            : root.session.externalInfo.status === "verified"
                            ? Theme.t("外部动画 · 已验证映射", "External animation · verified mapping", "外部動畫 · 已驗證映射")
                            : Theme.t("外部动画 · 试播（未验证兼容）", "External animation · trial (unverified)", "外部動畫 · 試播（未驗證相容）"))
-                          + " · " + (root.session.externalInfo.notice || "")
+                          + " · " + Explain.noteText(root.session.externalInfo.notice)
                     ToolTip.visible: extHover.hovered
-                    ToolTip.text: (root.session.externalInfo.notice || "") + "\n" + (root.session.externalInfo.path || "") + "\n" + Theme.t("关系仅存于查看会话，不改写目标或源文件。", "Session-only relationship; neither file is modified.", "關聯僅存於檢視工作階段，不改寫目標或來源檔案。")
+                    ToolTip.text: Explain.noteText(root.session.externalInfo.notice) + "\n" + (root.session.externalInfo.notice || "") + "\n" + (root.session.externalInfo.path || "") + "\n" + Theme.t("关系仅存于查看会话，不改写目标或源文件。", "Session-only relationship; neither file is modified.", "關聯僅存於檢視工作階段，不改寫目標或來源檔案。")
                     HoverHandler { id: extHover }
                 }
                 Tool {

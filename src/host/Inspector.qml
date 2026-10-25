@@ -41,7 +41,7 @@ Rectangle {
             Readout { Layout.fillWidth: true; label: Theme.t("修改时间", "Modified", "修改時間"); value: root.controller.asset.modified || "—" }
         }
         SectionHeader { id: resourcesSection; objectName: "genericResourceSection"; Layout.fillWidth: true; checkable: true; text:Theme.t("关联资源", "Linked resources", "關聯資源") + (root.controller.resourceIssues.length ? " · "+root.controller.resourceIssues.length : "") }
-        Label { visible: resourcesSection.checked && root.controller.resourceIssues.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("尚无资源报告。专业资源解析暂不可用。", "No resource report. Professional resource parsing is unavailable.", "尚無資源報告。專業資源解析暫不可用。") }
+        Label { visible: resourcesSection.checked && root.controller.resourceIssues.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("此文件类型没有可解析的关联资源。", "This file type has no linked resources to resolve.", "此檔案類型沒有可解析的關聯資源。") }
         ListView {
             objectName: "genericResourceList"
             Layout.fillWidth: true; Layout.preferredHeight: Math.min(contentHeight,320)
@@ -52,7 +52,7 @@ Rectangle {
                 required property var modelData
                 width: ListView.view.width; spacing: 6
                 Readout { Layout.fillWidth: true; label: Theme.t("预期资源", "Expected resource", "預期資源"); value: issue.modelData.expected }
-                Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.error; text: issue.modelData.detail }
+                ExplainedText { Layout.fillWidth: true; kind: "error"; raw: issue.modelData.detail }
                 Readout { Layout.fillWidth: true; visible: issue.modelData.candidate.length>0; label: Theme.t("候选路径", "Candidate path", "候選路徑"); value: issue.modelData.candidate }
                 Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: issue.modelData.state === "mapped" ? Theme.t("已记录路径，加载时仍须验证格式。", "Path recorded. Format validation is still required on load.", "已記錄路徑，載入時仍須驗證格式。") : Theme.t("候选检查仅验证路径与可读性。", "Candidate check verifies path and readability only.", "候選檢查僅驗證路徑與可讀性。") }
                 RowLayout {

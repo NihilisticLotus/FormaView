@@ -20,6 +20,9 @@ Rectangle {
     property bool wireframe: false
     property var uvCamera: ({})
     color: Theme.base
+    function addExternalAnimation(): void {
+        if (root.session.canAttachExternalAnimation && !root.session.busy && !root.session.externalBusy) externalDialog.open()
+    }
     function fit(selected: bool): void {
         if (root.narrow && root.session.mode===1 && root.showUV && root.uvViewport) root.uvViewport.fit(selected)
         else modelViewport.fit(selected)
@@ -50,7 +53,7 @@ Rectangle {
                       ? Theme.t("选择匹配当前 PSK 的 PSA 动画，自动读取同名轨道配置", "Choose PSA animations matching this PSK; matching track configs load automatically", "選擇符合目前 PSK 的 PSA 動畫，自動讀取同名軌道設定")
                       : Theme.t("选择一个或多个带骨架动画的 FBX，驱动当前模型", "Choose one or more skeletal-animation FBX files to drive this model", "選擇一個或多個帶骨架動畫的 FBX，驅動目前模型")
                 enabled: !root.session.busy && !root.session.externalBusy
-                onClicked: externalDialog.open()
+                onClicked: root.addExternalAnimation()
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0 }
             Tool { objectName: "modelWireframe"; Layout.preferredWidth: 32; iconName: "wireframe"; hint: Theme.t("线框模式", "Wireframe", "線框模式"); checkable: true; checked: root.wireframe; enabled: root.session.available; onToggled: root.wireframe=checked }
@@ -169,7 +172,8 @@ Rectangle {
                 anchors.centerIn: parent; width: Math.min(stage.width-40,480)
                 visible: root.session.busy || root.session.preparing || !!root.session.error || !!root.session.frameError
                 BusyIndicator { Layout.alignment: Qt.AlignHCenter; running: root.session.busy || root.session.preparing; visible: running }
-                Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; color: root.session.error || root.session.frameError ? Theme.error : Theme.text; text: root.session.error || root.session.frameError || (root.session.preparing ? Theme.t("正在准备视图 · 旧画面仅供参考，精确检查暂缓", "Preparing view · previous frame is reference only; exact inspection paused", "正在準備視圖 · 舊畫面僅供參考，精確檢查暫緩") : Theme.t("正在读取模型…", "Reading model…", "正在讀取模型…")) }
+                ExplainedText { objectName: "modelErrorExplained"; Layout.fillWidth: true; kind: "error"; raw: root.session.error || root.session.frameError }
+                Label { visible: !root.session.error && !root.session.frameError; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; color: Theme.text; text: (root.session.preparing ? Theme.t("正在准备视图 · 旧画面仅供参考，精确检查暂缓", "Preparing view · previous frame is reference only; exact inspection paused", "正在準備視圖 · 舊畫面僅供參考，精確檢查暫緩") : Theme.t("正在读取模型…", "Reading model…", "正在讀取模型…")) }
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
                     Tool { visible: (!!root.session.error || !!root.session.frameError) && !root.session.error.startsWith("ANIMATION_ONLY_FBX:"); text: Theme.t("重试", "Retry", "重試"); onClicked: root.session.retry() }

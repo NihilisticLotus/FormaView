@@ -77,8 +77,8 @@ target_compile_definitions(formaview PRIVATE
     $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:QT_QML_DEBUG>
     $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:FORMAVIEW_QML_SOURCE_DIR="${FORMAVIEW_QML_PREVIEW_SOURCE_DIR}">)
 set_target_properties(formaview PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
-set_source_files_properties(Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set(desktop_qml Main.qml Theme.qml AppIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FolderNavigation.qml FilesPane.qml
+set_source_files_properties(Theme.qml Explain.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set(desktop_qml Main.qml Theme.qml Explain.qml ExplainedText.qml AppIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FolderNavigation.qml FilesPane.qml
     Inspector.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml

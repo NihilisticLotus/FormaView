@@ -23,7 +23,7 @@ async def main():
         async with ClientSession(reader, writer, client_info=Implementation(name='FormaView GUI integration', version='1')) as session:
             initialized = await session.initialize()
             tools = await session.list_tools()
-            assert len(tools.tools) == 11
+            assert len(tools.tools) == 13, sorted(t.name for t in tools.tools)  # 11 image tools + inspect_model + create_model_export_plan
 
             async def call(name, arguments):
                 result = await session.call_tool(name, arguments)

@@ -83,14 +83,14 @@ Item {
                     Readout { Layout.fillWidth: true; label: Theme.t("源点 / 三角形", "Source points / triangles", "來源點 / 三角形"); value: (root.session.info.points ?? "—")+" / "+(root.session.info.triangles ?? "—") }
                     Readout { Layout.fillWidth: true; label: Theme.t("当前网格", "This mesh", "目前網格"); value: (root.session.info.meshPoints ?? "—")+" / "+(root.session.info.meshTriangles ?? "—") }
                     Readout { Layout.fillWidth: true; label: Theme.t("当前可见", "Currently visible", "目前可見"); value: (root.session.info.visiblePoints ?? "—")+" / "+(root.session.info.visibleTriangles ?? "—") }
-                    Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; text: root.session.info.coordinates || ""; font.pixelSize: Theme.noteText; textFormat: Text.PlainText }
+                    Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; text: Explain.noteText(root.session.info.coordinates || ""); font.pixelSize: Theme.noteText; textFormat: Text.PlainText }
                 }
                 SectionHeader { id: issues; objectName: "modelSourceResources"; Layout.fillWidth: true; text: Theme.t("资源与说明", "Resources and notes", "資源與說明")+" · "+(root.session.resources.length+root.session.warnings.length) }
                 ColumnLayout {
                     Layout.fillWidth: true; visible: issues.checked
                     Repeater {
                         model: root.session.warnings
-                        delegate: Label { required property string modelData; Layout.fillWidth: true; text: modelData; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere; color: Theme.muted; font.pixelSize: Theme.noteText }
+                        delegate: ExplainedText { required property string modelData; objectName: "modelNote"; Layout.fillWidth: true; kind: "note"; raw: modelData; tone: Theme.muted }
                     }
                     Repeater {
                         model: root.session.resources
@@ -118,7 +118,7 @@ Item {
                 Choice { Layout.fillWidth: true; model: root.session.uvSets; currentIndex: root.session.uvIndex; enabled: count>0; onActivated: root.session.selectUV(currentIndex); Accessible.name: Theme.t("会话关联使用的UV集", "UV set for session association", "工作階段關聯使用的UV集") }
                 Tool { Layout.fillWidth: true; text: root.session.textureBusy ? Theme.t("读取中…", "Reading…", "讀取中…") : Theme.t("定位贴图…", "Locate texture…", "定位貼圖…"); enabled: root.session.available&&!root.session.textureBusy; onClicked: textureDialog.open() }
                 Tool { Layout.fillWidth: true; text: Theme.t("清除会话关联", "Clear session association", "清除工作階段關聯"); enabled: root.session.canClearTexture; onClicked: root.session.removeTexture() }
-                Label { Layout.fillWidth: true; visible: !!root.session.textureError; color: Theme.error; wrapMode: Text.Wrap; text: root.session.textureError; textFormat: Text.PlainText }
+                ExplainedText { objectName: "modelTextureError"; Layout.fillWidth: true; kind: "error"; raw: root.session.textureError }
                 Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; font.pixelSize: Theme.noteText; text: Theme.t("定位后仍须真实解码；只改变本次显示，不保存或覆盖源模型、材质或贴图。", "Located images must decode successfully. Associations only affect this session and never overwrite source models, materials or textures.", "定位後仍須實際解碼；僅改變本次顯示，不儲存或覆寫來源模型、材質或貼圖。") }
             }
         }

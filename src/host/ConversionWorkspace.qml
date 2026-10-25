@@ -54,7 +54,7 @@ FocusScope {
             }
             Tool { objectName: "returnToPreview"; quiet: true; iconName: "return"; text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.close() }
         }
-        Label { Layout.fillWidth: true; visible: !!root.service.error; wrapMode: Text.WrapAnywhere; color: Theme.error; text: root.service.error; textFormat: Text.PlainText }
+        ExplainedText { objectName: "conversionServiceError"; Layout.fillWidth: true; kind: "error"; raw: root.service.error }
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: tabs.currentIndex
             ConversionSettings {

@@ -39,14 +39,12 @@ Rectangle {
             }
         }
 
-        Label {
+        ExplainedText {
             objectName: "compareErrorMessage"
             Layout.fillWidth: true
-            visible: text.length > 0
-            text: root.session.compareError
-            wrapMode: Text.Wrap
-            color: Theme.text
-            font.pixelSize: Theme.noteText
+            kind: "error"
+            raw: root.session.compareError
+            tone: Theme.text
         }
         Label {
             objectName: "compareStructureVerdict"

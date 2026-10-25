@@ -117,7 +117,7 @@ FormGroup {
         Readout { form: true; visible: root.modelMode; inlineValue: true; Layout.fillWidth: true; label: Theme.t("坐标与单位", "Axes and units", "座標與單位"); value: modelFields.coordinateLabel }
         Readout { form: true; inlineValue: true; Layout.fillWidth: true; label: Theme.t("冲突策略", "Conflict policy", "衝突策略"); value: conflict.displayText }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
-        Readout { form: true; objectName: "conversionNamingExamples"; Layout.fillWidth: true; label: Theme.t("命名示例 · 预检前", "Name examples · Before preflight", "命名範例 · 預檢前"); value: root.namingPreview.error || (root.namingPreview.names || []).join("\n") || "—" }
+        Readout { form: true; objectName: "conversionNamingExamples"; Layout.fillWidth: true; label: Theme.t("命名示例 · 预检前", "Name examples · Before preflight", "命名範例 · 預檢前"); value: Explain.errorText(root.namingPreview.error) || (root.namingPreview.names || []).join("\n") || "—" }
         RowLayout { Layout.fillWidth: true; spacing: 10
             AppIcon { name: "preflight"; variant: "muted"; Layout.alignment: Qt.AlignTop }
             Label { font.pixelSize: Theme.formText; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("预检会检查输入、输出范围与格式兼容性，再确认转换。", "Preflight checks inputs, output scope and format compatibility before conversion.", "預檢會檢查輸入、輸出範圍與格式相容性，再確認轉換。") }

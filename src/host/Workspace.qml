@@ -115,6 +115,7 @@ Item {
                             onSettings: { mainMenu.close(); settingsDialog.open("permissions") }
                             onUnavailable: { mainMenu.close(); about.open() }
                             onConvert: { mainMenu.close(); root.openConversion(0) }
+                            onAddAnimation: { mainMenu.close(); preview.addExternalAnimation() }
                         }
                     }
                 }
@@ -168,6 +169,7 @@ Item {
                     onOpenFile: fileDialog.open(); onLocate: locateDialog.open()
                     onToggleFocus: { root.conversionVisible = false; root.setFocusMode(!root.focusMode) }
                     onUnavailable: about.open()
+                    onConvert: root.openConversion(0)
                 }
                     }
                 }
@@ -240,13 +242,31 @@ Item {
     FileDialog { id: locateDialog; title: Theme.t("定位替代文件 · 读取检查后应用", "Locate replacement · Check before applying", "定位替代檔案 · 讀取檢查後套用"); onAccepted: root.controller.openPath(selectedFile.toString()) }
     Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => navigation.focusDestination("conversion")) } }
     Dialog {
-        id: about; anchors.centerIn: Overlay.overlay; width: 480; modal: true; focus: true
+        id: about; anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
         footer: DialogButtonBox {
             Button { text: Theme.t("关闭", "Close", "關閉"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
             onRejected: about.reject()
         }
         title: "FormaView"
-        Label { width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; text: (root.controller.imageJobs ? Theme.t("支持图片通道、像素读数、子资源与批量转换。MCP 默认关闭，需在设置中应用范围并启用。动画播放尚未提供。", "Image channels, pixel values, subresources and batch conversion are available. MCP is off by default; apply a scope and enable it in Settings. Animation playback is not yet available.", "支援影像通道、像素讀數、子資源與批次轉換。MCP 預設關閉，須在設定套用範圍並啟用。動畫播放尚未提供。") : Theme.t("此构建提供文件浏览、缩略图、读取检查与任务中心。未编入图片服务。", "This build provides file browsing, thumbnails, access checks and task status. The image service is not included.", "此組建提供檔案瀏覽、縮圖、讀取檢查與工作中心。未編入影像服務。")) + (root.controller.model ? Theme.t("\n支持 FBX/PSK 模型、骨骼、UV 与源权重只读检查。", "\nRead-only FBX/PSK model, skeleton, UV and source-weight inspection is available.", "\n支援 FBX/PSK 模型、骨骼、UV 與來源權重唯讀檢查。") : "") + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置\nAlt+← 后退 · Alt+→ 前进 · Alt+↑ 上级\n文件列表内 ↑/↓ 连续浏览\nCtrl / Shift 多选 · Esc 关闭弹层", "\n\nCtrl+O Open · Ctrl+L Location\nAlt+Left Back · Alt+Right Forward · Alt+Up Parent\nUp/Down Browse in file list\nCtrl / Shift Multi-select · Esc Close popup", "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置\nAlt+← 返回 · Alt+→ 前進 · Alt+↑ 上層\n檔案清單內 ↑/↓ 連續瀏覽\nCtrl / Shift 多選 · Esc 關閉彈層") }
+        Label {
+            width: parent.width; wrapMode: Text.WordWrap; color: Theme.text; textFormat: Text.PlainText
+            text: (root.controller.imageJobs
+                   ? Theme.t("图片：读取 PNG / JPEG / BMP / TGA / TIFF / WebP / GIF / ICO / DDS / HDR / EXR，查看通道、透明度、曝光与源像素；可写出 PNG / JPEG / BMP / TGA / TIFF / WebP / DDS / HDR / EXR，转换前先预检并确认损失。",
+                             "Images: read PNG / JPEG / BMP / TGA / TIFF / WebP / GIF / ICO / DDS / HDR / EXR; inspect channels, alpha, exposure and source pixels; write PNG / JPEG / BMP / TGA / TIFF / WebP / DDS / HDR / EXR. Every conversion is preflighted and losses must be confirmed.",
+                             "影像：讀取 PNG / JPEG / BMP / TGA / TIFF / WebP / GIF / ICO / DDS / HDR / EXR，檢視通道、透明度、曝光與來源像素；可寫出 PNG / JPEG / BMP / TGA / TIFF / WebP / DDS / HDR / EXR，轉換前先預檢並確認損失。")
+                   : Theme.t("此构建提供文件浏览、缩略图、读取检查与任务中心。未编入图片服务。", "This build provides file browsing, thumbnails, access checks and task status. The image service is not included.", "此組建提供檔案瀏覽、縮圖、讀取檢查與工作中心。未編入影像服務。"))
+                  + (root.controller.model
+                     ? Theme.t("\n模型：预览 FBX / OBJ / glTF / GLB / PSK / PSKX，检查 UV、完整源权重、骨架与绑定、LOD 与碰撞；播放 FBX / glTF 动作与 PSA（独立或外部配对），可比较骨架、锁定根运动。导出 FBX（含 PMX / VRM 输入）同样先预检再确认损失。",
+                               "\nModels: preview FBX / OBJ / glTF / GLB / PSK / PSKX; inspect UV, full source weights, skeleton and bindings, LOD and collision; play FBX / glTF actions and PSA (standalone or paired); compare skeletons and lock root motion. FBX export (including PMX / VRM inputs) is also preflighted with losses confirmed first.",
+                               "\n模型：預覽 FBX / OBJ / glTF / GLB / PSK / PSKX，檢查 UV、完整來源權重、骨架與綁定、LOD 與碰撞；播放 FBX / glTF 動作與 PSA（獨立或外部配對），可比較骨架、鎖定根運動。匯出 FBX（含 PMX / VRM 輸入）同樣先預檢再確認損失。")
+                     : "")
+                  + Theme.t("\nMCP 默认关闭：在设置中应用输入/输出范围后启用，客户端与界面共用同一套预检与任务。",
+                            "\nMCP is off by default: apply an input/output scope in settings and enable it. Clients and this window share the same preflight and tasks.",
+                            "\nMCP 預設關閉：在設定中套用輸入/輸出範圍後啟用，用戶端與介面共用同一套預檢與工作。")
+                  + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置 · Esc 返回/关闭弹层\nAlt+← 后退 · Alt+→ 前进 · Alt+↑ 上级\n文件列表内 ↑/↓ 连续浏览 · Ctrl / Shift 多选\n图片：F 适合 · Z 原始像素 · 空格 平铺 · C/R/G/B/A 通道\n模型：F 聚焦 · Home 显示全部 · 空格 播放/暂停（有动画时）",
+                            "\n\nCtrl+O Open · Ctrl+L Location · Esc Back / close popup\nAlt+Left Back · Alt+Right Forward · Alt+Up Parent\nUp/Down Browse in file list · Ctrl / Shift Multi-select\nImage: F Fit · Z Actual pixels · Space Tile · C/R/G/B/A Channels\nModel: F Focus · Home Frame all · Space Play/Pause (when animated)",
+                            "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置 · Esc 返回/關閉彈層\nAlt+← 返回 · Alt+→ 前進 · Alt+↑ 上層\n檔案清單內 ↑/↓ 連續瀏覽 · Ctrl / Shift 多選\n影像：F 符合視窗 · Z 原始像素 · 空白鍵 並排 · C/R/G/B/A 通道\n模型：F 聚焦 · Home 顯示全部 · 空白鍵 播放/暫停（有動畫時）")
+        }
     }
     DropArea { anchors.fill: parent; enabled: !root.conversionVisible && !root.settingsVisible; onDropped: drop => { if(drop.hasUrls) { root.controller.openUrls(drop.urls); drop.acceptProposedAction() } } }
 }

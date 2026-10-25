@@ -78,7 +78,10 @@ ColumnLayout {
             }
             ColumnLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1 && (clipMode.currentIndex === 1 || root.sourceClips.length > 0)
                 Repeater { model: root.inspectedSources
-                    Label { required property var modelData; visible: !!modelData.error; Layout.fillWidth: true; color: Theme.error; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText; text: modelData.error ? modelData.input_path + "\n" + modelData.error.code + ": " + modelData.error.message : "" }
+                    ColumnLayout { required property var modelData; visible: !!modelData.error; Layout.fillWidth: true; spacing: 2
+                        Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText; font.pixelSize: Theme.noteText; text: parent.modelData.input_path || "" }
+                        ExplainedText { Layout.fillWidth: true; kind: "error"; raw: parent.modelData.error ? parent.modelData.error.code + ": " + parent.modelData.error.message : "" }
+                    }
                 }
                 Label { visible: root.sourceClips.length === 0; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("读取源文件后显示动作；未选片段不能导出。", "Read source clips first; select at least one clip to export.", "讀取來源檔案後顯示動作；未選片段不能匯出。") }
                 Repeater { model: root.sourceClips
