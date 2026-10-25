@@ -60,6 +60,19 @@ namespace {
 bool workflowHeadless() {
   return qEnvironmentVariableIsSet("FORMAVIEW_TEST_HEADLESS");
 }
+#ifdef FORMAVIEW_IMAGE_UI
+// These waits establish correctness states for the same 64 inputs. ASan
+// instrumentation is not subject to the Release validation deadlines;
+// throughput and latency targets are measured separately.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr int reviewPreflightWaitMs = 90000;
+constexpr int reviewProducerSignalWaitMs = 135000;
+#else
+constexpr int reviewPreflightWaitMs = 30000;
+constexpr int reviewProducerSignalWaitMs = 45000;
+#endif
+constexpr int reviewProducerPreflightWaitMs = reviewPreflightWaitMs + 5000;
+#endif
 }
 #ifdef Q_OS_WIN
 #include <d3d11.h>
@@ -4065,6 +4078,10 @@ private slots:
     // QTest assertions return early. Leave the shared window in the same
     // normal-preview state on failure as on successful completion.
     const auto restoreReviewUi = qScopeGuard([&] { restorePageReviewUi(); });
+    QJsonObject validationWaits{{"cancel_preflight_budget_ms", reviewPreflightWaitMs},
+      {"producer_preflight_budget_ms", reviewProducerPreflightWaitMs},
+      {"producer_signal_budget_ms", reviewProducerSignalWaitMs}};
+    const auto recordWaits = qScopeGuard([&] { evidence_["review_validation_waits"] = validationWaits; });
     workspace->setProperty("tasksVisible", false);
     workspace->setProperty("settingsVisible", false);
     workspace->setProperty("conversionVisible", false);
@@ -4175,9 +4192,12 @@ private slots:
     QVERIFY(cancelImage.save(cancelSource));
     QStringList cancelInputs;
     for (int i = 0; i < 64; ++i) cancelInputs.append(cancelSource);
+    QElapsedTimer cancelPreflightElapsed; cancelPreflightElapsed.start();
     service->preflight(cancelInputs, reviewScope,
        {{"target","png"}, {"png_compression",9}}, "cancel-{index}.{ext}", "skip");
-    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", qPrintable(service->error()), 30000);
+    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", qPrintable(service->error()), reviewPreflightWaitMs);
+    validationWaits["cancel_preflight_elapsed_ms"] = cancelPreflightElapsed.elapsed();
+    validationWaits["input_count"] = cancelInputs.size();
     const auto previousJob = service->job().value("id");
     service->submit(true);
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("id") != previousJob, 15000);
@@ -4205,8 +4225,9 @@ private slots:
     producer.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) { args->flags |= CREATE_NO_WINDOW; });
 #endif
     const auto stopProducer = qScopeGuard([&] { if (producer.state() != QProcess::NotRunning) { producer.kill(); producer.waitForFinished(5000); } });
+    QElapsedTimer producerSignalElapsed; producerSignalElapsed.start();
     producer.start(QCoreApplication::applicationFilePath(), {"--recovery-producer", recoveryInput, recoveryOutput, recoverySignal});
-    QTRY_VERIFY2_WITH_TIMEOUT(QFile::exists(recoverySignal), producer.readAll().constData(), 45000);
+    QTRY_VERIFY2_WITH_TIMEOUT(QFile::exists(recoverySignal), producer.readAll().constData(), reviewProducerSignalWaitMs);
     QFile signal(recoverySignal);
     // Windows may expose the committed name before a transient exclusive
     // handle is released. Wait for readability as well as atomic publication.
@@ -4216,8 +4237,10 @@ private slots:
     signal.close();
     QVERIFY2(signalError.error == QJsonParseError::NoError, qPrintable(signalError.errorString()));
     QCOMPARE(runningJob.value("state").toString(), QString("running"));
+    validationWaits["producer_signal_elapsed_ms"] = producerSignalElapsed.elapsed();
     producer.kill();
     QTRY_COMPARE(producer.state(), QProcess::NotRunning);
+    QCOMPARE(producer.exitStatus(), QProcess::CrashExit);
     service->configureScope({{"input_roots",QStringList{recoveryInput}}, {"output_roots",QStringList{recoveryOutput}}, {"allow_overwrite",false}});
     QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->error().isEmpty(), qPrintable(service->error()), 15000);
     service->selectJob(runningJob.value("id").toString());
@@ -8449,13 +8472,13 @@ int main(int argc, char **argv) {
     ImageJobs service;
     QStringList inputs;
     for (int i = 0; i < 64; ++i) inputs.append(input + "/source.png");
-    const auto wait = [](auto predicate) {
+    const auto wait = [](auto predicate, int timeoutMs = 35000) {
       QElapsedTimer deadline; deadline.start();
-      while (!predicate() && deadline.elapsed() < 35000) QTest::qWait(10);
+      while (!predicate() && deadline.elapsed() < timeoutMs) QTest::qWait(10);
       return predicate();
     };
     service.preflight(inputs, {{"input_roots",QStringList{input}}, {"output_roots",QStringList{output}}, {"allow_overwrite",false}}, {{"target","png"}, {"png_compression",9}}, "recovery-{index}.{ext}", "skip");
-    if (!wait([&] { return !service.busy() && service.plan().value("state") == "ready"; })) return 21;
+    if (!wait([&] { return !service.busy() && service.plan().value("state") == "ready"; }, reviewProducerPreflightWaitMs)) return 21;
     service.submit(true);
     if (!wait([&] { return !service.busy() && service.job().value("state") == "running"; })) return 22;
     QSaveFile ready(app.arguments()[4]);
