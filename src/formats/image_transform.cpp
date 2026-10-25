@@ -121,6 +121,11 @@ TransformedImage transform(const ImageSubresource &source,
     if (is_alpha && options.alpha_action != AlphaAction::Preserve)
       invalid("Dropped/composited alpha cannot remain in output channel mapping");
     const int component = colour_component(mapping.destination);
+    // Colour transfer/exposure/compositing is defined for R/G/B destinations
+    // only: a Y/luma or arbitrarily named destination would silently skip the
+    // colour math while the report claims it was applied. Never guess.
+    if (transformed && component < 0 && !is_alpha)
+      invalid("Colour transfer/exposure requires R/G/B destination channels");
     if (options.alpha_action == AlphaAction::Composite && component < 0)
       invalid("Composite output must map explicitly to RGB");
     if (is_alpha && component >= 0 && transformed)

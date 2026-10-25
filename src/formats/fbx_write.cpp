@@ -280,7 +280,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     info->mTitle = model_only ? "ActorX model" : first_sequence.source.original_name.c_str();
     info->mAuthor = "FormaView";
     const auto provenance =
-        "ActorX bounded-error Euler bake. Original source initial_samples and real seconds retained. "
+        "ActorX bounded-error Euler bake. Original source key samples and real seconds retained. "
         "Terminal hold at exclusive source end. PSA SHA256=" +
         a.source.identity.sha256 +
         "; reference PSK SHA256=" + (paired ? paired->source.identity.sha256 : "none") +

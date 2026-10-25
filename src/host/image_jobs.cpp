@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointer>
@@ -31,6 +32,23 @@ QString errorText(const QJsonObject &r) {
   const auto e = r["error"].toObject();
   return e.isEmpty() ? QString{}
                      : e["code"].toString() + ": " + e["message"].toString();
+}
+// Reverse of the service's error_name(): plan-item errors round-trip as JSON.
+ErrorCode error_code(const QString &name) {
+  static const QHash<QString, ErrorCode> codes{
+      {"unsupported", ErrorCode::Unsupported},
+      {"invalid_argument", ErrorCode::InvalidArgument},
+      {"queue_full", ErrorCode::QueueFull},
+      {"resource_limit", ErrorCode::ResourceLimit},
+      {"shutting_down", ErrorCode::ShuttingDown},
+      {"cancelled", ErrorCode::Cancelled},
+      {"stale_result", ErrorCode::StaleResult},
+      {"input_changed", ErrorCode::InputChanged},
+      {"out_of_scope", ErrorCode::OutOfScope},
+      {"conflict", ErrorCode::Conflict},
+      {"io", ErrorCode::Io},
+      {"internal", ErrorCode::Internal}};
+  return codes.value(name, ErrorCode::Internal);
 }
 bool active(const QString &s) {
   return s == "queued" || s == "running" || s == "planning";
@@ -218,13 +236,27 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           }
           itemOptions["include_mesh"] = content != "animation";
           if (content == "model") itemOptions.remove("pairing_policy");
+          // Read-only snapshot before any access: Qt's non-const operator[]
+          // inserts a null value on a missing key, which used to plant an
+          // empty "error" here and permanently disable the guards below.
+          const QJsonObject animation_info = animation_source;
+          const QJsonObject inspect_error =
+              animation_info.value("error").toObject();
           QJsonArray clips;
           if (content != "model")
-            for (const auto &v : animation_source["clips"].toArray())
+            for (const auto &v : animation_info.value("clips").toArray())
               if (!selection_explicit || selection.contains(v.toObject()["id"])) clips.append(v);
           inputInfo.append(QVariantMap{{"input", inputs[i]}, {"clips", clips.toVariantList()},
-              {"error", animation_source["error"].toObject().toVariantMap()}});
-          if (content != "model" && clips.isEmpty() && !animation_source.contains("error")) {
+              {"error", inspect_error.toVariantMap()}});
+          if (content != "model" && !inspect_error.isEmpty()) {
+            // Surface the real inspection failure instead of fabricating a
+            // clip-less item that only fails later in the writer.
+            throw skeletal::Failure(
+                error_code(inspect_error.value("code").toString()),
+                "Paired animation could not be inspected: " +
+                    inspect_error.value("message").toString().toStdString());
+          }
+          if (content != "model" && clips.isEmpty()) {
             if (selection_explicit) continue;
             throw skeletal::Failure(ErrorCode::InvalidArgument,
                 "No source animation selected; choose model-only, or supply an ActorX animation pair");
@@ -417,6 +449,7 @@ void ImageJobs::dispatch(QJsonObject q) {
   preparation_.reset();
   busy_ = true;
   error_.clear();
+  timer_.start(); // poll() stops the timer once nothing is left to watch
   emit changed();
   const auto service = service_;
   QPointer<ImageJobs> receiver(this);
@@ -532,6 +565,17 @@ void ImageJobs::poll() {
     discovery_ = discovery;
     emit changed();
   }
+  // Idle polling burns GUI-thread wakeups at 10 Hz: once nothing is in
+  // flight, stop; every action (preflight/dispatch/endpoint change) restarts.
+  const auto watching =
+      busy_ || !retiredEndpoints_.empty() || !discoveryId_.isEmpty() ||
+      active(plan_.value("state").toString()) ||
+      active(job_.value("state").toString()) ||
+      std::any_of(rows.cbegin(), rows.cend(), [](const auto &v) {
+        return active(v.toMap().value("state").toString());
+      });
+  if (!watching && timer_.isActive())
+    timer_.stop();
 }
 void ImageJobs::configureScope(const QVariantMap &scope) {
   preflight({}, scope, {}, {}, "skip");

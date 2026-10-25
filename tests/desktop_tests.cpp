@@ -745,6 +745,16 @@ private slots:
       const auto jpeg = call("lossText", "lossy_codec", "JPEG recompression");
       QCOMPARE(hasCjk(jpeg), language != "en");
       QVERIFY2(jpeg.contains("JPEG"), qPrintable(jpeg));
+      // Two-letter service codes (io) must match the bundled headline, and
+      // producer details containing replace() patterns must not corrupt text.
+      const auto generic = call("errorText", "internal: definitely-unmapped-message-xyz");
+      const auto io = call("errorText", "io: Cannot read bounded scope configuration");
+      QVERIFY2(io != generic && !io.contains("Cannot read"), qPrintable(io + " | " + generic));
+      const auto copied_label = language == "en" ? QStringLiteral("Metadata not copied: ")
+                                  : language == "zh-TW" ? QStringLiteral("中繼資料未複製：")
+                                                        : QStringLiteral("元数据未复制：");
+      QCOMPARE(call("lossText", "metadata_field", "Not copied: key=$&{d}"), copied_label + "key=$&{d}");
+
       const auto note = call("noteText", "Body: base colour has no usable UV set; source image reference retained without inventing coordinates");
       QCOMPARE(hasCjk(note), language != "en");
       QVERIFY2(note.contains("Body"), qPrintable(note));
@@ -2817,7 +2827,28 @@ private slots:
       if (mode == 3) {
         choose("modelExportOrganization", 0);
         choose("modelExportClipMode", 1);
-        click("modelExportClip");
+        // Under load the synthesized click can occasionally fail to toggle
+        // the checkbox (Qt delivery timing). Verify the selection at the QML
+        // property level and retry the click when it did not register; the
+        // assertion below still requires a registered selection.
+        auto *settings = window_->findChild<QQuickItem *>("modelExportSettings");
+        QVERIFY(settings);
+        // Keyboard activation (focus + Space) instead of a synthesized mouse
+        // click: coordinate delivery can miss the delegate under load, while
+        // keyboard selection is an equivalent real user path.
+        for (int attempt = 0; attempt < 3 &&
+                            settings->property("selectedClips").toStringList().isEmpty();
+             ++attempt) {
+          auto *clip = item("modelExportClip");
+          QVERIFY2(clip && clip->isEnabled(), "source clip row missing");
+          clip->forceActiveFocus();
+          QTest::qWait(60);
+          QTest::keyClick(window_, Qt::Key_Space);
+          QTRY_VERIFY_WITH_TIMEOUT(
+              !settings->property("selectedClips").toStringList().isEmpty(), 2000);
+        }
+        QVERIFY2(!settings->property("selectedClips").toStringList().isEmpty(),
+                 "selected-clip toggle did not register");
         edit("conversionNamingTemplate", "{name}-selected-{clip}.{ext}");
       }
       if (mode == 1) {
@@ -2840,7 +2871,19 @@ private slots:
       save("model-settings-" + QString::number(mode));
       click("createImagePlan");
       QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
-          qPrintable(QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson(QJsonDocument::Compact) + " error=" + service->error().toUtf8()), 20000);
+          qPrintable("mode=" + QByteArray::number(mode) + " error=" + service->error().toUtf8() +
+                     " plan=" + QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson(QJsonDocument::Compact) +
+                     " sources=" + QJsonDocument(QJsonArray::fromVariantList(service->modelSources())).toJson(QJsonDocument::Compact) +
+                     " qml=" + [&] {
+                        QStringList parts;
+                        if (auto *settings = window_->findChild<QQuickItem *>("modelExportSettings"))
+                          parts << "selectedClips=" + settings->property("selectedClips").toStringList().join(",");
+                        if (auto *mode = window_->findChild<QQuickItem *>("modelExportClipMode"))
+                          parts << "clipMode=" + QString::number(mode->property("currentIndex").toInt());
+                        if (auto *clip = window_->findChild<QQuickItem *>("modelExportClip"))
+                          parts << "clipChecked=" + QString::number(clip->property("checked").toBool())
+                                << "clipEnabled=" + QString::number(clip->property("enabled").toBool());
+                        return parts.join(" "); }()), 20000);
       const auto items = service->plan().value("items").toList();
       save("model-preflight-" + QString::number(mode));
       QCOMPARE(items.size(), mode == 0 ? 2 : 1);

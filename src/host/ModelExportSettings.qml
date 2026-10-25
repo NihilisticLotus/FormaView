@@ -5,6 +5,7 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 ColumnLayout {
     id: root
+    objectName: "modelExportSettings"
     required property var controller
     required property var inputs
     required property var scope

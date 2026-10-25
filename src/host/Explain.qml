@@ -98,6 +98,10 @@ QtObject {
         [/Morph chunks|morph chunks/i, ["此 ActorX 含形态键数据块，当前写出器不支持，已拒绝。", "This ActorX holds morph chunks that the writer does not support; it was refused.", "此 ActorX 含形態鍵資料區塊，目前寫出器不支援，已拒絕。"]],
         [/\{clip\} needs one selected animation/, ["模板含 {clip}，每个输出只能对应一个所选动作；把多个动作放进同一输出时请改用 {name}-animations.{ext}。", "A {clip} template needs exactly one selected clip per output; for several clips in one output use {name}-animations.{ext}.", "範本含 {clip}，每個輸出只能對應一個所選動作；把多個動作放進同一輸出時請改用 {name}-animations.{ext}。"]],
         [/Output template must be a filename/, ["输出命名模板必须是文件名：不能含路径分隔符或未知占位符，可用 {name}、{clip}、{index}、{ext}。", "The output template must be a plain file name without path separators or unknown placeholders; use {name}, {clip}, {index}, {ext}.", "輸出命名範本必須是檔名：不能含路徑分隔符或未知預留位置，可用 {name}、{clip}、{index}、{ext}。"]],
+        [/requires R\/G\/B destination channels/, ["颜色传递/曝光只对 R/G/B 目标通道有定义：请先映射到 RGB，或取消该颜色操作。", "Colour transfer/exposure is defined for R/G/B destination channels only: map to RGB or drop the colour operation.", "顏色傳遞/曝光只對 R/G/B 目標通道有定義：請先映射到 RGB，或取消該顏色操作。"]],
+        [/^No source animation selected/, ["未选择任何动作片段：请改为“只导出模型”，或提供 ActorX 动画配对/先勾选片段。", "No animation clips are selected: choose model-only, or supply an ActorX animation pair / tick clips first.", "未選擇任何動作片段：請改為「只匯出模型」，或提供 ActorX 動畫配對／先勾選片段。"]],
+        [/^Paired animation could not be inspected/, ["配对的动画文件读取检查失败；真实原因见下方技术信息，未写入任何输出。", "The paired animation could not be inspected; the actual reason is in the technical text below. Nothing was written.", "配對的動畫檔案讀取檢查失敗；真實原因見下方技術資訊，未寫入任何輸出。"]],
+        [/requires clip_id\/clip_ids chosen from inspect/, ["导出动画必须先“读取列表”并从中选择动作片段。", "Animation export requires reading the clip list and selecting clips from it first.", "匯出動畫必須先「讀取清單」並從中選擇動作片段。"]],
         [/Select up to 64 inputs|Select between 1 and 64 inputs/i, ["一次最多选择 64 个输入文件（至少 1 个）。", "Select between 1 and 64 input files per plan.", "一次最多選擇 64 個輸入檔（至少 1 個）。"]],
         [/Per-item options must match|Input and per-item options do not match/i, ["每个文件的设置必须与已固定的输入列表一致。请重新打开转换设置。", "Per-item settings must match the fixed input list. Reopen the conversion settings.", "每個檔案的設定必須與已固定的輸入清單一致。請重新開啟轉換設定。"]],
         [/Cancel active work before changing its access scope/i, ["有任务正在运行。请先取消或等待结束，再修改访问范围。", "Work is in progress. Cancel it or wait before changing the access scope.", "有工作正在執行。請先取消或等待結束，再修改存取範圍。"]],
@@ -147,14 +151,16 @@ QtObject {
 
     function _t(z: var): string { return Theme.t(z[0], z[1], z[2]) }
     function _fill(text: string, d: string, parts: var): string {
-        let out = text.replace(/\{d\}/g, d)
-        for (let i = 1; parts && i < parts.length; ++i) out = out.replace(new RegExp("\\{" + i + "\\}", "g"), parts[i] || "")
+        // Function replacements keep producer-controlled detail strings (which
+        // may contain $&, $$ etc.) out of replace()'s special-pattern handling.
+        let out = text.replace(/\{d\}/g, () => d)
+        for (let i = 1; parts && i < parts.length; ++i) out = out.replace(new RegExp("\\{" + i + "\\}", "g"), () => parts[i] || "")
         return out
     }
     // Split "code: message" produced by services; plain messages have no code.
     function parse(raw: var): var {
         const text = String(raw || "")
-        const m = /^([a-z][a-z0-9_]{2,}|[A-Z][A-Z0-9_]{2,}):\s*([\s\S]*)$/.exec(text)
+        const m = /^([a-z][a-z0-9_]*|[A-Z][A-Z0-9_]*):\s*([\s\S]*)$/.exec(text)
         return m ? { code: m[1], message: m[2], raw: text } : { code: "", message: text, raw: text }
     }
     function lossText(code: string, detail: string): string {

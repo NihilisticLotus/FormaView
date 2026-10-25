@@ -331,6 +331,12 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   }
   std::vector<std::size_t> selected;
   if (animation) {
+    // Absent selection must not degrade to an empty id that fails matching
+    // with an unrelated message: animation export always requires explicit
+    // clip ids from inspect (the MCP contract tests rely on this).
+    if (!o.contains("clip_ids") && !o.contains("clip_id"))
+      fail(ErrorCode::InvalidArgument,
+           "Animation export requires clip_id/clip_ids chosen from inspect");
     const auto ids = o.contains("clip_ids") ? o["clip_ids"].toArray()
                                             : QJsonArray{o["clip_id"]};
     if (static_cast<std::uint64_t>(ids.size()) > limits.clips)

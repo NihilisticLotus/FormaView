@@ -107,6 +107,21 @@ void colour_alpha() {
   require(value(out.image.channels[0], 0) == .25, "Premultiplied input multiplied by alpha twice");
   o.output_scalar = ScalarType::Half; source.channels[2] = channel<float>("beauty.B", ScalarType::Float32, {1e30F, 1.F});
   rejects([&]{ (void)transform(source, o); });
+  // A transfer on a non-RGB destination has no defined semantics: it must be
+  // rejected, never silently skipped while the report claims it was applied.
+  auto grey = rgba(); grey.channels = {channel<float>("beauty.Y", ScalarType::Float32, {.25F, .5F})};
+  auto g = options(); g.meaning = ImageMeaning::Colour;
+  g.channels = {{"beauty.Y", "Y"}};
+  g.alpha_channel.clear(); g.source_alpha = AlphaMode::Absent;
+  g.output_scalar = ScalarType::Float32; g.quantization = Quantization::ClampRound;
+  g.transfer = Transfer::SrgbToLinear;
+  rejects([&]{ (void)transform(grey, g); });
+  g.transfer = Transfer::Preserve; g.exposure = 1;
+  rejects([&]{ (void)transform(grey, g); });
+  g.exposure = 0;
+  const auto passthrough = transform(grey, g);
+  require(value(passthrough.image.channels[0], 0) == .25 && !passthrough.report.colour_transformed,
+          "No-transfer non-RGB passthrough must stay untouched and unreported");
 }
 void limits_errors() {
   auto source = rgba(); auto o = options(); Limits small; small.decoded_bytes = 8;
