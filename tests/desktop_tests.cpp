@@ -40,6 +40,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSaveFile>
 #include <QScopeGuard>
 #include <QAbstractNativeEventFilter>
 #include <QScreen>
@@ -221,7 +222,11 @@ class DesktopTests final : public QObject {
   QImage captureWindow(QQuickWindow *window) {
     const auto image=captureExposedWindow(window);
     if (image.isNull())
-      QTest::qFail("Window capture unavailable: require a live, exposed, initialized window",__FILE__,__LINE__);
+      QTest::qFail(qPrintable(QString("Window capture unavailable: window=%1 handle=%2 visible=%3 exposed=%4 visibility=%5 sceneGraph=%6 size=%7x%8")
+          .arg(window != nullptr).arg(window && window->handle()).arg(window && window->isVisible())
+          .arg(window && window->isExposed()).arg(window ? int(window->visibility()) : -1)
+          .arg(window && window->isSceneGraphInitialized()).arg(window ? window->width() : 0)
+          .arg(window ? window->height() : 0)), __FILE__, __LINE__);
     return image;
   }
   void save(const QString &name) {
@@ -749,8 +754,26 @@ private slots:
       // Two-letter service codes (io) must match the bundled headline, and
       // producer details containing replace() patterns must not corrupt text.
       const auto generic = call("errorText", "internal: definitely-unmapped-message-xyz");
+      for (const auto *message : {
+             "Duplicate glTF animation target channel",
+             "Invalid glTF sparse animation indices", "Sparse animation value read failed",
+             "Animation times must be finite", "Animation key count mismatch", "Non-finite animation value",
+             "Cannot open input", "Cannot hold parent directory", "Cannot inspect file handle",
+             "Journal already has an owner", "Journal directory contains unrelated entries",
+             "Corrupt journal record", "Invalid journal record contract",
+             "Journal exceeds 100 preserved temporary records"}) {
+        const auto raw = QString("internal: ") + message;
+        const auto localized = call("errorText", raw);
+        QVERIFY2(localized != generic && !localized.contains(message), qPrintable(raw + " => " + localized));
+        QCOMPARE(hasCjk(localized), language != "en");
+        QCOMPARE(call("errorTechnical", raw), raw);
+      }
       const auto io = call("errorText", "io: Cannot read bounded scope configuration");
       QVERIFY2(io != generic && !io.contains("Cannot read"), qPrintable(io + " | " + generic));
+      const auto ambiguous = call("errorText", "out_of_scope: Ambiguous path component rejected");
+      const auto nameReason = language == "en" ? QString("trailing space/dot") : language == "zh-TW" ? QString("末尾空格/句點") : QString("末尾空格/句点");
+      QVERIFY2(ambiguous.contains(nameReason), qPrintable(ambiguous));
+      QVERIFY(ambiguous != call("errorText", "out_of_scope: Only absolute local drive paths are authorized"));
       const auto copied_label = language == "en" ? QStringLiteral("Metadata not copied: ")
                                   : language == "zh-TW" ? QStringLiteral("中繼資料未複製：")
                                                         : QStringLiteral("元数据未复制：");
@@ -3017,6 +3040,31 @@ private slots:
     QCOMPARE(QImage(request.value("output").toString()).pixelColor(0, 0), QColor(Qt::cyan));
     QVERIFY(!QFile::exists(firstRequest.value("output").toString()));
     evidence_["conversion_editor_binding"] = QJsonObject{{"before", QJsonObject::fromVariantMap(firstRequest)}, {"submitted", QJsonObject::fromVariantMap(request)}};
+    // Opening directly on Preflight or Jobs must invalidate a plan whose
+    // selected inputs changed, just as opening the Settings page does.
+    for (const auto page : {1, 2}) {
+      const auto plannedInputs = desktop_->selectedImages();
+      service->preflight(plannedInputs,
+          {{"input_roots", QStringList{desktop_->directory()}}, {"output_roots", QStringList{secondOutput}}, {"allow_overwrite", false}},
+          {{"target", "png"}}, "{name}-changed-selection.{ext}", "skip");
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+      auto *conversion = window_->findChild<QObject *>("conversionWorkspace");
+      QVERIFY(conversion);
+      QVERIFY(QMetaObject::invokeMethod(conversion, "close"));
+      const auto selectedPath = page == 1 ? fixture_ + "/图片0.png" : source;
+      desktop_->navigate(QFileInfo(selectedPath).absolutePath());
+      QTRY_VERIFY(idle() && desktop_->directory() == QFileInfo(selectedPath).absolutePath());
+      const auto selectedIndex = static_cast<FileList *>(desktop_->files())->indexOf(selectedPath);
+      QVERIFY(selectedIndex >= 0);
+      desktop_->select(selectedIndex);
+      QTRY_COMPARE(desktop_->selectedImages(), QStringList{selectedPath});
+      QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, page)));
+      QTRY_VERIFY(service->plan().isEmpty());
+      QCOMPARE(item("conversionSteps")->property("currentIndex").toInt(), page);
+      const auto count = service->jobs().size();
+      service->submit(true);
+      QCOMPARE(service->jobs().size(), count);
+    }
   }
 
   void imageJobsCancelAndShutdown() {
@@ -3805,6 +3853,12 @@ private slots:
               QString("/image-%1.png").arg(i, 3, 10, QLatin1Char('0'))));
     QVERIFY(QFile::copy(small_ + "/唯一图片.png",
                         directory + "/nested/inside.png"));
+#ifdef Q_OS_WIN
+    const auto ambiguousPath = L"\\\\?\\" + QDir::toNativeSeparators(directory + "/trailing.png.").toStdWString();
+    const auto ambiguous = CreateFileW(ambiguousPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(ambiguous != INVALID_HANDLE_VALUE);
+    CloseHandle(ambiguous);
+#endif
     const auto output = root_ + "/discovery-output";
     QVERIFY(QDir().mkpath(output));
     const auto click = [&](const char *name) {
@@ -3861,6 +3915,11 @@ private slots:
         15000);
     QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
     QCOMPARE(service->discovery()["items"].toList().size(), 100);
+#ifdef Q_OS_WIN
+    const auto rejected = service->discovery().value("rejected_paths").toList();
+    QCOMPARE(rejected.size(), 1);
+    QVERIFY(rejected.front().toMap().value("path").toString().endsWith("trailing.png."));
+#endif
     const auto snapshot = service->discovery()["id"].toString();
     QVERIFY(click("discoveryNext"));
     QCOMPARE(service->discoveryOffset(), 100);
@@ -3887,6 +3946,26 @@ private slots:
          {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
       desktop_->setLanguage(language);
       QTest::qWait(60);
+#ifdef Q_OS_WIN
+      auto *rejection = item("discoveryRejectedPaths");
+      QVERIFY(rejection && rejection->isVisible());
+      QVERIFY(rejection->property("value").toString().contains("trailing.png."));
+      const auto label = language == "en" ? QString("Skipped unsafe paths") : language == "zh-TW" ? QString("已略過不安全路徑") : QString("已跳过不安全路径");
+      QCOMPARE(rejection->property("label").toString(), label);
+      QVERIFY(!rejection->property("value").toString().contains("Ambiguous path component"));
+      const auto reason = language == "en" ? QString("trailing space/dot") : language == "zh-TW" ? QString("末尾空格/句點") : QString("末尾空格/句点");
+      QVERIFY(rejection->property("value").toString().contains(reason));
+      for (auto *parent = rejection->parentItem(); parent; parent = parent->parentItem()) {
+        if (parent->metaObject()->indexOfProperty("contentY") < 0) continue;
+        const auto y = rejection->mapToItem(parent, {0, 0}).y();
+        parent->setProperty("contentY", std::clamp(
+            parent->property("contentY").toDouble() + y - 24., 0.,
+            std::max(0., parent->property("contentHeight").toDouble() - parent->height())));
+      }
+      QTest::qWait(60);
+      const auto rejectionTop = rejection->mapToScene({0, 0});
+      QVERIFY(rejectionTop.y() >= 0 && rejectionTop.y() + rejection->height() <= window_->height());
+#endif
       save("conversion-discovery-" + language);
     }
     desktop_->setLanguage("zh-CN");
@@ -3906,6 +3985,19 @@ private slots:
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     QVERIFY(workspace && session && service);
+    // QTest assertions return early. Leave the shared window in the same
+    // normal-preview state on failure as on successful completion.
+    const auto restoreReviewUi = qScopeGuard([&] {
+      service->setMcpEnabled(false);
+      if (auto *settings = window_->findChild<QObject *>("mcpSettingsDialog"))
+        QMetaObject::invokeMethod(settings, "close");
+      workspace->setProperty("tasksVisible", false);
+      workspace->setProperty("settingsVisible", false);
+      workspace->setProperty("conversionVisible", false);
+      workspace->setProperty("focusMode", false);
+      window_->resize(1600, 900);
+      desktop_->setLanguage("zh-CN");
+    });
     workspace->setProperty("tasksVisible", false);
     workspace->setProperty("settingsVisible", false);
     workspace->setProperty("conversionVisible", false);
@@ -4049,9 +4141,13 @@ private slots:
     producer.start(QCoreApplication::applicationFilePath(), {"--recovery-producer", recoveryInput, recoveryOutput, recoverySignal});
     QTRY_VERIFY2_WITH_TIMEOUT(QFile::exists(recoverySignal), producer.readAll().constData(), 45000);
     QFile signal(recoverySignal);
-    QVERIFY(signal.open(QIODevice::ReadOnly));
-    const auto runningJob = QJsonDocument::fromJson(signal.readAll()).object();
+    // Windows may expose the committed name before a transient exclusive
+    // handle is released. Wait for readability as well as atomic publication.
+    QTRY_VERIFY2_WITH_TIMEOUT(signal.isOpen() || signal.open(QIODevice::ReadOnly), qPrintable(signal.errorString()), 5000);
+    QJsonParseError signalError;
+    const auto runningJob = QJsonDocument::fromJson(signal.readAll(), &signalError).object();
     signal.close();
+    QVERIFY2(signalError.error == QJsonParseError::NoError, qPrintable(signalError.errorString()));
     QCOMPARE(runningJob.value("state").toString(), QString("running"));
     producer.kill();
     QTRY_COMPARE(producer.state(), QProcess::NotRunning);
@@ -4500,6 +4596,10 @@ private slots:
     desktop_->preference("inspectorMode", "auto");
     desktop_->openPath(fixtures.filePath("external.gltf"));
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    // Inspection and directory scanning finish independently. Capture the
+    // focus-restoration baseline only after both refer to the target asset.
+    QTRY_COMPARE(session->path(), fixtures.filePath("external.gltf"));
+    QTRY_VERIFY(idle() && desktop_->directory() == fixtures.absolutePath());
     session->setMode(0);
     auto *view = qobject_cast<ModelView *>(item("modelViewport"));
     QVERIFY(view);
@@ -4531,8 +4631,10 @@ private slots:
         click("globalFocusPreview");
         QTRY_VERIFY(workspace->property("focusMode").toBool());
         QTRY_VERIFY(item("focusFilesRail") && item("focusInspectorRail"));
-        QCOMPARE(item("focusFilesRail")->width(), 36.0);
-        QCOMPARE(item("focusInspectorRail")->width(), 36.0);
+        // Visibility changes precede the RowLayout polish; wait for the
+        // requested rail width instead of observing Tool's implicit width.
+        QTRY_COMPARE(item("focusFilesRail")->width(), 36.0);
+        QTRY_COMPARE(item("focusInspectorRail")->width(), 36.0);
         QVERIFY(item("focusFilesRail")->height() > 600);
         QVERIFY(!item("navigationRail") && !item("inspectorPane"));
         save(QString("focus-rails-%1-%2").arg(width).arg(railName));
@@ -5519,7 +5621,10 @@ private slots:
     QVERIFY(viewport);
     viewport->forceActiveFocus();
     QTest::keyClick(window_, Qt::Key_Space);
-    QVERIFY(session->playing());
+    QVERIFY2(session->playing(), QJsonDocument(QJsonObject{
+        {"time", session->time()}, {"clip", QJsonObject::fromVariantMap(session->clipInfo())},
+        {"viewport_focus", viewport->hasActiveFocus()}, {"speed", session->speed()},
+        {"loop", session->loop()}}).toJson(QJsonDocument::Compact).constData());
     QTest::keyClick(window_, Qt::Key_Space);
     QVERIFY(!session->playing());
     // Frame never mutates source data: reopening yields the same digest.
@@ -8125,6 +8230,93 @@ private slots:
         {"boundary", "GUI-thread engine+rows excludes parsing; end-to-end includes it. Not input latency."}};
     QVERIFY2(p95(guiMs) <= 200.0, "Engine+rows P95 exceeds the 200 ms budget");
   }
+  void screenCompatibility() {
+    if (workflowHeadless()) QSKIP("Requires real Windows screens");
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    auto *originalScreen = window_->screen();
+    const auto originalGeometry = window_->geometry();
+    const auto originalLanguage = desktop_->language();
+    QObject *help = nullptr;
+    for (auto *object : window_->findChildren<QObject *>())
+      if (object->property("title").toString() == "FormaView" && object->metaObject()->indexOfMethod("open()") >= 0)
+        help = object;
+    QVERIFY(help);
+    const auto restore = qScopeGuard([&] {
+      QMetaObject::invokeMethod(help, "close");
+      if (auto *drawer = window_->findChild<QObject *>("fileDrawer"))
+        QMetaObject::invokeMethod(drawer, "close");
+      desktop_->filter("", 0, 0);
+      desktop_->setLanguage(originalLanguage);
+      window_->setScreen(originalScreen);
+      window_->setGeometry(originalGeometry);
+    });
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("focusMode", false);
+    desktop_->navigate(fixture_);
+    QTRY_VERIFY(idle() && desktop_->directory() == fixture_);
+    QJsonArray observations;
+    int screenIndex = 0;
+    for (auto *screen : QGuiApplication::screens()) {
+      window_->setScreen(screen);
+      window_->resize(1280, 800);
+      window_->setPosition(screen->availableGeometry().topLeft() + QPoint(24, 24));
+      QTRY_COMPARE(window_->screen(), screen);
+      QTRY_VERIFY(window_->isExposed());
+      QTest::qWait(100);
+      const auto firstSize = window_->size();
+      // Keep the initial expanded-client geometry discrepancy as evidence.
+      // A second explicit resize tests the settled usable window, as the
+      // existing model rail test does; this does not validate the first resize.
+      if (firstSize != QSize(1280, 800)) window_->resize(1280, 800);
+      QTRY_COMPARE(window_->size(), QSize(1280, 800));
+      for (const auto &language : {QString("zh-CN"), QString("en"), QString("zh-TW")}) {
+        desktop_->setLanguage(language);
+        auto *drawer = window_->findChild<QObject *>("fileDrawer");
+        QVERIFY(drawer);
+        if (auto *rail = item("fileRail")) {
+          QVERIFY(QMetaObject::invokeMethod(rail, "clicked"));
+          QTRY_VERIFY(drawer->property("opened").toBool());
+        }
+        auto *search = item("search");
+        QVERIFY(search);
+        search->forceActiveFocus();
+        QTRY_VERIFY(search->hasActiveFocus());
+        QVERIFY(QMetaObject::invokeMethod(search, "selectAll"));
+        QInputMethodEvent commit;
+        commit.setCommitString("图片");
+        QCoreApplication::sendEvent(search, &commit);
+        QTRY_COMPARE(desktop_->query(), QString("图片"));
+        QTRY_COMPARE(desktop_->count(), 24);
+        QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(window_, Qt::Key_Backspace);
+        QTRY_VERIFY(idle() && desktop_->query().isEmpty());
+        QVERIFY(QMetaObject::invokeMethod(drawer, "close"));
+        QTRY_VERIFY(!drawer->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(help, "open"));
+        QTRY_VERIFY(help->property("opened").toBool());
+        QVERIFY(help->property("x").toDouble() >= 0 && help->property("y").toDouble() >= 0);
+        QVERIFY(help->property("x").toDouble() + help->property("width").toDouble() <= window_->width());
+        QVERIFY(help->property("y").toDouble() + help->property("height").toDouble() <= window_->height());
+        QTest::qWait(80);
+        const auto capture = captureWindow(window_);
+        QVERIFY(!capture.isNull());
+        QVERIFY(capture.save(root_ + QString("/screen-%1-help-%2.png").arg(screenIndex).arg(language)));
+        observations.append(QJsonObject{{"screen", screen->name()}, {"language", language},
+          {"dpr", window_->devicePixelRatio()}, {"logical_width", window_->width()}, {"logical_height", window_->height()},
+          {"first_resize_width", firstSize.width()}, {"first_resize_height", firstSize.height()},
+          {"available_width", screen->availableGeometry().width()}, {"available_height", screen->availableGeometry().height()},
+          {"capture_width", capture.width()}, {"capture_height", capture.height()}});
+        QVERIFY(QMetaObject::invokeMethod(help, "close"));
+        QTRY_VERIFY(!help->property("visible").toBool());
+      }
+      ++screenIndex;
+    }
+    evidence_["screen_compatibility"] = observations;
+  }
+
   void cleanupTestCase() {
     if (const auto mem = formaview::process_memory()) {
       evidence_["working_set_bytes"] =
@@ -8199,10 +8391,13 @@ int main(int argc, char **argv) {
     if (!wait([&] { return !service.busy() && service.plan().value("state") == "ready"; })) return 21;
     service.submit(true);
     if (!wait([&] { return !service.busy() && service.job().value("state") == "running"; })) return 22;
-    QFile ready(app.arguments()[4]);
+    QSaveFile ready(app.arguments()[4]);
     if (!ready.open(QIODevice::WriteOnly)) return 23;
-    ready.write(QJsonDocument(QJsonObject::fromVariantMap(service.job())).toJson());
-    ready.close();
+    // Widen the publication window so the parent exercises an incomplete
+    // signal deterministically if this writer ever loses atomic publication.
+    QTest::qWait(150);
+    const auto signalBytes = QJsonDocument(QJsonObject::fromVariantMap(service.job())).toJson();
+    if (ready.write(signalBytes) != signalBytes.size() || !ready.commit()) return 24;
     return app.exec();
   }
 #endif
