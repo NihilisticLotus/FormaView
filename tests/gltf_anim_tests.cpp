@@ -234,6 +234,107 @@ void runSynthetic(const std::filesystem::path &path) {
   check("read.range", clip.start == 0.0 && clip.end == 2.0);
   check("read.channels", clip.channels.size() == 4);
 
+  const auto original = QJsonDocument::fromJson(
+      QByteArray::fromStdString(buildAnimatedGltf(path))).object();
+  const auto readVariant = [&](const QJsonObject &document) {
+    QFile file(QString::fromStdWString(path.wstring()));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+      throw std::runtime_error("Cannot write animation variant");
+    file.write(QJsonDocument(document).toJson());
+    file.close();
+    return formaview::gltf::read_gltf_animations(path, limits);
+  };
+  {
+    auto document = original;
+    auto animation = document["animations"].toArray()[0].toObject();
+    auto channels = animation["channels"].toArray();
+    channels.append(channels[0]);
+    animation["channels"] = channels;
+    document["animations"] = QJsonArray{animation};
+    bool rejected = false;
+    try { (void)readVariant(document); }
+    catch (const formaview::skeletal::Failure &) { rejected = true; }
+    check("read.duplicate_target_rejected", rejected);
+    document["animations"] = QJsonArray{original["animations"].toArray()[0],
+                                       original["animations"].toArray()[0]};
+    check("read.same_target_different_clips", readVariant(document).clips.size() == 2);
+  }
+  for (const bool zeroBase : {false, true}) {
+    auto document = original;
+    // Only one translation track: t=[0,2], x=[1,5] with a dense base,
+    // or x=[0,5] without one. Both times and output use sparse overrides.
+    std::vector<std::uint8_t> bytes = floats({0,0, 1,0,0, 1,0,0});
+    bytes.insert(bytes.end(), {1,1,0,0});
+    const auto overrides = floats({2,5,0,0});
+    bytes.insert(bytes.end(), overrides.begin(), overrides.end());
+    const auto view = [](int offset, int length) {
+      return QJsonObject{{"buffer",0},{"byteOffset",offset},{"byteLength",length}};
+    };
+    document["bufferViews"] = QJsonArray{view(0,8),view(8,24),view(32,1),
+                                         view(33,1),view(36,4),view(40,12)};
+    auto accessors = original["accessors"].toArray();
+    QJsonArray selected;
+    for (int index = 0; index < 2; ++index) {
+      auto accessor = accessors[index].toObject();
+      if (zeroBase) accessor.remove("bufferView");
+      accessor.remove("min"); accessor.remove("max");
+      if (index == 0) { accessor["min"] = QJsonArray{0}; accessor["max"] = QJsonArray{2}; }
+      accessor["sparse"] = QJsonObject{{"count",1},
+          {"indices",QJsonObject{{"bufferView",2+index},{"componentType",5121}}},
+          {"values",QJsonObject{{"bufferView",4+index}}}};
+      selected.append(accessor);
+    }
+    document["accessors"] = selected;
+    document["buffers"] = QJsonArray{QJsonObject{{"byteLength",static_cast<int>(bytes.size())},
+      {"uri",QString::fromStdString("data:application/octet-stream;base64," + base64(bytes))}}};
+    auto animation = original["animations"].toArray()[0].toObject();
+    animation["channels"] = QJsonArray{animation["channels"].toArray()[0]};
+    animation["samplers"] = QJsonArray{animation["samplers"].toArray()[0]};
+    document["animations"] = QJsonArray{animation};
+    bool correct = false;
+    try {
+      const auto sparse = readVariant(document);
+      const auto start = formaview::gltf::evaluate_clip(sparse,0,0)[0].local.translation.x;
+      const auto middle = formaview::gltf::evaluate_clip(sparse,0,1)[0].local.translation.x;
+      const auto end = formaview::gltf::evaluate_clip(sparse,0,2)[0].local.translation.x;
+      correct = near(start,zeroBase ? 0 : 1) && near(middle,zeroBase ? 2.5 : 3) && near(end,5);
+    } catch (const formaview::skeletal::Failure &) {}
+    check(zeroBase ? "read.sparse_zero_base" : "read.sparse_dense_base", correct);
+    bytes[33] = 2; // output index equals count, outside the accessor
+    document["buffers"] = QJsonArray{QJsonObject{{"byteLength",static_cast<int>(bytes.size())},
+      {"uri",QString::fromStdString("data:application/octet-stream;base64," + base64(bytes))}}};
+    bool rejected = false;
+    try { (void)readVariant(document); }
+    catch (const formaview::skeletal::Failure &) { rejected = true; }
+    check("read.sparse_outside_rejected", rejected);
+    // Two sparse entries exercise advancement as well as the required strict
+    // ordering. The valid stream overrides x to 5 and 9 (midpoint 7).
+    const auto extra = floats({9,0,0});
+    bytes.insert(bytes.end(), extra.begin(), extra.end());
+    auto views = document["bufferViews"].toArray();
+    auto indexView = views[3].toObject(); indexView["byteLength"] = 2; views[3] = indexView;
+    auto valueView = views[5].toObject(); valueView["byteLength"] = 24; views[5] = valueView;
+    document["bufferViews"] = views;
+    auto accessor = selected[1].toObject();
+    auto sparse = accessor["sparse"].toObject(); sparse["count"] = 2;
+    accessor["sparse"] = sparse; selected[1] = accessor; document["accessors"] = selected;
+    for (const auto &indices : {std::pair{0,1}, std::pair{1,0}, std::pair{1,1}}) {
+      bytes[33] = static_cast<std::uint8_t>(indices.first);
+      bytes[34] = static_cast<std::uint8_t>(indices.second);
+      document["buffers"] = QJsonArray{QJsonObject{{"byteLength",static_cast<int>(bytes.size())},
+        {"uri",QString::fromStdString("data:application/octet-stream;base64," + base64(bytes))}}};
+      const bool valid = indices.first == 0;
+      bool accepted = false;
+      bool orderingRejected = false;
+      try {
+        const auto many = readVariant(document);
+        accepted = near(formaview::gltf::evaluate_clip(many,0,1)[0].local.translation.x,7);
+      } catch (const formaview::skeletal::Failure &) { orderingRejected = true; }
+      check(valid ? "read.sparse_multiple" : "read.sparse_order_rejected",
+            valid ? accepted && !orderingRejected : orderingRejected);
+    }
+  }
+
   const auto at = [&](double seconds) {
     return formaview::gltf::evaluate_clip(data, 0, seconds);
   };

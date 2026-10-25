@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QSaveFile>
 #include <QUuid>
 #include <chrono>
 #include <io.h>
@@ -130,6 +131,27 @@ void run(const std::filesystem::path &root) {
           "Write input");
   file.close();
   {
+    const auto journal = root / "mixed-path-journal";
+    std::filesystem::create_directory(journal);
+    ImageBatchService service(scope(root), journal);
+    auto bad = item(root);
+    bad["input"] = "relative.png";
+    bad["output"] = qp(root / "bad.tiff");
+    const auto created = call(service, {{"operation","create_plan"},
+        {"items",QJsonArray{bad,item(root)}}});
+    require(created.contains("plan_id"), "Mixed plan rejected before per-item validation");
+    QJsonObject plan;
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      plan = call(service, {{"operation","get_plan"},{"id",created["plan_id"]}});
+      if (plan["state"] != "planning" && plan["state"] != "queued") break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto items = plan["items"].toArray();
+    require(items.size() == 2 && items[0].toObject()["status"] == "failed" &&
+                items[1].toObject()["status"] == "ready",
+            "Malformed input poisoned the unrelated valid plan item");
+  }
+  {
     ImageBatchService service(scope(root), root / "journal");
     bool rejected = false;
     try {
@@ -226,11 +248,56 @@ void run(const std::filesystem::path &root) {
   for (const auto &entry : std::filesystem::directory_iterator(root))
     require(entry.path().extension() != ".tmp",
             "Owned crash temporary not removed");
+  const auto journal = root / "save-crash-journal";
+  std::filesystem::create_directory(journal);
+  process.start(QCoreApplication::applicationFilePath(),
+                {"--leave-journal-save", qp(journal)});
+  require(process.waitForStarted(5000) && process.waitForReadyRead(10000),
+          "Journal child did not open save file");
+  require(process.readAllStandardOutput().contains("ready"), "Journal child not ready");
+  process.kill();
+  require(process.waitForFinished(5000), "Journal child not killed");
+  std::filesystem::path remainder;
+  for (const auto &entry : std::filesystem::directory_iterator(journal)) {
+    std::cout << "journal crash remainder: " << entry.path().filename().string() << '\n';
+    remainder = entry.path();
+  }
+  require(!remainder.empty(), "Expected actual QSaveFile crash remainder");
+  {
+    ImageBatchService reopened(scope(root), journal);
+    const auto listing = call(reopened, {{"operation","list_jobs"}});
+    require(listing["preserved_journal_temporaries"].toArray().size() == 1,
+            "Uncommitted journal remainder not reported");
+    QFile preserved(qp(remainder));
+    require(preserved.open(QIODevice::ReadOnly) && preserved.readAll() == "{incomplete",
+            "Uncommitted journal bytes changed or were adopted");
+    require(call(reopened, {{"operation","create_plan"},
+                           {"items",QJsonArray{item(root)}}}).contains("plan_id"),
+            "Crash remainder prevented new work");
+  }
+  write_json(journal / "unrelated.json.tmp", {});
+  bool unrelatedRejected = false;
+  try { ImageBatchService unrelated(scope(root), journal); }
+  catch (const skeletal::Failure &error) {
+    unrelatedRejected = error.error.code == ErrorCode::InvalidArgument;
+  }
+  require(unrelatedRejected && std::filesystem::exists(remainder) &&
+              std::filesystem::exists(journal / "unrelated.json.tmp"),
+          "Unknown journal entries were accepted or removed");
 }
 } // namespace
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (app.arguments().size() == 3 && app.arguments()[1] == "--leave-journal-save") {
+      QSaveFile save(app.arguments()[2] + '/' + new_id() + ".json");
+      save.setDirectWriteFallback(false);
+      require(save.open(QIODevice::WriteOnly), "Open actual QSaveFile");
+      require(save.write("{incomplete") > 0 && save.flush(), "Write actual QSaveFile");
+      std::cout << "ready" << std::endl;
+      std::this_thread::sleep_for(std::chrono::seconds(60));
+      return 0;
+    }
     if (app.arguments().size() == 3 &&
         (app.arguments()[1] == "--leave-temp" ||
          app.arguments()[1] == "--unlogged-temp")) {

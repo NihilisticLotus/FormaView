@@ -185,6 +185,9 @@ void check_target(const std::filesystem::path &path,
     fail(ErrorCode::Conflict, "Output is a hard link to an input");
 }
 } // namespace
+std::filesystem::path validated_local_path(const std::filesystem::path &path) {
+  return normal(path);
+}
 struct PrivateDirectory::Impl {
   std::vector<Handle> parents;
   Handle directory;
@@ -342,7 +345,21 @@ FileDiscovery discover_files(const AccessScope &scope,
         continue;
       if (++result.visited_entries > 100000)
         fail(ErrorCode::ResourceLimit, "Discovery exceeds 100000 entries");
-      const auto path = normal(current / name);
+      std::filesystem::path path;
+      try {
+        path = normal(current / name);
+      } catch (const skeletal::Failure &error) {
+        if (error.error.code != ErrorCode::OutOfScope &&
+            error.error.code != ErrorCode::InvalidArgument) throw;
+        if (result.rejected_paths.size() >= 100)
+          fail(ErrorCode::ResourceLimit, "Discovery exceeds 100 rejected path entries");
+        const auto rejected = current / name;
+        path_bytes += rejected.wstring().size() * sizeof(wchar_t);
+        if (path_bytes > 1024 * 1024)
+          fail(ErrorCode::ResourceLimit, "Discovery membership exceeds bounded storage");
+        result.rejected_paths.push_back({rejected, error.error});
+        continue;
+      }
       if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
         if (result.rejected_reparse_points.size() >= 100)
           fail(ErrorCode::ResourceLimit,

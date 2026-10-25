@@ -3,6 +3,7 @@
 #include "formaview/image_requests.hpp"
 #include <QCoreApplication>
 #include <QJsonArray>
+#include <QFile>
 #include <fstream>
 #include <iostream>
 
@@ -52,6 +53,32 @@ void run(const std::filesystem::path &root) {
   RasterEncodeOptions png;
   png.alpha = AlphaMode::Straight;
   write(root / "source.png", encode_raster(source, png));
+  const auto iccPath = qEnvironmentVariable("FORMAVIEW_TEST_ICC_PROFILE");
+  if (!iccPath.isEmpty()) {
+    QFile profile(iccPath);
+    require(profile.open(QIODevice::ReadOnly), "Cannot read external ICC profile");
+    const auto bytes = profile.readAll();
+    require(!bytes.isEmpty() && bytes.size() <= 1024 * 1024, "Invalid ICC fixture size");
+    auto rgb = source;
+    rgb.channels.pop_back();
+    for (const auto target : {RasterTarget::Png, RasterTarget::Jpeg}) {
+      RasterEncodeOptions encoded;
+      encoded.target = target;
+      encoded.icc_profile.assign(reinterpret_cast<const std::byte *>(bytes.constData()),
+          reinterpret_cast<const std::byte *>(bytes.constData()) + bytes.size());
+      const auto path = root / (target == RasterTarget::Png ? "icc.png" : "icc.jpg");
+      write(path, encode_raster(rgb, encoded));
+      const auto loaded = RasterFile::open(path);
+      const auto &properties = loaded.description().source.properties;
+      const auto found = properties.find("entry.0.icc_base64");
+      require(found != properties.end() &&
+          QByteArray::fromBase64(QByteArray::fromStdString(found->second)) == bytes,
+          "ICC bytes changed across raster encoding and metadata extraction");
+    }
+    std::cout << "PASS external ICC exact bytes across PNG and JPEG\n";
+  } else {
+    std::cout << "SKIP external ICC: FORMAVIEW_TEST_ICC_PROFILE is unset\n";
+  }
 #ifdef _WIN32
   AccessScope scope;
   scope.input_roots = {root};

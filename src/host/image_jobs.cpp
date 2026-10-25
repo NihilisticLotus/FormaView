@@ -615,8 +615,9 @@ void ImageJobs::setMcpEnabled(bool enabled) {
                     QUuid::createUuid().toString(QUuid::WithoutBraces);
     endpoint_ = std::make_unique<ImageEndpoint>(service_, endpointName_);
     endpoint_->workChanged = [this] {
-      timer_.start();
-      poll();
+      // Observe on the next event-loop turn: poll() may retire this endpoint.
+      // Do not erase the callback owner inside its own completion event.
+      if (!timer_.isActive()) timer_.start();
     };
     endpoint_->observedClient = [this](const QJsonObject &client) {
       lastClient_ = client.toVariantMap();

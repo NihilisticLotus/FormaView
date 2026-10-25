@@ -80,6 +80,13 @@ QtObject {
 
     // Specific messages; first match wins and replaces the generic headline.
     readonly property var messages: ([
+        [/Duplicate glTF animation target channel|Duplicate glTF animation channel/i, ["同一动画包含重复的节点属性轨道。请修正源文件后重试。", "This animation contains duplicate tracks for the same node property. Correct the source and retry.", "同一動畫包含重複的節點屬性軌道。請修正來源檔後重試。"]],
+        [/Invalid glTF sparse.*indices|Sparse animation value read failed/i, ["动画稀疏数据的索引或数值无效，无法安全读取。", "The animation sparse indices or values are invalid and cannot be read safely.", "動畫稀疏資料的索引或數值無效，無法安全讀取。"]],
+        [/Animation times must be finite|Animation key count mismatch|Non-finite animation value/i, ["动画关键帧的时间、数量或数值不合法。请检查源动画。", "Animation key times, counts or values are invalid. Check the source animation.", "動畫關鍵影格的時間、數量或數值不合法。請檢查來源動畫。"]],
+        [/Cannot open input|Cannot hold parent directory|Cannot inspect file handle/i, ["无法读取文件或目录。请检查路径、访问权限以及文件是否被其他程序占用。", "The file or folder could not be read. Check the path, permissions and whether another application is using it.", "無法讀取檔案或資料夾。請檢查路徑、存取權限及檔案是否被其他程式占用。"]],
+        [/Journal already has an owner/i, ["此任务目录已被另一个服务使用。请先关闭该服务再重试。", "Another service is using this task directory. Close that service before retrying.", "此工作目錄已被另一個服務使用。請先關閉該服務再重試。"]],
+        [/Journal directory contains unrelated entries|Corrupt journal record|Invalid journal record contract/i, ["任务记录目录含有未知或损坏的文件。文件已保留，请检查记录目录后重试。", "The task record directory contains unknown or damaged files. They were preserved; inspect the directory before retrying.", "工作記錄目錄含有未知或損壞的檔案。檔案已保留，請檢查記錄目錄後重試。"]],
+        [/Journal exceeds 100 preserved temporary records/i, ["保留的未提交任务记录过多。请备份并检查记录目录后再启动服务。", "Too many uncommitted task records were preserved. Back up and inspect the directory before restarting the service.", "保留的未提交工作記錄過多。請備份並檢查記錄目錄後再啟動服務。"]],
         [/Input changed after preflight|Preflight approval does not match|approval no longer matches|differs from held snapshot|appeared after preflight|changed\/truncated during read|grew during read/i, ["源文件、参数或授权范围在预检后发生变化。请重新预检后再提交，未写入任何输出。", "The source, parameters or scope changed after preflight. Run a new preflight and submit again; nothing was written.", "來源檔、參數或授權範圍在預檢後發生變化。請重新預檢後再提交，未寫入任何輸出。"]],
         [/Approved (output )?name is occupied|Output rename candidates exhausted/i, ["预检批准的输出名已被占用。请重新预检以分配新的输出名。", "The approved output name is now occupied. Run a new preflight to get a new name.", "預檢核准的輸出名稱已被占用。請重新預檢以配置新的輸出名稱。"]],
         [/Output cannot replace an input|hard link to an input/i, ["输出不能覆盖输入文件（包括硬链接）。请换一个输出位置或名称。", "Output must not replace an input file (including hard links). Choose another location or name.", "輸出不能覆蓋輸入檔（包括硬連結）。請換一個輸出位置或名稱。"]],

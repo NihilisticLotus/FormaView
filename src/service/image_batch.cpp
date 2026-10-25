@@ -6,9 +6,11 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLockFile>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QUuid>
 #include <algorithm>
@@ -158,6 +160,7 @@ struct ImageBatchService::Impl {
   std::map<QString, std::shared_ptr<Record>> records;
   std::unique_ptr<QLockFile> owner;
   std::optional<PrivateDirectory> private_directory;
+  QJsonArray preserved_journal_temporaries;
   Scheduler scheduler;
   bool closing{};
 
@@ -174,17 +177,38 @@ struct ImageBatchService::Impl {
     // an arbitrary folder containing unrelated user data.
     const auto entries = QDir(directory).entryList(
         QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot);
-    for (const auto &entry : entries)
-      if (entry != "service.lock" &&
+    QStringList temporaries;
+    static const QRegularExpression temporaryName(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.json\\.[A-Za-z0-9]{6}$");
+    for (const auto &entry : entries) {
+      if (temporaryName.match(entry).hasMatch() &&
+          QFileInfo(directory + '/' + entry).isFile() &&
+          !QFileInfo(directory + '/' + entry).isSymLink()) {
+        if (temporaries.size() >= 100)
+          fail(ErrorCode::ResourceLimit, "Journal exceeds 100 preserved temporary records");
+        temporaries.append(entry);
+      } else if (entry != "service.lock" &&
           (entry.size() != 41 || !entry.endsWith(".json") ||
            QUuid(entry.left(36)).isNull()))
         fail(ErrorCode::InvalidArgument,
              "Journal directory contains unrelated entries");
+    }
     private_directory.emplace(PrivateDirectory::open(dir));
     owner = std::make_unique<QLockFile>(directory + "/service.lock");
     owner->setStaleLockTime(0);
     if (!owner->tryLock())
       fail(ErrorCode::Conflict, "Journal already has an owner");
+    for (const auto &entry : temporaries) {
+      AccessScope temporary_scope;
+      temporary_scope.input_roots = {dir};
+      const auto lease = InputLease::open(temporary_scope,
+          dir / entry.toStdWString(), 2 * 1024 * 1024);
+      // The rename never committed. Preserve bytes without parsing, adopting
+      // or deleting them; only the committed .json can authorize recovery.
+      preserved_journal_temporaries.append(QJsonObject{
+          {"name",entry},
+          {"sha256",QString::fromStdString(lease.snapshot().content_sha256)}});
+    }
     const auto files =
         QDir(directory).entryList({"*.json"}, QDir::Files, QDir::Name);
     if (files.size() > static_cast<qsizetype>(limits.records))
@@ -363,6 +387,15 @@ struct ImageBatchService::Impl {
       // commits. Failed opens still retain lexical path protection.
       std::vector<InputLease> leases;
       std::vector<InputSnapshot> protected_inputs;
+      const auto protectFallback = [&](InputSnapshot fallback) {
+        try {
+          fallback.resolved_path = validated_local_path(fallback.resolved_path);
+          protected_inputs.push_back(std::move(fallback));
+        } catch (const skeletal::Failure &) {
+          // An unauthorized path cannot be opened by this service. Its own
+          // item reports the error; valid unreadable paths remain protected.
+        }
+      };
       for (const auto &entry : entries) {
         const auto request = entry.toObject()["request"].toObject();
         InputSnapshot fallback;
@@ -374,7 +407,7 @@ struct ImageBatchService::Impl {
                                             limits.image.input_bytes, stop));
           protected_inputs.push_back(leases.back().snapshot());
         } catch (const skeletal::Failure &) {
-          protected_inputs.push_back(std::move(fallback));
+          protectFallback(std::move(fallback));
         }
       }
 #ifdef FORMAVIEW_MODEL_EXPORT
@@ -416,7 +449,7 @@ struct ImageBatchService::Impl {
             leases.push_back(InputLease::open(scope, fallback.resolved_path, limits.image.input_bytes, stop));
             protected_inputs.push_back(leases.back().snapshot());
           } catch (const skeletal::Failure &) {
-            protected_inputs.push_back(std::move(fallback));
+            protectFallback(std::move(fallback));
           }
         }
       }
@@ -600,12 +633,18 @@ struct ImageBatchService::Impl {
           scope,
           std::filesystem::path(text(request, "directory").toStdWString()),
           request["recursive"].toBool(), extensions, stop);
-      QJsonArray items, rejected;
+      QJsonArray items, rejected, rejectedPaths;
       for (const auto &path : found.files)
         items.append(
             QJsonObject{{"input", QString::fromStdWString(path.wstring())}});
       for (const auto &path : found.rejected_reparse_points)
         rejected.append(QString::fromStdWString(path.wstring()));
+      for (const auto &entry : found.rejected_paths) {
+        auto rejection = image_error_json(skeletal::Failure(
+            entry.error.code, entry.error.message))["error"].toObject();
+        rejection["path"] = QString::fromStdWString(entry.path.wstring());
+        rejectedPaths.append(rejection);
+      }
       auto record = std::make_shared<Record>();
       record->data = {
           {"version", 1},
@@ -614,6 +653,7 @@ struct ImageBatchService::Impl {
           {"state", "ready"},
           {"items", items},
           {"rejected_reparse_points", rejected},
+          {"rejected_paths", rejectedPaths},
           {"visited_entries", static_cast<qint64>(found.visited_entries)},
           {"ignored_files", static_cast<qint64>(found.ignored_files)},
           {"directory", request["directory"]},
@@ -663,7 +703,8 @@ struct ImageBatchService::Impl {
                                      {"state", record->data["state"]},
                                      {"plan_id", record->data["plan_id"]}});
       }
-      return page({{"version", 1}, {"items", items}}, request);
+      return page({{"version", 1}, {"items", items},
+                   {"preserved_journal_temporaries", preserved_journal_temporaries}}, request);
     }
     if (operation == "cancel") {
       fields(request, {"version", "operation", "id", "kind"});

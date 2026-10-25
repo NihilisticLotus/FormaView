@@ -6,6 +6,9 @@
 #include <stop_token>
 
 namespace formaview {
+// Syntax validation only: never opens a file or grants access to a scope.
+[[nodiscard]] std::filesystem::path
+validated_local_path(const std::filesystem::path &);
 // Explicit dedicated service-state directory. Rejects reparse traversal and
 // foreign ownership, then restricts inherited access to the current user.
 class PrivateDirectory {
@@ -38,7 +41,9 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 struct FileDiscovery {
+  struct RejectedPath { std::filesystem::path path; Error error; };
   std::vector<std::filesystem::path> files, rejected_reparse_points;
+  std::vector<RejectedPath> rejected_paths;
   std::uint64_t visited_entries{}, ignored_files{};
 };
 // Membership snapshot only; content is revalidated by InputLease in preflight.

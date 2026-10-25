@@ -32,6 +32,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocalSocket>
 #include <QMimeData>
 #include <QMetaProperty>
 #include <QProcess>
@@ -1063,7 +1064,13 @@ private slots:
       }
     QVERIFY(controls>0);
     auto *menu=item("applicationMenuButton");QVERIFY(menu);
-    const auto dismiss=qScopeGuard([&]{QTest::keyClick(window_,Qt::Key_Escape);});
+    const auto dismiss=qScopeGuard([&]{
+      // This test inspects hit-test purity, not keyboard dismissal. The
+      // preceding capture probe may own activation, so Escape is unreliable.
+      for (auto *child : menu->children())
+        if (child->property("opened").isValid())
+          QMetaObject::invokeMethod(child, "close");
+    });
     QVERIFY(QMetaObject::invokeMethod(menu,"clicked"));
     QTRY_VERIFY(pureClient(bar->mapToScene(QPointF(400,bar->height()/2))));
 #else
@@ -3163,11 +3170,21 @@ private slots:
         QVERIFY(QDir().mkpath(destination));
         output->setProperty("text", destination);
         QTest::qWait(80);
+        // Earlier keyboard navigation can leave the settings scrolled. This
+        // assertion compares the top-aligned layout, so establish that view.
+        auto *settingsScroll = item("conversionSettingsScroll");
+        QVERIFY(settingsScroll);
+        auto *settingsContent = qvariant_cast<QQuickItem *>(settingsScroll->property("contentItem"));
+        QVERIFY(settingsContent);
+        settingsContent->setProperty("contentY", 0);
+        QTest::qWait(60);
         auto *left = item("conversionSources");
         auto *right = item("conversionSummary");
         QVERIFY(left && right);
         const auto leftPoint = left->mapToScene({0,0});
         const auto rightPoint = right->mapToScene({0,0});
+        qInfo() << "fidelity alignment" << leftPoint << rightPoint
+                << item("conversionSettingsScroll")->property("contentItem");
         QVERIFY(qAbs(leftPoint.y() - rightPoint.y()) < 2);
         QVERIFY(rightPoint.x() > leftPoint.x() + left->width());
         QVERIFY(rightPoint.x() + right->width() <= size.width() - 20);
@@ -3402,6 +3419,7 @@ private slots:
              "Explicit MCP verification runtime and client paths required");
     QVERIFY(!service->mcpEnabled());
     service->setMcpEnabled(true);
+    const auto disableEndpoint = qScopeGuard([&] { service->setMcpEnabled(false); });
     QVERIFY(service->mcpEnabled());
     QVERIFY(service->lastClient().isEmpty());
     // The host is idle before the external client starts. Its task list must
@@ -3453,6 +3471,50 @@ private slots:
              QColor(Qt::cyan));
     service->setMcpEnabled(false);
     QVERIFY(!service->mcpEnabled());
+    service->setMcpEnabled(true);
+    QVERIFY(service->mcpEnabled());
+    QTest::qWait(250);
+    const auto pipeRequest = [&](QJsonObject request, QJsonObject &reply) {
+      request["version"] = 1;
+      QLocalSocket pipe;
+      pipe.connectToServer(service->endpoint());
+      QTRY_COMPARE(pipe.state(), QLocalSocket::ConnectedState);
+      pipe.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+      QTRY_VERIFY_WITH_TIMEOUT(pipe.canReadLine(), 5000);
+      reply = QJsonDocument::fromJson(pipe.readLine()).object();
+      QVERIFY2(!reply.contains("error"), qPrintable(QString::fromUtf8(QJsonDocument(reply).toJson())));
+    };
+    QJsonObject externalPlan;
+    QJsonArray externalChannels;
+    for (const auto *channel : {"R", "G", "B", "A"})
+      externalChannels.append(QJsonObject{{"source", channel}, {"destination", channel}});
+    pipeRequest({{"operation","create_plan"},{"items",QJsonArray{QJsonObject{
+        {"input",source},{"output",output + "/without-client-metadata.png"},{"conflict","skip"},
+        {"options",QJsonObject{{"target","png"},{"channels",externalChannels},
+                              {"source_alpha","straight"},{"alpha_channel","A"}}}}}}}, externalPlan);
+    QVERIFY(externalPlan.contains("plan_id"));
+    QJsonObject externalState;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      pipeRequest({{"operation","get_plan"},{"id",externalPlan["plan_id"]}}, externalState);
+      if (externalState["state"] == "ready") break;
+      QTest::qWait(20);
+    }
+    QCOMPARE(externalState["state"].toString(), QString("ready"));
+    QJsonObject externalJob;
+    pipeRequest({{"operation","submit"},{"plan_id",externalPlan["plan_id"]},
+        {"approval_digest",externalState["approval_digest"]},
+        {"idempotency_key","gui-no-client-metadata"},{"acknowledge_losses",true}}, externalJob);
+    QVERIFY(externalJob.contains("job_id"));
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+      const auto rows = service->jobs();
+      return std::any_of(rows.cbegin(), rows.cend(), [&](const QVariant &row) {
+        const auto value = row.toMap();
+        return value["id"] == externalJob["job_id"].toString() && value["state"] == "succeeded";
+      });
+    }(), 5000);
+    QVERIFY(service->lastClient().isEmpty());
+    QCOMPARE(QImage(output + "/without-client-metadata.png").pixelColor(0,0), QColor(Qt::cyan));
+    service->setMcpEnabled(false);
     service->preflight({source, small_ + "/unreadable.png"}, scope,
                        {{"target", "png"}}, "read-error-{index}.{ext}", "skip");
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&

@@ -77,6 +77,7 @@ ColumnLayout {
             Tool { text: Theme.t("清空选择", "Clear selection", "清空選擇"); onClicked: root.selected = [] }
         }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; visible: (root.service.discovery.rejected_reparse_points || []).length > 0; text: Theme.t("已跳过重解析点：", "Skipped reparse points: ", "已略過重新解析點：") + (root.service.discovery.rejected_reparse_points || []).length }
+        Readout { objectName: "discoveryRejectedPaths"; Layout.fillWidth: true; visible: (root.service.discovery.rejected_paths || []).length > 0; label: Theme.t("已跳过不安全路径", "Skipped unsafe paths", "已略過不安全路徑"); value: (root.service.discovery.rejected_paths || []).map(entry => entry.path + "\n" + Explain.errorText(entry.code + ": " + entry.message)).join("\n") }
         Tool { objectName: "useDiscoveredInputs"; enabled: root.selected.length > 0; text: Theme.t("将选择作为固定输入列表", "Use selection as fixed inputs", "將選擇設為固定輸入清單"); onClicked: { root.accepted(root.selected.slice()); expand.checked = false } }
     }
 }

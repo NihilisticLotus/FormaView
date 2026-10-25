@@ -92,6 +92,16 @@ void run(const std::filesystem::path &root) {
   require(discovered.files.size() == 1 &&
               discovered.rejected_reparse_points.size() == 1,
           "Directory discovery followed a junction or missed source");
+  const auto ambiguous = L"\\\\?\\" + (input / L"trailing.bin.").wstring();
+  const auto ambiguousFile = CreateFileW(ambiguous.c_str(), GENERIC_WRITE, 0,
+      nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  require(ambiguousFile != INVALID_HANDLE_VALUE, "Create ambiguous-name fixture");
+  CloseHandle(ambiguousFile);
+  const auto withAmbiguous = discover_files(scope, input, true, extensions);
+  require(withAmbiguous.files.size() == 1 && withAmbiguous.rejected_paths.size() == 1 &&
+              withAmbiguous.rejected_paths[0].path.filename() == L"trailing.bin." &&
+              withAmbiguous.rejected_paths[0].error.code == ErrorCode::OutOfScope,
+          "An unrelated ambiguous name stopped valid directory discovery");
   rejects([&] { (void)discover_files(scope, outside, true, extensions); },
           ErrorCode::OutOfScope);
   std::stop_source discovery_stop;

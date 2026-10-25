@@ -25,7 +25,7 @@ FocusScope {
             modelMode = modelAvailable && models.length > 0 && selected.length === 0
             selectionSnapshot = snapshot
             settings.inputRoot = controller.directory
-            if (page === 0) service.invalidatePlan()
+            service.invalidatePlan()
         }
         initialized = true
         tabs.currentIndex = page

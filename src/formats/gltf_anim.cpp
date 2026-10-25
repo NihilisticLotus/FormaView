@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <fstream>
 
@@ -33,6 +34,52 @@ std::uint32_t componentsOf(cgltf_type type) {
   case cgltf_type_vec3: return 3;
   case cgltf_type_vec4: return 4;
   default: fail("Unsupported glTF accessor type");
+  }
+}
+
+// Stream the validated base and sparse overrides together. Unlike unpacking a
+// second float array, this keeps temporary storage independent of key count.
+template <typename Consumer>
+void readElements(const cgltf_accessor &accessor, std::uint32_t components,
+                  std::stop_token stop, Consumer consume) {
+  auto base = accessor;
+  base.is_sparse = false;
+  cgltf_accessor indices{}, overrides = base;
+  cgltf_size sparseCount = 0, sparseIndex = 0, next = accessor.count;
+  const auto advance = [&] {
+    if (sparseIndex == sparseCount) { next = accessor.count; return; }
+    const auto at = cgltf_accessor_read_index(&indices, sparseIndex);
+    if (at >= accessor.count || (sparseIndex && at <= next))
+      fail("Invalid glTF sparse animation indices");
+    next = at;
+  };
+  if (accessor.is_sparse) {
+    const auto &sparse = accessor.sparse;
+    sparseCount = sparse.count;
+    indices.type = cgltf_type_scalar;
+    indices.component_type = sparse.indices_component_type;
+    indices.count = sparse.count;
+    indices.stride = cgltf_component_size(indices.component_type);
+    indices.buffer_view = sparse.indices_buffer_view;
+    indices.offset = sparse.indices_byte_offset;
+    overrides.buffer_view = sparse.values_buffer_view;
+    overrides.offset = sparse.values_byte_offset;
+    overrides.count = sparse.count;
+    overrides.stride = cgltf_calc_size(overrides.type, overrides.component_type);
+    advance();
+  }
+  for (cgltf_size i = 0; i < accessor.count; ++i) {
+    if ((i & 1023) == 0) checkStop(stop);
+    std::array<cgltf_float,4> value{};
+    if (!cgltf_accessor_read_float(&base, i, value.data(), components))
+      fail("Animation accessor read failed");
+    if (i == next) {
+      if (!cgltf_accessor_read_float(&overrides, sparseIndex, value.data(), components))
+        fail("Sparse animation value read failed");
+      ++sparseIndex;
+      advance();
+    }
+    consume(value.data());
   }
 }
 
@@ -287,12 +334,16 @@ GltfAnimationData read_gltf_animations(const std::filesystem::path &path,
     const cgltf_animation &animation = raw->animations[c];
     AnimationClip clip;
     clip.name = animation.name ? animation.name : "";
+    std::set<std::pair<cgltf_size, cgltf_animation_path_type>> targetsSeen;
     for (cgltf_size k = 0; k < animation.channels_count; ++k) {
       const cgltf_animation_channel &channel = animation.channels[k];
       if (!channel.target_node) {
         result.warnings.push_back("Animation channel without target node");
         continue;
       }
+      if (!targetsSeen.emplace(channel.target_node - raw->nodes,
+                               channel.target_path).second)
+        fail("Duplicate glTF animation target channel");
       AnimationChannel parsed;
       parsed.node_index = static_cast<std::uint32_t>(channel.target_node -
                                                      raw->nodes);
@@ -354,26 +405,19 @@ GltfAnimationData read_gltf_animations(const std::filesystem::path &path,
       if (elements > limits.decoded_bytes / sizeof(double))
         fail("glTF animation decoded byte budget exceeded");
       parsed.components = valueComponents;
-      for (cgltf_size i = 0; i < input.count; ++i) {
-        cgltf_float value[4]{};
-        if (!cgltf_accessor_read_float(&input, i, value, 1))
-          fail("Animation time read failed");
-        checkStop(stop);
+      parsed.times.reserve(input.count);
+      parsed.values.reserve(output.count * valueComponents);
+      readElements(input, 1, stop, [&](const cgltf_float *value) {
         if (!std::isfinite(value[0]) || value[0] < 0 ||
             (!parsed.times.empty() && value[0] <= parsed.times.back()))
           fail("Animation times must be finite, nonnegative and strictly increasing");
         parsed.times.push_back(value[0]);
-      }
-      std::vector<cgltf_float> element(valueComponents);
-      for (cgltf_size i = 0; i < output.count; ++i) {
-        if (!cgltf_accessor_read_float(&output, i, element.data(),
-                                       valueComponents))
-          fail("Animation value read failed");
-        if ((i & 1023) == 0) checkStop(stop);
-        for (auto v : element) if (!std::isfinite(v)) fail("Non-finite animation value");
-        parsed.values.insert(parsed.values.end(), element.begin(),
-                             element.end());
-      }
+      });
+      readElements(output, valueComponents, stop, [&](const cgltf_float *value) {
+        for (std::uint32_t c = 0; c < valueComponents; ++c)
+          if (!std::isfinite(value[c])) fail("Non-finite animation value");
+        parsed.values.insert(parsed.values.end(), value, value + valueComponents);
+      });
       if (!parsed.times.empty()) {
         clip.start = clip.channels.empty()
                          ? parsed.times.front()
