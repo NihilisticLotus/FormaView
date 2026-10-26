@@ -1,5 +1,6 @@
 #include "caption_evidence.hpp"
 #include "window_capture.hpp"
+#include "stress_trace.hpp"
 #include "desktop.hpp"
 #include "window_chrome.hpp"
 #include "formaview/telemetry.hpp"
@@ -91,18 +92,27 @@ public:
   int events{}, over100ms{};
   QJsonArray slowEvents;
   qint64 nativeDownNs{};
+  stress_trace::Trace *stressTrace{}; // GUI-only; owned by the active test scope.
   bool notify(QObject *receiver, QEvent *event) override {
     if (QThread::currentThread() != thread() || !measure)
       return QGuiApplication::notify(receiver, event);
     const auto started = std::chrono::steady_clock::now();
     const auto eventType = static_cast<int>(event->type());
     const QPointer<QObject> guardedReceiver(receiver);
+    auto *const trace=stressTrace;
+    const auto token=trace ? trace->enter(receiver,eventType,started) : stress_trace::Trace::Token{};
+    auto unwind=qScopeGuard([&] {
+      if(trace) trace->leave(token,std::chrono::steady_clock::now(),true);
+    });
     if (!nativeDownNs && event->type()==QEvent::KeyPress &&
         static_cast<QKeyEvent *>(event)->key()==Qt::Key_Down)
       nativeDownNs=std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count();
     const auto result = QGuiApplication::notify(receiver, event);
+    const auto finished=std::chrono::steady_clock::now();
+    if(trace) trace->leave(token,finished);
+    unwind.dismiss();
     const auto ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - started)
+                        finished - started)
                         .count();
     maxEventMs = std::max(maxEventMs, ms);
     ++events;
@@ -111,7 +121,7 @@ public:
     if (ms > 10) {
       // DeferredDelete and event handlers may destroy their receiver. The
       // diagnostic must not dereference it (or the event) after dispatch.
-      const QJsonObject sample{{"ms",ms},{"type",eventType},
+      const QJsonObject sample{{"ms",ms},{"type",eventType},{"call_id",qint64(token.id)},
         {"receiver",guardedReceiver ? guardedReceiver->metaObject()->className() : "<destroyed>"},
         {"object",guardedReceiver ? guardedReceiver->objectName() : QString{}}};
       if(slowEvents.size()<128) slowEvents.append(sample);
@@ -5594,6 +5604,81 @@ private slots:
     desktop_->clearAsset();
 #endif
   }
+  void stressTraceCapturesNestedAndLoss() {
+    struct Receiver : QObject {
+      bool event(QEvent *e) override {
+        if(e->type()==QEvent::User) {
+          QEvent child(static_cast<QEvent::Type>(QEvent::User+1));
+          QCoreApplication::sendEvent(this,&child);
+        }
+        return true;
+      }
+    } receiver;
+    auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    stress_trace::Trace trace({32,8,8,8});
+    const auto restore=qScopeGuard([&]{measured->measure=false;measured->stressTrace=nullptr;});
+    measured->stressTrace=&trace; measured->measure=true;
+    trace.phase(0,stress_trace::Phase::Setup); trace.publish(42);
+    QEvent event(QEvent::User); QCoreApplication::sendEvent(&receiver,&event);
+    auto *deleted=new QObject; QPointer<QObject> guarded(deleted);
+    deleted->deleteLater(); QCoreApplication::sendPostedEvents(deleted,QEvent::DeferredDelete);
+    measured->measure=false; measured->stressTrace=nullptr;
+    trace.render(true); trace.render(false); trace.stop();
+    QVERIFY(!guarded); QVERIFY(trace.complete()); QCOMPARE(trace.callCount(),std::size_t(3));
+    QCOMPARE(trace.call(0).id,std::uint64_t(1)); QCOMPARE(trace.call(0).parent,std::uint64_t(0));
+    QCOMPARE(trace.call(1).parent,trace.call(0).id); QCOMPARE(trace.call(1).depth,2u);
+    QVERIFY(trace.call(0).enter<=trace.call(1).enter && trace.call(1).exit<=trace.call(0).exit);
+    QCOMPARE(trace.call(2).type,int(QEvent::DeferredDelete));
+    QCOMPARE(trace.renderRecord(1).sync,trace.renderRecord(0).id);
+    QCOMPARE(trace.renderRecord(1).publication,std::uint64_t(1));
+    QVERIFY(trace.write(root_+"/stress-trace-calibration.jsonl"));
+    stress_trace::Trace tiny({1,1,1,1});
+    tiny.phase(0,stress_trace::Phase::Setup); tiny.phase(0,stress_trace::Phase::Open);
+    tiny.publish(1); tiny.publish(2); tiny.render(true); tiny.render(false);
+    const auto parent=tiny.enter(&receiver,1,stress_trace::Clock::now());
+    const auto child=tiny.enter(&receiver,1,stress_trace::Clock::now());
+    tiny.leave(child,stress_trace::Clock::now()); tiny.leave(parent,stress_trace::Clock::now());
+    tiny.stop(); QVERIFY(!tiny.complete()); QCOMPARE(tiny.callLoss(),std::uint64_t(1));
+    const auto lost=tiny.summary();
+    QCOMPARE(lost.value("operationLoss").toInteger(),1);
+    QCOMPARE(lost.value("publicationLoss").toInteger(),1);
+    QCOMPARE(lost.value("renderLoss").toInteger(),1);
+    stress_trace::Trace incomplete({1,1,1,1});
+    incomplete.enter(&receiver,1,stress_trace::Clock::now()); incomplete.stop();
+    QVERIFY(!incomplete.complete());
+    stress_trace::Trace unwound({1,1,1,1});
+    const auto throwing=unwound.enter(&receiver,1,stress_trace::Clock::now());
+    unwound.leave(throwing,stress_trace::Clock::now(),true); unwound.stop();
+    QVERIFY(!unwound.complete());
+    evidence_["stress_trace_calibration"]=QJsonObject{{"normal",trace.summary()},
+      {"boundedLoss",lost},{"incomplete",incomplete.summary()},{"unwound",unwound.summary()}};
+  }
+  void stressTraceOverhead() {
+    struct Receiver : QObject {
+      std::uint64_t received{};
+      bool event(QEvent *) override { ++received; return true; }
+    } receiver;
+    auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    const auto restore=qScopeGuard([&]{measured->measure=false;measured->stressTrace=nullptr;});
+    QEvent event(QEvent::User);
+    for(int i=0;i<5000;++i) QCoreApplication::sendEvent(&receiver,&event);
+    QJsonArray runs;
+    constexpr int count=50000;
+    for(int block=0;block<3;++block) for(bool enabled:{false,true,true,false}) {
+      stress_trace::Trace trace({count,1,1,1});
+      measured->stressTrace=enabled?&trace:nullptr; measured->measure=true;
+      const auto started=stress_trace::Clock::now();
+      for(int i=0;i<count;++i) QCoreApplication::sendEvent(&receiver,&event);
+      const double ns=std::chrono::duration<double,std::nano>(stress_trace::Clock::now()-started).count();
+      measured->measure=false; measured->stressTrace=nullptr; trace.stop();
+      QVERIFY(trace.complete()); QCOMPARE(trace.callCount(),enabled?std::size_t(count):std::size_t(0));
+      runs.append(QJsonObject{{"block",block},{"enabled",enabled},{"events",count},
+        {"nsPerEvent",ns/count},{"elapsedMs",ns/1e6},{"trace",trace.summary()}});
+    }
+    QCOMPARE(receiver.received,std::uint64_t(605000));
+    evidence_["stress_trace_overhead"]=QJsonObject{{"runs",runs},
+      {"boundary","Same empty synchronous sendEvent receiver, ABBA x3; both use the legacy measured notify path. Buffer allocation and JSON serialization excluded. This is a synthetic observer-cost calibration, not a correction to pressure-test latency or proof of zero workload perturbation."}};
+  }
   void modelLoadResourceStress() {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
@@ -5601,38 +5686,79 @@ private slots:
     const QString compactModel="E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk";
     auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
     measured->events=0; measured->maxEventMs=0; measured->over100ms=0; measured->slowEvents={};
-    measured->measure=true;
-    const auto stop=qScopeGuard([&]{measured->measure=false;desktop_->clearAsset();});
+    using Phase=stress_trace::Phase;
+    const auto trace=std::make_shared<stress_trace::Trace>();
+    trace->phase(-1,Phase::Setup);
+    const auto publication=connect(session,&ModelSession::frameChanged,this,[trace,session] {
+      const auto frame=session->frame(); trace->publish(frame?frame->revision:0);
+    });
+    const auto synchronized=connect(window_,&QQuickWindow::afterSynchronizing,window_,
+      [trace]{trace->render(true);},Qt::DirectConnection);
+    const auto swapped=connect(window_,&QQuickWindow::frameSwapped,window_,
+      [trace]{trace->render(false);},Qt::DirectConnection);
+    measured->stressTrace=trace.get(); measured->measure=true;
+    bool finished=false,traceComplete=false;
+    const auto finish=[&] {
+      if(finished) return;
+      finished=true; measured->measure=false; measured->stressTrace=nullptr;
+      disconnect(publication); disconnect(synchronized); disconnect(swapped); trace->stop();
+      const auto before=stress_trace::Clock::now();
+      const auto path=root_+"/stress-trace.jsonl";
+      const bool written=trace->write(path);
+      const double exportMs=std::chrono::duration<double,std::milli>(stress_trace::Clock::now()-before).count();
+      traceComplete=written && trace->complete() && trace->entered()==std::uint64_t(measured->events) && trace->swaps()>0;
+      auto summary=trace->summary(); summary["complete"]=traceComplete;
+      summary["writeSucceeded"]=written; summary["path"]=path;
+      summary["serializationMs"]=exportMs; summary["measuredNotifyEvents"]=measured->events;
+      summary["bytesWritten"]=written?QJsonValue(QFileInfo(path).size()):QJsonValue(QJsonValue::Null);
+      evidence_["stress_trace"]=summary;
+    };
+    const auto stop=qScopeGuard([&]{finish();desktop_->clearAsset();});
     QElapsedTimer elapsed; elapsed.start();
     QJsonArray cycles;
     const auto configuredCycles=qEnvironmentVariable("FORMAVIEW_STRESS_CYCLES");
     const auto cycleCount=configuredCycles.isEmpty()?60:configuredCycles.toInt();
     QVERIFY(cycleCount>=60 && cycleCount<=600);
     for(int cycle=0;cycle<cycleCount;++cycle) {
+      trace->phase(cycle,Phase::Open);
       desktop_->openPath(large);
       if(cycle%3==0) {
+        trace->phase(cycle,Phase::Cancel);
         session->cancel();
         QVERIFY(!session->busy() && !session->frame());
+        trace->phase(cycle,Phase::Supersede);
         desktop_->openPath(compactModel);
-      } else if(cycle%3==1) desktop_->openPath(compactModel);
+      } else if(cycle%3==1) {
+        trace->phase(cycle,Phase::Supersede); desktop_->openPath(compactModel);
+      }
+      trace->phase(cycle,Phase::WaitInspect);
       QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
       QCOMPARE(session->path(),cycle%3==2?large:compactModel);
+      trace->phase(cycle,Phase::WaitView);
       QTRY_VERIFY(window_->findChild<ModelView *>("modelViewport"));
       QPointer<ModelView> view=window_->findChild<ModelView *>("modelViewport");
       QTRY_VERIFY(view->isVisible());
+      trace->phase(cycle,Phase::Orbit);
       for(int i=0;i<10;++i) view->orbit(i%2?-.5:.5,.1);
+      trace->phase(cycle,Phase::WaitRender);
       QTest::qWait(500);
+      trace->phase(cycle,Phase::Clear);
       desktop_->clearAsset();
+      trace->phase(cycle,Phase::WaitDestroyed);
       QTRY_VERIFY(!view);
+      trace->phase(cycle,Phase::WaitClear);
       QTest::qWait(20);
       QVERIFY(!session->busy() && !session->available() && !session->frame());
+      trace->phase(cycle,Phase::Resources);
       const auto memory=formaview::process_memory();
       QVERIFY(memory);
       sampleGpu();
       cycles.append(QJsonObject{{"cycle",cycle},{"elapsed_ms",elapsed.elapsed()},{"rss",static_cast<qint64>(memory->working_set_bytes)},{"private",static_cast<qint64>(memory->private_bytes)},{"gpu",gpuMemory()}});
     }
     evidence_["model_load_resource_stress"]=QJsonObject{{"cycles",cycles},{"camera_commands",cycleCount*10},{"events",measured->events},{"max_event_ms",measured->maxEventMs},{"over_100ms",measured->over100ms},{"slow_events",measured->slowEvents},{"boundary","Repeated actual desktop load/cancel/supersede/render/destroy cycles; cycle count is recorded in cycles. Qt input, not OS input. Main-thread event dispatch timing only; process allocators/driver caches need not return RSS to initial baseline."}};
+    finish(); // Freeze and export before any assertion can return from the test.
     QCOMPARE(measured->over100ms,0);
+    QVERIFY2(traceComplete,"Stress diagnostic records lost, incomplete, unwound, or not saved; cannot count as a pass");
   }
   void modelPreviewIntegration() {
     QTest::failOnWarning(QRegularExpression(".*index is not valid.*"));
