@@ -500,10 +500,28 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
           FbxAMatrix identity;
           cluster->SetTransformMatrix(identity);
           if (inverse) {
-            const auto ibm = from_columns(inverse->data() + j * 16);
+            const FbxMatrix ibm(from_columns(inverse->data() + j * 16));
             if (std::abs(ibm.Determinant()) < 1e-15)
               invalid("Singular glTF inverse bind matrix");
-            cluster->SetTransformLinkMatrix(ibm.Inverse());
+            // The cluster API can decompose its stored matrix on readback.
+            // Reject bindings it cannot retain instead of exporting a changed
+            // skin palette (for example, shear from scaled joint hierarchies).
+            const auto inverseBind = ibm.Inverse();
+            FbxAMatrix bind;
+            for (int r = 0; r < 4; ++r)
+              for (int c = 0; c < 4; ++c)
+                bind[r][c] = inverseBind.Get(r, c);
+            cluster->SetTransformLinkMatrix(bind);
+            FbxAMatrix stored;
+            cluster->GetTransformLinkMatrix(stored);
+            const auto retained = FbxMatrix(stored).Inverse();
+            // Match the node TRS and animation component precision policy.
+            for (int r = 0; r < 4; ++r)
+              for (int c = 0; c < 4; ++c)
+                if (!std::isfinite(retained.Get(r, c)) ||
+                    std::abs(retained.Get(r, c) - ibm.Get(r, c)) >
+                        1e-5 * std::max(1.0, std::abs(ibm.Get(r, c))))
+                  unsupported("glTF inverse bind matrix cannot be retained by FBX cluster API");
           } else
             cluster->SetTransformLinkMatrix(identity);
         }

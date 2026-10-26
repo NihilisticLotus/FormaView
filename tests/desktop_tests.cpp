@@ -790,6 +790,7 @@ private slots:
       // producer details containing replace() patterns must not corrupt text.
       const auto generic = call("errorText", "internal: definitely-unmapped-message-xyz");
       for (const auto *message : {
+             "glTF inverse bind matrix cannot be retained by FBX cluster API",
              "Duplicate glTF animation target channel",
              "Invalid glTF sparse animation indices", "Sparse animation value read failed",
              "Animation times must be finite", "Animation key count mismatch", "Non-finite animation value",
@@ -2866,9 +2867,31 @@ private slots:
     };
     const auto click = [&](const char *name) {
       auto *control = item(name); QVERIFY(control && control->isEnabled());
-      control->forceActiveFocus(); QTest::qWait(150);
-      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
-          control->mapToScene({control->width()/2, control->height()/2}).toPoint());
+      window_->requestActivate();
+      QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      QSignalSpy activated(control, SIGNAL(clicked()));
+      QVERIFY(activated.isValid());
+      control->forceActiveFocus(Qt::TabFocusReason);
+      QTRY_VERIFY(control->hasActiveFocus());
+      const auto visibleCenter = [&] {
+        const auto point = control->mapToScene({control->width()/2, control->height()/2});
+        if (!QRectF(0, 0, window_->width(), window_->height()).contains(point)) return false;
+        for (auto *ancestor = control->parentItem(); ancestor; ancestor = ancestor->parentItem())
+          if (ancestor->clip() && !ancestor->contains(ancestor->mapFromScene(point))) return false;
+        return true;
+      };
+      const auto diagnose = qScopeGuard([&] {
+        if (activated.isEmpty()) {
+          qWarning() << "Model button input missed" << name << control->mapToScene({0,0})
+                     << "visible center" << visibleCenter() << "focus" << control->hasActiveFocus();
+          save("model-button-missed-" + QString::fromLatin1(name));
+        }
+      });
+      QTRY_VERIFY_WITH_TIMEOUT(visibleCenter(), 5000);
+      // Exercise real keyboard activation after focus-driven scrolling settles.
+      // Other conversion flows retain their mouse click coverage.
+      QTest::keyClick(window_, Qt::Key_Space);
+      QTRY_COMPARE_WITH_TIMEOUT(activated.count(), 1, 2000);
     };
     const auto output = root_ + "/model-export";
     QVERIFY(QDir().mkpath(output));
@@ -2911,8 +2934,8 @@ private slots:
         for (int attempt = 0; attempt < 3 &&
                             settings->property("selectedClips").toStringList().isEmpty();
              ++attempt) {
+          QTRY_VERIFY_WITH_TIMEOUT(item("modelExportClip") && item("modelExportClip")->isEnabled(), 5000);
           auto *clip = item("modelExportClip");
-          QVERIFY2(clip && clip->isEnabled(), "source clip row missing");
           clip->forceActiveFocus();
           QTest::qWait(60);
           QTest::keyClick(window_, Qt::Key_Space);
@@ -3015,7 +3038,15 @@ private slots:
     desktop_->select(index);
     QTRY_VERIFY(idle());
     QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    const auto close = qScopeGuard([&] {
+      if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
+        QMetaObject::invokeMethod(conversion, "close");
+    });
     QTRY_VERIFY(item("conversionOutputRoot"));
+    // Source validation/import runs on the control worker. The settings page
+    // may be visible before its input list and naming example are published.
+    QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 15000);
+    QCOMPARE(service->sourcePaths(), QStringList{source});
     QCOMPARE(item("conversionPreflightStatus")->property("value").toString(), QString("待预检"));
     QVERIFY(item("conversionContentSource")->property("value").toString().contains("不套用预览"));
     QCOMPARE(item("conversionNamingExamples")->property("value").toString(), QString("唯一图片-converted.png"));
@@ -3025,10 +3056,6 @@ private slots:
                  .value("names").toStringList(), QStringList{"唯一图片-1.tiff"});
     QVERIFY(!service->nameExamples({source}, "{name}_m{mip}.{ext}", "png", {}).value("error").toString().isEmpty());
     QVERIFY(!service->nameExamples({source}, "../{name}.{ext}", "png", {}).value("error").toString().isEmpty());
-    const auto close = qScopeGuard([&] {
-      if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
-        QMetaObject::invokeMethod(conversion, "close");
-    });
     const auto firstOutput = root_ + "/editor-plan-a";
     const auto secondOutput = root_ + "/editor-plan-b";
     QVERIFY(QDir().mkpath(firstOutput) && QDir().mkpath(secondOutput));
@@ -3101,6 +3128,8 @@ private slots:
       desktop_->select(selectedIndex);
       QTRY_COMPARE(desktop_->selectedImages(), QStringList{selectedPath});
       QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, page)));
+      QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 15000);
+      QCOMPARE(service->sourcePaths(), QStringList{selectedPath});
       QTRY_VERIFY(service->plan().isEmpty());
       QCOMPARE(item("conversionSteps")->property("currentIndex").toInt(), page);
       const auto count = service->jobs().size();
@@ -3205,6 +3234,28 @@ private slots:
       QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point.toPoint());
       QTest::qWait(60);
     };
+    auto clickConvert = [&] {
+      window_->requestActivate();
+      QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      // Leaving focus mode makes the navigation rail visible and relayouts
+      // it. Wait for a rendered frame before sampling pointer coordinates.
+      QSignalSpy rendered(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY_WITH_TIMEOUT(!rendered.isEmpty(), 5000);
+      auto *button = item("convertImagesButton");
+      QVERIFY(button);
+      QSignalSpy activated(button, SIGNAL(clicked()));
+      QVERIFY(activated.isValid());
+      const auto diagnose = qScopeGuard([&] {
+        if (activated.isEmpty()) {
+          qWarning() << "Fidelity conversion input missed" << button->mapToScene({0,0})
+                     << "active window" << window_->isActive();
+          save("fidelity-conversion-input-missed");
+        }
+      });
+      click(button);
+      QTRY_COMPARE_WITH_TIMEOUT(activated.count(), 1, 2000);
+    };
     auto bounds = [](QQuickItem *control) {
       const auto point = control->mapToScene({0, 0});
       return QJsonObject{{"x",point.x()}, {"y",point.y()}, {"width",control->width()}, {"height",control->height()}};
@@ -3252,7 +3303,7 @@ private slots:
         QVERIFY(!item("inspectorPane"));
         capture("fidelity-focus-" + suffix);
         workspace->setProperty("focusMode", false);
-        click(item("convertImagesButton"));
+        clickConvert();
         QTRY_VERIFY(item("conversionOutputRoot"));
         QVERIFY(!item("previewPane"));
         auto *output = item("conversionOutputRoot");
@@ -3324,7 +3375,7 @@ private slots:
         // Leaving/re-entering the workspace preserves settings and the current plan.
         QTest::keyClick(window_, Qt::Key_Escape);
         QTRY_VERIFY(item("previewPane"));
-        click(item("convertImagesButton"));
+        clickConvert();
         QTRY_VERIFY(item("conversionOutputRoot"));
         QCOMPARE(item("conversionOutputRoot")->property("text").toString(), destination);
         QCOMPARE(service->plan().value("state").toString(), QString("ready"));

@@ -80,6 +80,7 @@ QtObject {
 
     // Specific messages; first match wins and replaces the generic headline.
     readonly property var messages: ([
+        [/glTF inverse bind matrix cannot be retained by FBX cluster API/i, ["当前 FBX 写入器无法准确保留此模型的骨骼绑定矩阵，转换已停止。请在建模软件中重新生成绑定矩阵后重试；原文件未修改。", "The FBX writer cannot accurately retain this model's skin binding matrices. Conversion stopped. Regenerate the bind matrices in your modelling application and retry; the source is unchanged.", "目前 FBX 寫入器無法準確保留此模型的骨骼綁定矩陣，轉換已停止。請在建模軟體中重新產生綁定矩陣後重試；原始檔未修改。"]],
         [/PNG requires explicit straight alpha/i, ["PNG 需要未预乘的 RGB。请在“源 Alpha 类型”中确认直通类型；未知或预乘数据不能直接标成直通输出。", "PNG requires unassociated RGB. Confirm Straight under Source alpha type; unknown or premultiplied data cannot simply be relabeled.", "PNG 需要未預乘的 RGB。請在「來源 Alpha 類型」中確認直通類型；未知或預乘資料不能直接標為直通輸出。"]],
         [/Absent alpha conflicts with selected alpha channel/i, ["图片含有 A 通道，与“无 Alpha”声明冲突。请保留源类型；若要去掉透明度，请选择“删除 Alpha，保留 RGB”。", "The image has an A channel, which conflicts with No alpha. Keep the source type; to remove transparency, choose Drop alpha, keep RGB.", "影像含有 A 通道，與「無 Alpha」宣告衝突。請保留來源類型；若要移除透明度，請選擇「移除 Alpha，保留 RGB」。"]],
         [/Compositing requires explicit straight or premultiplied alpha/i, ["背景合成需要知道 RGB 是否已乘 Alpha。请确认“源 Alpha 类型”为直通或预乘后重试。", "Background compositing requires a known alpha type. Confirm Straight or Premultiplied under Source alpha type and retry.", "背景合成需要知道 RGB 是否已乘 Alpha。請確認「來源 Alpha 類型」為直通或預乘後重試。"]],

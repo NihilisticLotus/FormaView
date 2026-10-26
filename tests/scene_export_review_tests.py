@@ -205,6 +205,40 @@ def main():
         names = [m['name'] for m in report['media']]
         assert any(n.lower().endswith(('.jpg', '.jpeg')) for n in names), names
 
+    def affine_inverse_bind():
+        # The SDK cluster API loses shear on matrix readback. Refuse such
+        # bindings explicitly; representable rotated/scaled binds must survive.
+        data = copy.deepcopy(original)
+        expected = [
+            [1, .25, 0, .5, 0, 1, .125, -2, 0, 0, 1, .25, 0, 0, 0, 1],
+            [-2, .125, 0, 1, 0, .5, 0, 2, 0, 0, 1, -1, 0, 0, 0, 1],
+        ] + [[1,0,0,0, 0,1,0,-i, 0,0,1,0, 0,0,0,1] for i in range(2, 6)]
+        columns = [matrix[row*4+column] for matrix in expected for column in range(4) for row in range(4)]
+        payload = struct.pack('<'+'f'*len(columns), *columns)
+        data['buffers'].append(dict(uri='data:application/octet-stream;base64,'+base64.b64encode(payload).decode(), byteLength=len(payload)))
+        data['bufferViews'].append(dict(buffer=len(data['buffers'])-1, byteLength=len(payload)))
+        data['accessors'].append(dict(bufferView=len(data['bufferViews'])-1, componentType=5126, count=6, type='MAT4'))
+        data['skins'][0]['inverseBindMatrices'] = len(data['accessors'])-1
+        path = write('affine-inverse-bind', data)
+        destination = args.output / 'affine-inverse-bind.fbx'
+        result = call('preflight', input=path, output=str(destination), options=dict(target='fbx'))
+        assert result.get('error', {}).get('code') == 'unsupported', result
+        assert 'inverse bind matrix cannot be retained' in result['error']['message'], result
+        assert not destination.exists()
+
+        # Positive control: rotation, non-uniform scale and translation with
+        # an orthogonal bind basis (the inverse itself need not have one).
+        a = math.sqrt(.5)
+        expected[0] = [2*a, 2*a, 0, .5, -3*a, 3*a, 0, -2, 0, 0, 4, .25, 0, 0, 0, 1]
+        expected[1] = [-2, 0, 0, 1, 0, .5, 0, 2, 0, 0, 1, -1, 0, 0, 0, 1]
+        columns = [matrix[row*4+column] for matrix in expected for column in range(4) for row in range(4)]
+        payload = struct.pack('<'+'f'*len(columns), *columns)
+        data['buffers'][-1]['uri'] = 'data:application/octet-stream;base64,'+base64.b64encode(payload).decode()
+        report = export('representable-inverse-bind', data)
+        clusters = {cluster['bone']: cluster for cluster in report['meshes'][0]['clusters']}
+        for index, matrix in enumerate(expected):
+            close(clusters['Joint'+str(index)]['geometry_to_bone'], matrix, 1e-6)
+
     def animation_reader_inputs():
         # The animation preview reader shares the storage guard: hostile files
         # produce a normal error JSON (process alive), valid ones still load.
@@ -232,7 +266,7 @@ def main():
                        ('animation_time_range', animation_time_range), ('valid_sparse', valid_sparse),
                        ('deep_hierarchy', deep_hierarchy), ('sub_tick_keys', sub_tick_keys),
                        ('meshopt_fallback', meshopt_fallback), ('embedded_jpeg_extension', embedded_jpeg_extension),
-                       ('animation_reader_inputs', animation_reader_inputs)]:
+                       ('animation_reader_inputs', animation_reader_inputs), ('affine_inverse_bind', affine_inverse_bind)]:
         try:
             if name == 'animation_reader_inputs' and args.no_animation_reader:
                 results.append(dict(name=name, passed=False, skipped=True))

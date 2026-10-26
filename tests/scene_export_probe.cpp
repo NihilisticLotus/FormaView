@@ -51,12 +51,19 @@ QJsonArray geometry(const ufbx_scene *scene) {
       }
     for (const auto *blend : mesh->blend_deformers)
       for (const auto *channel : blend->channels) {
-        QJsonArray offsets;
-        if (channel->target_shape)
+        QJsonArray offsets, indices, normalOffsets;
+        if (channel->target_shape) {
+          for (const auto index : channel->target_shape->offset_vertices)
+            indices.append(static_cast<qint64>(index));
           for (const auto v : channel->target_shape->position_offsets)
             offsets.append(vec(v));
+          for (const auto v : channel->target_shape->normal_offsets)
+            normalOffsets.append(vec(v));
+        }
         shapes.append(QJsonObject{{"name", name(channel->name)},
                                   {"weight", channel->weight},
+                                  {"indices", indices},
+                                  {"normal_offsets", normalOffsets},
                                   {"offsets", offsets}});
       }
     QJsonArray materials;

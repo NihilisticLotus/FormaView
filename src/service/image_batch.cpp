@@ -167,7 +167,7 @@ struct ImageBatchService::Impl {
 
   Impl(AccessScope s, std::filesystem::path dir, ImageBatchLimits l,
        ImageBatchContext c)
-      : scope(std::move(s)), directory(QString::fromStdWString(dir.wstring())),
+      : scope(std::move(s)), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
         limits(l), context(std::move(c)), scheduler(scheduler_limits(l)) {
     if (!dir.is_absolute() || !limits.records || !limits.items ||
         limits.items > 64 || !limits.queue)
@@ -196,7 +196,10 @@ struct ImageBatchService::Impl {
              "Journal directory contains unrelated entries");
     }
     private_directory.emplace(PrivateDirectory::open(dir));
-    owner = std::make_unique<QLockFile>(directory + "/service.lock");
+    // QLockFile can create a long Windows path but fail to remove it on
+    // unlock unless its native delete path also has the extended prefix.
+    owner = std::make_unique<QLockFile>(QStringLiteral("\\\\?\\") +
+        QDir::toNativeSeparators(QDir::cleanPath(directory + "/service.lock")));
     owner->setStaleLockTime(0);
     if (!owner->tryLock())
       fail(ErrorCode::Conflict, "Journal already has an owner");

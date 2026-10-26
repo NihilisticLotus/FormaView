@@ -72,8 +72,9 @@ struct ImageTaskGroups::Impl {
   Scheduler scheduler{groupLimits()};
 
   Impl(AccessScope s, std::filesystem::path dir)
-      : scope(std::move(s)), directory(QString::fromStdWString(dir.wstring())),
-        protection(PrivateDirectory::open(dir)), owner(directory + "/groups.lock") {
+      : scope(std::move(s)), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
+        protection(PrivateDirectory::open(dir)),
+        owner(QStringLiteral("\\\\?\\") + QDir::toNativeSeparators(QDir::cleanPath(directory + "/groups.lock"))) {
     owner.setStaleLockTime(0);
     if (!owner.tryLock()) fail(ErrorCode::Conflict, "Conversion groups already have an owner");
     const auto dirs = QDir(directory).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);

@@ -14,6 +14,15 @@
 using namespace formaview;
 using namespace formaview::imaging;
 namespace {
+// Functional completeness is unchanged under instrumentation; ASan needs
+// the same 3x wait budget used by the desktop correctness regressions.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr int groupWaitMinutes = 30;
+constexpr int producerReadyMinutes = 24;
+#else
+constexpr int groupWaitMinutes = 10;
+constexpr int producerReadyMinutes = 8;
+#endif
 void require(bool v, const char *m) { if (!v) throw std::runtime_error(m); }
 QJsonObject query(const char *op, const QString &id = {}) {
   QJsonObject q{{"version", 1}, {"operation", op}};
@@ -25,7 +34,7 @@ QJsonObject checked(QJsonObject r) {
   return r;
 }
 QJsonObject wait(ImageTaskGroups &g, const char *op, const QString &id) {
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(groupWaitMinutes);
   for (;;) {
     const auto r = checked(g.request(query(op, id))); const auto s = r["state"].toString();
     if (s != "planning" && s != "running" && s != "queued") return r;
@@ -90,13 +99,15 @@ void killedRecovery(const QString &root) {
   child.start(QCoreApplication::applicationFilePath(), {"--crash-producer", root});
   require(child.waitForStarted(10000), "Start crash producer");
   QByteArray output;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(8);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(producerReadyMinutes);
   while (!output.contains("READY ") && child.state() != QProcess::NotRunning && std::chrono::steady_clock::now() < deadline) {
     child.waitForReadyRead(100); output += child.readAllStandardOutput();
   }
   if (!output.contains("READY ")) {
     child.kill(); child.waitForFinished(10000);
-    throw std::runtime_error((output + child.readAllStandardError()).toStdString());
+    throw std::runtime_error("Crash producer did not become ready within " +
+        std::to_string(producerReadyMinutes) + " minutes: " +
+        (output + child.readAllStandardError()).toStdString());
   }
   child.kill(); require(child.waitForFinished(10000), "Wait for killed producer");
   require(child.exitStatus() == QProcess::CrashExit, "Producer was actually killed");
@@ -124,8 +135,41 @@ void killedRecovery(const QString &root) {
   wait(recovered, "get_plan", retry["plan_id"].toString());
   std::cout << "PASS actual killed-process group recovery: succeeded=" << succeeded << " interrupted=" << interrupted << std::endl;
 }
+void longJournal(const QString &root) {
+  auto directory = root + "/long-journal";
+  while (directory.size() < 280) directory += '/' + QString(64, 'x');
+  const auto batchPath = directory + "/batch";
+  const auto groupPath = directory + "/groups";
+  require(QDir().mkpath(batchPath) && QDir().mkpath(groupPath), "Create long journal paths");
+  const auto nativeBatch = std::filesystem::path(batchPath.toStdWString());
+  {
+    ImageBatchService owner(scope(root), nativeBatch);
+    bool refused = false;
+    try { ImageBatchService duplicate(scope(root), nativeBatch); }
+    catch (const skeletal::Failure &e) { refused = e.error.code == ErrorCode::Conflict; }
+    require(refused, "Long journal still excludes concurrent owners");
+  }
+  require(!QFileInfo::exists(batchPath + "/service.lock"), "Long service lock removed on normal close");
+  { ImageBatchService reopened(scope(root), std::filesystem::path((batchPath + '/').toStdWString())); }
+  const auto nativeGroup = std::filesystem::path(groupPath.toStdWString());
+  {
+    ImageTaskGroups groups(scope(root), nativeGroup);
+    const auto plan = start(groups, requests(root, 65, "long-journal-"));
+    require(plan["state"] == "ready", "Long journal preflight");
+    const auto submitted = checked(groups.request(submission(plan)));
+    require(wait(groups, "get_job", submitted["job_id"].toString())["state"] == "succeeded", "Long journal child locks can be reacquired for execution");
+  }
+  require(!QFileInfo::exists(groupPath + "/groups.lock"), "Long group lock removed on normal close");
+  {
+    ImageTaskGroups recovered(scope(root), std::filesystem::path((groupPath + '/').toStdWString()));
+    const auto jobs = checked(recovered.request(query("list_jobs")))["items"].toArray();
+    require(jobs.size() == 1 && jobs[0].toObject()["state"] == "succeeded", "Long journal recovery retains successful group");
+  }
+  std::cout << "PASS long journal ownership, release, execution and recovery" << std::endl;
+}
 void run(const QString &root) {
   fixture(root + "/source.tga"); QDir().mkpath(root + "/groups");
+  longJournal(root);
   {
     ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
     for (const int count : {64, 65, 129}) {
@@ -225,6 +269,11 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     if (argc == 3 && app.arguments()[1] == "--crash-producer") { crashProducer(app.arguments()[2]); return 0; }
+    if (argc == 3 && app.arguments()[1] == "--long-journal") {
+      const auto root = app.arguments()[2];
+      require(!QFileInfo::exists(root) && QDir().mkpath(root), "Create new focused long-journal root");
+      fixture(root + "/source.tga"); longJournal(root); return 0;
+    }
     require(argc == 2, "Expected external test root");
     QDir().mkpath(QString::fromLocal8Bit(argv[1]));
     QTemporaryDir temp(QString::fromLocal8Bit(argv[1]) + "/groups-XXXXXX");
