@@ -1,4 +1,5 @@
 #include "formaview/raster_image.hpp"
+#include "raster_profile.hpp"
 #include <QBuffer>
 #include <QColorSpace>
 #include <QImageReader>
@@ -583,6 +584,7 @@ std::vector<std::byte> encode_raster(const ImageSubresource &s,
   if (alpha && options.alpha != AlphaMode::Straight)
     invalid("PNG requires explicit straight alpha");
   budget(options.icc_profile.size() <= 1024 * 1024);
+  validate_icc_model(options.icc_profile, gray);
   QColorSpace colour;
   if (!options.icc_profile.empty()) {
     if (options.target == RasterTarget::Bmp)
@@ -621,7 +623,9 @@ std::vector<std::byte> encode_raster(const ImageSubresource &s,
     throw skeletal::Failure(ErrorCode::ResourceLimit,
                             "Raster encode allocation failed");
   image.fill(Qt::white);
-  if (colour.isValid())
+  // JPEG's Qt handler drops grayscale profiles. Write APP2 ourselves for both
+  // models so the exact source bytes, including multi-segment profiles, survive.
+  if (colour.isValid() && options.target != RasterTarget::Jpeg)
     image.setColorSpace(colour);
   const auto component = wide ? 2U : 1U;
   for (int y = 0; y < image.height(); ++y) {
@@ -648,6 +652,36 @@ std::vector<std::byte> encode_raster(const ImageSubresource &s,
     throw skeletal::Failure(ErrorCode::Io,
                             "Raster encode failed: " +
                                 writer.errorString().toStdString());
+  if (options.target == RasterTarget::Jpeg && !options.icc_profile.empty()) {
+    constexpr std::size_t partSize = 65519; // APP2 length minus length/ICC header.
+    const auto count = (options.icc_profile.size() + partSize - 1) / partSize;
+    budget(static_cast<std::uint64_t>(bytes.size()) + options.icc_profile.size() +
+               count * 18 <= limits.input_bytes);
+    QByteArray segments;
+    for (std::size_t i = 0; i < count; ++i) {
+      cancel(stop);
+      const auto size = std::min(partSize, options.icc_profile.size() - i * partSize);
+      segments.append("\xff\xe2", 2);
+      const auto length = static_cast<std::uint16_t>(size + 16);
+      char encodedLength[2];
+      qToBigEndian(length, encodedLength);
+      segments.append(encodedLength, 2);
+      segments.append("ICC_PROFILE\0", 12);
+      segments.append(static_cast<char>(i + 1));
+      segments.append(static_cast<char>(count));
+      segments.append(reinterpret_cast<const char *>(options.icc_profile.data() + i * partSize),
+                      static_cast<qsizetype>(size));
+    }
+    // Keep the JFIF APP0 marker immediately after SOI when it is present.
+    qsizetype offset = 2;
+    if (bytes.size() >= 6 && bytes.mid(2, 2) == QByteArray("\xff\xe0", 2)) {
+      const auto length = qFromBigEndian<std::uint16_t>(bytes.constData() + 4);
+      if (length < 2 || length > bytes.size() - 4)
+        invalid("Invalid encoded JPEG APP0 marker");
+      offset = 4 + length;
+    }
+    bytes.insert(offset, segments);
+  }
   budget(static_cast<std::uint64_t>(bytes.size()) <= limits.input_bytes);
   cancel(stop);
   std::vector<std::byte> out(static_cast<std::size_t>(bytes.size()));

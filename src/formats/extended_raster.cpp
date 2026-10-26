@@ -1,4 +1,5 @@
 #include "formaview/extended_raster.hpp"
+#include "raster_profile.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -510,6 +511,7 @@ std::vector<std::byte> encode_extended(const ImageSubresource &s,
             o.alpha == AlphaMode::Premultiplied,
         "Explicit alpha interpretation required");
   budget(o.icc_profile.size() <= 1024 * 1024);
+  validate_icc_model(o.icc_profile, gray);
   Memory memory;
   memory.maximum = std::min<std::uint64_t>(limits.input_bytes, SIZE_MAX);
   memory.writing = true;

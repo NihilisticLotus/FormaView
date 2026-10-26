@@ -2,6 +2,8 @@
 #include "formaview/image_conversion.hpp"
 #include "formaview/image_requests.hpp"
 #include <QCoreApplication>
+#include <QColorSpace>
+#include <QtEndian>
 #include <QJsonArray>
 #include <QFile>
 #include <fstream>
@@ -33,6 +35,103 @@ bool loss(const ImageConversionProduct &p, const std::string &code) {
   return std::any_of(p.losses.begin(), p.losses.end(),
                      [&](const auto &l) { return l.code == code; });
 }
+void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &root) {
+  const auto raw = [](const QColorSpace &space) {
+    require(space.isValid(), "Invalid generated colour profile");
+    const auto bytes = space.iccProfile();
+    require(bytes.size() >= 128, "Missing generated ICC header");
+    return std::vector<std::byte>(reinterpret_cast<const std::byte *>(bytes.constData()),
+                                 reinterpret_cast<const std::byte *>(bytes.constData()) + bytes.size());
+  };
+  const auto rgbProfile = raw(QColorSpace(QColorSpace::SRgb));
+  const auto grayProfile = raw(QColorSpace(QPointF(0.3127, 0.3290), QColorSpace::TransferFunction::Gamma, 2.2f));
+  write(root / "rgb.icc", rgbProfile); write(root / "gray.icc", grayProfile);
+  auto rgb = rgba; rgb.channels.pop_back();
+  auto gray = rgb; gray.channels.resize(1); gray.channels[0].name = "Y";
+  auto grayAlpha = gray; grayAlpha.channels.push_back(rgba.channels.back());
+  const auto mismatch = [](const auto &encode) {
+    try { encode(); }
+    catch (const skeletal::Failure &e) {
+      require(e.error.code == ErrorCode::Unsupported &&
+                  std::string(e.what()).find("ICC colour model") != std::string::npos,
+              "Wrong ICC model mismatch diagnostic");
+      return;
+    }
+    throw std::runtime_error("Encoder accepted an ICC profile for the wrong output colour model");
+  };
+  const auto check = [&](const ImageSubresource &image, bool isGray, bool hasAlpha) {
+    for (const auto target : {ImageTarget::Png, ImageTarget::Jpeg, ImageTarget::Tiff, ImageTarget::Webp}) {
+      if ((hasAlpha && target == ImageTarget::Jpeg) || (isGray && target == ImageTarget::Webp)) continue;
+      const auto encode = [&](const std::vector<std::byte> &profile) {
+        if (target == ImageTarget::Tiff || target == ImageTarget::Webp) {
+          ExtendedEncodeOptions o;
+          o.target = target == ImageTarget::Tiff ? ExtendedRasterTarget::Tiff : ExtendedRasterTarget::Webp;
+          o.alpha = hasAlpha ? AlphaMode::Straight : AlphaMode::Absent;
+          o.icc_profile = profile;
+          return encode_extended(image, o);
+        }
+        RasterEncodeOptions o;
+        o.target = target == ImageTarget::Png ? RasterTarget::Png : RasterTarget::Jpeg;
+        o.alpha = hasAlpha ? AlphaMode::Straight : AlphaMode::Absent;
+        o.icc_profile = profile;
+        return encode_raster(image, o);
+      };
+      mismatch([&] { write(root / "mismatched-profile.bin", encode(isGray ? rgbProfile : grayProfile)); });
+      const auto &matching = isGray ? grayProfile : rgbProfile;
+      const auto path = root / ("matching-" + std::to_string(static_cast<int>(target)) +
+                                (isGray ? "-gray" : "-rgb") + (hasAlpha ? "-alpha.bin" : ".bin"));
+      write(path, encode(matching));
+      const auto doc = ImageDocument::open(path);
+      require(doc.semantics(0).icc_profile_sha256 == skeletal::sha256(matching),
+              "Matching ICC profile bytes changed");
+    }
+  };
+  check(rgb, false, false); check(rgba, false, true);
+  check(gray, true, false); check(grayAlpha, true, true);
+  auto largeProfile = rgbProfile;
+  largeProfile.resize(150000, std::byte{0}); // Unused ICC padding preserves the transfer tags.
+  qToBigEndian<std::uint32_t>(static_cast<std::uint32_t>(largeProfile.size()), largeProfile.data());
+  RasterEncodeOptions segmented; segmented.target = RasterTarget::Jpeg; segmented.icc_profile = largeProfile;
+  write(root / "large-profile.jpg", encode_raster(rgb, segmented));
+  require(ImageDocument::open(root / "large-profile.jpg").semantics(0).icc_profile_sha256 == skeletal::sha256(largeProfile),
+          "Multi-segment JPEG ICC bytes changed");
+  Limits smallBudget; smallBudget.input_bytes = 10000;
+  bool budgetRejected = false;
+  try { (void)encode_raster(rgb, segmented, smallBudget); }
+  catch (const skeletal::Failure &e) { budgetRejected = e.error.code == ErrorCode::ResourceLimit; }
+  require(budgetRejected, "JPEG ICC segments exceeded the output budget");
+  const auto path = root / "rgb-profile.png";
+  RasterEncodeOptions tagged; tagged.icc_profile = rgbProfile;
+  write(path, encode_raster(rgb, tagged));
+  const auto doc = ImageDocument::open(path);
+  for (const auto target : {ImageTarget::Png, ImageTarget::Jpeg, ImageTarget::Tiff}) {
+    ImageConversionOptions options; options.target = target; options.allow_lossy = true;
+    options.transform.channels = {{"R", "Y"}};
+    mismatch([&] { (void)prepare_image_conversion(doc, options); });
+    options.metadata = MetadataPolicy::Drop;
+    const auto dropped = prepare_image_conversion(doc, options);
+    require(loss(dropped, "icc_profile"), "Explicit ICC drop must report loss");
+    write(root / "dropped-profile.bin", dropped.encoded);
+    const auto decoded = ImageDocument::open(root / "dropped-profile.bin");
+    require(decoded.semantics(0).icc_profile_sha256.empty(), "Dropped ICC was retained");
+    require(decoded.decode(0).channels.front().samples.bytes == rgb.channels.front().samples.bytes,
+            "Metadata drop changed gray channel samples");
+  }
+  const auto cmykPath = qEnvironmentVariable("FORMAVIEW_TEST_CMYK_PROFILE");
+  if (!cmykPath.isEmpty()) {
+    QFile file(cmykPath); require(file.open(QIODevice::ReadOnly), "Cannot read CMYK ICC fixture");
+    const auto bytes = file.readAll();
+    require(bytes.size() >= 128 && bytes.mid(16, 4) == "CMYK", "Fixture is not a CMYK profile");
+    const std::vector<std::byte> profile(reinterpret_cast<const std::byte *>(bytes.constData()),
+                                      reinterpret_cast<const std::byte *>(bytes.constData()) + bytes.size());
+    for (const auto target : {ExtendedRasterTarget::Tiff, ExtendedRasterTarget::Webp}) {
+      ExtendedEncodeOptions o; o.target = target; o.icc_profile = profile;
+      mismatch([&] { (void)encode_extended(rgb, o); });
+    }
+    std::cout << "PASS external CMYK ICC rejected for RGB TIFF/WebP\n";
+  } else std::cout << "SKIP external CMYK ICC: FORMAVIEW_TEST_CMYK_PROFILE is unset\n";
+  std::cout << "PASS RGB/gray ICC output models, exact profile bytes and explicit metadata drop\n";
+}
 void run(const std::filesystem::path &root) {
   const auto capabilities = execute_image_request(
       {{"version", 1}, {"operation", "capabilities"}}, {});
@@ -53,6 +152,7 @@ void run(const std::filesystem::path &root) {
   RasterEncodeOptions png;
   png.alpha = AlphaMode::Straight;
   write(root / "source.png", encode_raster(source, png));
+  profile_layouts(source, root);
   const auto iccPath = qEnvironmentVariable("FORMAVIEW_TEST_ICC_PROFILE");
   if (!iccPath.isEmpty()) {
     QFile profile(iccPath);
