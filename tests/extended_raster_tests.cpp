@@ -1,4 +1,5 @@
 #include "formaview/extended_raster.hpp"
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
@@ -40,6 +41,35 @@ ImageSubresource source() {
                           SampleEncoding::UNorm});
   }
   return s;
+}
+// Change the interpretation tag without touching any stored sample. The TIFF
+// writer emits native little-endian classic TIFF on this Windows target.
+void white_is_zero(std::vector<std::byte> &bytes) {
+  require(bytes.size() >= 8 && bytes[0] == std::byte{'I'} &&
+              bytes[1] == std::byte{'I'},
+          "Expected little-endian TIFF fixture");
+  const auto read = [&]<class T>(std::size_t offset) {
+    require(offset <= bytes.size() && sizeof(T) <= bytes.size() - offset,
+            "Truncated TIFF fixture");
+    T value{};
+    std::memcpy(&value, bytes.data() + offset, sizeof(T));
+    return value;
+  };
+  require(read.operator()<std::uint16_t>(2) == 42, "Expected classic TIFF");
+  const auto ifd = read.operator()<std::uint32_t>(4);
+  const auto count = read.operator()<std::uint16_t>(ifd);
+  for (std::size_t n = 0; n < count; ++n) {
+    const auto offset = static_cast<std::size_t>(ifd) + 2 + n * 12;
+    if (read.operator()<std::uint16_t>(offset) == 262) {
+      require(read.operator()<std::uint16_t>(offset + 2) == 3 &&
+                  read.operator()<std::uint32_t>(offset + 4) == 1 &&
+                  read.operator()<std::uint16_t>(offset + 8) == 1,
+              "Expected inline BlackIsZero tag");
+      bytes[offset + 8] = std::byte{0};
+      return;
+    }
+  }
+  throw std::runtime_error("Missing photometric fixture tag");
 }
 void run(const std::filesystem::path &root) {
   auto s = source();
@@ -118,6 +148,34 @@ void run(const std::filesystem::path &root) {
               "TIFF compression changed values");
   }
   require(s.channels[0].samples.bytes == original, "Encoding modified source");
+  o = {};
+  o.alpha = AlphaMode::Straight;
+  for (const auto scalar : {ScalarType::UInt8, ScalarType::UInt16})
+    for (const bool alpha : {false, true}) {
+      auto gray = source();
+      gray.channels.erase(gray.channels.begin() + 1, gray.channels.begin() + 3);
+      gray.channels[0].name = "Y";
+      if (!alpha)
+        gray.channels.pop_back();
+      for (auto &channel : gray.channels) {
+        channel.samples.scalar = scalar;
+        if (scalar == ScalarType::UInt16)
+          channel.samples.bytes.resize(2048, std::byte{0x7f});
+      }
+      auto bytes = encode_extended(gray, o);
+      const auto name = std::to_string(static_cast<int>(scalar)) +
+                        (alpha ? "-alpha" : "-gray");
+      auto path = root / ("black-is-zero-" + name + ".tiff");
+      write(path, bytes);
+      const auto decoded = ExtendedRasterFile::open(path).decode(0);
+      for (std::size_t c = 0; c < gray.channels.size(); ++c)
+        require(decoded.channels[c].samples.bytes == gray.channels[c].samples.bytes,
+                "BlackIsZero raw samples changed");
+      white_is_zero(bytes);
+      path = root / ("white-is-zero-" + name + ".tiff");
+      write(path, bytes);
+      rejects([&] { (void)ExtendedRasterFile::open(path); }, ErrorCode::Unsupported);
+    }
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {

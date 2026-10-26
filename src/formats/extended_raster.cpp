@@ -173,8 +173,13 @@ TiffInfo tiff_info(TIFF *t, Limits limits) {
   TIFFGetFieldDefaulted(t, TIFFTAG_COMPRESSION, &i.compression);
   budget(i.w && i.h && i.w <= limits.dimension && i.h <= limits.dimension &&
          i.count && i.count <= limits.channels);
-  if (i.photo != PHOTOMETRIC_RGB && i.photo != PHOTOMETRIC_MINISBLACK &&
-      i.photo != PHOTOMETRIC_MINISWHITE)
+  // Native samples are kept unchanged. The common Y channel and output
+  // encoders mean BlackIsZero; accepting WhiteIsZero would silently reverse
+  // brightness in both the viewport and converted files.
+  if (i.photo == PHOTOMETRIC_MINISWHITE)
+    fail("TIFF WhiteIsZero grayscale requires an explicit photometric conversion; "
+         "convert to BlackIsZero in an image editor before importing");
+  if (i.photo != PHOTOMETRIC_RGB && i.photo != PHOTOMETRIC_MINISBLACK)
     fail("TIFF photometric interpretation requires a separate conversion path");
   valid(
       (i.planar == PLANARCONFIG_CONTIG || i.planar == PLANARCONFIG_SEPARATE) &&

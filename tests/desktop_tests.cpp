@@ -790,6 +790,7 @@ private slots:
       // producer details containing replace() patterns must not corrupt text.
       const auto generic = call("errorText", "internal: definitely-unmapped-message-xyz");
       for (const auto *message : {
+             "TIFF WhiteIsZero grayscale requires an explicit photometric conversion; convert to BlackIsZero in an image editor before importing",
              "ICC colour model does not match output channels; choose metadata drop or a matching profile",
              "glTF inverse bind matrix cannot be retained by FBX cluster API",
              "Duplicate glTF animation target channel",
