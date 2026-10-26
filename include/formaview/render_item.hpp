@@ -1,12 +1,17 @@
 #pragma once
 #include <QMatrix4x4>
 #include <QQuickRhiItem>
+#include <cstdint>
 #include <functional>
 #include <array>
 #include <memory>
 #include <vector>
 
 namespace formaview::render {
+// Bytes kept by every live renderer for the largest Params uniform block.
+// Observation::owned_gpu_bytes includes this allocation even for preview frames
+// that upload only the 80-byte non-skin prefix.
+inline constexpr std::uint64_t renderer_uniform_bytes = 176;
 struct Texture {
   std::vector<float> rgba;
   int width{}, height{};

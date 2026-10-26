@@ -16,7 +16,7 @@ namespace formaview::render {
 namespace {
 using Clock = std::chrono::steady_clock;
 // Params block: matrix, options (80 bytes, preview) + display, skinOptions, skinMode.
-constexpr quint32 uniformBytes = 176;
+constexpr quint32 uniformBytes = renderer_uniform_bytes;
 double elapsed(Clock::time_point t) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }

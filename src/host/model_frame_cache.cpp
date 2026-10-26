@@ -43,12 +43,12 @@ QByteArray ModelSession::stateKey(const ModelRenderState &state) const {
 }
 // Plain mode-0 pose payload: what the resident GPU geometry bakes into its vertices
 // and draws. Selected bone/node, material, selected mesh without isolation,
-// visibility and LOD levels only change which resident draws a pose shows.
+// visibility, LOD levels and collision appearance only select resident draws.
 QByteArray ModelSession::gpuStateKey(const ModelRenderState &state) const {
   if (state.mode != 0) return QByteArrayLiteral("F") + stateKey(state);
   QByteArray bytes;
   QDataStream stream(&bytes, QIODevice::WriteOnly);
-  stream << QByteArrayLiteral("N") << state.mode << state.collisionMode;
+  stream << QByteArrayLiteral("N") << state.mode;
   for (std::size_t i = 0; i < state.uvs.size(); ++i) {
     stream << state.uvs[i] << state.classes[i].collision;
     stream << static_cast<quint64>(state.textures[i].size());
@@ -58,11 +58,12 @@ QByteArray ModelSession::gpuStateKey(const ModelRenderState &state) const {
   }
   return bytes;
 }
-// Which resident draws a pose shows: visibility, isolation and the isolated mesh.
+// Which resident draws a pose shows: visibility, isolation, the isolated mesh,
+// and collision overlay versus opaque appearance.
 QByteArray ModelSession::gpuViewKey(const ModelRenderState &state) const {
   QByteArray bytes;
   QDataStream stream(&bytes, QIODevice::WriteOnly);
-  stream << state.mode << state.isolated << (state.isolated ? state.mesh : -1);
+  stream << state.mode << state.isolated << (state.isolated ? state.mesh : -1) << state.collisionMode;
   for (const bool shown : state.visible) stream << shown;
   return bytes;
 }

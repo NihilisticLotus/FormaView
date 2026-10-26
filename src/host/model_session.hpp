@@ -249,6 +249,7 @@ private:
   };
   void startPending();
   void openInputs(QString, QString, QString);
+  void reset(bool opening);
   struct FrameResult {
     ModelFrames frames;
     ModelRenderState state;

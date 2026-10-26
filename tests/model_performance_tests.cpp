@@ -27,11 +27,15 @@ double milliseconds(Clock::duration value) {
 QJsonObject distribution(std::vector<double> values) {
   if (values.empty())
     return {{"count", 0}};
+  QJsonArray raw;
+  for (const auto value : values)
+    raw.append(value);
   std::sort(values.begin(), values.end());
   const auto at = [&](double p) {
     return values[static_cast<std::size_t>(std::ceil(p * values.size())) - 1];
   };
   return {{"count", static_cast<int>(values.size())},
+          {"samples_ms", raw},
           {"p95_ms", at(.95)},
           {"p99_ms", at(.99)},
           {"max_ms", values.back()},
@@ -100,6 +104,7 @@ int main(int argc, char **argv) {
       {"filesystem_cache", "OS caches are not flushed; first load in this "
                            "process is not physical cold-disk I/O"},
       {"msaa", 4}};
+  evidence["forced_geometry_copy"]=qEnvironmentVariableIsSet("FORMAVIEW_PERF_FORCE_GEOMETRY_COPY");
   std::atomic<std::uint64_t> generation{}, synchronized{};
   struct Shared {
     std::mutex mutex;
@@ -184,6 +189,7 @@ int main(int argc, char **argv) {
         {"first_actual_frame_ms", milliseconds(displayed - start)},
         {"source", QJsonObject::fromVariantMap(session.info())}};
   };
+  std::uint64_t previousRowUpload{};
   const auto begin = [&] {
     std::lock_guard guard(shared.mutex);
     shared.prepare.clear();
@@ -192,6 +198,7 @@ int main(int argc, char **argv) {
     shared.intervals.clear();
     shared.swapTime = {};
     shared.uploadBytes = 0;
+    previousRowUpload = 0;
     shared.residentHits = 0;
     shared.measuring = true;
     app.events.clear();
@@ -211,6 +218,89 @@ int main(int argc, char **argv) {
         {"uploaded_bytes", static_cast<qint64>(shared.uploadBytes)},
         {"resident_hits", static_cast<qint64>(shared.residentHits)},
         {"rss_bytes", static_cast<qint64>(rss())}};
+  };
+  const auto residencyRow = [&](int cycle, const std::shared_ptr<const formaview::render::Frame> &before,
+                                std::uint64_t buildsBefore) {
+    const auto frame = session.frame();
+    // The pinned LOD fixture has a small palette that occupies one RGBA32F row.
+    // Refuse a different shape rather than silently widening the upload budget.
+    if (frame->geometry && (frame->palette.empty() || frame->palette.size()>4096 || frame->palette.size()%4))
+      throw std::runtime_error("Residency fixture must use a nonempty single-row palette");
+    const auto dynamicBytes = frame->geometry ?
+        frame->palette.size()*sizeof(float)+formaview::render::renderer_uniform_bytes+
+          (frame->selectionVertices ? frame->guides.size()*sizeof(formaview::render::Vertex) : 0) : 0;
+    bool subsetMatches=true, collisionAlphaMatches=true, meshMembershipMatches=true;
+    if(frame->geometry) {
+      const auto state=session.renderStateForTest();
+      const auto cpu=buildModelFrames(*session.documentSnapshot(),state,1,{},nullptr,false).model;
+      std::uint64_t shown=0, blended=0, cpuBlended=0;
+      std::vector<std::uint64_t> meshVertices(state.classes.size());
+      for(const auto &draw:frame->draws) {
+        shown+=draw.count;if(draw.blend)blended+=draw.count;
+        if(draw.mesh>=0)meshVertices.at(static_cast<std::size_t>(draw.mesh))+=draw.count;
+        if(draw.mesh>=0 && !state.classes.empty() && state.classes.at(static_cast<std::size_t>(draw.mesh)).collision) {
+          for(std::size_t vi=draw.first;vi<static_cast<std::size_t>(draw.first)+draw.count;++vi) {
+            const auto &vertex=frame->geometry->vertices.at(vi);
+            collisionAlphaMatches=collisionAlphaMatches &&
+              vertex.alpha==(state.collisionMode==1?.35F:1.F) &&
+              vertex.alphaMode==(state.collisionMode==1?2.F:0.F);
+          }
+        }
+      }
+      // Independently derive membership from classification, not state.visible:
+      // CPU and GPU builders must not agree on the same erroneous visibility.
+      const auto document=session.documentSnapshot();
+      for(std::size_t mi=0;mi<state.classes.size();++mi) {
+        const auto &classification=state.classes[mi];
+        const auto level=state.levels.find(classification.group);
+        const bool atLevel=classification.group.isEmpty() ||
+          (level!=state.levels.end() && level->second==classification.level);
+        const bool expected=atLevel && (!state.isolated || mi==static_cast<std::size_t>(state.mesh)) &&
+          (classification.collision ? state.collisionMode!=0 : state.collisionMode!=2);
+        meshMembershipMatches=meshMembershipMatches &&
+          meshVertices[mi]==(expected?document->meshes[mi].triangles.size():0);
+      }
+      for(const auto &draw:cpu->draws)if(draw.blend)cpuBlended+=draw.count;
+      subsetMatches=shown==cpu->vertices.size() && blended==cpuBlended &&
+                    frame->sourceTriangles==cpu->sourceTriangles && frame->sourcePoints==cpu->sourcePoints;
+    }
+    std::lock_guard guard(shared.mutex);
+    const auto uploadDelta=shared.uploadBytes-previousRowUpload;
+    previousRowUpload=shared.uploadBytes;
+    return QJsonObject{
+        {"cycle", cycle}, {"gpu", shared.last.gpu_skinning},
+        {"geometrySame", frame->geometry && frame->geometry == before->geometry},
+        {"geometryRevision", static_cast<qint64>(frame->geometry ? frame->geometry->revision : 0)},
+        {"geometryBuilds", static_cast<qint64>(modelGpuGeometryBuildCount()-buildsBefore)},
+        {"frameRevision", static_cast<qint64>(frame->revision)},
+        {"observedRevision", static_cast<qint64>(shared.last.frame_revision)},
+        {"paletteFloats", static_cast<qint64>(frame->palette.size())},
+        {"sourceSubsetMatchesCpu", subsetMatches}, {"collisionAlphaMatches", collisionAlphaMatches},
+        {"meshMembershipMatches", meshMembershipMatches},
+        {"expectedDynamicBytes", static_cast<qint64>(dynamicBytes)},
+        {"frameCacheable", frame->cacheable},
+        {"uploadedBytes", static_cast<qint64>(shared.last.uploaded_bytes)},
+        {"uploadedSincePreviousRow", static_cast<qint64>(uploadDelta)},
+        {"residentHit", shared.last.resident_hit}};
+  };
+  const auto verifyResidency = [&](const QJsonObject &result, const QJsonArray &rows) {
+    if (!session.frame()->geometry) {
+      if (result["uploaded_bytes"].toInteger()!=0 || result["resident_hits"].toInteger()<rows.size()-1)
+        throw std::runtime_error("CPU frame-cache residency must reuse buffers without re-upload");
+      return;
+    }
+    qint64 expected=0;
+    for (const auto &value:rows) {
+      const auto row=value.toObject();
+      expected+=row["expectedDynamicBytes"].toInteger();
+      if (!row["gpu"].toBool() || !row["geometrySame"].toBool() || row["geometryBuilds"].toInteger()!=0 ||
+          row["frameRevision"]!=row["observedRevision"] || row["uploadedSincePreviousRow"]!=row["expectedDynamicBytes"] ||
+          !row["sourceSubsetMatchesCpu"].toBool() || !row["collisionAlphaMatches"].toBool() ||
+          !row["meshMembershipMatches"].toBool())
+        throw std::runtime_error("Resident GPU geometry changed, rebuilt, mismatched its frame, or uploaded more than pose/guide data");
+    }
+    if (result["uploaded_bytes"].toInteger()!=expected)
+      throw std::runtime_error("Resident GPU workload contains additional unaccounted uploads");
   };
   bool passed = false;
   try {
@@ -270,18 +360,27 @@ int main(int argc, char **argv) {
     evidence["first_lod_switch_ms"] = coldLevels;
     begin();
     std::vector<double> warm;
+    QJsonArray lodRows;
     for (int i = 0; i < 80; ++i) {
+      const auto beforeFrame = session.frame();
+      const auto buildsBefore = modelGpuGeometryBuildCount();
       const auto start = Clock::now();
       session.requestLod(levels[(i + 1) % 2].toMap().value("level").toInt());
       ready();
+      if (i==2 && qEnvironmentVariableIsSet("FORMAVIEW_PERF_FORCE_GEOMETRY_COPY") && session.frame()->geometry) {
+        // Negative control: an equivalent new geometry object must be detected as a re-upload.
+        auto copy=std::make_shared<formaview::render::Frame>(*session.frame());
+        copy->geometry=std::make_shared<formaview::render::Frame>(*copy->geometry);
+        view->setFrame(copy);
+      }
       warm.push_back(milliseconds(presented() - start));
+      lodRows.append(residencyRow(i,beforeFrame,buildsBefore));
     }
     const auto resident = finish(warm);
     evidence["resident_lod"] = resident;
-    if (resident.value("uploaded_bytes").toInteger() != 0 ||
-        resident.value("resident_hits").toInteger() < 79)
-      throw std::runtime_error(
-          "Warm LOD result must use resident GPU buffers without re-upload");
+    evidence["resident_lod_rows"] = lodRows;
+    evidence["residency_boundary"]="GPU: immutable geometry identity and build count unchanged; matching presented revision; exact palette/uniform/selection-guide upload budget, no extra uploads. CPU: original frame-cache zero-upload/hit-count requirement.";
+    verifyResidency(resident,lodRows);
     // Session-only explicit classification measures the actual collision view
     // path without claiming this FBX exported collision or a PhysicsAsset.
     session.selectMesh(0);
@@ -292,27 +391,32 @@ int main(int argc, char **argv) {
       const auto start = Clock::now();
       session.setCollisionMode(mode);
       ready();
-      if (mode == 2 && session.frame()->vertices.empty())
+      const auto frame=session.frame();
+      const bool drawsGeometry=frame->geometry ? std::any_of(frame->draws.begin(),frame->draws.end(),[](const auto &draw){return draw.count>0;}) : !frame->vertices.empty();
+      if (mode == 2 && !drawsGeometry)
         throw std::runtime_error("Collision benchmark must draw actual source geometry");
       firstCollision.append(milliseconds(presented() - start));
     }
     evidence["first_collision_switch_ms"] = firstCollision;
     begin();
     std::vector<double> collision;
+    QJsonArray collisionRows;
     for (int i = 0; i < 81; ++i) {
+      const auto beforeFrame=session.frame();
+      const auto buildsBefore=modelGpuGeometryBuildCount();
       const auto start = Clock::now();
       session.setCollisionMode((i + 1) % 3);
       ready();
       collision.push_back(milliseconds(presented() - start));
+      collisionRows.append(residencyRow(i,beforeFrame,buildsBefore));
     }
     const auto collisionResult = finish(collision);
     evidence["resident_collision"] = collisionResult;
+    evidence["resident_collision_rows"] = collisionRows;
     evidence["collision_boundary"] = "Explicit session-only correction of an actual source mesh; hidden/overlay/collision-only. This source is not claimed to contain exported collision.";
     if (collisionResult.value("command_to_swap").toObject().value("p95_ms").toDouble() > 100)
       throw std::runtime_error("Resident collision switch exceeds 100 ms P95");
-    if (collisionResult.value("uploaded_bytes").toInteger() != 0 ||
-        collisionResult.value("resident_hits").toInteger() < 80)
-      throw std::runtime_error("Warm collision result must reuse resident GPU buffers");
+    verifyResidency(collisionResult,collisionRows);
     session.restoreClassification();
     session.setCollisionMode(0);
     ready();
@@ -322,7 +426,7 @@ int main(int argc, char **argv) {
       session.clear();
       presented();
       std::lock_guard guard(shared.mutex);
-      if (shared.last.owned_gpu_bytes > 80)
+      if (shared.last.owned_gpu_bytes > formaview::render::renderer_uniform_bytes)
         throw std::runtime_error(
             "Geometry/texture resources retained after clear");
       release.append(QJsonObject{

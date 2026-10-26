@@ -1278,6 +1278,9 @@ void ModelSession::clearSelection() {
   emit selectionChanged();
 }
 void ModelSession::clear() {
+  reset(false);
+}
+void ModelSession::reset(bool opening) {
   ++generation_;
   ++frameRequest_;
   ++poseRequest_;
@@ -1330,7 +1333,9 @@ void ModelSession::clear() {
   highlightedNode_.clear();
   skeletonJoint_ = -1;
   frame_.reset();
-  busy_ = false;
+  // Opening is one transaction. Publishing an intermediate idle/empty state
+  // destroys the preview Loader and recreates its entire UI on every file.
+  busy_ = opening;
   path_.clear();
   referencePath_.clear();
   companionPath_.clear();
@@ -1428,10 +1433,14 @@ void ModelSession::setAnimationCompanion(const QString &companion) {
     openInputs(path_, referencePath_, QUrl(companion).isLocalFile() ? QUrl(companion).toLocalFile() : companion);
 }
 void ModelSession::openInputs(QString p, QString reference, QString companion) {
+  if (p.isEmpty()) {
+    clear();
+    return;
+  }
   // An open/repair transaction while playing resumes playback on the new
   // document landing; an explicit clear/close does not.
   resumePlaybackOnLanding_ = playing_;
-  clear();
+  reset(true);
   path_ = p;
   referencePath_ = reference;
   companionPath_ = companion;

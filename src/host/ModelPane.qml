@@ -19,6 +19,21 @@ Rectangle {
     property bool showAxes: true
     property bool wireframe: false
     property var uvCamera: ({})
+    Connections {
+        target: root.session
+        function onDocumentChanged() {
+            if (root.session.path !== "") return
+            // The pane survives model opens; preserve the fresh-document defaults.
+            root.showUV = true
+            root.showCompare = false
+            root.showGrid = true
+            root.showAxes = true
+            root.wireframe = false
+            root.uvCamera = ({})
+            externalDialog.close()
+            compareDialog.close()
+        }
+    }
     color: Theme.base
     function addExternalAnimation(): void {
         if (root.session.canAttachExternalAnimation && !root.session.busy && !root.session.externalBusy) externalDialog.open()

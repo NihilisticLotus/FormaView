@@ -4,6 +4,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <imm.h>
+#pragma comment(lib,"imm32.lib")
 #include <psapi.h>
 #include <wct.h>
 #pragma comment(lib,"advapi32.lib")
@@ -35,6 +37,11 @@
 #include <QtGui/private/qrhid3d11_p.h>
 using namespace formaview::render;
 namespace {
+bool sogouPyObserved{}, sogouTsfObserved{};
+void observeImeModules() {
+  sogouPyObserved |= GetModuleHandleW(L"SogouPY.ime") != nullptr;
+  sogouTsfObserved |= GetModuleHandleW(L"SogouTSF.ime") != nullptr;
+}
 void require(bool value,const char *message) { if(!value)throw std::runtime_error(message); }
 void settle(const std::function<bool()> &ready,int timeout=60000) {
   QElapsedTimer t;t.start();while(!ready() && t.elapsed()<timeout){QCoreApplication::processEvents();QThread::msleep(1);} require(ready(),"Timeout");
@@ -52,6 +59,7 @@ std::vector<float> read(const std::shared_ptr<const Frame> &frame,int mode) {
   item->readback=[s](QByteArray bytes,QSize size){s->data=std::move(bytes);s->size=size;s->done=true;};
   item->skinFailure=[s](QString message,std::shared_ptr<const Frame>){s->error=message;s->done=true;};
   item->setFrame(frame);window.show();settle([&]{return s->done.load();},10000);
+  observeImeModules();
   require(s->error.isEmpty(),qPrintable(s->error));require(s->data.size()==static_cast<qsizetype>(count*16),"Readback shape");
   std::vector<float> values(count*4);std::memcpy(values.data(),s->data.constData(),values.size()*4);
   item.reset();window.hide();window.releaseResources();QCoreApplication::processEvents();return values;
@@ -291,13 +299,20 @@ QJsonObject usageRow(const QString &label,qint64 ms,std::uint64_t owned,std::uin
   DWORD handles=0;GetProcessHandleCount(GetCurrentProcess(),&handles);
   return {{"label",label},{"ms",ms},{"privateBytes",static_cast<qint64>(counters.PrivateUsage)},{"workingSetBytes",static_cast<qint64>(counters.WorkingSetSize)},{"handles",static_cast<int>(handles)},{"ownedGpuBytes",static_cast<qint64>(owned)},{"processGpuBytes",static_cast<qint64>(processGpu)},{"releases",static_cast<qint64>(releases)}};
 }
-double percentile(std::vector<double> v,double p) {if(v.empty())return -1;std::sort(v.begin(),v.end());return v[static_cast<std::size_t>(std::ceil(p*static_cast<double>(v.size()-1)))];}
+double percentile(std::vector<double> v,double p) {if(v.empty())return -1;std::sort(v.begin(),v.end());return v[static_cast<std::size_t>(std::ceil(p*static_cast<double>(v.size())))-1];}
 }
 int main(int argc,char **argv) {
+  // Opt-in diagnostic isolation only: no keyboard input is tested in numerical
+  // readback. This affects this GUI thread, never the user's system IME settings.
+  const bool isolateIme=qEnvironmentVariable("FORMAVIEW_TEST_NO_IME")=="1";
+  const bool imeDisabled=isolateIme && ImmDisableIME(GetCurrentThreadId());
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
   model_forensics::Application app(argc,argv);const auto args=app.arguments();
   if(args.size()<3){std::cerr<<"model_gpu_tests SAMPLE OUTPUT.json [seconds] [cpu|numeric]";return 2;}
-  QJsonObject report;try {
+  observeImeModules();
+  QJsonObject report{{"percentileConvention","nearest-rank ceil(p*n)-1; no interpolation"},
+    {"imeIsolationRequested",isolateIme},{"imeDisabledForGuiThread",imeDisabled}};try {
+    require(!isolateIme || imeDisabled,"IME diagnostic isolation failed");
     const auto path=args[1];const double duration=args.size()>3?args[3].toDouble():10;
     const auto mode=args.size()>4?args[4]:QString("gpu");report["mode"]=mode;report["sample"]=path;
     const auto externals=qEnvironmentVariable("FORMAVIEW_GPU_EXTERNALS").split(';',Qt::SkipEmptyParts);report["externals"]=QJsonArray::fromStringList(externals);
@@ -358,12 +373,20 @@ int main(int argc,char **argv) {
       auto live=std::make_shared<Live>();
       ModelSession session;QQuickWindow window;window.setTitle("FormaView GPU lifecycle");window.resize(1280,720);
       const bool foreground=qEnvironmentVariable("FORMAVIEW_PERF_FOREGROUND")=="1";report["foregroundCondition"]=foreground;
+      const bool background=qEnvironmentVariable("FORMAVIEW_PERF_BACKGROUND")=="1";
+      require(!(foreground && background),"Conflicting foreground/background conditions");
+      report["backgroundCondition"]=background;
+      if(background)report["backgroundKind"]="Visible focus-disabled window; occlusion/minimization not controlled";
+      if(background)window.setFlag(Qt::WindowDoesNotAcceptFocus);
       if(foreground)window.setFlag(Qt::WindowStaysOnTopHint);
       auto item=std::make_unique<ModelView>(window.contentItem());item->setSize({1280,720});item->setSession(&session);
+      item->setFixedColorBufferWidth(1920);item->setFixedColorBufferHeight(1080);
+      report["fixedColorBufferPixels"]=QJsonArray{1920,1080};
       item->observe=[live](Observation o){live->renderBeat=beatNow();live->renderThread=GetCurrentThreadId();std::lock_guard lock(live->mutex);if(o.released){++live->releases;live->owned=0;return;}live->owned=o.owned_gpu_bytes;live->process=o.process_gpu_bytes;live->revision=o.frame_revision;live->latestClip=o.clip;live->latestSeconds=o.seconds;live->gpu=o.gpu_skinning;live->uploadedMax=std::max(live->uploadedMax,o.uploaded_bytes);if(live->origin.time_since_epoch().count() && (o.prepare_ms>3 || o.record_ms>3 || o.uploaded_bytes>100000))live->heavy.push_back({std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-live->origin).count(),o.prepare_ms,o.record_ms,static_cast<double>(o.uploaded_bytes),o.gpu_skinning?1.:0.});};
       QObject::connect(&window,&QQuickWindow::frameSwapped,&window,[live]{std::lock_guard lock(live->mutex);const auto now=std::chrono::steady_clock::now();++live->swaps;const bool timed=live->origin.time_since_epoch().count()>0;const double at=timed?std::chrono::duration<double,std::milli>(now-live->origin).count():0;if(live->last.time_since_epoch().count()){const double gap=std::chrono::duration<double,std::milli>(now-live->last).count();live->intervals.push_back(gap);if(timed && gap>50)live->slow.push_back({at,gap});}if(timed){live->swapTimes.push_back(at);if(live->forensic){if(live->presents.size()<live->presents.capacity())live->presents.push_back({at,live->latestSeconds,live->revision,live->latestClip});else ++live->presentOverflow;}}live->last=now;},Qt::DirectConnection);
       QJsonArray rows;QElapsedTimer total;total.start();
-      const auto sample=[&](const QString &label){std::lock_guard lock(live->mutex);rows.append(usageRow(label,total.elapsed(),live->owned,live->process,live->releases));};
+      const auto saveRows=qScopeGuard([&]{report["rows"]=rows;});
+      const auto sample=[&](const QString &label){std::lock_guard lock(live->mutex);auto row=usageRow(label,total.elapsed(),live->owned,live->process,live->releases);row["active"]=window.isActive();row["exposed"]=window.isExposed();row["nativeForeground"]=GetForegroundWindow()==reinterpret_cast<HWND>(window.winId());row["dpr"]=window.devicePixelRatio();row["refreshHz"]=window.screen()?window.screen()->refreshRate():0.;row["effectiveWidth"]=item?item->effectiveColorBufferSize().width():0;row["effectiveHeight"]=item?item->effectiveColorBufferSize().height():0;rows.append(row);};
       const auto pause=[&](int ms){QElapsedTimer t;t.start();while(t.elapsed()<ms){QCoreApplication::processEvents();QThread::msleep(1);}};
       const auto load=[&]{openSample(session,path,externals);settle([&]{return !session.busy() && session.inspectable() && session.frame() && bool(session.frame()->geometry);},90000);};
       const auto liveGpu=[&]{std::lock_guard lock(live->mutex);return live->gpu;};
@@ -611,6 +634,28 @@ int main(int argc,char **argv) {
         require(visibleP95<=50.0,qPrintable("LOD input feedback P95 "+QString::number(visibleP95,'f',1)+" ms > 50 ms"));
       } else if(phase=="soak") {
         load();session.setLoop(true);session.togglePlay();
+        // A foreground soak must stay foreground; a completed process alone
+        // does not validate that condition. Activate once, never steal it back.
+        const auto hwnd=reinterpret_cast<HWND>(window.winId());
+        if(foreground) {
+          const DWORD foregroundThread=GetWindowThreadProcessId(GetForegroundWindow(),nullptr);
+          const bool attached=foregroundThread && foregroundThread!=GetCurrentThreadId()
+            && AttachThreadInput(GetCurrentThreadId(),foregroundThread,TRUE);
+          window.raise();window.requestActivate();BringWindowToTop(hwnd);
+          const bool activated=SetForegroundWindow(hwnd);
+          if(attached)AttachThreadInput(GetCurrentThreadId(),foregroundThread,FALSE);
+          pause(300);
+          report["foregroundActivation"]=QJsonObject{{"attachSucceeded",attached},{"setForegroundSucceeded",activated},
+            {"active",window.isActive()},{"exposed",window.isExposed()},{"nativeForeground",GetForegroundWindow()==hwnd}};
+          require(window.isActive() && window.isExposed() && GetForegroundWindow()==hwnd,"Foreground soak could not acquire initial focus");
+        }
+        bool foregroundHeld=true;
+        const bool focusLossControl=qEnvironmentVariable("FORMAVIEW_SOAK_FOCUS_LOSS_CONTROL")=="1";
+        report["focusLossControl"]=focusLossControl;
+        if(focusLossControl) {
+          require(foreground && duration>=10,"Focus-loss control requires a foreground soak of at least 10 seconds");
+          QTimer::singleShot(5000,&window,&QWindow::hide);
+        }
         const auto clips=static_cast<int>(session.clips().size());const int rotate=std::max(1,std::min(clips,8));
         QElapsedTimer run;run.start();qint64 nextSample=0,nextClip=10000,nextSpeed=20000,nextLock=30000;int tick=0;bool rootLocked=false;
         const double speeds[]={1.0,2.0,.5,1.0};
@@ -677,9 +722,12 @@ int main(int argc,char **argv) {
           if(pumped>20)events.append(QJsonObject{{"ms",pumpStart},{"type","processEvents"},{"callMs",pumped}});
           QThread::msleep(2);
           const auto now=run.elapsed();
+          if(foreground && (!window.isActive() || !window.isExposed() || GetForegroundWindow()!=hwnd)) {
+            foregroundHeld=false;report["foregroundLostAtMs"]=now;sample("soak focus lost");break;
+          }
           if(stimulus&&now>=nextStimulus){
             const UINT messages[]={WM_GETTEXTLENGTH,WM_NCHITTEST,WM_THEMECHANGED};
-            const auto message=messages[stimulusIndex++%3];const auto hwnd=reinterpret_cast<HWND>(window.winId());
+            const auto message=messages[stimulusIndex++%3];
             POINT point{10,10};ClientToScreen(hwnd,&point);
             timedAction("controlledNativeMessage",[&]{SendMessageW(hwnd,message,0,message==WM_NCHITTEST?MAKELPARAM(point.x,point.y):0);});
             nextStimulus+=5000;
@@ -713,7 +761,11 @@ int main(int argc,char **argv) {
             forensic["presentOverflow"]=static_cast<qint64>(live->presentOverflow);report["forensics"]=forensic;}
         }
         require(liveGpu(),"Soak ended off the GPU path");
+        report["measuredDurationMs"]=run.elapsed();
+        report["foregroundConditionHeld"]=foreground ? QJsonValue(foregroundHeld) : QJsonValue(QJsonValue::Null);
+        report["foregroundObservationBoundary"]="Checked after every GUI event pump; one initial activation only; abort on observed focus/exposure loss, without stitching intervals";
         session.clear();pause(500);sample("cleared");
+        require(foregroundHeld,"Foreground soak lost focus or exposure; partial run is not a completed foreground soak");
       } else if(phase=="exit") {
         // True process exit with a load in flight: the report is written
         // first, then the branch-scope objects (view, window, session) are
@@ -1006,6 +1058,11 @@ int main(int argc,char **argv) {
       ModelSession session;QQuickWindow window;window.setTitle("FormaView Dasheng GPU performance");window.resize(1920,1080);
       // Diagnostic condition only: foreground viewing, to separate OS background throttling from app cost.
       const bool foreground=qEnvironmentVariable("FORMAVIEW_PERF_FOREGROUND")=="1";report["foregroundCondition"]=foreground;
+      const bool background=qEnvironmentVariable("FORMAVIEW_PERF_BACKGROUND")=="1";
+      require(!(foreground && background),"Conflicting foreground/background conditions");
+      report["backgroundCondition"]=background;
+      if(background)report["backgroundKind"]="Visible focus-disabled window; occlusion/minimization not controlled";
+      if(background)window.setFlag(Qt::WindowDoesNotAcceptFocus);
       if(foreground)window.setFlag(Qt::WindowStaysOnTopHint);
       auto item=std::make_unique<ModelView>(window.contentItem());item->setSize({1920,1080});item->setSession(&session);
       struct Metrics {std::mutex mutex;std::vector<double> intervals,gpu,prepare,poseTimes,swapTimes;std::vector<std::uint64_t> uploads;std::uint64_t latest{},presented{},swapped{},ownedMax{},processMax{};std::chrono::steady_clock::time_point previous{},swapTime{},measureStart{};bool measuring{};};auto m=std::make_shared<Metrics>();
@@ -1022,18 +1079,49 @@ int main(int argc,char **argv) {
       item->fit();auto camera=item->cameraState();camera["automatic"]=false;item->restoreCamera(camera);
       report["gpuGeometry"]=bool(session.frame()->geometry);
       if(mode=="gpu") {
-        const auto command=[&](const std::function<void()> &action) {
-          const auto start=std::chrono::steady_clock::now();action();const auto target=session.frame()->revision;
-          settle([&]{std::lock_guard lock(m->mutex);return m->swapped>=target;},10000);
-          std::lock_guard lock(m->mutex);return std::chrono::duration<double,std::milli>(m->swapTime-start).count();
+        if(foreground){window.raise();window.requestActivate();}
+        const auto windowInfo=[&]{return QJsonObject{
+          {"active",window.isActive()},{"exposed",window.isExposed()},
+          {"dpr",window.devicePixelRatio()},
+          {"bufferWidth",item->effectiveColorBufferSize().width()},
+          {"bufferHeight",item->effectiveColorBufferSize().height()}};};
+        const auto condition=[&](const QJsonObject &row){return row["exposed"].toBool() &&
+          (!foreground || row["active"].toBool()) && (!background || !row["active"].toBool());};
+        settle([&]{const auto row=windowInfo();std::lock_guard lock(m->mutex);
+          return condition(row) && row["bufferWidth"].toInt()==1920 && row["bufferHeight"].toInt()==1080 &&
+                 m->swapped>=session.frame()->revision;},10000);
+        QJsonArray commandRows;
+        const auto command=[&](const char *label,const std::function<void()> &action) {
+          const auto beginWindow=windowInfo();
+          const auto before=session.frame()->revision;
+          const auto start=std::chrono::steady_clock::now();action();
+          try {settle([&]{return session.frame() && session.frame()->revision>before;},10000);}
+          catch(const std::exception &e){throw std::runtime_error(std::string(label)+" revision: "+e.what());}
+          const auto target=session.frame()->revision;
+          try {settle([&]{std::lock_guard lock(m->mutex);return m->swapped>=target && m->swapTime>=start;},10000);}
+          catch(const std::exception &e){throw std::runtime_error(std::string(label)+" swap: "+e.what());}
+          double latency;{std::lock_guard lock(m->mutex);latency=std::chrono::duration<double,std::milli>(m->swapTime-start).count();}
+          const auto endWindow=windowInfo();
+          commandRows.append(QJsonObject{{"action",label},{"ms",latency},
+            {"beforeRevision",static_cast<qint64>(before)},{"targetRevision",static_cast<qint64>(target)},
+            {"beginWindow",beginWindow},{"endWindow",endWindow}});
+          report["commandRows"]=commandRows;
+          require(condition(beginWindow) && condition(endWindow),"Command window condition not met");
+          return latency;
         };
         std::vector<double> seeks,rootLatencies,clipLatencies;
-        for(int i=0;i<30;++i) {
-          seeks.push_back(command([&]{const auto info=session.clipInfo();session.seek(info.value("start").toDouble()+(info.value("end").toDouble()-info.value("start").toDouble())*((i%7)/7.0));}));
-          rootLatencies.push_back(command([&]{session.setRootLock(i%2==0?false:true);}));
-          clipLatencies.push_back(command([&]{session.setClipIndex(i%2==0?(clip==0?1:0):clip);}));
+        for(int i=0;i<100;++i) {
+          seeks.push_back(command("seek",[&]{const auto info=session.clipInfo();session.seek(info.value("start").toDouble()+(info.value("end").toDouble()-info.value("start").toDouble())*((i%7)/7.0));}));
+          rootLatencies.push_back(command("rootLock",[&]{session.setRootLock(i%2==0?false:true);}));
+          if(session.clips().size()>1)
+            clipLatencies.push_back(command("clip",[&]{session.setClipIndex(i%2==0?(clip==0?1:0):clip);}));
         }
         report["seekP95Ms"]=percentile(seeks,.95);report["rootLockP95Ms"]=percentile(rootLatencies,.95);report["residentClipP95Ms"]=percentile(clipLatencies,.95);
+        const auto raw=[](const std::vector<double> &values){QJsonArray rows;for(double value:values)rows.append(value);return rows;};
+        report["seekSamplesMs"]=raw(seeks);report["rootLockSamplesMs"]=raw(rootLatencies);report["residentClipSamplesMs"]=raw(clipLatencies);
+        report["clipCount"]=session.clips().size();
+        if(clipLatencies.empty())report["residentClipExcludedReason"]="Source has only one clip; no action-switch latency measured";
+        if(clipLatencies.empty())report["residentClipP95Ms"]=QJsonValue(QJsonValue::Null);
         session.setClipIndex(clip);session.setRootLock(true);
       }
       session.setLoop(true);session.togglePlay();QElapsedTimer warm;warm.start();settle([&]{return warm.elapsed()>=5000;},10000);
@@ -1052,5 +1140,8 @@ int main(int argc,char **argv) {
     }
     report["passed"]=true;report["passedMeaning"]="Execution and applicable correctness assertions; performance gate is frameTimeGatePassed";
   }catch(const std::exception &e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());std::cerr<<e.what()<<std::endl;}
+  observeImeModules();
+  report["sogouPyObserved"]=sogouPyObserved;report["sogouTsfObserved"]=sogouTsfObserved;
+  report["imeModuleObservationBoundary"]="Module presence sampled after app construction, each numerical readback, and before report output";
   QFile file(args[2]);if(!file.open(QIODevice::WriteOnly))return 3;file.write(QJsonDocument(report).toJson());return report["passed"].toBool()?0:1;
 }

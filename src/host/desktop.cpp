@@ -175,6 +175,7 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
   }
   recent_ = settings.value("recent").toStringList().mid(0, 20);
   pollTimer_.setInterval(30);
+  pollTimer_.setObjectName("desktopJobPoll");
   connect(&pollTimer_, &QTimer::timeout, this, &Desktop::poll);
   pollTimer_.start();
 }

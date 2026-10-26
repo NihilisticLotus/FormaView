@@ -32,6 +32,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLocalSocket>
 #include <QMimeData>
 #include <QMetaProperty>
@@ -55,6 +56,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <thread>
 namespace {
 bool workflowHeadless() {
@@ -88,10 +90,16 @@ public:
   double maxEventMs{};
   int events{}, over100ms{};
   QJsonArray slowEvents;
+  qint64 nativeDownNs{};
   bool notify(QObject *receiver, QEvent *event) override {
     if (QThread::currentThread() != thread() || !measure)
       return QGuiApplication::notify(receiver, event);
     const auto started = std::chrono::steady_clock::now();
+    const auto eventType = static_cast<int>(event->type());
+    const QPointer<QObject> guardedReceiver(receiver);
+    if (!nativeDownNs && event->type()==QEvent::KeyPress &&
+        static_cast<QKeyEvent *>(event)->key()==Qt::Key_Down)
+      nativeDownNs=std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count();
     const auto result = QGuiApplication::notify(receiver, event);
     const auto ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - started)
@@ -101,7 +109,11 @@ public:
     if (ms > 100)
       ++over100ms;
     if (ms > 10) {
-      const QJsonObject sample{{"ms",ms},{"type",static_cast<int>(event->type())},{"receiver",receiver->metaObject()->className()},{"object",receiver->objectName()}};
+      // DeferredDelete and event handlers may destroy their receiver. The
+      // diagnostic must not dereference it (or the event) after dispatch.
+      const QJsonObject sample{{"ms",ms},{"type",eventType},
+        {"receiver",guardedReceiver ? guardedReceiver->metaObject()->className() : "<destroyed>"},
+        {"object",guardedReceiver ? guardedReceiver->objectName() : QString{}}};
       if(slowEvents.size()<128) slowEvents.append(sample);
       else {
         int smallest=0;
@@ -4498,7 +4510,7 @@ private slots:
     bool pending = false, ready = false, native = false;
     int expected = -1;
     quint64 sequence = 0;
-    std::atomic<quint64> changed{0}, synchronized{0};
+    std::atomic<quint64> changed{0}, synchronized{0}, swapped{0};
     auto started = std::chrono::steady_clock::now();
     std::vector<double> cacheTimes, inputTimes;
     auto mark = [&] {
@@ -4514,10 +4526,13 @@ private slots:
     const auto synced = connect(
         window_, &QQuickWindow::afterSynchronizing, window_,
         [&] { synchronized.store(changed.load()); }, Qt::DirectConnection);
+    const auto directlySwapped = connect(
+        window_, &QQuickWindow::frameSwapped, window_,
+        [&] { swapped.store(synchronized.load()); }, Qt::DirectConnection);
     const auto frame = connect(
         window_, &QQuickWindow::frameSwapped, this,
         [&] {
-          if (pending && synchronized.load() == sequence) {
+          if (pending && swapped.load() == sequence) {
             (native ? inputTimes : cacheTimes)
                 .push_back(std::chrono::duration<double, std::milli>(
                                std::chrono::steady_clock::now() - started)
@@ -4532,6 +4547,7 @@ private slots:
       disconnect(loaded);
       disconnect(display);
       disconnect(synced);
+      disconnect(directlySwapped);
       disconnect(frame);
     });
     int cacheOverlap = 0, inputOverlap = 0;
@@ -4596,9 +4612,13 @@ private slots:
       QVERIFY2(ready, "Image change did not reach a synchronized frame");
     }
     const auto summarize = [](std::vector<double> values) {
+      QJsonArray raw;
+      for (const auto value : values)
+        raw.append(value);
       std::sort(values.begin(), values.end());
       return QJsonObject{
           {"samples", static_cast<int>(values.size())},
+          {"samples_ms", raw},
           {"p95_ms",
            values[static_cast<std::size_t>(std::ceil(values.size() * .95)) -
                   1]},
@@ -4660,8 +4680,27 @@ private slots:
         &decoded, {});
     QVERIFY(invalid.isNull());
   }
+  void measuredDeferredDeleteIsSafe() {
+    struct SlowDelete final : QObject { ~SlowDelete() override { QThread::msleep(12); } };
+    auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    const auto wasMeasuring=measured->measure;
+    const auto restore=qScopeGuard([&] { measured->measure=wasMeasuring; });
+    measured->slowEvents={};
+    measured->measure=true;
+    QPointer<QObject> object=new SlowDelete;
+    object->deleteLater();
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+    QVERIFY(object.isNull());
+    QVERIFY(std::any_of(measured->slowEvents.begin(),measured->slowEvents.end(),[](const auto &value) {
+      const auto row=value.toObject();
+      return row.value("type").toInt()==QEvent::DeferredDelete && row.value("receiver")=="<destroyed>";
+    }));
+  }
   void nativeInputPerformance() {
 #ifdef Q_OS_WIN
+    const auto rescanText=qEnvironmentVariable("FORMAVIEW_NATIVE_RESCANS");
+    const int rescans=rescanText.isEmpty()?8:rescanText.toInt();
+    QVERIFY(rescans==0 || rescans==1 || rescans==8);
     auto *workspace = item("workspace");
     QVERIFY(workspace);
     workspace->setProperty("tasksVisible", false);
@@ -4708,12 +4747,17 @@ private slots:
     const auto stopMeasurement =
         qScopeGuard([measured] { measured->measure = false; });
     std::vector<double> samples;
+    QJsonArray stageRows;
     auto pending = false;
     auto frameReady = false;
     auto previous = -1;
     std::atomic<quint64> changed{0}, synchronized{0};
     quint64 sequence{};
     using Clock = std::chrono::steady_clock;
+    const auto nowNs=[] {return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();};
+    struct FeedbackTimes {std::mutex mutex;quint64 expected{};qint64 syncNs{},swapNs{},selectNs{};};
+    const auto feedback=std::make_shared<FeedbackTimes>();
+    bool beginActive{},beginExposed{};
     auto start = Clock::now();
     QEventLoop feedbackLoop;
     QTimer feedbackTimeout;
@@ -4722,19 +4766,40 @@ private slots:
             &QEventLoop::quit);
     auto stateConnection =
         connect(desktop_.get(), &Desktop::changed, this, [&] {
-          if (pending && desktop_->currentIndex() != previous)
+          if (pending && desktop_->currentIndex() != previous) {
+            std::lock_guard guard(feedback->mutex);
+            if(!feedback->selectNs)feedback->selectNs=nowNs();
             changed.store(sequence);
+          }
         });
     auto syncConnection = connect(
         window_, &QQuickWindow::afterSynchronizing, window_,
-        [&] { synchronized.store(changed.load()); }, Qt::DirectConnection);
+        [&] { const auto value=changed.load();synchronized.store(value);
+          std::lock_guard guard(feedback->mutex);
+          if(value && value==feedback->expected && !feedback->syncNs)feedback->syncNs=nowNs();
+        }, Qt::DirectConnection);
+    const auto directSwapConnection=connect(window_,&QQuickWindow::frameSwapped,window_,[&] {
+      std::lock_guard guard(feedback->mutex);
+      if(feedback->expected && synchronized.load()==feedback->expected && !feedback->swapNs)feedback->swapNs=nowNs();
+    },Qt::DirectConnection);
     auto connection = connect(
         window_, &QQuickWindow::frameSwapped, this,
         [&] {
           if (pending && synchronized.load() == sequence) {
+            std::lock_guard feedbackGuard(feedback->mutex);
+            // A queued notification for an older frame can arrive after the
+            // next generation synchronizes. Require its actual matching swap.
+            if(!feedback->swapNs)return;
             samples.push_back(
                 std::chrono::duration<double, std::milli>(Clock::now() - start)
                     .count());
+            const auto base=std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
+            const auto offset=[&](qint64 stamp){return stamp?QJsonValue(double(stamp-base)/1e6):QJsonValue(QJsonValue::Null);};
+            stageRows.append(QJsonObject{{"iteration",static_cast<int>(sequence)-1},
+              {"dispatch_ms",offset(measured->nativeDownNs)}, {"selection_ms",offset(feedback->selectNs)},
+              {"synchronized_ms",offset(feedback->syncNs)}, {"swap_signal_ms",offset(feedback->swapNs)},
+              {"gui_callback_ms",samples.back()}, {"active_begin",beginActive},{"active_end",window_->isActive()},
+              {"exposed_begin",beginExposed},{"exposed_end",window_->isExposed()}});
             pending = false;
             frameReady = true;
             feedbackLoop.quit();
@@ -4745,15 +4810,19 @@ private slots:
       disconnect(connection);
       disconnect(syncConnection);
       disconnect(stateConnection);
+      disconnect(directSwapConnection);
     });
     // Native OS injection to QML selection repaint, not event-loop timer
     // latency.
     for (auto i = 0; i < 160; ++i) {
-      if (i % 20 == 0)
+      if (rescans && i % (160/rescans) == 0)
         desktop_->refresh();
       previous = desktop_->currentIndex();
       frameReady = false;
       ++sequence;
+      measured->nativeDownNs=0;
+      {std::lock_guard guard(feedback->mutex);feedback->selectNs=0;feedback->syncNs=0;feedback->swapNs=0;feedback->expected=sequence;}
+      beginActive=window_->isActive();beginExposed=window_->isExposed();
       start = Clock::now();
       pending = true;
       INPUT events[2]{};
@@ -4784,6 +4853,10 @@ private slots:
     disconnect(connection);
     disconnect(syncConnection);
     disconnect(stateConnection);
+    disconnect(directSwapConnection);
+    QJsonArray rawSamples;
+    for (const auto value : samples)
+      rawSamples.append(value);
     std::sort(samples.begin(), samples.end());
     const auto percentile = [&](double p) {
       return samples[static_cast<size_t>(
@@ -4792,12 +4865,15 @@ private slots:
     };
     evidence_["native_input"] = QJsonObject{
         {"samples", static_cast<int>(samples.size())},
+        {"samples_ms", rawSamples},
+        {"rescan_requests", rescans},
+        {"stage_rows", stageRows},
         {"p95_ms", percentile(.95)},
         {"p99_ms", percentile(.99)},
         {"max_ms", samples.back()},
         {"boundary",
          "SendInput start to frameSwapped queued notification after selection "
-         "generation synchronized; 8 concurrent directory rescans; includes "
+         "generation synchronized; configured rescan requests scheduled across 160 inputs; includes "
          "GUI callback delivery; not GPU presentation timestamp"}};
     evidence_["main_thread_events"] = QJsonObject{
         {"observations", measured->events},
@@ -4816,6 +4892,64 @@ private slots:
 #endif
   }
 #ifdef FORMAVIEW_MODEL_UI
+  void modelOpenKeepsPreviewPane() {
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    // Fixture contract: readable OBJ markers with no geometry, so parsing fails.
+    for (int i = 0; i < 2; ++i) {
+      QFile marker(fixture_ + QString("/asset%1.obj").arg(i));
+      QVERIFY(marker.open(QIODevice::ReadOnly));
+      QCOMPARE(marker.readAll(), QByteArray("# metadata test\n"));
+    }
+    desktop_->openPath(fixture_ + "/asset0.obj");
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 10000);
+    const QPointer<QQuickItem> pane = item("modelPane");
+    QVERIFY(pane);
+    auto *view = window_->findChild<ModelView *>("modelViewport");
+    QVERIFY(view);
+    for (int i = 0; i < 10; ++i) {
+      const auto path = fixture_ + QString("/asset%1.obj").arg(i % 2);
+      pane->setProperty("wireframe", true);
+      pane->setProperty("showGrid", false);
+      pane->setProperty("showAxes", false);
+      pane->setProperty("showUV", false);
+      view->orbit(20, 10);
+      view->zoomBy(2);
+      session->open(path);
+      QVERIFY(session->busy());
+      QVERIFY2(pane, "A new model open must not destroy the preview during reset");
+      QCOMPARE(item("modelPane"), pane.data());
+      QVERIFY(!pane->property("wireframe").toBool());
+      QVERIFY(pane->property("showGrid").toBool());
+      QVERIFY(pane->property("showAxes").toBool());
+      QVERIFY(pane->property("showUV").toBool());
+      QVERIFY(view->cameraState().value("automatic").toBool());
+      QCOMPARE(view->cameraState().value("yaw").toDouble(), 25.0);
+      QCOMPARE(session->path(), path);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 10000);
+      QCOMPARE(item("modelPane"), pane.data());
+    }
+    const QString sampleRoot = "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/";
+    for (const auto &name : {QString("Suzanne.psk"), QString("CS_Sarge_S0_Skelmesh.pskx")}) {
+      view->panBy(20, 10);
+      view->zoomBy(2);
+      session->open(sampleRoot + name);
+      QVERIFY(session->busy());
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+      QVERIFY(session->error().isEmpty());
+      QCOMPARE(item("modelPane"), pane.data());
+      QVERIFY(view->cameraState().value("automatic").toBool());
+      QCOMPARE(view->cameraState().value("yaw").toDouble(), 25.0);
+    }
+    session->clear();
+    QTRY_VERIFY(pane.isNull());
+    session->open(sampleRoot + "Suzanne.psk");
+    QVERIFY(session->busy());
+    session->open(QString{});
+    QVERIFY(!session->busy() && !session->available() && session->path().isEmpty());
+    QTest::qWait(100);
+    QVERIFY(!session->busy() && !session->available() && session->path().isEmpty());
+  }
   void modelFocusRestoreRails() {
     const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
@@ -5341,14 +5475,19 @@ private slots:
     QTest::keyClick(window_,Qt::Key_Return);
     QTRY_COMPARE(session->collisionMode(),2);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
-    QVERIFY(session->frame()->vertices.empty()); // No source collision: never invent PhysicsAsset.
+    const auto hasDrawnGeometry = [&] {
+      const auto frame=session->frame();
+      return frame->geometry ? std::any_of(frame->draws.begin(),frame->draws.end(),
+          [](const auto &draw) { return draw.count > 0; }) : !frame->vertices.empty();
+    };
+    QVERIFY(!hasDrawnGeometry()); // No source collision: never invent PhysicsAsset.
     save("lod-native-no-exported-collision");
     session->setCollisionMode(0);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
     click("modelLodLevel0");
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->lodLevels()[0].toMap().value("current").toBool(),10000);
     QVERIFY(session->frame()!=levelFrame);
-    QVERIFY(!session->frame()->vertices.empty());
+    QVERIFY(hasDrawnGeometry());
     evidence_["lod_native_flow"]=QJsonObject{{"source",path},{"info",QJsonObject::fromVariantMap(session->info())},{"levels",QJsonArray::fromVariantList(session->lodLevels())},{"boundary","Actual QML buttons/ComboBox driven by Qt window mouse/key events; not OS input latency."}};
     desktop_->clearAsset();
   }
@@ -5447,9 +5586,10 @@ private slots:
       samples.push_back(double(telemetrySignals->swapNs.load()-startNs)/1e6);
     }
     QTRY_COMPARE_WITH_TIMEOUT(service->job().value("state").toString(),QString("succeeded"),30000);
+    QJsonArray rawSamples;for(const auto value:samples)rawSamples.append(value);
     std::sort(samples.begin(),samples.end());
     const auto p95=samples[227],p99=samples[237];
-    evidence_["model_mixed_queue"]=QJsonObject{{"samples",240},{"while_job_active",concurrent},{"p95_ms",p95},{"p99_ms",p99},{"max_ms",samples.back()},{"max_main_thread_event_ms",measured->maxEventMs},{"main_thread_over_100ms",measured->over100ms},{"job",QJsonObject::fromVariantMap(service->job())},{"boundary","Qt camera command to first frameSwapped after matching synchronization; actual image conversion queue; not OS input or physical display presentation."}};
+    evidence_["model_mixed_queue"]=QJsonObject{{"samples",240},{"samples_ms",rawSamples},{"while_job_active",concurrent},{"p95_ms",p95},{"p99_ms",p99},{"max_ms",samples.back()},{"max_main_thread_event_ms",measured->maxEventMs},{"main_thread_over_100ms",measured->over100ms},{"job",QJsonObject::fromVariantMap(service->job())},{"boundary","Qt camera command to first frameSwapped after matching synchronization; actual image conversion queue; not OS input or physical display presentation."}};
     QVERIFY(concurrent>=30); QVERIFY(p95<=50 && p99<=100); QCOMPARE(measured->over100ms,0);
     desktop_->clearAsset();
 #endif

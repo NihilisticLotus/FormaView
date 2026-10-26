@@ -257,7 +257,8 @@ int main(int argc, char **argv) {
         {"shader_resource_bytes", static_cast<qint64>(actual.owned)}});
     if (!frame->textures.empty()) {
       ++assertions;
-      if (actual.owned < frame->vertices.size() * sizeof(Vertex) + 16 + 64 + 80)
+      if (actual.owned < frame->vertices.size() * sizeof(Vertex) + 16 + 64 +
+                             renderer_uniform_bytes)
         throw std::runtime_error(
             "Extra model texture omitted from owned GPU resource accounting");
     }
@@ -388,15 +389,35 @@ int main(int argc, char **argv) {
     {
       auto red = cached({1, 0, 0}), blue = cached({0, 0, 1});
       const auto result = residency({red, blue, red});
+      records.append(QJsonObject{
+          {"case", "resident A/B/A and clear"},
+          {"resident_hit", result.stages[2].resident_hit},
+          {"uploaded_bytes", static_cast<qint64>(result.stages[2].uploaded_bytes)},
+          {"resident_frames", static_cast<int>(result.stages[2].resident_frames)},
+          {"rgba", QJsonArray{result.rgba[0], result.rgba[1], result.rgba[2], result.rgba[3]}},
+          {"clear_owned_bytes", static_cast<qint64>(result.cleared.owned_gpu_bytes)},
+          {"clear_resident_frames", static_cast<int>(result.cleared.resident_frames)}});
       ++assertions;
       if (!result.stages[2].resident_hit || result.stages[2].uploaded_bytes ||
           result.stages[2].resident_frames != 2 ||
           result.rgba != std::array<float, 4>{1, 0, 0, 1} ||
-          result.cleared.owned_gpu_bytes != 80 ||
+          result.cleared.owned_gpu_bytes != renderer_uniform_bytes ||
           result.cleared.resident_frames)
         throw std::runtime_error(
-            "Resident A/B/A must reuse GPU objects and display exact A despite "
-            "equal source revision");
+            (QString("Resident A/B/A must reuse GPU objects and display exact A "
+                     "despite equal source revision: hit=%1 uploaded=%2 "
+                     "resident=%3 rgba=[%4,%5,%6,%7] clearOwned=%8 "
+                     "clearResident=%9")
+                 .arg(result.stages[2].resident_hit)
+                 .arg(result.stages[2].uploaded_bytes)
+                 .arg(result.stages[2].resident_frames)
+                 .arg(result.rgba[0], 0, 'g', 9)
+                 .arg(result.rgba[1], 0, 'g', 9)
+                 .arg(result.rgba[2], 0, 'g', 9)
+                 .arg(result.rgba[3], 0, 'g', 9)
+                 .arg(result.cleared.owned_gpu_bytes)
+                 .arg(result.cleared.resident_frames))
+                .toStdString());
     }
     {
       std::vector<std::shared_ptr<Frame>> sequence;
@@ -407,9 +428,10 @@ int main(int argc, char **argv) {
       const auto result = residency(std::move(sequence));
       ++assertions;
       if (result.stages[4].resident_frames != 4 ||
-          result.stages[4].owned_gpu_bytes > 256ULL * 1024 * 1024 + 80 ||
+          result.stages[4].owned_gpu_bytes >
+              256ULL * 1024 * 1024 + renderer_uniform_bytes ||
           result.expired.resident_frames != 1 ||
-          result.cleared.owned_gpu_bytes != 80)
+          result.cleared.owned_gpu_bytes != renderer_uniform_bytes)
         throw std::runtime_error(
             (QString("GPU LRU count/budget and expired-source/clear release "
                      "failed: count=%1 owned=%2 expired=%3 clear=%4")
@@ -424,6 +446,11 @@ int main(int argc, char **argv) {
     records.append(idleRendering({}, true));
     ++assertions;
   } catch (const std::exception &e) {
+    QFile output(app.arguments()[1]);
+    if (output.open(QIODevice::WriteOnly))
+      output.write(QJsonDocument(QJsonObject{{"qt", qVersion()},
+          {"backend", "D3D11"}, {"cases", records},
+          {"assertions", assertions}, {"failure", QString::fromUtf8(e.what())}}).toJson());
     std::cerr << "FAILED after " << assertions << " assertions: " << e.what()
               << '\n';
     return 1;

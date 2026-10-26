@@ -97,14 +97,35 @@ std::shared_ptr<const ModelGpuGeometry> buildModelGpuGeometry(
   auto out=std::make_shared<ModelGpuGeometry>();
   // Plain mode-0 view: keep every mesh resident (visibility/isolation/LOD select
   // draws) unless that would not fit the vertex budget; then build as asked.
-  std::uint64_t allBytes=0;for(const auto &m:d.meshes)allBytes+=static_cast<std::uint64_t>(m.triangles.size())*(sizeof(formaview::render::Vertex)+8);
+  // Collision overlay and opaque-only appearances need different alpha values.
+  // Keep both in the same immutable payload so toggling them only selects draws.
+  std::uint64_t allBytes=0;
+  for(std::size_t mi=0;mi<d.meshes.size();++mi) {
+    const bool collision=!state.classes.empty() && state.classes.at(mi).collision;
+    allBytes+=static_cast<std::uint64_t>(d.meshes[mi].triangles.size())*
+              (sizeof(formaview::render::Vertex)+8)*(collision?2:1);
+  }
   const bool superset=state.mode==0 && allBytes<=256ULL*1024*1024;
   auto buildState=state;
-  if(superset){buildState.visible.assign(d.meshes.size(),true);buildState.isolated=false;buildState.highlightedNode.clear();}
+  if(superset){buildState.visible.assign(d.meshes.size(),true);buildState.isolated=false;buildState.highlightedNode.clear();buildState.collisionMode=1;}
   out->frames=buildModelFrames(d,buildState,revision,stop,nullptr,true);
   // This frame has just been allocated by the builder and has never been
   // published. Convert its positions/normals to local space once, in the worker.
   auto base=std::const_pointer_cast<formaview::render::Frame>(out->frames.model);
+  if(superset) {
+    const auto originalDraws=base->draws;
+    for(const auto &draw:originalDraws) {
+      if(draw.mesh<0 || state.classes.empty() || !state.classes.at(static_cast<std::size_t>(draw.mesh)).collision)continue;
+      auto opaque=draw;opaque.first=static_cast<std::uint32_t>(base->vertices.size());opaque.blend=false;
+      for(std::size_t vi=draw.first;vi<static_cast<std::size_t>(draw.first)+draw.count;++vi) {
+        if((vi&4095)==0 && stop.stop_requested())throw std::runtime_error("GPU collision geometry cancelled");
+        auto vertex=base->vertices.at(vi);vertex.alpha=1.F;vertex.alphaMode=0.F;
+        const auto source=base->sourceCorners.at(vi);
+        base->vertices.push_back(vertex);base->sourceCorners.push_back(source);
+      }
+      base->draws.push_back(opaque);
+    }
+  }
   auto skin=std::make_shared<formaview::render::SkinData>();
   QMatrix4x4 normalize; normalize.scale(1/std::max(d.radius,1e-6F)); normalize.translate(-d.center);
   skin->display=normalize*d.displayBasis;
@@ -340,7 +361,13 @@ GpuView makeGpuView(const ModelDocument &d, const ModelGpuGeometry &g, const Mod
   std::vector<bool> shown(d.meshes.size());
   for(std::size_t mi=0;mi<d.meshes.size();++mi)shown[mi]=(state.visible.empty() || state.visible[mi]) && (!state.isolated || mi==static_cast<std::size_t>(state.mesh));
   const auto &draws=g.frames.model->draws;
-  for(std::size_t di=0;di<draws.size();++di)if(draws[di].mesh>=0 && shown.at(static_cast<std::size_t>(draws[di].mesh)))view.draws.push_back(static_cast<std::uint32_t>(di));
+  for(std::size_t di=0;di<draws.size();++di) {
+    const auto &draw=draws[di];
+    if(draw.mesh<0 || !shown.at(static_cast<std::size_t>(draw.mesh)))continue;
+    const bool collision=!state.classes.empty() && state.classes.at(static_cast<std::size_t>(draw.mesh)).collision;
+    if(collision && draw.blend!=(state.collisionMode==1))continue;
+    view.draws.push_back(static_cast<std::uint32_t>(di));
+  }
   for(std::size_t mi=0;mi<d.meshes.size();++mi) {
     if(!shown[mi])continue;
     view.sourcePoints+=g.meshPoints[mi];view.sourceTriangles+=g.meshTriangles[mi];
