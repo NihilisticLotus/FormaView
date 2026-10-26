@@ -120,6 +120,21 @@ void run(const std::filesystem::path &root) {
     require(snapshot.size_bytes == 6 && !snapshot.file_identity.empty() &&
                 snapshot.content_sha256 == skeletal::sha256(bytes("source")),
             "Wrong input snapshot");
+    // Network paths are outside the current local-disk authorization model,
+    // including callers that explicitly put them in their requested scope.
+    for (const auto *network : {
+             LR"(\\localhost\formaview-no-such-share\asset.bin)",
+             LR"(//localhost/formaview-no-such-share/asset.bin)",
+             LR"(\\?\UNC\localhost\formaview-no-such-share\asset.bin)"}) {
+      const std::filesystem::path path(network);
+      AccessScope requested{{path.parent_path()}, {path.parent_path()}, true, "network-rejection"};
+      rejects([&] { (void)validated_local_path(path); }, ErrorCode::OutOfScope);
+      rejects([&] { (void)PrivateDirectory::open(path.parent_path()); }, ErrorCode::OutOfScope);
+      rejects([&] { (void)InputLease::open(requested, path, 1024); }, ErrorCode::OutOfScope);
+      rejects([&] { (void)discover_files(requested, path.parent_path(), true, extensions); }, ErrorCode::OutOfScope);
+      rejects([&] { OutputTransaction t(requested, path, snapshot, ConflictPolicy::Overwrite); }, ErrorCode::OutOfScope);
+    }
+    std::cout << "PASS UNC rejection for validation, private journals, input, discovery and output\n";
     auto writer =
         CreateFileW((input / L"原图.bin").c_str(), GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

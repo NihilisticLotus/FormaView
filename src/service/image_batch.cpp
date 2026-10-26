@@ -173,6 +173,8 @@ struct ImageBatchService::Impl {
         limits.items > 64 || !limits.queue)
       fail(ErrorCode::InvalidArgument,
            "Invalid batch service limits or journal path");
+    // Reject unsupported paths before QDir can probe a network location.
+    (void)validated_local_path(dir);
     if (!QDir(directory).exists())
       fail(ErrorCode::Io, "Explicit journal directory must exist");
     // Require a dedicated directory before restricting its ACL. Do not alter

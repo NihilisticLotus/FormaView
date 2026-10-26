@@ -1,4 +1,5 @@
 #include "formaview/image_batch.hpp"
+#include "formaview/image_groups.hpp"
 #include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
@@ -46,6 +47,34 @@ QJsonObject call(ImageBatchService &service, QJsonObject request) {
   return service.request(request);
 }
 QString new_id() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
+void nonlocal_journals(const std::filesystem::path &root) {
+  std::vector<std::filesystem::path> paths{
+      LR"(\\localhost\formaview-no-such-share\journal)",
+      LR"(//localhost/formaview-no-such-share/journal)",
+      LR"(\\?\UNC\localhost\formaview-no-such-share\journal)"};
+  const auto mapped = qEnvironmentVariable("FORMAVIEW_TEST_NETWORK_DRIVE").toStdWString();
+  if (!mapped.empty()) {
+    require(GetDriveTypeW(mapped.c_str()) == DRIVE_REMOTE,
+            "Configured network-drive fixture is not a mapped network drive");
+    paths.emplace_back(std::filesystem::path(mapped) / L"formaview-no-such-journal");
+  }
+  for (const auto &path : paths) {
+    const auto rejects = [&](const auto &create, const char *label) {
+      try { create(); }
+      catch (const skeletal::Failure &error) {
+        if (error.error.code != ErrorCode::OutOfScope)
+          throw std::runtime_error(std::string(label) +
+              " must reject a non-local journal before directory I/O: " + error.what());
+        return;
+      }
+      throw std::runtime_error(std::string(label) + " accepted a non-local journal");
+    };
+    rejects([&] { ImageBatchService service(scope(root), path); }, "Single-batch service");
+    rejects([&] { ImageTaskGroups groups(scope(root), path); }, "Task-group service");
+  }
+  std::cout << "PASS non-local journal rejection: " << paths.size()
+            << " path forms, single-batch and task-group services\n";
+}
 QJsonObject crash_record(const QString &id, const QJsonObject &request,
                          const QJsonObject &intent) {
   return {{"version", 1},
@@ -96,6 +125,7 @@ void child(const std::filesystem::path &root, bool unlogged) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
 }
 void run(const std::filesystem::path &root) {
+  nonlocal_journals(root);
   std::filesystem::create_directories(root / "journal");
   std::filesystem::create_directories(root / "commit-journal");
   std::filesystem::create_directories(root / "temp-journal");
@@ -289,6 +319,10 @@ void run(const std::filesystem::path &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (app.arguments().size() == 3 && app.arguments()[1] == "--non-local-journals") {
+      nonlocal_journals(std::filesystem::path(app.arguments()[2].toStdWString()));
+      return 0;
+    }
     if (app.arguments().size() == 3 && app.arguments()[1] == "--leave-journal-save") {
       QSaveFile save(app.arguments()[2] + '/' + new_id() + ".json");
       save.setDirectWriteFallback(false);

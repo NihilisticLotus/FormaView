@@ -298,6 +298,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
     QVariantList inputInfo;
     try {
       if (!existing) {
+        (void)validated_local_path(std::filesystem::path(journalRoot.toStdWString()));
         if (!QDir().mkpath(journalRoot))
           throw skeletal::Failure(ErrorCode::Io,
                                   "Cannot create image journal directory");
@@ -307,6 +308,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
       }
       if (!existingGroups) {
         const auto groupRoot = journalRoot + "-groups";
+        (void)validated_local_path(std::filesystem::path(groupRoot.toStdWString()));
         if (!QDir().mkpath(groupRoot))
           throw skeletal::Failure(ErrorCode::Io, "Cannot create conversion group journal");
         existingGroups = std::make_shared<ImageTaskGroups>(

@@ -4020,6 +4020,43 @@ private slots:
     }
 #endif
   }
+  void imageJournalPathValidation() {
+#ifdef FORMAVIEW_IMAGE_UI
+    const auto previousRoot = qgetenv("FORMAVIEW_IMAGE_STATE_ROOT");
+    const auto restoreRoot = qScopeGuard([&] {
+      qputenv("FORMAVIEW_IMAGE_STATE_ROOT", previousRoot);
+    });
+    const auto localRoot = root_ + "/journal-path-validation";
+    QVERIFY(QDir().mkpath(localRoot + "/input"));
+    QVERIFY(QDir().mkpath(localRoot + "/output"));
+    const QVariantMap scope{{"input_roots", QStringList{localRoot + "/input"}},
+                            {"output_roots", QStringList{localRoot + "/output"}},
+                            {"allow_overwrite", false}};
+    const QStringList rejectedRoots{
+        QStringLiteral("\\\\localhost\\formaview-no-such-share\\journal"),
+        QStringLiteral("//localhost/formaview-no-such-share/journal"),
+        QStringLiteral("\\\\?\\UNC\\localhost\\formaview-no-such-share\\journal"),
+        localRoot + "/must-not-create/../escaped"};
+    for (const auto &stateRoot : rejectedRoots) {
+      qputenv("FORMAVIEW_IMAGE_STATE_ROOT", stateRoot.toUtf8());
+      ImageJobs jobs;
+      jobs.configureScope(scope);
+      QTRY_VERIFY_WITH_TIMEOUT(!jobs.busy(), 10000);
+      QVERIFY2(jobs.error().startsWith("out_of_scope: "), qPrintable(jobs.error()));
+      QVERIFY(!jobs.configured());
+      QVERIFY(jobs.plan().isEmpty());
+    }
+    QVERIFY(!QDir(localRoot + "/must-not-create").exists());
+    QVERIFY(!QDir(localRoot + "/escaped").exists());
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (localRoot + "/valid-state").toUtf8());
+    ImageJobs valid;
+    valid.configureScope(scope);
+    QTRY_VERIFY_WITH_TIMEOUT(!valid.busy(), 10000);
+    QVERIFY2(valid.error().isEmpty(), qPrintable(valid.error()));
+    QVERIFY(valid.configured());
+    QCOMPARE(QDir(localRoot + "/valid-state").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 2);
+#endif
+  }
   void imageDirectorySelection() {
 #ifdef FORMAVIEW_IMAGE_UI
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
