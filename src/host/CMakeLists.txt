@@ -124,6 +124,13 @@ if(BUILD_TESTING)
             qt_add_executable(formaview_model_gpu_tests ../../tests/model_gpu_tests.cpp)
             target_link_libraries(formaview_model_gpu_tests PRIVATE formaview_models formaview_options Qt6::GuiPrivate)
             target_include_directories(formaview_model_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+            if(MSVC)
+                # Resolve diagnostic test frames without changing Release optimization.
+                target_compile_options(formaview_model_gpu_tests PRIVATE /Zi)
+                target_link_options(formaview_model_gpu_tests PRIVATE /DEBUG:FULL
+                    $<$<CONFIG:Release>:/OPT:REF>
+                    $<$<CONFIG:Release>:/OPT:ICF>)
+            endif()
             qt_add_executable(formaview_model_render_tests ../../tests/model_render_tests.cpp)
             target_link_libraries(formaview_model_render_tests PRIVATE formaview_models formaview_options)
             qt_add_executable(formaview_model_state_tests ../../tests/model_state_tests.cpp)
