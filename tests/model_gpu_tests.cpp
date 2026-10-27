@@ -26,6 +26,9 @@
 #include <QJsonObject>
 #include <QThread>
 #include <QTimer>
+#include <QAbstractEventDispatcher>
+#include <QEventLoop>
+#include <exception>
 #include <QUuid>
 #include <atomic>
 #include <chrono>
@@ -411,6 +414,9 @@ int main(int argc,char **argv) {
     else if(mode=="lifecycle") {
       // G5: FORMAVIEW_LIFECYCLE = open | cancel | hide | soak; REPEATS applies to the first three, args[3] seconds to soak.
       const auto phase=qEnvironmentVariable("FORMAVIEW_LIFECYCLE","open");
+      if(phase=="soak") require(std::isfinite(duration) && duration>0 &&
+          duration*1000<=std::numeric_limits<int>::max(),
+          "Soak duration must be positive and fit the Qt timer interval");
       const int repeats=std::max(1,qEnvironmentVariable("FORMAVIEW_LIFECYCLE_REPEATS","10").toInt());
       report["phase"]=phase;report["repeats"]=repeats;
       struct Live {std::atomic<long long> renderBeat{0};std::atomic<std::uint64_t> swapchainHandle{0};QJsonArray swapchainWaitables;std::atomic<DWORD> renderThread{0};std::mutex mutex;std::uint64_t owned{},process{},releases{},revision{},swaps{},uploadedMax{};bool gpu{},collecting{true};std::vector<double> intervals,swapTimes;struct Presented{double at{},seconds{};std::uint64_t revision{};int clip{-1};};std::vector<Presented> presents;bool forensic{};std::uint64_t presentOverflow{};int latestClip{-1};double latestSeconds{};std::vector<std::array<double,2>> slow;std::vector<std::array<double,5>> heavy;std::chrono::steady_clock::time_point last{},origin{};};
@@ -789,17 +795,31 @@ int main(int argc,char **argv) {
         }
         QJsonArray events;
         const auto timedAction=[&](const char *type,const std::function<void()> &action){const double start=since();action();events.append(QJsonObject{{"ms",start},{"type",type},{"callMs",since()-start}});};
-        while(run.elapsed()<static_cast<qint64>(duration*1000)) {
-          if(injectStall && !injected && run.elapsed()>=15000){injected=true;injectedStallForWatchdogValidation();}
-          watch.beat=beatNow();const double pumpStart=since();QCoreApplication::processEvents();watch.beat=beatNow();const double pumped=since()-pumpStart;
-          if(pumped>20)events.append(QJsonObject{{"ms",pumpStart},{"type","processEvents"},{"callMs",pumped}});
-          QThread::msleep(2);
+        // Run the same event dispatcher as the application. Sleeping after a
+        // manual processEvents() delays queued frame/vsync notifications and
+        // adds test-generated jitter to the unchanged frameSwapped metric.
+        QEventLoop soakLoop;
+        QTimer actions,deadline;
+        actions.setTimerType(Qt::PreciseTimer);actions.setSingleShot(true);
+        deadline.setTimerType(Qt::PreciseTimer);deadline.setSingleShot(true);
+        const auto durationMs=static_cast<qint64>(duration*1000);
+        unsigned deadlineRearms=0;
+        std::exception_ptr controlError;
+        bool finished=false;
+        const auto checkState=[&] {
+          watch.beat=beatNow();
           const auto now=run.elapsed();
           const auto observedForeground=foreground ? GetForegroundWindow() : nullptr;
           if(foreground && (!window.isActive() || !window.isExposed() || observedForeground!=hwnd)) {
             foregroundTrace->observedLoss(observedForeground,window.isActive(),window.isExposed());
-            foregroundHeld=false;report["foregroundLostAtMs"]=now;sample("soak focus lost");break;
+            foregroundHeld=false;report["foregroundLostAtMs"]=now;sample("soak focus lost");finished=true;return;
           }
+          require(session.playing() && session.frameError().isEmpty(),"Soak playback stopped");
+        };
+        const auto controlStep=[&] {
+          checkState();if(finished)return;
+          if(injectStall && !injected && run.elapsed()>=15000){injected=true;injectedStallForWatchdogValidation();}
+          const auto now=run.elapsed();
           if(stimulus&&now>=nextStimulus){
             const UINT messages[]={WM_GETTEXTLENGTH,WM_NCHITTEST,WM_THEMECHANGED};
             const auto message=messages[stimulusIndex++%3];
@@ -812,8 +832,46 @@ int main(int argc,char **argv) {
           if(now>=nextSpeed){timedAction("setSpeed",[&]{session.setSpeed(speeds[(now/20000)%4]);});nextSpeed+=20000;}
           if(now>=nextLock){rootLocked=!rootLocked;timedAction("setRootLock",[&]{session.setRootLock(rootLocked);});nextLock+=30000;}
           require(session.playing() && session.frameError().isEmpty(),"Soak playback stopped");
+        };
+        const auto checked=[&](const auto &action) {
+          if(finished)return;
+          try {action();} catch(...) {controlError=std::current_exception();finished=true;}
+          if(finished)soakLoop.quit();
+        };
+        auto *dispatcher=QAbstractEventDispatcher::instance();
+        require(dispatcher,"Missing GUI event dispatcher");
+        const auto awake=QObject::connect(dispatcher,&QAbstractEventDispatcher::awake,&soakLoop,[&]{checked(checkState);});
+        const auto idle=QObject::connect(dispatcher,&QAbstractEventDispatcher::aboutToBlock,&soakLoop,[&]{checked(checkState);});
+        const auto active=QObject::connect(&window,&QWindow::activeChanged,&soakLoop,[&]{checked(checkState);});
+        const auto visible=QObject::connect(&window,&QWindow::visibleChanged,&soakLoop,[&]{checked(checkState);});
+        const auto disconnectChecks=qScopeGuard([&]{QObject::disconnect(awake);QObject::disconnect(idle);QObject::disconnect(active);QObject::disconnect(visible);});
+        const auto armActions=[&] {
+          auto next=std::min({nextSample,nextClip,nextSpeed,nextLock});
+          if(stimulus)next=std::min(next,nextStimulus);
+          if(injectStall&&!injected)next=std::min<qint64>(next,15000);
+          if(next<durationMs)actions.start(int(std::max<qint64>(1,next-run.elapsed())));
+        };
+        QObject::connect(&actions,&QTimer::timeout,&soakLoop,[&]{checked(controlStep);if(!finished)armActions();});
+        QObject::connect(&deadline,&QTimer::timeout,&soakLoop,[&]{
+          // Timer delivery and QElapsedTimer millisecond rounding can differ
+          // by a fraction of a millisecond. Never shorten the measured window.
+          const auto remaining=durationMs-run.elapsed();
+          if(remaining>0){++deadlineRearms;deadline.start(int(remaining));return;}
+          checked(controlStep);finished=true;soakLoop.quit();
+        });
+        // Schedule the original actions against their absolute deadlines.
+        // Dispatcher activity supplies the watchdog heartbeat and checks
+        // native focus without introducing a high-frequency polling timer.
+        checked(controlStep);
+        if(!finished) {
+          armActions();
+          deadline.start(int(std::max<qint64>(0,durationMs-run.elapsed())));
+          soakLoop.exec();
         }
+        finished=true;actions.stop();deadline.stop();
+        if(controlError)std::rethrow_exception(controlError);
         report["measuredDurationMs"]=run.elapsed();
+        report["soakDeadlineRearms"]=int(deadlineRearms);
         {std::lock_guard lock(live->mutex);live->collecting=false;}
         watch.run=false;if(watchdog.joinable())watchdog.join();watchStopped=true;
         if(foregroundTrace) {
@@ -853,7 +911,11 @@ int main(int argc,char **argv) {
         require(liveGpu(),"Soak ended off the GPU path");
         report["postMeasurementDiagnosticsMs"]=run.elapsed()-report["measuredDurationMs"].toInteger();
         report["foregroundConditionHeld"]=foreground ? QJsonValue(foregroundHeld) : QJsonValue(QJsonValue::Null);
-        report["foregroundObservationBoundary"]="Checked after every GUI event pump; one initial activation only; abort on observed focus/exposure loss, without stitching intervals";
+        report["foregroundObservationBoundary"]="Checked at GUI dispatcher wake/block boundaries, active/visible changes, and action/deadline callbacks; one initial activation only; abort on observed focus/exposure loss, without stitching intervals";
+        report["soakEventLoop"]="Native QEventLoop with absolute original action deadlines and monotonic-clock duration check; no manual processEvents/msleep polling";
+        report["frameTimeP95LimitMs"]=16.7;
+        report["frameTimeP99LimitMs"]=33.3;
+        report["frameTimeGatePassed"]=report["swapIntervals"].toInt()>0 && report["swapP95Ms"].toDouble()<=16.7 && report["swapP99Ms"].toDouble()<=33.3;
         session.clear();pause(500);sample("cleared");
         require(foregroundHeld,"Foreground soak lost focus or exposure; partial run is not a completed foreground soak");
         if(foregroundTrace) require(foregroundTrace->complete(),"Foreground activation journal incomplete");
