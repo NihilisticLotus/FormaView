@@ -2,10 +2,12 @@
 #include <QHash>
 
 void ModelScene::replace(const ModelDocument *document) {
-  clear();
-  meshes_.clear();
+  replace(prepare(document));
+}
+ModelScene::Prepared ModelScene::prepare(const ModelDocument *document) {
+  Prepared prepared;
   if (!document)
-    return;
+    return prepared;
   auto root = std::make_unique<QStandardItem>(document->name);
   auto *asset = root.get();
   asset->setData(document->hash + ":root", NodeId);
@@ -47,11 +49,17 @@ void ModelScene::replace(const ModelDocument *document) {
     item->setData(false, Bone);
     item->setData(true, SourceActive);
     nodes.value(mesh.nodeId, asset)->appendRow(item.release());
-    meshes_[static_cast<int>(i)] = ptr;
+    prepared.meshes[static_cast<int>(i)] = ptr;
   }
   // Populate off-model, then publish one complete subtree. Publishing the root
   // first made views and proxies process every descendant insertion separately.
-  invisibleRootItem()->appendRow(root.release());
+  prepared.root=std::move(root);
+  return prepared;
+}
+void ModelScene::replace(Prepared prepared) {
+  clear();
+  meshes_=std::move(prepared.meshes);
+  if(prepared.root) invisibleRootItem()->appendRow(prepared.root.release());
 }
 QModelIndex ModelScene::meshIndex(int mesh) const {
   const auto it = meshes_.find(mesh);

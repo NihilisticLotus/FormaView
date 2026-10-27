@@ -20,7 +20,8 @@ RowLayout {
     readonly property Item popupOverlay: root.Overlay.overlay
     readonly property real popupAvailableWidth: popupOverlay ? popupOverlay.width : 0
     readonly property real popupAvailableHeight: popupOverlay ? popupOverlay.height : 0
-    readonly property var crumbs: controller.breadcrumbs(controller.directory)
+    readonly property string breadcrumbDirectory: controller.directory
+    readonly property var crumbs: controller.breadcrumbs(root.breadcrumbDirectory)
     function crumbWidth(crumb): real { return Math.max(64, Math.min(170, Math.ceil(metrics.advanceWidth(crumb.name)) + 44)) }
     readonly property var visibleCrumbs: {
         const all = root.crumbs
@@ -169,8 +170,9 @@ RowLayout {
     }
     AppPopupMenu {
         id: ancestorsMenu
+        objectName: "ancestorMenu"
         Repeater {
-            model: root.hiddenCrumbs
+            model: ancestorsMenu.visible ? root.hiddenCrumbs : []
             AppMenuItem {
                 required property var modelData
                 text: modelData.name; Accessible.description: modelData.path

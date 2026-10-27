@@ -95,6 +95,22 @@ void check(std::stop_token stop) {
   if (stop.stop_requested())
     throw skeletal::Failure(ErrorCode::Cancelled, "Model load cancelled");
 }
+int initialMeshFor(const ModelDocument &document) {
+  std::map<QString,int> levels;
+  for(const auto &mesh:document.meshes) {
+    const auto &c=mesh.classification;
+    if(!c.group.isEmpty()) {
+      const auto [it,inserted]=levels.try_emplace(c.group,c.level);
+      if(!inserted) it->second=std::min(it->second,c.level);
+    }
+  }
+  for(std::size_t i=0;i<document.meshes.size();++i) {
+    const auto &c=document.meshes[i].classification;
+    if(!c.collision && (c.group.isEmpty() || levels.at(c.group)==c.level))
+      return static_cast<int>(i);
+  }
+  return 0;
+}
 QMatrix4x4 displayBasisFor(Axis up) {
   QMatrix4x4 basis;
   switch (up) {
@@ -1459,7 +1475,21 @@ void ModelSession::startPending() {
   auto future = std::async(std::launch::async, [p, reference, companion, token] {
     Result r;
     try {
-      r.document = readModelDocument(p, token, reference, companion);
+      auto document = readModelDocument(p, token, reference, companion);
+      check(token);
+      const int mesh=document ? initialMeshFor(*document) : 0;
+      const int binding=document && !document->meshes.empty() &&
+        document->meshes[static_cast<std::size_t>(mesh)].skins.size()==1 ? 0 : -1;
+      auto scene=ModelScene::prepare(document.get());
+      check(token);
+      auto skeleton=ModelSkeleton::prepare(document.get(),mesh,binding);
+      check(token);
+      // No live QObject/model crosses threads. Publish the detached trees only
+      // after all preparation succeeds; cancellation destroys them here.
+      r.document=std::move(document);
+      r.scene=std::move(scene);
+      r.skeleton=std::move(skeleton);
+      r.initialMesh=mesh;
     } catch (const std::exception &e) {
       r.error = QString::fromUtf8(e.what());
     }
@@ -1527,8 +1557,9 @@ void ModelSession::poll() {
       busy_ = false;
       error_ = r.error;
       document_ = std::move(r.document);
-      scene_.replace(document_.get());
-      mesh_ = bone_ = mode_ = 0;
+      scene_.replace(std::move(r.scene));
+      mesh_=r.initialMesh;
+      bone_ = mode_ = 0;
       material_ = 0;
       isolated_ = false;
       bindingSelections_.clear();
@@ -1553,13 +1584,11 @@ void ModelSession::poll() {
           uvSelections_.push_back(0);
         }
       if (document_ && !document_->meshes.empty())
-        chooseVisibleMesh();
-      if (document_ && !document_->meshes.empty())
         selectedNode_ =
             document_->meshes.empty()
                 ? QString{}
                 : document_->meshes.at(static_cast<std::size_t>(mesh_)).nodeId;
-      updateSkeleton();
+      updateSkeleton(true,&r.skeleton);
       rootIndex_ = -1; // Resolve and cache against the newly landed document.
       rootBaseClip_ = -1;
       rootBaseLocals_.clear();
@@ -2902,8 +2931,9 @@ void ModelSession::selectBone(int i) {
   rebuild();
   emit changed();
 }
-void ModelSession::updateSkeleton(bool resetHighlight) {
-  skeleton_.replace(document_.get(), mesh_, bindingIndex());
+void ModelSession::updateSkeleton(bool resetHighlight,ModelSkeleton::Prepared *prepared) {
+  if(prepared) skeleton_.replace(std::move(*prepared));
+  else skeleton_.replace(document_.get(), mesh_, bindingIndex());
   if (resetHighlight)
     highlightedNode_.clear();
   skeletonNode_.clear();

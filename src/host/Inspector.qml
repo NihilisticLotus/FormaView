@@ -15,7 +15,9 @@ Rectangle {
     readonly property bool imageActive: !!controller.image && controller.image.available
     readonly property bool modelActive: !!controller.model && controller.model.available
     Loader {
+        objectName: "modelInspectorLoader"
         anchors.fill: parent; anchors.margins: 12
+        asynchronous: true
         active: root.modelActive; visible: active
         onActiveChanged: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }
         Component.onCompleted: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }

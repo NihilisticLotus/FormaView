@@ -39,6 +39,7 @@
 #include <QMetaProperty>
 #include <QProcess>
 #include <QQmlApplicationEngine>
+#include <QQmlIncubationController>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -230,6 +231,13 @@ class DesktopTests final : public QObject {
   bool idle() {
     QCoreApplication::processEvents();
     return desktop_->activeTasks() == 0 && !desktop_->busy();
+  }
+  bool modelPanelsReady() const {
+    for(const auto *name:{"modelPaneLoader","modelInspectorLoader"}) {
+      const auto *loader=window_->findChild<QObject *>(name);
+      if(!loader || loader->property("status").toInt()!=1) return false;
+    }
+    return true;
   }
   int delegateCount(QQuickItem *item) const {
     auto n = item->objectName() == "fileDelegate" ? 1 : 0;
@@ -544,6 +552,12 @@ private slots:
     click(sibling);
     QTRY_COMPARE(desktop_->directory(), model + "/场景");
     QTRY_VERIFY(idle());
+    auto *childrenPopup=window_->findChild<QObject *>("folderChildrenPopup");
+    QVERIFY(childrenPopup);
+    QTRY_VERIFY(!childrenPopup->property("visible").toBool());
+    QSignalSpy navigationFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!navigationFrame.isEmpty());
     auto *name = findPath("breadcrumbName", model);
     QVERIFY(name);
     click(name);
@@ -595,6 +609,15 @@ private slots:
     QTRY_VERIFY(item("hiddenAncestors"));
     QVERIFY(item("hiddenAncestors")->width() >= 32);
     QVERIFY(item("hiddenAncestors")->height() >= 32);
+    auto *ancestors=window_->findChild<QObject *>("ancestorMenu");
+    QVERIFY(ancestors);
+    QCOMPARE(ancestors->property("count").toInt(),0);
+    click(item("hiddenAncestors"));
+    QTRY_VERIFY(ancestors->property("visible").toBool());
+    QTRY_VERIFY(ancestors->property("count").toInt()>0);
+    QVERIFY(QMetaObject::invokeMethod(ancestors,"close"));
+    QTRY_VERIFY(!ancestors->property("visible").toBool());
+    QTRY_COMPARE(ancestors->property("count").toInt(),0);
     QCOMPARE(navigation->height(), 38.0);
     window_->resize(1280, 800);
     QMetaObject::invokeMethod(workspace, "openAddress");
@@ -4905,6 +4928,8 @@ private slots:
   void modelOpenKeepsPreviewPane() {
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
+    desktop_->clearAsset();
+    QTRY_VERIFY(!item("modelPane"));
     // Fixture contract: readable OBJ markers with no geometry, so parsing fails.
     for (int i = 0; i < 2; ++i) {
       QFile marker(fixture_ + QString("/asset%1.obj").arg(i));
@@ -4912,7 +4937,12 @@ private slots:
       QCOMPARE(marker.readAll(), QByteArray("# metadata test\n"));
     }
     desktop_->openPath(fixture_ + "/asset0.obj");
+    QTRY_COMPARE(session->path(),fixture_ + "/asset0.obj");
     QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 10000);
+    auto *loader=window_->findChild<QObject *>("modelPaneLoader");
+    QVERIFY(loader);
+    QTRY_COMPARE(loader->property("status").toInt(),1); // Loader.Ready: Connections installed.
+    QTRY_VERIFY(item("modelPane"));
     const QPointer<QQuickItem> pane = item("modelPane");
     QVERIFY(pane);
     auto *view = window_->findChild<ModelView *>("modelViewport");
@@ -5123,6 +5153,10 @@ private slots:
     window_->resize(1600,900);
     desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(modelPanelsReady());
+    QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!panelsFrame.isEmpty());
     QTRY_VERIFY(item("modelInspector"));
     item("modelInspector")->setProperty("tab",0);
     QTRY_VERIFY(item("modelNodeMatrices"));
@@ -5168,6 +5202,10 @@ private slots:
     window_->resize(1600,900);
     desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(modelPanelsReady());
+    QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!panelsFrame.isEmpty());
     QTRY_VERIFY(item("modelInspectorTab1"));
     const auto click=[&](QQuickItem *control) {
       QVERIFY(control && control->isVisible() && control->isEnabled());
@@ -5435,6 +5473,10 @@ private slots:
     desktop_->openPath(path);
     QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(modelPanelsReady());
+    QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!panelsFrame.isEmpty());
     QVERIFY(session->lodGroups().size()==2 && session->lodLevels().size()==3);
     const auto ensureVisible=[&](QQuickItem *control) {
       QTRY_VERIFY(control->width()>0 && control->height()>0);
@@ -5511,6 +5553,10 @@ private slots:
     desktop_->openPath(path);
     QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    QTRY_VERIFY(modelPanelsReady());
+    QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!panelsFrame.isEmpty());
     QCOMPARE(session->bindings().size(),2);
     QCOMPARE(session->bindingIndex(),-1);
     auto *tab=item("modelInspectorTab1");
@@ -5536,13 +5582,20 @@ private slots:
     save("two-bindings-second-skin");
     session->setMode(2);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
-    QVERIFY(session->frame()->heat);
-    const auto secondHeat=session->frame();
+    QCOMPARE(session->mode(),2);
+    const auto heatPayload=[&] {
+      const auto frame=session->frame();
+      return frame && frame->geometry ? frame->geometry : frame;
+    };
+    // GPU poses reference immutable geometry; heat/weights live in that payload.
+    QTRY_VERIFY_WITH_TIMEOUT(heatPayload() && heatPayload()->heat,10000);
+    const auto secondHeat=heatPayload();
     choose(Qt::Key_Home);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->bindingIndex()==0,10000);
-    QVERIFY(session->frame()->heat && session->frame()!=secondHeat);
-    QCOMPARE(session->frame()->vertices.size(),secondHeat->vertices.size());
-    QVERIFY(std::abs(session->frame()->vertices[0].weight-secondHeat->vertices[0].weight)>.5F);
+    QTRY_VERIFY_WITH_TIMEOUT(heatPayload() && heatPayload()->heat && heatPayload()!=secondHeat,10000);
+    QCOMPARE(heatPayload()->vertices.size(),secondHeat->vertices.size());
+    QVERIFY(!secondHeat->vertices.empty());
+    QVERIFY(std::abs(heatPayload()->vertices[0].weight-secondHeat->vertices[0].weight)>.5F);
     evidence_["multiple_bindings_native"]=QJsonObject{{"source",path},{"first_id",firstId},{"skin_count",2},{"boundary","Actual Qt QML ComboBox selection and heat frames; fixture is an explicitly hand-modified FBX, not claimed as a DCC export."}};
     desktop_->clearAsset();
   }
@@ -5678,6 +5731,129 @@ private slots:
     QCOMPARE(receiver.received,std::uint64_t(605000));
     evidence_["stress_trace_overhead"]=QJsonObject{{"runs",runs},
       {"boundary","Same empty synchronous sendEvent receiver, ABBA x3; both use the legacy measured notify path. Buffer allocation and JSON serialization excluded. This is a synthetic observer-cost calibration, not a correction to pressure-test latency or proof of zero workload perturbation."}};
+  }
+  void recentHistoryPersistsOnClose() {
+    QTRY_VERIFY(idle());
+    const auto previous=QSettings{}.value("recent");
+    const auto restore=qScopeGuard([&]{QSettings{}.setValue("recent",previous);});
+    QStringList expected;
+    {
+      Desktop history;
+      for(const auto &path:{small_,fixture_,small_}) {
+        history.navigate(path);
+        QTRY_COMPARE(history.directory(),path);
+        QTRY_VERIFY(!history.busy() && history.activeTasks()==0);
+      }
+      expected=history.recent();
+      QCOMPARE(expected[0],small_);
+      QCOMPARE(expected[1],fixture_);
+    } // A close drains all ordered snapshots, including the last navigation.
+    QCOMPARE(QSettings{}.value("recent").toStringList(),expected);
+  }
+  void preparedModelTreesTransferOwnership() {
+    ModelDocument document;
+    document.name="prepared tree";
+    document.skeletonOnly=true;
+    document.boneNames={"root","child","child"};
+    document.boneParents={-1,0,0};
+    document.nodes={QVariantMap{{"id","root"},{"name","root"}},
+      QVariantMap{{"id","child"},{"name","child"},{"parent","root"}}};
+    auto future=std::async(std::launch::async,[&document] {
+      return std::make_pair(ModelScene::prepare(&document),ModelSkeleton::prepare(&document,0,-1));
+    });
+    auto prepared=future.get();
+    QVERIFY(prepared.first.root && !prepared.first.root->model());
+    for(auto *node:prepared.second.nodes) QVERIFY(node && !node->model());
+    ModelScene scene;
+    ModelSkeleton skeleton;
+    scene.replace(std::move(prepared.first));
+    skeleton.replace(std::move(prepared.second));
+    QCOMPARE(scene.rowCount(),1);
+    const auto root=scene.index(0,0,scene.index(0,0));
+    QCOMPARE(root.data(ModelScene::NodeId).toString(),QString("root"));
+    QCOMPARE(scene.rowCount(root),1);
+    const auto child=skeleton.indexForNode("bone/2",2);
+    QVERIFY(child.isValid());
+    QCOMPARE(child.data(ModelSkeleton::JointIndex).toInt(),2);
+    QVERIFY(child.data().toString().contains("#2"));
+    QCOMPARE(skeleton.details("bone/2",2).value("parentIndex").toInt(),0);
+    skeleton.setSearchText("child");
+    QVERIFY(skeleton.indexForNode("bone/2",2).isValid());
+    QPersistentModelIndex old=child;
+    skeleton.replace(ModelSkeleton::Prepared{});
+    scene.replace(ModelScene::Prepared{});
+    QVERIFY(!old.isValid());
+    QCOMPARE(skeleton.rowCount(),0);
+    QCOMPARE(scene.rowCount(),0);
+  }
+  void folderBreadcrumbsSurviveUnrelatedChanges() {
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(),small_);
+    QTRY_VERIFY(idle());
+    QTest::qWait(50);
+    const auto crumbs=visualItems(window_->contentItem(),"breadcrumbName");
+    QVERIFY(!crumbs.isEmpty());
+    std::vector<QPointer<QQuickItem>> original;
+    for(auto *crumb:crumbs) original.emplace_back(crumb);
+    auto *navigation=item("folderNavigation");
+    QVERIFY(navigation);
+    QSignalSpy changed(navigation,SIGNAL(crumbsChanged()));
+    // The real shared notifier also fires for task/file state changes while
+    // the directory is identical; it must not rebuild the breadcrumb model.
+    for(int i=0;i<5;++i) QVERIFY(QMetaObject::invokeMethod(desktop_.get(),"changed",Qt::DirectConnection));
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+    QCOMPARE(changed.count(),0);
+    for(const auto &crumb:original) QVERIFY(crumb);
+    QCOMPARE(visualItems(window_->contentItem(),"breadcrumbName"),crumbs);
+    desktop_->navigate(root_);
+    QTRY_COMPARE(desktop_->directory(),root_);
+    QTRY_VERIFY(idle());
+    QVERIFY(changed.count()>0);
+  }
+  void modelPanelIncubationCanBeCancelled() {
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    desktop_->clearAsset();
+    QTRY_VERIFY(!item("modelPane") && !item("modelInspector"));
+    auto *paneLoader=window_->findChild<QQuickItem *>("modelPaneLoader");
+    auto *inspectorLoader=window_->findChild<QQuickItem *>("modelInspectorLoader");
+    QVERIFY(paneLoader && inspectorLoader);
+    QQmlIncubationController controlled;
+    auto *original=engine_->incubationController();
+    engine_->setIncubationController(&controlled);
+    const auto restore=qScopeGuard([&]{
+      desktop_->clearAsset();
+      engine_->setIncubationController(original);
+    });
+    const QString compactModel="E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk";
+    desktop_->openPath(compactModel);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
+    // Deliberately withhold the incubation budget. Both panels must yield,
+    // even though the model worker has already finished loading its data.
+    QTRY_COMPARE(paneLoader->property("status").toInt(),2); // Loader.Loading
+    QTRY_COMPARE(inspectorLoader->property("status").toInt(),2);
+    QVERIFY(controlled.incubatingObjectCount()>0);
+    QVERIFY(!item("modelViewport") && !item("modelInspector"));
+    desktop_->clearAsset();
+    QTRY_COMPARE(controlled.incubatingObjectCount(),0);
+    QCOMPARE(paneLoader->property("status").toInt(),0); // Loader.Null
+    QCOMPARE(inspectorLoader->property("status").toInt(),0);
+    // A superseded request must not resurrect either cancelled component.
+    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    desktop_->openPath(compactModel);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->path()==compactModel,30000);
+    const auto panelsReady=[&] {
+      controlled.incubateFor(5);
+      return paneLoader->property("status").toInt()==1 &&
+             inspectorLoader->property("status").toInt()==1;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(panelsReady(),10000);
+    QVERIFY(item("modelViewport") && item("modelInspector"));
+    QCOMPARE(session->path(),compactModel);
+    QCOMPARE(item("modelPane")->property("session").value<QObject *>(),session);
+    QCOMPARE(item("modelInspector")->property("session").value<QObject *>(),session);
+    evidence_["model_panel_incubation"]=QJsonObject{{"cancelledWhileLoading",true},
+      {"supersededWithoutStalePanel",true},{"panelsReadyAfterBudget",true}};
   }
   void modelLoadResourceStress() {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());

@@ -64,7 +64,9 @@ Rectangle {
         }
         Loader {
             id: modelLoader
+            objectName: "modelPaneLoader"
             Layout.fillWidth: true; Layout.fillHeight: true
+            asynchronous: true
             active: root.modelActive; visible: active
             onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }
             Component.onCompleted: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }

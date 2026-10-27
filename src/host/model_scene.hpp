@@ -21,6 +21,14 @@ public:
             {SourceActive, "sourceActive"}};
   }
   void replace(const ModelDocument *);
+  // Detached items have no QObject/model affinity. Build them on the loading
+  // worker, then transfer ownership to the GUI model in one publication.
+  struct Prepared {
+    std::unique_ptr<QStandardItem> root;
+    std::map<int,QStandardItem *> meshes;
+  };
+  static Prepared prepare(const ModelDocument *);
+  void replace(Prepared);
   QModelIndex meshIndex(int mesh) const;
   Qt::ItemFlags flags(const QModelIndex &index) const override {
     return QStandardItemModel::flags(index) & ~Qt::ItemIsEditable;

@@ -35,6 +35,7 @@
 #include <cmath>
 #include <limits>
 #include "model_forensics.hpp"
+#include "foreground_trace.hpp"
 #include <QtGui/private/qrhid3d11_p.h>
 using namespace formaview::render;
 namespace {
@@ -680,6 +681,12 @@ int main(int argc,char **argv) {
         // A foreground soak must stay foreground; a completed process alone
         // does not validate that condition. Activate once, never steal it back.
         const auto hwnd=reinterpret_cast<HWND>(window.winId());
+        std::unique_ptr<ForegroundTrace> foregroundTrace;
+        if(foreground) foregroundTrace=std::make_unique<ForegroundTrace>(hwnd);
+        const auto saveForegroundTrace=qScopeGuard([&]{
+          if(foregroundTrace){foregroundTrace->stop();report["foregroundTrace"]=foregroundTrace->report();}
+        });
+        if(foreground) require(foregroundTrace->ready(),"Cannot install foreground activation journal");
         if(foreground) {
           const DWORD foregroundThread=GetWindowThreadProcessId(GetForegroundWindow(),nullptr);
           const bool attached=foregroundThread && foregroundThread!=GetCurrentThreadId()
@@ -693,16 +700,31 @@ int main(int argc,char **argv) {
           require(window.isActive() && window.isExposed() && GetForegroundWindow()==hwnd,"Foreground soak could not acquire initial focus");
         }
         bool foregroundHeld=true;
-        const bool focusLossControl=qEnvironmentVariable("FORMAVIEW_SOAK_FOCUS_LOSS_CONTROL")=="1";
+        const auto focusControl=qEnvironmentVariable("FORMAVIEW_SOAK_FOCUS_LOSS_CONTROL");
+        const bool focusLossControl=!focusControl.isEmpty();
         report["focusLossControl"]=focusLossControl;
+        report["focusLossControlKind"]=focusControl;
+        std::unique_ptr<QWindow> activationControl;
         if(focusLossControl) {
           require(foreground && duration>=10,"Focus-loss control requires a foreground soak of at least 10 seconds");
-          QTimer::singleShot(5000,&window,&QWindow::hide);
+          require(focusControl=="1" || focusControl=="activate","Unknown focus-loss control");
+          if(focusControl=="1") QTimer::singleShot(5000,&window,&QWindow::hide);
+          else {
+            activationControl=std::make_unique<QWindow>();
+            activationControl->setTitle("FormaView controlled activation target");
+            activationControl->setFlags(Qt::Tool | Qt::WindowStaysOnTopHint);
+            activationControl->resize(240,120);
+            QTimer::singleShot(5000,&window,[&]{
+              activationControl->show();activationControl->requestActivate();
+              SetForegroundWindow(reinterpret_cast<HWND>(activationControl->winId()));
+            });
+          }
         }
         const auto clips=static_cast<int>(session.clips().size());const int rotate=std::max(1,std::min(clips,8));
         QElapsedTimer run;run.start();qint64 nextSample=0,nextClip=10000,nextSpeed=20000,nextLock=30000;int tick=0;bool rootLocked=false;
         const double speeds[]={1.0,2.0,.5,1.0};
         const auto origin=std::chrono::steady_clock::now();{std::lock_guard lock(live->mutex);/* Intervals recorded since the window first showed, i.e. while the model loaded, before the soak clock starts. */QJsonArray loadGaps;int loadOver100=0;for(double v:live->intervals){if(v>100)++loadOver100;if(v>50)loadGaps.append(v);}report["loadPhaseIntervals"]=static_cast<int>(live->intervals.size());report["loadPhaseOver100Ms"]=loadOver100;report["loadPhaseOver50Ms"]=loadGaps;live->origin=origin;live->swapTimes.clear();live->intervals.clear();live->last={};}
+        if(foregroundTrace) report["foregroundJournalSoakStartMs"]=foregroundTrace->elapsedMs();
         const auto since=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-origin).count();};
         std::unique_ptr<model_forensics::Probe> diagnostics;QMetaObject::Connection poseConnection,renderDiagnosticConnection;
         std::atomic<bool> renderCalibrated{false};
@@ -773,7 +795,9 @@ int main(int argc,char **argv) {
           if(pumped>20)events.append(QJsonObject{{"ms",pumpStart},{"type","processEvents"},{"callMs",pumped}});
           QThread::msleep(2);
           const auto now=run.elapsed();
-          if(foreground && (!window.isActive() || !window.isExposed() || GetForegroundWindow()!=hwnd)) {
+          const auto observedForeground=foreground ? GetForegroundWindow() : nullptr;
+          if(foreground && (!window.isActive() || !window.isExposed() || observedForeground!=hwnd)) {
+            foregroundTrace->observedLoss(observedForeground,window.isActive(),window.isExposed());
             foregroundHeld=false;report["foregroundLostAtMs"]=now;sample("soak focus lost");break;
           }
           if(stimulus&&now>=nextStimulus){
@@ -792,6 +816,16 @@ int main(int argc,char **argv) {
         report["measuredDurationMs"]=run.elapsed();
         {std::lock_guard lock(live->mutex);live->collecting=false;}
         watch.run=false;if(watchdog.joinable())watchdog.join();watchStopped=true;
+        if(foregroundTrace) {
+          // Foreground events are asynchronous. Preserve the failed boundary,
+          // then drain activation notifications outside the measured interval.
+          if(!foregroundHeld) {
+            QElapsedTimer drain;drain.start();
+            while(drain.elapsed()<250){QCoreApplication::processEvents();QThread::msleep(2);}
+            foregroundTrace->afterLoss();
+          }
+          foregroundTrace->stop(); // Exclude our own cleanup/hide.
+        }
         report["stallWatchdog"]=summarizeStalls(watch.samples);
         report["watchdogThread"]=QJsonObject{{"enabled",watchEnabled},{"checks",static_cast<qint64>(watch.checks)},
           {"suppressedEligibleChecks",static_cast<qint64>(watch.suppressed)},{"cpuMs",watch.cpuMs},
@@ -822,6 +856,7 @@ int main(int argc,char **argv) {
         report["foregroundObservationBoundary"]="Checked after every GUI event pump; one initial activation only; abort on observed focus/exposure loss, without stitching intervals";
         session.clear();pause(500);sample("cleared");
         require(foregroundHeld,"Foreground soak lost focus or exposure; partial run is not a completed foreground soak");
+        if(foregroundTrace) require(foregroundTrace->complete(),"Foreground activation journal incomplete");
       } else if(phase=="exit") {
         // True process exit with a load in flight: the report is written
         // first, then the branch-scope objects (view, window, session) are

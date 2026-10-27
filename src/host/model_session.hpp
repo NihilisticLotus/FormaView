@@ -229,6 +229,9 @@ signals:
 private:
   struct Result {
     std::shared_ptr<ModelDocument> document;
+    ModelScene::Prepared scene;
+    ModelSkeleton::Prepared skeleton;
+    int initialMesh{};
     QString error;
   };
   struct Job {
@@ -269,7 +272,7 @@ private:
   void poll();
   void rebuild();
   void clearSelection();
-  void updateSkeleton(bool resetHighlight = true);
+  void updateSkeleton(bool resetHighlight = true,ModelSkeleton::Prepared *prepared = nullptr);
   const ModelMesh *selectedMesh() const;
   std::vector<bool> visibleMeshes() const;
   void chooseVisibleMesh();

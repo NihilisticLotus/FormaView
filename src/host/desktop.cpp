@@ -157,6 +157,7 @@ void Desktop::styleToolWindow(QObject *window) {
   installWindowChrome(qobject_cast<QQuickWindow *>(window));
 }
 Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
+  recentWriter_.setMaxThreadCount(1);
 #ifdef FORMAVIEW_MODEL_UI
   model_ = std::make_unique<ModelSession>();
 #endif
@@ -182,6 +183,7 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
 Desktop::~Desktop() {
   pollTimer_.stop();
   scheduler_.shutdown();
+  recentWriter_.waitForDone();
 }
 void Desktop::setLanguage(const QString &value) {
   if (value != language_ &&
@@ -818,7 +820,9 @@ void Desktop::publish(Job &job) {
     recent_.removeAll(directory_);
     recent_.prepend(directory_);
     recent_ = recent_.mid(0, 20);
-    QSettings{}.setValue("recent", recent_);
+    // QSettings destruction flushes to disk and can block for >100ms.
+    // Keep snapshot writes ordered, and drain them before Desktop is destroyed.
+    recentWriter_.start([recent=recent_] { QSettings{}.setValue("recent",recent); });
     if (!sameDirectory) {
       const auto view = views_.value(directory_);
       query_ = view.query;

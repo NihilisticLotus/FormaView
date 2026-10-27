@@ -21,6 +21,14 @@ public:
   QHash<int, QByteArray> roleNames() const override;
   Qt::ItemFlags flags(const QModelIndex &index) const override;
   void replace(const ModelDocument *, int mesh, int binding);
+  struct Prepared {
+    std::vector<std::unique_ptr<QStandardItem>> roots;
+    QHash<QString,QStandardItem *> nodes;
+    QHash<int,QStandardItem *> joints;
+    QHash<QString,QVariantMap> details;
+  };
+  static Prepared prepare(const ModelDocument *,int mesh,int binding);
+  void replace(Prepared);
   QString searchText() const { return search_; }
   bool weightedOnly() const { return weightedOnly_; }
   void setSearchText(const QString &);

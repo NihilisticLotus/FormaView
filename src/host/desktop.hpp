@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QSet>
 #include <QTimer>
+#include <QThreadPool>
 #include <QUrl>
 #include <QVariantList>
 #include <memory>
@@ -190,6 +191,7 @@ private:
   std::vector<Job> jobs_;
   std::shared_ptr<const std::vector<FileEntry>> source_;
   QTimer pollTimer_;
+  QThreadPool recentWriter_;
   QString directory_, query_, error_, errorTarget_, requested_,
       language_{"zh-CN"};
   QVariantMap asset_, preferences_, folderMenu_;

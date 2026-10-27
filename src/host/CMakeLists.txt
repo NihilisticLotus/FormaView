@@ -154,6 +154,11 @@ if(BUILD_TESTING)
         target_link_libraries(formaview_desktop_tests PRIVATE formaview_desktopplugin)
     endif()
     target_compile_definitions(formaview_desktop_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        # ASan instrumentation of the desktop regression suite exceeds COFF's
+        # default section limit. Keep sanitizer instrumentation enabled.
+        target_compile_options(formaview_desktop_tests PRIVATE /bigobj)
+    endif()
     if(WIN32)
         target_link_libraries(formaview_desktop_tests PRIVATE dxgi)
     endif()

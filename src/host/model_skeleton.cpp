@@ -55,12 +55,13 @@ QVariantMap ModelSkeleton::details(const QString &id, int joint) const {
 }
 void ModelSkeleton::replace(const ModelDocument *document, int mesh,
                             int binding) {
-  nodes_.clear();
-  joints_.clear();
-  details_.clear();
-  source_.clear();
+  replace(prepare(document,mesh,binding));
+}
+ModelSkeleton::Prepared ModelSkeleton::prepare(const ModelDocument *document,
+                                               int mesh,int binding) {
+  Prepared prepared;
   if (!document)
-    return;
+    return prepared;
   if (document->skeletonOnly) {
     // Animation documents (standalone PSA, animation-only FBX) expose the
     // bone hierarchy directly. Raw unpaired records keep their verbatim
@@ -83,7 +84,7 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
       item->setData(false, InPalette);
       item->setData(QVariant::fromValue(qulonglong{0}), InfluencePoints);
       const auto parent = document->boneParents[static_cast<std::size_t>(i)];
-      details_.insert(
+      prepared.details.insert(
           id, QVariantMap{{"id", id},
                           {"name", document->boneNames[static_cast<std::size_t>(i)]},
                           {"boneIndex", i},
@@ -104,23 +105,17 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
       else
         roots.push_back(std::move(owners.at(id)));
     }
-    QList<QStandardItem *> rows;
-    rows.reserve(static_cast<qsizetype>(roots.size()));
-    for (auto &root : roots)
-      rows.append(root.release());
-    source_.invisibleRootItem()->appendRows(rows);
-    for (auto it = items.cbegin(); it != items.cend(); ++it)
-      nodes_.insert(it.key(), source_.indexFromItem(it.value()));
+    prepared.roots=std::move(roots);
+    prepared.nodes=std::move(items);
     for (int i = 0; i < static_cast<int>(document->boneNames.size()); ++i)
-      joints_.insert(i, source_.indexFromItem(
-                            items.value(QStringLiteral("bone/%1").arg(i))));
-    return;
+      prepared.joints.insert(i,prepared.nodes.value(QStringLiteral("bone/%1").arg(i)));
+    return prepared;
   }
   if (mesh < 0 || mesh >= static_cast<int>(document->meshes.size()))
-    return;
+    return prepared;
   const auto &skins = document->meshes[static_cast<std::size_t>(mesh)].skins;
   if (binding < 0 || binding >= static_cast<int>(skins.size()))
-    return;
+    return prepared;
   const auto &skin = skins[static_cast<std::size_t>(binding)];
   QHash<QString, QList<int>> palette;
   QHash<QString, qulonglong> nodeCounts;
@@ -207,7 +202,7 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
     const auto parent =
         document->nodeById.value(node.value("parent").toString());
     detail.insert("parentName", parent.value("name"));
-    details_.insert(id, detail);
+    prepared.details.insert(id, detail);
     items.insert(id, item.get());
     owners[id] = std::move(item);
   }
@@ -245,15 +240,22 @@ void ModelSkeleton::replace(const ModelDocument *document, int mesh,
       jointItems.insert(i, entry);
     }
   }
-  // Notify the proxy once per completed root instead of once per bone. The
-  // source hierarchy and QModelIndexes become visible only after construction.
+  prepared.roots=std::move(roots);
+  prepared.nodes=std::move(items);
+  prepared.joints=std::move(jointItems);
+  return prepared;
+}
+void ModelSkeleton::replace(Prepared prepared) {
+  nodes_.clear();
+  joints_.clear();
+  details_=std::move(prepared.details);
+  source_.clear();
   QList<QStandardItem *> rows;
-  rows.reserve(static_cast<qsizetype>(roots.size()));
-  for (auto &root : roots)
-    rows.append(root.release());
+  rows.reserve(static_cast<qsizetype>(prepared.roots.size()));
+  for(auto &root:prepared.roots) rows.append(root.release());
   source_.invisibleRootItem()->appendRows(rows);
-  for (auto it = items.cbegin(); it != items.cend(); ++it)
-    nodes_.insert(it.key(), source_.indexFromItem(it.value()));
-  for (auto it = jointItems.cbegin(); it != jointItems.cend(); ++it)
-    joints_.insert(it.key(), source_.indexFromItem(it.value()));
+  for(auto it=prepared.nodes.cbegin();it!=prepared.nodes.cend();++it)
+    nodes_.insert(it.key(),source_.indexFromItem(it.value()));
+  for(auto it=prepared.joints.cbegin();it!=prepared.joints.cend();++it)
+    joints_.insert(it.key(),source_.indexFromItem(it.value()));
 }
