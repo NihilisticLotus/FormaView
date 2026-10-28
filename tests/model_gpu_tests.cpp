@@ -42,6 +42,19 @@
 #include <QtGui/private/qrhid3d11_p.h>
 using namespace formaview::render;
 namespace {
+constexpr double frameTimeP95TargetMs=16.7;
+// User-approved P95 budget tolerance; the percentile and samples are unchanged.
+constexpr double frameTimeP95Tolerance=0.05;
+constexpr double frameTimeP95LimitMs=frameTimeP95TargetMs*(1.0+frameTimeP95Tolerance);
+constexpr double frameTimeP99LimitMs=33.3;
+void recordFrameTimeGate(QJsonObject &report,double p95,double p99,bool eligible) {
+  report["frameTimeP95TargetMs"]=frameTimeP95TargetMs;
+  report["frameTimeP95TolerancePercent"]=frameTimeP95Tolerance*100.0;
+  report["frameTimeP95LimitMs"]=frameTimeP95LimitMs;
+  report["frameTimeP99LimitMs"]=frameTimeP99LimitMs;
+  report["frameTimeNominalGatePassed"]=eligible && p95<=frameTimeP95TargetMs && p99<=frameTimeP99LimitMs;
+  report["frameTimeGatePassed"]=eligible && p95<=frameTimeP95LimitMs && p99<=frameTimeP99LimitMs;
+}
 bool sogouPyObserved{}, sogouTsfObserved{};
 void observeImeModules() {
   sogouPyObserved |= GetModuleHandleW(L"SogouPY.ime") != nullptr;
@@ -486,6 +499,7 @@ int main(int argc,char **argv) {
         item.reset();window.hide();window.releaseResources();QCoreApplication::processEvents(); // this phase owns its windows
         const auto build=[&](ModelSession *target){
           auto w=std::make_unique<QQuickWindow>();w->setTitle("FormaView GPU lifecycle close");w->resize(1280,720);
+          if(background)w->setFlag(Qt::WindowDoesNotAcceptFocus);
           if(foreground)w->setFlag(Qt::WindowStaysOnTopHint);
           auto it=std::make_unique<ModelView>(w->contentItem());it->setSize({1280,720});it->setSession(target);
           it->observe=[live](Observation o){std::lock_guard lock(live->mutex);if(o.released){++live->releases;live->owned=0;return;}live->owned=o.owned_gpu_bytes;live->process=o.process_gpu_bytes;live->revision=o.frame_revision;live->gpu=o.gpu_skinning;};
@@ -527,6 +541,7 @@ int main(int argc,char **argv) {
         item.reset();window.hide();window.releaseResources();QCoreApplication::processEvents(); // this phase owns its windows
         const auto build=[&](ModelSession *target){
           auto w=std::make_unique<QQuickWindow>();w->setTitle("FormaView GPU lifecycle close-external");w->resize(1280,720);
+          if(background)w->setFlag(Qt::WindowDoesNotAcceptFocus);
           if(foreground)w->setFlag(Qt::WindowStaysOnTopHint);
           auto it=std::make_unique<ModelView>(w->contentItem());it->setSize({1280,720});it->setSession(target);
           it->observe=[live](Observation o){std::lock_guard lock(live->mutex);if(o.released){++live->releases;live->owned=0;return;}live->owned=o.owned_gpu_bytes;live->process=o.process_gpu_bytes;live->revision=o.frame_revision;live->gpu=o.gpu_skinning;};
@@ -913,9 +928,7 @@ int main(int argc,char **argv) {
         report["foregroundConditionHeld"]=foreground ? QJsonValue(foregroundHeld) : QJsonValue(QJsonValue::Null);
         report["foregroundObservationBoundary"]="Checked at GUI dispatcher wake/block boundaries, active/visible changes, and action/deadline callbacks; one initial activation only; abort on observed focus/exposure loss, without stitching intervals";
         report["soakEventLoop"]="Native QEventLoop with absolute original action deadlines and monotonic-clock duration check; no manual processEvents/msleep polling";
-        report["frameTimeP95LimitMs"]=16.7;
-        report["frameTimeP99LimitMs"]=33.3;
-        report["frameTimeGatePassed"]=report["swapIntervals"].toInt()>0 && report["swapP95Ms"].toDouble()<=16.7 && report["swapP99Ms"].toDouble()<=33.3;
+        recordFrameTimeGate(report,report["swapP95Ms"].toDouble(),report["swapP99Ms"].toDouble(),report["swapIntervals"].toInt()>0);
         session.clear();pause(500);sample("cleared");
         require(foregroundHeld,"Foreground soak lost focus or exposure; partial run is not a completed foreground soak");
         if(foregroundTrace) require(foregroundTrace->complete(),"Foreground activation journal incomplete");
@@ -1288,7 +1301,7 @@ int main(int argc,char **argv) {
       report["seconds"]=duration;
       const auto intervals=report.value("intervalsMs").toArray();double totalMs=0;for(const auto &value:intervals)totalMs+=value.toDouble();
       report["meanPoseFps"]=totalMs>0?intervals.size()*1000.0/totalMs:0;
-      report["frameTimeGatePassed"]=report.value("p95Ms").toDouble()<=16.7 && report.value("p99Ms").toDouble()<=33.3 && report.value("meanPoseFps").toDouble()>=60;
+      recordFrameTimeGate(report,report.value("p95Ms").toDouble(),report.value("p99Ms").toDouble(),report.value("meanPoseFps").toDouble()>=60);
       item.reset();session.clear();window.hide();window.releaseResources();QCoreApplication::processEvents();
     }
     report["passed"]=true;report["passedMeaning"]="Execution and applicable correctness assertions; performance gate is frameTimeGatePassed";
