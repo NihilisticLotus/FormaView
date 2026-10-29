@@ -176,6 +176,9 @@ AccessScope parse_image_scope(const QJsonObject &o) {
     for (const auto &value : list) {
       if (!value.isString())
         invalid("Scope root must be a string");
+      if (value.toString().trimmed().isEmpty())
+        invalid(roots == &scope.input_roots ? "Input scope root must not be empty"
+                                           : "Output scope root must not be empty");
       roots->push_back(path(value.toString()));
     }
   }

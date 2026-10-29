@@ -4,10 +4,13 @@ import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
+    objectName: "conversionResults"
     required property var controller
     required property var snapshot
     property alias acknowledged: acknowledge.checked
     readonly property string approvalDigest: snapshot.approval_digest || ""
+    readonly property string planId: snapshot.id || ""
+    onPlanIdChanged: filters.reset()
     onApprovalDigestChanged: acknowledge.checked = false
     readonly property bool hasLoss: (snapshot.items || []).some(i => (i.preflight?.losses || []).length > 0)
     signal submit()
@@ -15,6 +18,7 @@ ColumnLayout {
     spacing: 10
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.accent; wrapMode: Text.WordWrap; text: root.controller.imageJobs.busy ? Theme.t("正在固定输入与准备预检…", "Preparing fixed inputs and preflight…", "正在固定輸入與準備預檢…") : Theme.state(root.snapshot.state || "") + " · " + (root.snapshot.total || 0) }
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WrapAnywhere; text: root.snapshot.id ? Theme.t("已固定输入与参数快照；修改设置后需重新预检。", "Inputs and settings are fixed to this plan; edits require preflight again.", "已固定輸入與參數快照；修改設定後須重新預檢。") : Theme.t("修改参数后需重新预检。", "Changed parameters require a new preflight.", "修改參數後需重新預檢。") }
+    PreflightFilters { id: filters; Layout.fillWidth: true; items: root.snapshot.items || []; onFilterChanged: results.positionViewAtBeginning() }
     RowLayout {
         Layout.fillWidth: true; spacing: 24
         Label { Layout.fillWidth: true; Layout.preferredWidth: 30; color: Theme.muted; font.pixelSize: Theme.compactText; text: Theme.t("来源 / 选择", "Source / Selection", "來源 / 選擇") }
@@ -23,14 +27,15 @@ ColumnLayout {
         Item { Layout.preferredWidth: 70 }
     }
     ListView {
+        id: results; objectName: "preflightResultsList"
         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; reuseItems: true; spacing: 6
-        model: root.snapshot.items || []
+        model: filters.filteredItems
         ScrollBar.vertical: ScrollBar {}
         delegate: ConversionItemRow {
             required property var modelData
             width: ListView.view.width; controller: root.controller; entry: modelData; preflight: true
         }
-
+        Label { anchors.centerIn: parent; width: parent.width - 40; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: Theme.muted; visible: results.count === 0; text: filters.active ? Theme.t("没有符合筛选条件的结果。可调整条件或清空筛选。", "No results match these filters. Adjust or clear the filters.", "沒有符合篩選條件的結果。可調整條件或清空篩選。") : Theme.t("暂无预检结果。", "No preflight results yet.", "尚無預檢結果。") }
     }
     OptionCheck { id: acknowledge; objectName: "acknowledgeImageLosses"; visible: root.hasLoss; enabled: root.snapshot.state === "ready"; text: Theme.t("已阅读并接受本计划列出的全部损失", "I reviewed and accept all losses listed for this plan", "已閱讀並接受本計畫列出的全部損失") }
     RowLayout {

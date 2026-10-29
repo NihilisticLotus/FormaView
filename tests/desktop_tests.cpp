@@ -39,6 +39,7 @@
 #include <QMetaProperty>
 #include <QProcess>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlIncubationController>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -2873,6 +2874,207 @@ private slots:
     }
     jobs.append(QJsonObject::fromVariantMap(service->job())); evidence_["scene_export_gui"] = jobs;
   }
+  void preflightCombinedFilters() {
+    QVariantList entries;
+    for (int i = 0; i < 474; ++i) {
+      const auto state = i < 200 ? "ready" : i < 300 ? "failed" : i < 400 ? "pending" : "cancelled";
+      const auto format = i < 200 ? "png" : i < 300 ? "jpeg" : i < 400 ? "fbx" : "exr";
+      entries.append(QVariantMap{{"status", state},
+          {"request", QVariantMap{{"input", QString("C:/source/alpha-%1.psa").arg(i, 3, 10, QChar('0'))},
+              {"output", QString("C:/output/result-%1.%2").arg(i).arg(format)},
+              {"options", QVariantMap{{"target", format}}}}},
+          {"preflight", QVariantMap{{"losses", i < 50 ? QVariantList{QVariantMap{{"code", "alpha_dropped"}, {"detail", "Alpha channel omitted"}}} : QVariantList{}}}}});
+    }
+    QVariantMap snapshot{{"id", "filter-fixture"}, {"state", "ready"}, {"total", 474},
+                         {"approval_digest", "fixture-digest"}, {"items", entries}};
+    QSignalSpy warnings(engine_.get(), &QQmlEngine::warnings);
+    QQmlComponent component(engine_.get());
+    component.loadFromModule("FormaView.TestUI", "ConversionResults");
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    std::unique_ptr<QObject> object(component.createWithInitialProperties(
+        {{"controller", QVariant::fromValue(desktop_.get())}, {"snapshot", snapshot}}));
+    auto *panel = qobject_cast<QQuickItem *>(object.get()); QVERIFY(panel);
+    QQuickWindow probe;
+    probe.setColor(QColor("#1c1c1e")); probe.resize(1060, 760);
+    probe.setFlag(Qt::WindowDoesNotAcceptFocus, true);
+    panel->setParentItem(probe.contentItem()); panel->setPosition({20, 20}); panel->setSize({1020, 720});
+    probe.show(); QVERIFY(QTest::qWaitForWindowExposed(&probe));
+    const auto find = [&](const char *name) { return panel->findChild<QQuickItem *>(name); };
+    auto *filters = find("preflightFilters"), *list = find("preflightResultsList");
+    auto *search = find("preflightSearch"), *kind = find("preflightKind"), *format = find("preflightFormat");
+    QVERIFY(filters && list && search && kind && format);
+    const auto reset = [&] { return QMetaObject::invokeMethod(find("clearPreflightFilters"), "clicked"); };
+    const auto state = [&](const char *name) {
+      const auto matches = visualItems(panel, "preflightState-" + QString::fromUtf8(name));
+      if (matches.isEmpty()) return false;
+      auto *check = matches.front(); check->setProperty("checked", !check->property("checked").toBool());
+      return QMetaObject::invokeMethod(check, "toggled");
+    };
+    QTRY_COMPARE(list->property("count").toInt(), 474);
+    QVERIFY(state("ready")); QTRY_COMPARE(list->property("count").toInt(), 200);
+    QVERIFY(state("failed")); QTRY_COMPARE(list->property("count").toInt(), 300);
+    find("preflightWarnings")->setProperty("checked", true);
+    QTRY_COMPARE(list->property("count").toInt(), 50);
+    search->setProperty("text", "ALPHA-004"); QTRY_COMPARE(list->property("count").toInt(), 1);
+    QVERIFY(find("acknowledgeImageLosses")->isVisible()); QVERIFY(!find("submitImagePlan")->isEnabled());
+    QTest::qWait(80); QVERIFY(captureWindow(&probe).save(root_ + "/filters-combined.png"));
+    QVERIFY(reset()); QTRY_COMPARE(list->property("count").toInt(), 474);
+    kind->setProperty("currentIndex", 2); QTRY_COMPARE(list->property("count").toInt(), 100);
+    // Open the real popup and select the last entry through keyboard input.
+    QTest::mouseClick(&probe, Qt::LeftButton, Qt::NoModifier,
+                      format->mapToScene(QPointF(format->width()/2, format->height()/2)).toPoint());
+    auto *popup = format->property("popup").value<QObject *>(); QVERIFY(popup);
+    QTRY_VERIFY(popup->property("visible").toBool());
+    QTest::keyClick(&probe, Qt::Key_End);
+    QTest::keyClick(&probe, Qt::Key_Return);
+    QTRY_COMPARE(format->property("currentIndex").toInt(), 4);
+    QTRY_COMPARE(list->property("count").toInt(), 0);
+    QVERIFY(reset()); QTRY_COMPARE(list->property("count").toInt(), 474);
+    QCOMPARE(format->property("currentIndex").toInt(), 0);
+    search->setProperty("text", "RESULT-473.EXR"); QTRY_COMPARE(list->property("count").toInt(), 1);
+    QVERIFY(!find("submitImagePlan")->isEnabled()); // Hidden losses still require whole-plan acknowledgement.
+    QVERIFY(reset());
+    QTRY_COMPARE(list->property("count").toInt(), 474);
+    QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+    QTRY_VERIFY(list->property("contentY").toDouble() > 1000);
+    auto details = visualItems(panel, "conversionItemDetails"); QVERIFY(!details.isEmpty());
+    QVERIFY(QMetaObject::invokeMethod(details.back(), "clicked"));
+    search->setProperty("text", "alpha-000"); QTRY_COMPARE(list->property("count").toInt(), 1);
+    QTRY_VERIFY(list->property("contentY").toDouble() < 1);
+    QTest::qWait(80);
+    details = visualItems(panel, "conversionItemDetails"); QVERIFY(!details.isEmpty());
+    QCOMPARE(details.front()->property("text").toString(), QString::fromUtf8("详情"));
+    QVERIFY(reset()); QVERIFY(state("pending")); QTRY_COMPARE(list->property("count").toInt(), 100);
+    for (int i = 300; i < 400; ++i) { auto row = entries[i].toMap(); row["status"] = "ready"; entries[i] = row; }
+    snapshot["items"] = entries; QVERIFY(panel->setProperty("snapshot", snapshot));
+    QTRY_COMPARE(list->property("count").toInt(), 0);
+    QVERIFY(state("pending")); QTRY_COMPARE(list->property("count").toInt(), 474);
+    search->setProperty("text", "missing"); QTRY_COMPARE(list->property("count").toInt(), 0);
+    probe.resize(720, 760); panel->setWidth(680); QTest::qWait(80);
+    QVERIFY(captureWindow(&probe).save(root_ + "/filters-narrow-empty.png"));
+    snapshot["id"] = "next-plan"; QVERIFY(panel->setProperty("snapshot", snapshot));
+    QTRY_COMPARE(list->property("count").toInt(), 474); QVERIFY(!filters->property("active").toBool());
+    QCOMPARE(panel->property("snapshot").toMap().value("items").toList(), entries);
+    QTest::qWait(80); QVERIFY(captureWindow(&probe).save(root_ + "/filters-all.png"));
+    QCOMPARE(warnings.size(), 0);
+    evidence_["preflight_filters"] = "474 items; status OR, warning/kind/format/path AND; reset, empty, live states, details reuse, count, whole-plan losses and narrow layout";
+    panel->setParentItem(nullptr);
+  }
+  void modelScopeValidation() {
+    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to synthetic ActorX fixtures");
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    const auto input = root_ + "/scope-input", output = root_ + "/scope-output";
+    QVERIFY(QDir().mkpath(input)); QVERIFY(QDir().mkpath(output));
+    QVERIFY(QFile::copy(fixtures + "/source.psk", input + "/reference.psk"));
+    QStringList sources;
+    for (int i = 0; i < 6; ++i) {
+      const auto source = input + QString("/animation-%1.psa").arg(i);
+      QVERIFY(QFile::copy(fixtures + "/source.psa", source)); sources.append(source);
+    }
+    QMap<QString, QByteArray> originalSources;
+    for (const auto &path : sources + QStringList{input + "/reference.psk"}) {
+      QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); originalSources[path] = file.readAll();
+    }
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    auto *conversion = window_->findChild<QObject *>("conversionWorkspace");
+    QVERIFY(conversion);
+    const auto cleanup = qScopeGuard([&] { QMetaObject::invokeMethod(conversion, "close"); });
+    QVERIFY(conversion->setProperty("modelInputs", sources));
+    QVERIFY(conversion->setProperty("modelMode", true));
+    QTRY_VERIFY(item("conversionInputRoot") && item("conversionOutputRoot"));
+    item("conversionInputRoot")->setProperty("text", "");
+    item("conversionOutputRoot")->setProperty("text", output);
+    item("modelExportPaired")->setProperty("text", input + "/reference.psk");
+    auto *preflight = item("createImagePlan"); QVERIFY(preflight);
+    const QVariantMap emptyInput{{"input_roots", QStringList{QString{}}}, {"output_roots", QStringList{output}}};
+    const QVariantMap options{{"target", "fbx"}, {"export_content", "animation"},
+        {"paired_file", input + "/reference.psk"}, {"file_organization", "per-clip"}};
+    const bool emptyButtonEnabled = preflight->isEnabled();
+    service->preflight(sources, emptyInput, options, "{name}-{clip}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
+    const QJsonObject observed{{"scope", QJsonObject::fromVariantMap(emptyInput)},
+        {"options", QJsonObject::fromVariantMap(options)}, {"inputs", QJsonArray::fromStringList(sources)},
+        {"button_enabled", emptyButtonEnabled}, {"error", service->error()},
+        {"plan", QJsonObject::fromVariantMap(service->plan())}};
+    QFile repro(root_ + "/empty-scope-observation.json"); QVERIFY(repro.open(QIODevice::WriteOnly));
+    repro.write(QJsonDocument(observed).toJson()); repro.close();
+    save("model-empty-input-scope");
+    // The original UI enabled preflight for [""] and returned only "Empty path".
+    QVERIFY2(!emptyButtonEnabled, "Empty input scope must disable GUI preflight");
+    QVERIFY2(service->error().contains("Input scope root must not be empty"), qPrintable(service->error()));
+    QVERIFY(service->plan().isEmpty());
+    QVERIFY(QDir(output).entryList(QDir::Files).isEmpty());
+    item("conversionInputRoot")->setProperty("text", "  ");
+    QTRY_VERIFY(!preflight->isEnabled());
+    item("conversionInputRoot")->setProperty("text", input);
+    item("conversionOutputRoot")->setProperty("text", "  ");
+    QTRY_VERIFY(!preflight->isEnabled());
+    QVERIFY(item("conversionOutputScopeHint"));
+    service->preflight(sources, {{"input_roots", QStringList{input}}, {"output_roots", QStringList{QString{}}}},
+                       options, "{name}-{clip}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
+    QVERIFY2(service->error().contains("Output scope root must not be empty"), qPrintable(service->error()));
+    item("conversionOutputRoot")->setProperty("text", output);
+    QTRY_VERIFY(preflight->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(preflight, "clicked"));
+    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
+                             qPrintable(service->error()), 30000);
+    QCOMPARE(service->plan().value("items").toList().size(), 12);
+    evidence_["model_scope_ready"] = QJsonObject::fromVariantMap(service->plan());
+    service->submit(true);
+    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded",
+                             qPrintable(service->error()), 60000);
+    const auto outputs = service->job().value("items").toList(); QCOMPARE(outputs.size(), 12);
+    for (const auto &v : outputs) {
+      const auto result = v.toMap().value("result").toMap();
+      const auto path = result.value("committed_output").toString();
+      QVERIFY(!path.isEmpty());
+      const auto fbx = formaview::skeletal::FbxDocument::read(std::filesystem::path(path.toStdWString()));
+      QVERIFY(fbx.data().meshes.empty()); QCOMPARE(fbx.data().clips.size(), 1u);
+      const auto expectedClip = result.value("clips").toList().front().toMap();
+      QVERIFY(std::abs(fbx.data().clips.front().start - expectedClip.value("start").toDouble()) < 1e-6);
+      QVERIFY(std::abs(fbx.data().clips.front().end - expectedClip.value("end").toDouble()) < 1e-6);
+    }
+    evidence_["model_scope_export"] = QJsonObject::fromVariantMap(service->job());
+    QJsonArray singleExports;
+    const QVariantMap scope{{"input_roots", QStringList{input}}, {"output_roots", QStringList{output}}};
+    for (const bool paired : {false, true}) {
+      auto singleOptions = options;
+      if (!paired) singleOptions.remove("paired_file");
+      service->preflight({sources.front()}, scope, singleOptions,
+                         paired ? "single-paired-{clip}.{ext}" : "single-auto-{clip}.{ext}", "skip");
+      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
+                               qPrintable(service->error()), 30000);
+      QCOMPARE(service->plan().value("items").toList().size(), 2);
+      service->submit(true);
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 30000);
+      for (const auto &value : service->job().value("items").toList()) {
+        const auto result = value.toMap().value("result").toMap();
+        const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(result.value("committed_output").toString().toStdWString()));
+        QVERIFY(doc.data().meshes.empty()); QCOMPARE(doc.data().clips.size(), 1u);
+        const auto expected = result.value("clips").toList().front().toMap();
+        QVERIFY(std::abs(doc.data().clips.front().end - expected.value("end").toDouble()) < 1e-6);
+      }
+      singleExports.append(QJsonObject::fromVariantMap(service->job()));
+    }
+    evidence_["model_scope_single_exports"] = singleExports;
+    const auto outside = root_ + "/outside-reference.psk";
+    QVERIFY(QFile::copy(fixtures + "/source.psk", outside));
+    auto denied = options; denied["paired_file"] = outside;
+    service->preflight({sources.front()}, scope, denied, "outside-{clip}.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") != "planning", 30000);
+    const auto failed = QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson();
+    QVERIFY2(service->plan().value("state") == "failed", failed.constData());
+    QVERIFY2(failed.contains("out_of_scope"), failed.constData());
+    QVERIFY(QDir(output).entryList({"outside-*"}, QDir::Files).isEmpty());
+    evidence_["model_scope_outside_rejected"] = QJsonObject::fromVariantMap(service->plan());
+    for (auto it = originalSources.cbegin(); it != originalSources.cend(); ++it) {
+      QFile file(it.key()); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), it.value());
+    }
+  }
   void modelExportGuiLifecycle() {
     const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to skeletal_tests fbx synthetic fixtures");
@@ -3715,6 +3917,22 @@ private slots:
     QCOMPARE(service->plan()["items"].toList()[1].toMap()["status"].toString(),
              QString("failed"));
     const auto layered = small_ + "/actual-layers.exr";
+    // This case also runs independently of imageStructuresAndLayers.
+    formaview::ImageSubresource layerSource;
+    layerSource.data_window = layerSource.display_window = {0, 0, 1, 1};
+    for (const auto &[name, value] : std::array<std::pair<const char *, float>, 7>{{
+        {"beauty.R", .125F}, {"beauty.G", .25F}, {"beauty.B", .5F}, {"beauty.A", .75F},
+        {"utility.Z", 1.5F}, {"mono.Y", .25F}, {"mono.A", .5F}}}) {
+      formaview::ImageChannel channel; channel.name = name; channel.samples.scalar = formaview::ScalarType::Float32;
+      channel.samples.element_count = 1; channel.samples.bytes.resize(sizeof(value));
+      std::memcpy(channel.samples.bytes.data(), &value, sizeof(value));
+      layerSource.channels.push_back(std::move(channel));
+    }
+    const auto layerBytes = formaview::imaging::encode_professional(layerSource, {});
+    QFile layerFile(layered); QVERIFY(layerFile.open(QIODevice::WriteOnly));
+    QCOMPARE(layerFile.write(reinterpret_cast<const char *>(layerBytes.data()), static_cast<qint64>(layerBytes.size())),
+             static_cast<qint64>(layerBytes.size()));
+    layerFile.close();
     service->preflight({source, layered}, scope, {{"target", "png"}},
                        "mapped-{index}.{ext}", "skip");
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&

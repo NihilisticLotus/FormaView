@@ -75,7 +75,7 @@ ColumnLayout {
                     notes: [Theme.t("预检从真实源文件展开全部片段。", "Preflight expands all clips from source files.", "預檢從實際來源檔案展開全部片段。"), Theme.t("先读取列表，再勾选需要的源动作。", "Read the list, then select source clips.", "先讀取清單，再勾選需要的來源動作。")]
                     onActivated: root.edited(); Accessible.name: Theme.t("动作选择", "Clip selection", "動作選擇")
                 }
-                Tool { form: true; objectName: "modelExportInspect"; text: Theme.t("读取列表", "Read clips", "讀取清單"); enabled: !root.controller.imageJobs.busy && !!root.inputs && root.inputs.length > 0 && !!root.scope?.input_roots?.[0]; onClicked: { root.inspectedKey = root.inspectionKey; root.controller.imageJobs.inspectModelInputs(root.inputs, root.scope, paired.text) } }
+                Tool { form: true; objectName: "modelExportInspect"; text: Theme.t("读取列表", "Read clips", "讀取清單"); enabled: !root.controller.imageJobs.busy && !!root.inputs && root.inputs.length > 0 && !!root.scope?.input_roots?.length && root.scope.input_roots.every(p => typeof p === "string" && !!p.trim()); onClicked: { root.inspectedKey = root.inspectionKey; root.controller.imageJobs.inspectModelInputs(root.inputs, root.scope, paired.text) } }
             }
             ColumnLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1 && (clipMode.currentIndex === 1 || root.sourceClips.length > 0)
                 Repeater { model: root.inspectedSources

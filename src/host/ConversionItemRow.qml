@@ -41,7 +41,7 @@ Rectangle {
                 }
                 Label { Layout.fillWidth: true; visible: !!root.entry.temporary_cleanup_error || !!root.entry.outcome_uncertain; color: Theme.error; wrapMode: Text.WordWrap; text: Theme.t("需检查中断或临时文件清理结果。", "Review interrupted output or temporary-file cleanup.", "需檢查中斷或暫存檔清理結果。") }
             }
-            Tool { Layout.alignment: Qt.AlignTop; quiet: true; text: root.expanded ? Theme.t("收起", "Less", "收起") : Theme.t("详情", "Details", "詳情"); onClicked: root.expanded = !root.expanded }
+            Tool { objectName: "conversionItemDetails"; Layout.alignment: Qt.AlignTop; quiet: true; text: root.expanded ? Theme.t("收起", "Less", "收起") : Theme.t("详情", "Details", "詳情"); onClicked: root.expanded = !root.expanded }
         }
         ColumnLayout {
             Layout.fillWidth: true; visible: root.expanded
