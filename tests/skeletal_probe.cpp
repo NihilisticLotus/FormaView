@@ -98,8 +98,17 @@ bool verify_clip(const std::filesystem::path &source, const std::filesystem::pat
         if (d.nodes[i].bone) nodes.emplace(d.nodes[i].source.original_name, i);
     if (nodes.size() != a.bones.size()) throw std::runtime_error("Exported bone count differs");
     double error{}, config_effect{};
+    std::vector<double> times;
     for (std::int64_t frame = 0; frame <= static_cast<std::int64_t>(seq.frame_count) * 2; ++frame) {
-        const auto seconds = std::min(frame * .5 / seq.fps, seq.time.source_end_seconds);
+        times.push_back(std::min(frame * .5 / seq.fps, seq.time.source_end_seconds));
+    }
+    // Independent, reproducible off-grid checks in addition to all source/half frames.
+    std::uint32_t random = 0x46425831u;
+    for (int sample = 0; sample < 100; ++sample) {
+        random = random * 1664525u + 1013904223u;
+        times.push_back(static_cast<double>(random) / 4294967296.0 * seq.time.source_end_seconds);
+    }
+    for (const auto seconds : times) {
         const auto expected = sk::evaluate_paired(a, pairing, clip, seconds, &config);
         const auto unmasked = sk::evaluate_paired(a, pairing, clip, seconds);
         const auto actual = f.evaluate(0, std::clamp(seconds, d.clips[0].start, d.clips[0].end));
@@ -111,11 +120,12 @@ bool verify_clip(const std::filesystem::path &source, const std::filesystem::pat
             config_effect = std::max(config_effect, difference(unmasked.world[j], expected.world[j]));
         }
     }
-    out << "{\"passed\":" << (error < 1e-3 ? "true" : "false")
+    out << "{\"passed\":" << (error <= 0.0005 ? "true" : "false")
+        << ",\"sample_times\":" << times.size() << ",\"bone_count\":" << nodes.size()
         << ",\"world_matrix_error\":" << error << ",\"config_effect\":" << config_effect
         << ",\"mesh_count\":" << d.meshes.size() << ",\"config_sha256\":"
         << quoted(config.source.identity.sha256) << '}';
-    return error < 1e-3;
+    return error <= 0.0005;
 }
 bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &output, std::ostream &out) {
     const auto back = sk::FbxDocument::read(output);

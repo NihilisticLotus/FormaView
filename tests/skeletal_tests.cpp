@@ -737,6 +737,43 @@ void fbx(const std::filesystem::path &directory) {
     check(bake.sample_subdivisions > 1 && bake.audited_world_matrix_error <= 0.0005,
           "Coupled rotation was not refined");
     const auto coupled_back = read_fbx_traced(refined);
+    // A long clip with one changing rotation must not charge every static T/R/S
+    // channel for every source frame and every adaptive rotation subdivision.
+    auto sparse = coupled;
+    sparse.sequences[0].frame_count = 100;
+    sparse.sequences[0].time.source_end_seconds = 100 / sparse.sequences[0].fps;
+    sparse.keys.resize(100 * sparse.bones.size());
+    sparse.scale_keys.resize(sparse.keys.size());
+    for (std::size_t frame = 0; frame < 100; ++frame)
+        for (std::size_t bone = 0; bone < sparse.bones.size(); ++bone) {
+            sparse.keys[frame * sparse.bones.size() + bone] = coupled.keys[bone];
+            sparse.scale_keys[frame * sparse.bones.size() + bone] = coupled.scale_keys[bone];
+            if (frame && bone == 1)
+                sparse.keys[frame * sparse.bones.size() + bone].rotation =
+                    coupled.keys[coupled.bones.size() + bone].rotation;
+        }
+    sk::FbxWriteOptions bounded;
+    bounded.include_mesh = false;
+    bounded.limits.decoded_bytes = 512 * 1024;
+    const auto sparse_path = directory / "sparse-bounded.fbx";
+    std::filesystem::remove(sparse_path);
+    const auto sparse_bake = write_fbx_traced(sparse, 0, sparse_path, &m, bounded);
+    check(sparse_bake.audited_world_matrix_error <= 0.0005, "Sparse bake exceeded accuracy contract");
+    const auto sparse_back = read_fbx_traced(sparse_path);
+    for (double frame : {0.137, 0.381966, 0.731, 50.5, 100.0}) {
+        const auto seconds = frame / sparse.sequences[0].fps;
+        const auto expected = sk::evaluate(sparse, 0, seconds);
+        const auto actual = sparse_back.evaluate(0, std::min(seconds, sparse_back.data().clips[0].end));
+        for (std::size_t bone = 0; bone < sparse.bones.size(); ++bone) {
+            const auto &nodes = sparse_back.data().nodes;
+            const auto node = std::find_if(nodes.begin(), nodes.end(), [&](const auto &n) {
+                return n.source.original_name == sparse.bones[bone].source.original_name;
+            });
+            check(node != nodes.end(), "Sparse bone missing");
+            for (std::size_t k = 0; k < 16; ++k)
+                near(expected.world[bone][k], actual.world[static_cast<std::size_t>(node - nodes.begin())][k], 0.0005);
+        }
+    }
     near(bake.source_fps, coupled.sequences[0].fps);
     near(coupled_back.data().fps, bake.bake_fps);
     near(coupled_back.data().clips[0].end, coupled.sequences[0].time.source_end_seconds);

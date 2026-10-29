@@ -61,12 +61,13 @@ ColumnLayout {
             }
             RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("骨架配对", "Skeleton pairing", "骨架配對") }
-                Choice { id: pairing; form: true; Layout.fillWidth: true
+                Choice { id: pairing; objectName: "modelExportPairing"; currentIndex: 1; form: true; Layout.fillWidth: true
                     labels: [Theme.t("严格匹配源记录", "Strict source records", "嚴格匹配來源記錄"), Theme.t("使用参考模型骨架", "Use reference skeleton", "使用參考模型骨架")]
-                    notes: [Theme.t("记录不兼容会阻止输出。", "Incompatible source records block export.", "記錄不相容會阻止輸出。"), Theme.t("以兼容 PSK / PSKX 的参考骨架解释 PSA。", "Interpret PSA using a compatible PSK/PSKX reference skeleton.", "以相容 PSK / PSKX 的參考骨架解釋 PSA。")]
+                    notes: [Theme.t("同时核对 PSA 与 PSK 的父子关系和参考姿态；占位记录会被拒绝。", "Also require matching PSA/PSK hierarchy and reference pose; placeholder records are rejected.", "同時核對 PSA 與 PSK 的父子關係和參考姿態；佔位記錄會被拒絕。"), Theme.t("与预览一致：按唯一骨骼名配对，采用 PSK / PSKX 的层级与参考姿态。", "Same as preview: match unique bone names and use the PSK/PSKX hierarchy and reference pose.", "與預覽一致：按唯一骨骼名配對，採用 PSK / PSKX 的階層與參考姿態。")]
                     onActivated: root.edited(); Accessible.name: Theme.t("骨架配对", "Skeleton pairing", "骨架配對")
                 }
             }
+            Label { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: pairing.notes[pairing.currentIndex] }
             Readout { form: true; Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1; label: Theme.t("PSA 配置 · 自动适配", "PSA config · Automatic", "PSA 設定 · 自動適配"); value: Theme.t("自动查找同目录同名 .config；预检列明采用路径、RemoveTracks 与参考恢复规则。", "Find same-directory, same-basename .config; preflight lists the applied file, RemoveTracks and reference recovery rules.", "自動尋找同目錄同名 .config；預檢列明採用路徑、RemoveTracks 與參考恢復規則。") }
             RowLayout { Layout.fillWidth: true; visible: content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("动作片段", "Animation clips", "動作片段") }

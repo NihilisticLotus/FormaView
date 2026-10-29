@@ -213,10 +213,55 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         initial_samples += count;
     }
     auto total_curve_samples = initial_samples;
-    if (initial_samples > options.limits.elements || a.bones.size() > options.limits.bones ||
-        (!a.bones.empty() && initial_samples > options.limits.decoded_bytes / (a.bones.size() * 9 * 256)))
-        throw Failure(ErrorCode::ResourceLimit, "FBX curve memory estimate exceeds export budget");
-    std::uint64_t estimate = initial_samples * a.bones.size() * 9 * 256;
+    if (initial_samples > options.limits.elements || a.bones.size() > options.limits.bones)
+        throw Failure(ErrorCode::ResourceLimit, "FBX animation work budget exceeded");
+    struct CurveProfile {
+        std::vector<std::array<bool, 3>> constant; // translation, rotation, scale
+        std::uint64_t rotation_channels{}, source_keys{};
+    };
+    std::vector<CurveProfile> profiles;
+    std::uint64_t estimate{};
+    const auto charge = [&](std::uint64_t count, std::uint64_t bytes) {
+        if (count > (options.limits.decoded_bytes - estimate) / bytes)
+            throw Failure(ErrorCode::ResourceLimit, "FBX curve memory estimate exceeds export budget");
+        estimate += count * bytes;
+    };
+    for (const auto selected : selection) {
+        const auto &seq = a.sequences[selected];
+        const auto pose_at = [&](double seconds) {
+            return paired ? evaluate_paired(a, pairing, selected, seconds, options.psa_config, options.stop)
+                          : evaluate(a, selected, seconds, options.stop);
+        };
+        const auto first = pose_at(0);
+        CurveProfile profile;
+        profile.constant.assign(a.bones.size(), {true, true, true});
+        const auto same_vector = [](const Vec3 &x, const Vec3 &y) {
+            return x.x == y.x && x.y == y.y && x.z == y.z;
+        };
+        for (std::int32_t frame = 1; frame < seq.frame_count; ++frame) {
+            const auto pose = pose_at(static_cast<double>(frame) / seq.fps);
+            for (std::size_t j = 0; j < a.bones.size(); ++j) {
+                const auto &x = first.local[j], &y = pose.local[j];
+                auto &constant = profile.constant[j];
+                constant[0] &= same_vector(x.translation, y.translation);
+                constant[2] &= same_vector(x.scale, y.scale);
+                const auto &q = x.rotation, &r = y.rotation;
+                constant[1] &= (q.x == r.x && q.y == r.y && q.z == r.z && q.w == r.w) ||
+                               (q.x == -r.x && q.y == -r.y && q.z == -r.z && q.w == -r.w);
+            }
+        }
+        // Each stack owns its constants: different clips may have different held poses.
+        // Reserve fixed curve/profile overhead as well as 256 bytes per actual key.
+        charge(a.bones.size(), 9 * 4096);
+        for (const auto &constant : profile.constant)
+            for (std::size_t group = 0; group < 3; ++group) {
+                const auto keys = 3 * (constant[group] ? 1ULL : static_cast<std::uint64_t>(seq.frame_count) + 1);
+                charge(keys, 256);
+                profile.source_keys += keys;
+                if (group == 1 && !constant[group]) profile.rotation_channels += 3;
+            }
+        profiles.push_back(std::move(profile));
+    }
     if (paired && options.include_mesh) {
         const auto &m = *paired->mesh;
         const auto mesh_estimate = m.points.size() * 512 + m.faces.size() * 2048 + m.weights.size() * 256;
@@ -292,6 +337,42 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     scene->SetSceneInfo(info);
     std::vector<fbxsdk::FbxNode *> nodes;
     std::vector<FbxAMatrix> reference_rotations;
+    const auto first_pose = model_only ? Pose{} : (paired
+        ? evaluate_paired(a, pairing, selection.front(), 0, options.psa_config, options.stop)
+        : evaluate(a, selection.front(), 0, options.stop));
+    // Choose a fixed Euler chart per bone from equivalent axis bases. A rest
+    // pose (or even the first frame) may put later motion near XYZ's Y=90
+    // singularity. Minimise the worst pitch over source frames and midpoints;
+    // this only conditions the representation, the world-space audit below
+    // still decides whether the result meets the unchanged accuracy contract.
+    std::vector<std::array<FbxAMatrix, 7>> basis_candidates(model_only ? 0 : a.bones.size());
+    std::vector<std::array<double, 7>> basis_scores(model_only ? 0 : a.bones.size());
+    const std::array<FbxVector4, 7> offsets{{{0,0,0}, {90,0,0}, {-90,0,0},
+        {0,90,0}, {0,-90,0}, {0,0,90}, {0,0,-90}}};
+    if (!model_only) {
+        for (std::size_t j = 0; j < a.bones.size(); ++j) {
+            FbxAMatrix first; first.SetR(rotation(first_pose.local[j]));
+            for (std::size_t c = 0; c < offsets.size(); ++c) {
+                FbxAMatrix offset; offset.SetR(offsets[c]);
+                basis_candidates[j][c] = (first * offset).Inverse();
+            }
+        }
+        for (const auto selected : selection) {
+            const auto &seq = a.sequences[selected];
+            for (std::int64_t frame = 0; frame < 2LL * seq.frame_count; ++frame) {
+                const auto seconds = frame * .5 / seq.fps;
+                const auto pose = paired ? evaluate_paired(a, pairing, selected, seconds, options.psa_config, options.stop)
+                                         : evaluate(a, selected, seconds, options.stop);
+                for (std::size_t j = 0; j < a.bones.size(); ++j) {
+                    FbxAMatrix r;
+                    const auto &q = pose.local[j].rotation; r.SetQ(FbxQuaternion(q.x,q.y,q.z,q.w));
+                    for (std::size_t c = 0; c < offsets.size(); ++c)
+                        basis_scores[j][c] = std::max(basis_scores[j][c],
+                            std::abs((basis_candidates[j][c] * r).GetR()[1]));
+                }
+            }
+        }
+    }
     nodes.reserve(a.bones.size());
     for (std::size_t j = 0; j < a.bones.size(); ++j) {
         cancelled(options.stop);
@@ -303,17 +384,20 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         attribute->SetSkeletonType(FbxSkeleton::eLimbNode);
         n->SetNodeAttribute(attribute);
         const auto &t = paired ? paired->bones[pairing.animation_to_mesh[j]].default_local : b.default_local;
-        const auto r = rotation(t);
+        const auto best = model_only ? 0 : static_cast<std::size_t>(std::min_element(basis_scores[j].begin(), basis_scores[j].end()) - basis_scores[j].begin());
+        const auto r = model_only ? rotation(t) : basis_candidates[j][best].Inverse().GetR();
         FbxAMatrix reference_rotation;
         reference_rotation.SetR(r);
         reference_rotations.push_back(reference_rotation);
         n->LclTranslation.Set(FbxDouble3(t.translation.x, t.translation.y, t.translation.z));
-        // Keep the static bone orientation out of the animated Euler channels.
-        // ActorX rest orientations often lie on an XYZ singularity; animation
-        // relative to that rest basis requires far fewer accurate bake initial_samples.
+        // PreRotation * LclRotation retains both animation and the unanimated
+        // reference pose, irrespective of the fixed basis chosen above.
         n->SetRotationActive(true);
         n->SetPreRotation(fbxsdk::FbxNode::eSourcePivot, r);
-        n->LclRotation.Set(FbxDouble3(0, 0, 0));
+        FbxAMatrix rest_rotation;
+        rest_rotation.SetQ(FbxQuaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w));
+        const auto rest_relative = (reference_rotation.Inverse() * rest_rotation).GetR();
+        n->LclRotation.Set(FbxDouble3(rest_relative[0], rest_relative[1], rest_relative[2]));
         n->LclScaling.Set(FbxDouble3(t.scale.x, t.scale.y, t.scale.z));
         n->SetRotationOrder(fbxsdk::FbxNode::eSourcePivot, eEulerXYZ);
         n->SetTransformationInheritType(FbxTransform::eInheritRSrs);
@@ -325,7 +409,9 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     }
     FbxWriteResult result;
     double scene_bake_fps{}, scene_end{};
+    std::size_t profile_index{};
     for (const auto selected : selection) {
+    const auto &profile = profiles[profile_index++];
     const auto clip = selected;
     const auto &seq = a.sequences[clip];
     const auto samples = static_cast<std::uint64_t>(seq.frame_count) + 1;
@@ -365,9 +451,9 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
             bake_samples += count;
         const auto subdivisions =
             *std::max_element(interval_subdivisions.begin(), interval_subdivisions.end());
-        const auto sample_bytes = a.bones.size() * 9 * 256;
+        const auto sample_bytes = profile.rotation_channels * 256;
         if (bake_samples - samples > options.limits.elements - total_curve_samples ||
-            bake_samples - samples > (options.limits.decoded_bytes - estimate) / sample_bytes)
+            (sample_bytes && bake_samples - samples > (options.limits.decoded_bytes - estimate) / sample_bytes))
             throw Failure(ErrorCode::ResourceLimit,
                           "FBX bake accuracy exceeds export memory budget; previous subdivisions=" +
                               std::to_string(result.sample_subdivisions) +
@@ -397,6 +483,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
             const auto pose = pose_at(seconds);
             FbxTime time;
             time.SetSecondDouble(seconds);
+            const bool source_key = frame == 0 || frame + 1 == bake_samples ||
+                source_intervals[static_cast<std::size_t>(frame)] != source_intervals[static_cast<std::size_t>(frame - 1)];
             for (std::size_t j = 0; j < nodes.size(); ++j) {
                 const auto &t = pose.local[j];
                 FbxAMatrix animated_rotation;
@@ -410,9 +498,13 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                     t.translation.x, t.translation.y, t.translation.z, r[0], r[1], r[2],
                     t.scale.x,       t.scale.y,       t.scale.z};
                 for (std::size_t c = 0; c < 9; ++c) {
+                    const auto group = c / 3;
+                    if (profile.constant[j][group] ? frame != 0 : (group != 1 && !source_key))
+                        continue;
                     auto *curve = curves[j][c];
+                    const auto expected_key = curve->KeyGetCount();
                     const auto key = curve->KeyAdd(time);
-                    if (key < 0 || static_cast<std::uint64_t>(key) != frame)
+                    if (key < 0 || key != expected_key)
                         throw Failure(ErrorCode::Unsupported, "FBX key times collide at FBX time resolution");
                     if (!std::isfinite(values[c]) || std::abs(values[c]) > std::numeric_limits<float>::max())
                         throw Failure(ErrorCode::Unsupported, "FBX curve value exceeds finite float range");
@@ -439,6 +531,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         scene->GetAnimationEvaluator()->Reset();
         double error{};
         std::vector<double> interval_errors(interval_subdivisions.size());
+        std::vector<std::string> interval_diagnostics(interval_subdivisions.size());
         for (std::uint64_t interval = 0; interval + 1 < bake_samples; ++interval) {
             const auto source = source_intervals[static_cast<std::size_t>(interval)];
             if (interval_errors[source] > options.max_world_matrix_error)
@@ -458,7 +551,13 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                             const auto delta = std::abs(expected.world[j][row * 4 + col] - actual[col][row]);
                             if (!std::isfinite(delta))
                                 throw Failure(ErrorCode::Unsupported, "Nonfinite FBX bake audit matrix");
-                            interval_errors[source] = std::max(interval_errors[source], delta);
+                            if (delta > interval_errors[source]) {
+                                interval_errors[source] = delta;
+                                if (interval_subdivisions[source] == options.max_sample_subdivisions)
+                                    interval_diagnostics[source] = "; bone=" + a.bones[j].source.original_name +
+                                        "; time=" + std::to_string(seconds) + "; row=" + std::to_string(row) +
+                                        "; col=" + std::to_string(col);
+                            }
                         }
                 }
             }
@@ -474,7 +573,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                     throw Failure(ErrorCode::Unsupported,
                                   "FBX rotation bake cannot meet requested world-matrix accuracy; interval=" +
                                       std::to_string(source) +
-                                      "; error=" + std::to_string(interval_errors[source]));
+                                      "; error=" + std::to_string(interval_errors[source]) + interval_diagnostics[source]);
                 interval_subdivisions[source] *= 2;
             }
     }
@@ -493,6 +592,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     metadata("FormaViewBakeFPS", result.bake_fps);
     metadata("FormaViewBakeSubdivisions", result.sample_subdivisions);
     metadata("FormaViewAuditedWorldMatrixError", result.audited_world_matrix_error);
+    metadata("FormaViewCurveKeys", static_cast<double>(profile.source_keys +
+        (result.samples - samples) * profile.rotation_channels));
     // FBX importers may resample at the declared file rate before running any
     // import pipeline. Declare the finest bake grid, preserving the original
     // ActorX rate/count separately rather than allowing that resample to discard keys.
@@ -501,7 +602,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     source_id.Set(FbxString(seq.source.identity.stable_id().value.c_str()));
     scene_bake_fps = std::max(scene_bake_fps, result.bake_fps);
     scene->GetGlobalSettings().SetCustomFrameRate(scene_bake_fps);
-    estimate += (result.samples - samples) * a.bones.size() * 9 * 256;
+    estimate += (result.samples - samples) * profile.rotation_channels * 256;
     total_curve_samples += result.samples - samples;
     if (clip_results) clip_results->push_back(result);
     } // Pure models contain no animation stacks or curves.

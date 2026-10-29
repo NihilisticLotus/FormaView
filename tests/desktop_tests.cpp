@@ -835,6 +835,8 @@ private slots:
       // Two-letter service codes (io) must match the bundled headline, and
       // producer details containing replace() patterns must not corrupt text.
       const auto generic = call("errorText", "internal: definitely-unmapped-message-xyz");
+      const auto pairing = call("errorText", "invalid_argument: PSK pairing failed: PSA parent records differ; paired evaluation uses the reference PSK hierarchy");
+      QVERIFY2(pairing.contains(language == "en" ? "Use reference skeleton" : language == "zh-TW" ? "使用參考模型骨架" : "使用参考模型骨架"), qPrintable(pairing));
       for (const auto *message : {
              "TIFF WhiteIsZero grayscale requires an explicit photometric conversion; convert to BlackIsZero in an image editor before importing",
              "ICC colour model does not match output channels; choose metadata drop or a matching profile",
@@ -2797,6 +2799,7 @@ private slots:
     QVERIFY(index >= 0); desktop_->select(index); QTRY_VERIFY(idle());
     QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
     QTRY_VERIFY(item("modelExportContent"));
+    QCOMPARE(item("modelExportPairing")->property("currentIndex").toInt(), 1);
     const auto cleanup = qScopeGuard([&] { if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(conversion, "close"); });
     const auto edit = [&](const char *name, const QString &text) {
       auto *field = item(name); QVERIFY(field); field->forceActiveFocus();
@@ -3161,6 +3164,7 @@ private slots:
     for (int mode = 0; mode < 4; ++mode) {
       if (mode) click("editConversionSettings");
       choose("modelExportContent", mode == 0 ? 0 : mode == 2 ? 1 : 2);
+      if (mode != 2) choose("modelExportPairing", mode % 2);
       if (mode == 1) {
         choose("modelExportOrganization", 1);
         choose("modelExportAxes", 3);
@@ -3234,6 +3238,8 @@ private slots:
       for (const auto &v : items) {
         const auto entry = v.toMap();
         const auto request = entry.value("request").toMap();
+        if (mode != 2) QCOMPARE(request.value("options").toMap().value("pairing_policy").toString(),
+                               mode % 2 ? QString("reference-skeleton") : QString("strict-records"));
         QVERIFY(!QFile::exists(request.value("output").toString()));
         const auto preflight = entry.value("preflight").toMap();
         QCOMPARE(preflight.value("clips").toList().size(), mode == 2 ? 0 : mode == 1 ? 2 : 1);
