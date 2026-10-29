@@ -533,6 +533,31 @@ void fbx(const std::filesystem::path &directory) {
         check(static_back.data().clips.empty() && static_back.data().meshes.size() == 1 &&
               static_back.data().meshes[0].skins.empty(), "Static model acquired skin or animation");
     }
+    // Near a global XYZ singularity, cluster matrix roundtrips can differ from
+    // the raw pose matrix. A distant bind origin amplifies that difference in
+    // the relative inverse and used to fail IsValidBindPose despite valid input.
+    auto near_singular = m;
+    for (std::size_t j = 0; j < near_singular.bones.size(); ++j) {
+        auto &bone = near_singular.bones[j];
+        bone.default_local.rotation = j == 0 ? sk::Quat{std::sqrt(0.5), 5e-7, std::sqrt(0.5), -1.5e-6} : sk::Quat{0,0,0,1};
+        bone.default_local.translation = j == 0 ? sk::Vec3{0,1,90} : sk::Vec3{0,10,0};
+    }
+    const auto singular_pose = sk::default_pose(near_singular);
+    for (std::size_t j = 0; j < near_singular.bones.size(); ++j) near_singular.bones[j].bind_world = singular_pose.world[j];
+    const auto singular_path = directory / "near-singular-bind.fbx";
+    std::filesystem::remove(singular_path);
+    sk::write_fbx_model(near_singular, singular_path);
+    const auto singular_back = read_fbx_traced(singular_path);
+    check(singular_back.data().clips.empty(), "Model gained an animation");
+    for (const auto &cluster : singular_back.data().meshes.at(0).skins.at(0).clusters) {
+        const auto &node = singular_back.data().nodes[cluster.bone_node];
+        const auto bone = std::find_if(near_singular.bones.begin(), near_singular.bones.end(), [&](const auto &b) { return b.source.original_name == node.source.original_name; });
+        check(bone != near_singular.bones.end(), "Bind regression lost a bone");
+        for (std::size_t k = 0; k < 16; ++k) {
+            near(cluster.bind_to_world[k], (*bone->bind_world)[k], 1e-4);
+            near(node.default_world[k], (*bone->bind_world)[k], 1e-4);
+        }
+    }
     auto placeholder_bytes = animation();
     const auto records = offset(placeholder_bytes, "BONENAMES");
     for (std::size_t j = 0; j < 7; ++j)
@@ -737,6 +762,32 @@ void fbx(const std::filesystem::path &directory) {
     check(bake.sample_subdivisions > 1 && bake.audited_world_matrix_error <= 0.0005,
           "Coupled rotation was not refined");
     const auto coupled_back = read_fbx_traced(refined);
+    auto lever_model = m;
+    for (auto &point : lever_model.mesh->points) point.x += 200;
+    const auto lever_path = directory / "skin-lever-arm.fbx";
+    std::filesystem::remove(lever_path);
+    const auto lever_bake = write_fbx_traced(coupled, 0, lever_path, &lever_model);
+    check(lever_bake.samples > bake.samples, "Distant skin points did not refine the bake");
+    const auto lever_back = read_fbx_traced(lever_path);
+    for (double fraction : {0.137, 0.381966, 0.731}) {
+        const auto seconds = fraction / coupled.sequences[0].fps;
+        const auto expected = sk::evaluate(coupled, 0, seconds);
+        const auto actual = lever_back.evaluate(0, seconds);
+        for (const auto &cluster : lever_back.data().meshes.at(0).skins.at(0).clusters) {
+            const auto &name = lever_back.data().nodes[cluster.bone_node].source.original_name;
+            const auto bone = std::find_if(coupled.bones.begin(), coupled.bones.end(), [&](const auto &b) { return b.source.original_name == name; });
+            check(bone != coupled.bones.end(), "Skin regression lost a bone");
+            const auto index = static_cast<std::size_t>(bone - coupled.bones.begin());
+            const auto e = sk::multiply(expected.world[index], sk::inverse(*lever_model.bones[index].bind_world));
+            const auto v = sk::multiply(actual.world[cluster.bone_node], cluster.geometry_to_bone);
+            for (auto point : cluster.points) {
+                const auto &p = lever_model.mesh->points[point];
+                for (std::size_t row = 0; row < 3; ++row)
+                    near(e[row*4]*p.x + e[row*4+1]*p.y + e[row*4+2]*p.z + e[row*4+3],
+                         v[row*4]*p.x + v[row*4+1]*p.y + v[row*4+2]*p.z + v[row*4+3], 0.0005);
+            }
+        }
+    }
     // A long clip with one changing rotation must not charge every static T/R/S
     // channel for every source frame and every adaptive rotation subdivision.
     auto sparse = coupled;

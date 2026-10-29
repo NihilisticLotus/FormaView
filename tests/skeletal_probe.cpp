@@ -70,6 +70,30 @@ void snapshot(const sk::FbxDocument &f, std::ostream &out) {
     }
     out << "]}";
 }
+bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &output, std::ostream &out,
+                  bool model_only = true);
+double skin_difference(const sk::ActorAsset &source, const std::vector<formaview::Matrix4> &expected,
+                       const std::vector<formaview::Matrix4> &actual) {
+    const auto &mesh = *source.mesh;
+    std::vector<std::array<double, 3>> delta(mesh.points.size());
+    std::vector<double> totals(mesh.points.size());
+    for (const auto &w : mesh.weights) {
+        const auto &p = mesh.points[w.point];
+        for (std::size_t row = 0; row < 3; ++row) {
+            const auto &a = actual[w.bone], &e = expected[w.bone];
+            const auto value = (a[row*4]-e[row*4])*p.x + (a[row*4+1]-e[row*4+1])*p.y +
+                               (a[row*4+2]-e[row*4+2])*p.z + a[row*4+3]-e[row*4+3];
+            if (!std::isfinite(value)) throw std::runtime_error("Nonfinite skin deformation");
+            delta[w.point][row] += w.value * value;
+        }
+        totals[w.point] += w.value;
+    }
+    double error{};
+    for (std::size_t i = 0; i < delta.size(); ++i)
+        if (totals[i] > 0)
+            for (double v : delta[i]) error = std::max(error, std::abs(v / totals[i]));
+    return error;
+}
 bool verify_clip(const std::filesystem::path &source, const std::filesystem::path &reference,
                  const std::filesystem::path &companion, const std::filesystem::path &output,
                  std::size_t clip, std::ostream &out) {
@@ -97,7 +121,23 @@ bool verify_clip(const std::filesystem::path &source, const std::filesystem::pat
     for (std::size_t i = 0; i < d.nodes.size(); ++i)
         if (d.nodes[i].bone) nodes.emplace(d.nodes[i].source.original_name, i);
     if (nodes.size() != a.bones.size()) throw std::runtime_error("Exported bone count differs");
-    double error{}, config_effect{};
+    double error{}, config_effect{}, skin_error{};
+    std::ostringstream model_report;
+    model_report << std::setprecision(17);
+    std::vector<formaview::Matrix4> source_inverse, exported_inverse(m.bones.size());
+    std::vector<std::size_t> animation_indices;
+    if (!d.meshes.empty()) {
+        if (!verify_model(m, output, model_report, false)) throw std::runtime_error("Combined model readback failed: " + model_report.str());
+        for (const auto &bone : m.bones) {
+            source_inverse.push_back(sk::inverse(*bone.bind_world));
+            const auto it = std::find_if(a.bones.begin(), a.bones.end(), [&](const auto &b) { return b.source.original_name == bone.source.original_name; });
+            animation_indices.push_back(static_cast<std::size_t>(it - a.bones.begin()));
+            const auto &clusters = d.meshes[0].skins.at(0).clusters;
+            const auto cluster = std::find_if(clusters.begin(), clusters.end(), [&](const auto &c) { return d.nodes[c.bone_node].source.original_name == bone.source.original_name; });
+            if (it == a.bones.end() || cluster == clusters.end()) throw std::runtime_error("Missing skin bone");
+            exported_inverse[source_inverse.size()-1] = cluster->geometry_to_bone;
+        }
+    }
     std::vector<double> times;
     for (std::int64_t frame = 0; frame <= static_cast<std::int64_t>(seq.frame_count) * 2; ++frame) {
         times.push_back(std::min(frame * .5 / seq.fps, seq.time.source_end_seconds));
@@ -119,19 +159,31 @@ bool verify_clip(const std::filesystem::path &source, const std::filesystem::pat
             error = std::max(error, difference(world, expected.world[j]));
             config_effect = std::max(config_effect, difference(unmasked.world[j], expected.world[j]));
         }
+        if (!d.meshes.empty()) {
+            std::vector<formaview::Matrix4> e, v;
+            for (std::size_t j = 0; j < m.bones.size(); ++j) {
+                e.push_back(sk::multiply(expected.world[animation_indices[j]], source_inverse[j]));
+                v.push_back(sk::multiply(actual.world[nodes.at(m.bones[j].source.original_name)], exported_inverse[j]));
+            }
+            skin_error = std::max(skin_error, skin_difference(m, e, v));
+        }
     }
-    out << "{\"passed\":" << (error <= 0.0005 ? "true" : "false")
+    const bool passed = error <= 0.0005 && skin_error <= 0.0005;
+    out << "{\"passed\":" << (passed ? "true" : "false")
         << ",\"sample_times\":" << times.size() << ",\"bone_count\":" << nodes.size()
-        << ",\"world_matrix_error\":" << error << ",\"config_effect\":" << config_effect
+        << ",\"world_matrix_error\":" << error << ",\"skin_position_error\":" << skin_error << ",\"config_effect\":" << config_effect
         << ",\"mesh_count\":" << d.meshes.size() << ",\"config_sha256\":"
-        << quoted(config.source.identity.sha256) << '}';
-    return error <= 0.0005;
+        << quoted(config.source.identity.sha256);
+    if (!d.meshes.empty()) out << ",\"model\":" << model_report.str();
+    out << '}';
+    return passed;
 }
-bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &output, std::ostream &out) {
+bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &output, std::ostream &out,
+                  bool model_only) {
     const auto back = sk::FbxDocument::read(output);
     const auto &d = back.data();
     const auto &m = *source.mesh;
-    bool ok = d.clips.empty() && d.meshes.size() == 1;
+    bool ok = (!model_only || d.clips.empty()) && d.meshes.size() == 1;
     double error{}, geometry_error{}, bind_error{}, default_error{};
     auto *category_error = &geometry_error;
     const auto compare = [&](double a, double b) {
@@ -205,10 +257,17 @@ bool verify_model(const sk::ActorAsset &source, const std::filesystem::path &out
                 actual.emplace_back(name, cluster.points[j], cluster.weights[j]);
         }
     std::sort(expected.begin(), expected.end()); std::sort(actual.begin(), actual.end());
+    std::vector<formaview::Matrix4> rest_source(source.bones.size(), sk::matrix({})), rest_exported(source.bones.size());
+    for (const auto &skin : mesh.skins) for (const auto &cluster : skin.clusters) {
+        const auto &name = d.nodes[cluster.bone_node].source.original_name;
+        const auto bone = std::find_if(source.bones.begin(), source.bones.end(), [&](const auto &b) { return b.source.original_name == name; });
+        rest_exported[static_cast<std::size_t>(bone-source.bones.begin())] = sk::multiply(d.nodes[cluster.bone_node].default_world, cluster.geometry_to_bone);
+    }
+    const auto rest_skin_error = skin_difference(source, rest_source, rest_exported);
     // Match the established ActorX roundtrip tolerances by semantic domain.
-    ok = ok && expected == actual && geometry_error < 1e-8 && bind_error < 1e-4 && default_error < 1e-4;
+    ok = ok && expected == actual && geometry_error < 1e-8 && bind_error < 1e-4 && default_error < 1e-4 && rest_skin_error <= 0.0005;
     out << "{\"passed\":" << (ok ? "true" : "false") << ",\"max_error\":" << error
-        << ",\"geometry_error\":" << geometry_error << ",\"bind_error\":" << bind_error << ",\"default_error\":" << default_error
+        << ",\"geometry_error\":" << geometry_error << ",\"bind_error\":" << bind_error << ",\"default_error\":" << default_error << ",\"rest_skin_error\":" << rest_skin_error
         << ",\"points\":" << m.points.size() << ",\"faces\":" << m.faces.size()
         << ",\"weights\":" << actual.size() << ",\"bones\":" << nodes.size()
         << ",\"uv_sets\":" << m.extra_uvs.size() + 1 << ",\"source_sha256\":" << quoted(source.source.identity.sha256)

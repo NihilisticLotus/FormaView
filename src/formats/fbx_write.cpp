@@ -281,6 +281,75 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                 throw Failure(ErrorCode::Unsupported,
                               "Morph chunks are retained by reader but not supported by this writer");
     }
+    // A normalized blend of nonnegative influences stays within the largest
+    // influence error. Bound each influence over its bind-local point box, so
+    // the animation audit also covers vertices away from the joint origin.
+    struct SkinBounds {
+        bool active{};
+        std::array<double, 3> minimum{}, maximum{};
+        Matrix4 correction{};
+    };
+    std::vector<SkinBounds> skin_bounds;
+    std::vector<FbxAMatrix> sdk_bind_world;
+    if (paired && options.include_mesh) {
+        charge(a.bones.size(), sizeof(SkinBounds) + sizeof(FbxAMatrix) + sizeof(Matrix4) + sizeof(std::uint32_t));
+        skin_bounds.resize(a.bones.size());
+        sdk_bind_world.resize(a.bones.size());
+        std::vector<Matrix4> source_inverse(a.bones.size());
+        std::vector<std::uint32_t> mesh_to_animation(a.bones.size());
+        for (std::size_t j = 0; j < a.bones.size(); ++j)
+            mesh_to_animation[pairing.animation_to_mesh[j]] = static_cast<std::uint32_t>(j);
+        for (std::size_t j = 0; j < paired->bones.size(); ++j) {
+            cancelled(options.stop);
+            const auto &source = *paired->bones[j].bind_world;
+            const auto raw = sdk_matrix(source);
+            sdk_bind_world[j].SetTRS(raw.GetT(), raw.GetR(), raw.GetS());
+            Matrix4 retained{};
+            for (int row = 0; row < 4; ++row)
+                for (int col = 0; col < 4; ++col) {
+                    retained[row * 4 + col] = sdk_bind_world[j][col][row];
+                    const auto delta = std::abs(source[row * 4 + col] - retained[row * 4 + col]);
+                    if (!std::isfinite(delta) || delta > 1e-4)
+                        throw Failure(ErrorCode::Unsupported,
+                                      "FBX bind transform cannot preserve source matrix accuracy: " +
+                                          paired->bones[j].source.original_name);
+                }
+            source_inverse[j] = inverse(source);
+            skin_bounds[mesh_to_animation[j]].correction = multiply(inverse(retained), source);
+        }
+        for (const auto &w : paired->mesh->weights) {
+            cancelled(options.stop);
+            if (w.value == 0) continue;
+            const auto &point = paired->mesh->points[w.point];
+            const auto &inv = source_inverse[w.bone];
+            auto &bounds = skin_bounds[mesh_to_animation[w.bone]];
+            for (std::size_t row = 0; row < 3; ++row) {
+                const auto value = inv[row*4]*point.x + inv[row*4+1]*point.y + inv[row*4+2]*point.z + inv[row*4+3];
+                if (!std::isfinite(value)) throw Failure(ErrorCode::Unsupported, "Nonfinite bind-local point");
+                bounds.minimum[row] = bounds.active ? std::min(bounds.minimum[row], value) : value;
+                bounds.maximum[row] = bounds.active ? std::max(bounds.maximum[row], value) : value;
+            }
+            bounds.active = true;
+        }
+    }
+    const auto skin_error_bound = [&](std::size_t bone, const Matrix4 &actual, const Matrix4 &expected) {
+        if (skin_bounds.empty() || !skin_bounds[bone].active) return 0.0;
+        const auto &bounds = skin_bounds[bone];
+        const auto adjusted = multiply(actual, bounds.correction);
+        double result{};
+        for (std::size_t row = 0; row < 3; ++row) {
+            double low = adjusted[row*4+3] - expected[row*4+3], high = low;
+            for (std::size_t col = 0; col < 3; ++col) {
+                const auto delta = adjusted[row*4+col] - expected[row*4+col];
+                const auto lower = delta * bounds.minimum[col], upper = delta * bounds.maximum[col];
+                low += std::min(lower,upper); high += std::max(lower,upper);
+            }
+            const auto bound = std::max(std::abs(low), std::abs(high));
+            if (!std::isfinite(bound)) throw Failure(ErrorCode::Unsupported, "Nonfinite FBX skin audit bound");
+            result = std::max(result, bound);
+        }
+        return result;
+    };
     (void)estimate; // Conservative cooperative admission, not an SDK allocator hard cap.
     Temporary temporary;
     if (!encoded) {
@@ -407,6 +476,16 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         const auto parent = paired ? pairing.parents[j] : a.bones[j].parent;
         (parent ? nodes[*parent] : scene->GetRootNode())->AddChild(nodes[j]);
     }
+    if (!skin_bounds.empty())
+        for (std::size_t j = 0; j < nodes.size(); ++j) {
+            cancelled(options.stop);
+            const auto actual = nodes[j]->EvaluateGlobalTransform(); // No stack: reference pose.
+            Matrix4 world{};
+            for (int row = 0; row < 4; ++row) for (int col = 0; col < 4; ++col)
+                world[row*4+col] = actual[col][row];
+            if (skin_error_bound(j, world, *paired->bones[pairing.animation_to_mesh[j]].bind_world) > options.max_world_matrix_error)
+                throw Failure(ErrorCode::Unsupported, "FBX bind pose cannot preserve skinned vertex accuracy: " + a.bones[j].source.original_name);
+        }
     FbxWriteResult result;
     double scene_bake_fps{}, scene_end{};
     std::size_t profile_index{};
@@ -445,6 +524,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                       : evaluate(a, clip, seconds, options.stop);
     };
     std::vector<std::uint32_t> interval_subdivisions(static_cast<std::size_t>(seq.frame_count), 1);
+    double skin_position_bound{};
     for (;;) {
         std::uint64_t bake_samples = 1;
         for (const auto count : interval_subdivisions)
@@ -529,7 +609,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         }
         scene->SetCurrentAnimationStack(stack);
         scene->GetAnimationEvaluator()->Reset();
-        double error{};
+        double error{}, world_error{};
+        skin_position_bound = 0;
         std::vector<double> interval_errors(interval_subdivisions.size());
         std::vector<std::string> interval_diagnostics(interval_subdivisions.size());
         for (std::uint64_t interval = 0; interval + 1 < bake_samples; ++interval) {
@@ -551,6 +632,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                             const auto delta = std::abs(expected.world[j][row * 4 + col] - actual[col][row]);
                             if (!std::isfinite(delta))
                                 throw Failure(ErrorCode::Unsupported, "Nonfinite FBX bake audit matrix");
+                            world_error = std::max(world_error, delta);
                             if (delta > interval_errors[source]) {
                                 interval_errors[source] = delta;
                                 if (interval_subdivisions[source] == options.max_sample_subdivisions)
@@ -559,11 +641,24 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                                         "; col=" + std::to_string(col);
                             }
                         }
+                    if (!skin_bounds.empty() && skin_bounds[j].active) {
+                        Matrix4 actual_world{};
+                        for (int row = 0; row < 4; ++row) for (int col = 0; col < 4; ++col)
+                            actual_world[row*4+col] = actual[col][row];
+                        const auto bound = skin_error_bound(j, actual_world, expected.world[j]);
+                        skin_position_bound = std::max(skin_position_bound, bound);
+                        if (bound > interval_errors[source]) {
+                            interval_errors[source] = bound;
+                            if (interval_subdivisions[source] == options.max_sample_subdivisions)
+                                interval_diagnostics[source] = "; skin bone=" + a.bones[j].source.original_name +
+                                    "; time=" + std::to_string(seconds);
+                        }
+                    }
                 }
             }
             error = std::max(error, interval_errors[source]);
         }
-        result = {subdivisions, seq.fps, bake_fps, error, bake_samples};
+        result = {subdivisions, seq.fps, bake_fps, world_error, bake_samples};
         if (error <= options.max_world_matrix_error) {
             break;
         }
@@ -571,7 +666,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
             if (interval_errors[source] > options.max_world_matrix_error) {
                 if (interval_subdivisions[source] == options.max_sample_subdivisions)
                     throw Failure(ErrorCode::Unsupported,
-                                  "FBX rotation bake cannot meet requested world-matrix accuracy; interval=" +
+                                  "FBX rotation bake cannot meet requested transform accuracy; interval=" +
                                       std::to_string(source) +
                                       "; error=" + std::to_string(interval_errors[source]) + interval_diagnostics[source]);
                 interval_subdivisions[source] *= 2;
@@ -592,6 +687,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     metadata("FormaViewBakeFPS", result.bake_fps);
     metadata("FormaViewBakeSubdivisions", result.sample_subdivisions);
     metadata("FormaViewAuditedWorldMatrixError", result.audited_world_matrix_error);
+    if (!skin_bounds.empty()) metadata("FormaViewAuditedSkinPositionBound", skin_position_bound);
     metadata("FormaViewCurveKeys", static_cast<double>(profile.source_keys +
         (result.samples - samples) * profile.rotation_channels));
     // FBX importers may resample at the declared file rate before running any
@@ -683,7 +779,11 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
             c->SetLink(nodes[mesh_to_animation[j]]);
             c->SetLinkMode(fbxsdk::FbxCluster::eNormalize);
             c->SetTransformMatrix(FbxAMatrix());
-            c->SetTransformLinkMatrix(sdk_matrix(*paired->bones[j].bind_world));
+            // Cluster matrix access uses the SDK's TRS representation. Near an
+            // Euler singularity this can differ slightly from a raw matrix;
+            // inversion amplifies the difference and rejects an otherwise valid
+            // bind pose. Use the same bounded representation in cluster and pose.
+            c->SetTransformLinkMatrix(sdk_bind_world[j]);
             skin->AddCluster(c);
             clusters[j] = c;
         }
@@ -696,7 +796,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         bind->SetIsBindPose(true);
         bind->Add(mesh_node, FbxMatrix(FbxAMatrix()));
         for (std::size_t j = 0; j < nodes.size(); ++j)
-            bind->Add(nodes[mesh_to_animation[j]], FbxMatrix(sdk_matrix(*paired->bones[j].bind_world)));
+            bind->Add(nodes[mesh_to_animation[j]], FbxMatrix(sdk_bind_world[j]));
         scene->AddPose(bind);
         FbxStatus bind_status;
         if (!bind->IsValidBindPose(scene->GetRootNode(), 1e-4, &bind_status))
