@@ -8,6 +8,7 @@ ColumnLayout {
     required property var controller
     required property var inputs
     property bool modelMode: false
+    property string exportPreset: ""
     readonly property var inputRoots: controller.imageJobs.localInputRoots
     readonly property bool inputScopeMissing: inputRoots.length === 0 || inputRoots.some(p => typeof p !== "string" || !p.trim())
     readonly property bool outputScopeMissing: !output.text.trim()
@@ -70,7 +71,7 @@ RowLayout { Layout.fillWidth: true; Layout.minimumHeight: 36; Label { Layout.pre
 OptionCheck { Layout.fillWidth: true; id: overwrite; visible: conflict.currentIndex === 2; text: Theme.t("允许在上述输出范围内覆盖已有文件", "Allow overwrite within the output scope above", "允許在上述輸出範圍內覆寫現有檔案"); onToggled: root.edited() }
  }
 }
-ModelExportSettings { id: modelFields; visible: root.modelMode; Layout.fillWidth: true; controller: root.controller; inputs: root.inputs; scope: root.scope; onEdited: root.edited() }
+ModelExportSettings { id: modelFields; visible: root.modelMode; Layout.fillWidth: true; controller: root.controller; inputs: root.inputs; scope: root.scope; animationOnlyPreset: root.exportPreset === "animation"; onEdited: root.edited() }
 FormGroup { visible: !root.modelMode; objectName: "conversionEncoding"; title: Theme.t("编码设置", "Encoding settings", "編碼設定"); Layout.fillWidth: true
  ColumnLayout { anchors.fill: parent; spacing: 12
 RowLayout { Layout.fillWidth: true; Layout.minimumHeight: 36; Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("目标格式", "Target format", "目標格式") } Choice { form: true; id: target; notes: root.targets.map(t => ({png: Theme.t("无损整数图像，支持 Alpha。", "Lossless integer image with alpha.", "無損整數影像，支援 Alpha。"), tga: Theme.t("常用 8 位通道，支持 Alpha。", "Commonly 8-bit channels with alpha.", "常用 8 位通道，支援 Alpha。"), tiff: Theme.t("支持多种数值类型；按实际编码能力预检。", "Multiple numeric types; preflight checks encoder support.", "支援多種數值類型；按實際編碼能力預檢。"), exr: Theme.t("高动态范围，支持半精度与单精度浮点。", "HDR with half and single-precision floats.", "高動態範圍，支援半精度與單精度浮點。"), hdr: Theme.t("Radiance RGBE；不支持 Alpha、负值，编码会损失精度。", "Radiance RGBE: no alpha or negative values; encoding loses precision.", "Radiance RGBE；不支援 Alpha、負值，編碼會損失精度。")}[t] || Theme.t("按源通道、数值范围与编码能力预检。", "Preflight checks source channels, range and encoder support.", "按來源通道、數值範圍與編碼能力預檢。"))); objectName: "conversionTarget"; Layout.preferredWidth: 220; Layout.maximumWidth: 260; Layout.fillWidth: true; model: root.targets.map(t => t.toUpperCase()); onActivated: root.edited(); Accessible.name: Theme.t("目标格式", "Target format", "目標格式") } }

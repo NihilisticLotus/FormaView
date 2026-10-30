@@ -122,6 +122,7 @@ public:
   double scrollPosition() const { return scroll_; }
   QVariantMap folderMenu() const { return folderMenu_; }
   Q_INVOKABLE void listFolders(const QString &path);
+  Q_INVOKABLE QVariantList drives() const;
   Q_INVOKABLE void closeFolderMenu();
   Q_INVOKABLE QVariantList breadcrumbs(const QString &path) const;
   Q_INVOKABLE void navigate(const QString &path);

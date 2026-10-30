@@ -11,9 +11,12 @@ ColumnLayout {
     required property var scope
     signal edited()
     property var selectedClips: []
+    property bool animationOnlyPreset: false
     property string inspectedKey: ""
     readonly property string inspectionKey: JSON.stringify([inputs, paired.text])
-    onInputsChanged: { selectedClips = []; content.currentIndex = inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
+    function defaultContentIndex(): int { return inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
+    onInputsChanged: { selectedClips = []; content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex() }
+    onAnimationOnlyPresetChanged: content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex()
     readonly property bool multipleStacks: organization.currentIndex === 1
     readonly property bool hasActorX: (inputs || []).some(p => /\.(psk|pskx|psa)$/i.test(String(p)))
     readonly property string contentLabel: content.displayText

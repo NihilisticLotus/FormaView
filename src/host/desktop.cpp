@@ -298,6 +298,16 @@ void Desktop::start(
   poll();
 }
 void Desktop::navigate(const QString &path) { scan(localPath(path)); }
+QVariantList Desktop::drives() const {
+  QVariantList result;
+  for (const auto &drive : QDir::drives()) {
+    const auto path = QDir::fromNativeSeparators(drive.absoluteFilePath());
+    if (path.isEmpty())
+      continue;
+    result.append(QVariantMap{{"name", path}, {"path", path}});
+  }
+  return result;
+}
 QVariantList Desktop::breadcrumbs(const QString &input) const {
   // Pure lexical splitting: never stat a path on the GUI thread (UNC included).
   auto path = QDir::fromNativeSeparators(input);

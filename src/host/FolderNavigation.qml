@@ -100,6 +100,29 @@ RowLayout {
         hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上")
         onClicked: { root.beforeNavigate(); root.controller.parentDirectory() }
     }
+    Tool {
+        id: driveButton
+        objectName: "folderDriveButton"
+        iconName: "assets"
+        hint: Theme.t("选择磁盘或卷", "Choose a drive", "選擇磁碟或磁碟區")
+        onClicked: drivesPopup.open()
+        AppPopupMenu {
+            id: drivesPopup
+            y: driveButton.height
+            Repeater {
+                model: drivesPopup.visible ? root.controller.drives() : []
+                AppMenuItem {
+                    required property var modelData
+                    objectName: "folderDriveOption"
+                    text: modelData.name
+                    checkable: true
+                    checked: String(modelData.path).toLowerCase() === root.controller.directory.slice(0, String(modelData.path).length).toLowerCase()
+                    onTriggered: { root.beforeNavigate(); root.controller.navigate(modelData.path) }
+                }
+            }
+            onClosed: driveButton.forceActiveFocus()
+        }
+    }
     Rectangle {
         id: pathBox
         Layout.fillWidth: true; Layout.minimumWidth: 110; Layout.preferredHeight: 36

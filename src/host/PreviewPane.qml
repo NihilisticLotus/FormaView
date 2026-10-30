@@ -9,6 +9,7 @@ Rectangle {
     signal toggleFocus()
     signal unavailable()
     signal convert()
+    signal exportShortcut(string preset)
     readonly property bool convertOnly: root.controller.asset.kind === "convert"
     property bool focused: false
     readonly property bool imageActive: !!controller.image && (controller.image.available || controller.image.busy || !!controller.image.error)
@@ -29,6 +30,9 @@ Rectangle {
                 Tool { id: imageFocus; quiet: true; iconName: "fullscreen"; text: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
                 Tool { iconName: "more"; quiet: true; hint: Theme.t("更多", "More", "更多"); onClicked: actions.open(); AppPopupMenu { id: actions; y: parent.height
                     AppMenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); enabled: !!root.controller.asset.path; onTriggered: root.controller.reveal(root.controller.asset.path) }
+                    AppMenuItem { objectName: "quickTextureExport"; visible: root.controller.asset.kind === "image"; text: Theme.t("导出贴图…", "Export texture…", "匯出貼圖…"); onTriggered: root.exportShortcut("texture") }
+                    AppMenuItem { objectName: "quickModelExport"; visible: ["model", "convert"].includes(root.controller.asset.kind); text: Theme.t("导出模型…", "Export model…", "匯出模型…"); onTriggered: root.exportShortcut("model") }
+                    AppMenuItem { objectName: "quickAnimationExport"; visible: ["model", "animation", "convert"].includes(root.controller.asset.kind); text: Theme.t("导出动画…", "Export animation…", "匯出動畫…"); onTriggered: root.exportShortcut("animation") }
                     AppMenuItem { text: Theme.t("关闭当前文件", "Close current file", "關閉目前檔案"); enabled: !!root.controller.asset.path; onTriggered: root.controller.clearAsset() }
                 } }
             }

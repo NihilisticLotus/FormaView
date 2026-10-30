@@ -11,18 +11,20 @@ FocusScope {
     property bool modelMode: false
     readonly property var inputs: modelMode ? modelInputs : imageInputs
     property string selectionSnapshot: ""
+    property string exportPreset: ""
     property bool initialized: false
     readonly property var service: controller.imageJobs
     readonly property bool modelAvailable: !!service.capabilities.model_export
     signal closed()
-    function open(page): void {
+    function open(page, preset): void {
         const selected = controller.selectedImages()
         const models = controller.selectedModels()
-        const snapshot = JSON.stringify([selected, models])
+        const snapshot = JSON.stringify([selected, models, preset || ""])
         if (!initialized || snapshot !== selectionSnapshot) {
             service.setSourceInputs(selected)
             modelInputs = models
-            modelMode = modelAvailable && models.length > 0 && selected.length === 0
+            modelMode = modelAvailable && (preset === "model" || preset === "animation" || (models.length > 0 && selected.length === 0))
+            exportPreset = preset || ""
             selectionSnapshot = snapshot
             service.invalidatePlan()
         }
@@ -57,7 +59,7 @@ FocusScope {
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: tabs.currentIndex
             ConversionSettings {
-                id: settings; controller: root.controller; inputs: root.inputs; modelMode: root.modelMode
+                id: settings; controller: root.controller; inputs: root.inputs; modelMode: root.modelMode; exportPreset: root.exportPreset
                 onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.service.addSourceFiles(paths) }
                 onEdited: { root.service.invalidatePlan(); results.acknowledged = false }
                 onBack: root.close()

@@ -30,15 +30,15 @@ Item {
         settingsDialog.leave(() => root.Window.window.close())
         return false
     }
-    function openConversion(page) {
+    function openConversion(page, preset) {
         if (!controller.imageJobs) return
-        if (settingsVisible) { settingsDialog.leave(() => root.openConversion(page)); return }
+        if (settingsVisible) { settingsDialog.leave(() => root.openConversion(page, preset)); return }
         tasksVisible = false; settingsVisible = false
         if (drawer.visible) drawer.close()
         conversionVisible = true
         if (!conversionLoader.item) conversionLoader.setSource("ConversionWorkspace.qml", {controller: root.controller})
         const workspace = conversionLoader.item as ConversionWorkspace
-        if (workspace) workspace.open(page)
+        if (workspace) workspace.open(page, preset || "")
     }
     readonly property bool narrow: width <= 1300
     function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }
@@ -170,6 +170,7 @@ Item {
                     onToggleFocus: { root.conversionVisible = false; root.setFocusMode(!root.focusMode) }
                     onUnavailable: about.open()
                     onConvert: root.openConversion(0)
+                    onExportShortcut: preset => root.openConversion(0, preset)
                 }
                     }
                 }
