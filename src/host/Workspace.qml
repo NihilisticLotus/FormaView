@@ -32,6 +32,7 @@ Item {
     }
     function openConversion(page, preset) {
         if (!controller.imageJobs) return
+        if (quickExportLoader.item && (quickExportLoader.item.visible || quickExportLoader.item.settling)) { quickExportLoader.item.raise(); quickExportLoader.item.requestActivate(); return }
         if (settingsVisible) { settingsDialog.leave(() => root.openConversion(page, preset)); return }
         tasksVisible = false; settingsVisible = false
         if (drawer.visible) drawer.close()
@@ -39,6 +40,12 @@ Item {
         if (!conversionLoader.item) conversionLoader.setSource("ConversionWorkspace.qml", {controller: root.controller})
         const workspace = conversionLoader.item as ConversionWorkspace
         if (workspace) workspace.open(page, preset || "")
+    }
+    function openQuickExport(preset) {
+        if (!controller.imageJobs || !controller.asset.path) return
+        if (quickExportLoader.item && (quickExportLoader.item.visible || quickExportLoader.item.settling)) { quickExportLoader.item.raise(); quickExportLoader.item.requestActivate(); return }
+        quickExportLoader.setSource("", {})
+        quickExportLoader.setSource("QuickExportWindow.qml", {controller: root.controller, inputPath: String(controller.asset.path), preset: preset, transientParent: root.Window.window})
     }
     readonly property bool narrow: width <= 1300
     function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }
@@ -170,7 +177,7 @@ Item {
                     onToggleFocus: { root.conversionVisible = false; root.setFocusMode(!root.focusMode) }
                     onUnavailable: about.open()
                     onConvert: root.openConversion(0)
-                    onExportShortcut: preset => root.openConversion(0, preset)
+                    onExportShortcut: preset => root.openQuickExport(preset)
                 }
                     }
                 }
@@ -191,7 +198,7 @@ Item {
                 }
                 Inspector { id: inspector; Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? Theme.narrowInspectorWidth : Theme.inspectorWidth; visible: root.inspectorVisible; controller: root.controller }
             }
-            TasksPane { anchors.fill: parent; visible: root.tasksVisible && !root.conversionVisible && !root.settingsVisible; controller: root.controller; onBack: root.tasksVisible = false; onRetryImageJob: id => { root.controller.imageJobs.retry(id); root.openConversion(1) } }
+            TasksPane { anchors.fill: parent; visible: root.tasksVisible && !root.conversionVisible && !root.settingsVisible; controller: root.controller; onBack: root.tasksVisible = false; onRetryImageJob: id => { if (quickExportLoader.item && quickExportLoader.item.visible) { quickExportLoader.item.raise(); quickExportLoader.item.requestActivate(); return } root.controller.imageJobs.retry(id); root.openConversion(1) } }
             SettingsDialog {
                 id: settingsDialog; anchors.fill: parent; controller: root.controller; visible: root.settingsVisible
                 onOpened: { root.settingsVisible = true; root.tasksVisible = false; root.conversionVisible = false }
@@ -241,6 +248,7 @@ Item {
     FileDialog { id: fileDialog; title: Theme.t("打开文件", "Open file", "開啟檔案"); onAccepted: root.controller.openPath(selectedFile.toString()) }
     FolderDialog { id: folderDialog; title: Theme.t("打开目录", "Open folder", "開啟資料夾"); onAccepted: root.controller.navigate(selectedFolder.toString()) }
     FileDialog { id: locateDialog; title: Theme.t("定位替代文件 · 读取检查后应用", "Locate replacement · Check before applying", "定位替代檔案 · 讀取檢查後套用"); onAccepted: root.controller.openPath(selectedFile.toString()) }
+    Loader { id: quickExportLoader }
     Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => navigation.focusDestination("conversion")) } }
     Dialog {
         id: about; anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true

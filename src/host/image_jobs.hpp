@@ -78,6 +78,7 @@ public:
   Q_INVOKABLE void pauseJob(const QString &id, bool pause);
   Q_INVOKABLE void removeJob(const QString &id);
   Q_INVOKABLE void selectJob(const QString &id);
+  Q_INVOKABLE QVariantMap jobSnapshot(const QString &id) const;
   Q_INVOKABLE void invalidatePlan();
   Q_INVOKABLE QVariantMap nameExamples(const QStringList &inputs,
                                       const QString &nameTemplate,
@@ -85,6 +86,7 @@ public:
                                       const QVariantList &itemOverrides) const;
   Q_INVOKABLE void cancelPreparation();
 signals:
+  void submissionFinished(const QString &planId, const QString &jobId);
   void changed();
   void sourcesChanged();
 

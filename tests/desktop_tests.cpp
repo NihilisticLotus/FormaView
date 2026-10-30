@@ -3289,6 +3289,146 @@ private slots:
   }
 #endif
 
+  void quickExportWorkflow() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    const auto findWindow = []() -> QQuickWindow * {
+      for (auto *candidate : QGuiApplication::topLevelWindows())
+        if (candidate->objectName() == "quickExportWindow" && candidate->isVisible())
+          return qobject_cast<QQuickWindow *>(candidate);
+      return nullptr;
+    };
+    const auto source = small_ + "/唯一图片.png";
+    desktop_->openPath(source);
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), source);
+    auto *shortcut = window_->findChild<QObject *>("quickTextureExport"); QVERIFY(shortcut);
+    QVERIFY(QMetaObject::invokeMethod(shortcut, "triggered"));
+    QTRY_VERIFY(findWindow());
+    auto *quick = findWindow();
+    const auto cleanup = qScopeGuard([&] { if (auto *w = findWindow()) w->close(); });
+    QCOMPARE(quick->modality(), Qt::NonModal);
+    QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
+    QCOMPARE(quick->property("inputPath").toString(), source);
+    auto *sourceReadout = quick->findChild<QQuickItem *>("quickExportSource"); QVERIFY(sourceReadout);
+    auto *header = quick->findChild<QQuickItem *>("topBar"); QVERIFY(header);
+    QTRY_VERIFY(sourceReadout->mapToScene({0, 0}).y() >= header->mapToScene({0, header->height()}).y());
+    const auto field = [&](const char *name) { return quick->findChild<QQuickItem *>(name); };
+    const auto edit = [&](const char *name, const QString &text) {
+      auto *control = field(name); QVERIFY(control);
+      QVERIFY(control->setProperty("text", text));
+      QVERIFY(QMetaObject::invokeMethod(control, "textEdited"));
+    };
+    const auto click = [&](const char *name) {
+      auto *control = field(name); QVERIFY(control && control->isEnabled());
+      QVERIFY(QMetaObject::invokeMethod(control, "clicked"));
+    };
+    const auto output = root_ + "/quick-export"; QVERIFY(QDir().mkpath(output));
+    edit("conversionOutputRoot", output);
+    if (!workflowHeadless()) { QTest::qWait(100); QVERIFY(captureWindow(quick).save(root_ + "/quick-texture-settings.png")); }
+    // Browsing remains possible and never changes the captured export input.
+    desktop_->openPath(fixture_ + "/图片0.png");
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), fixture_ + "/图片0.png");
+    QCOMPARE(quick->property("inputPath").toString(), source);
+    click("createImagePlan");
+    QTRY_VERIFY_WITH_TIMEOUT(quick->property("phase") == "job", 20000);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
+    QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
+    const auto exported = service->job().value("items").toList().front().toMap().value("result").toMap().value("committed_output").toString();
+    QCOMPARE(QImage(exported).convertToFormat(QImage::Format_RGBA8888), QImage(source).convertToFormat(QImage::Format_RGBA8888));
+    evidence_["quick_texture"] = QJsonObject::fromVariantMap(service->job());
+    const auto textureJob = service->job().value("id").toString();
+    if (!workflowHeadless()) QVERIFY(captureWindow(quick).save(root_ + "/quick-texture-complete.png"));
+    quick->close(); QTRY_VERIFY(!quick->isVisible());
+    // Closing during asynchronous preparation cannot submit later in the background.
+    const auto jobsBefore = service->jobs().size();
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, "texture")));
+    QTRY_VERIFY(findWindow()); quick = findWindow();
+    edit("conversionOutputRoot", output);
+    click("createImagePlan");
+    quick->close();
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 20000);
+    QTest::qWait(150);
+    QCOMPARE(service->jobs().size(), jobsBefore);
+    QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
+
+#ifdef FORMAVIEW_MODEL_EXPORT
+    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    QVERIFY2(!fixtures.isEmpty(), "Synthetic ActorX fixtures are required for all quick export modes");
+    for (const auto &mode : {QString("model"), QString("combined"), QString("animation")}) {
+      const auto input = fixtures + (mode == "animation" ? "/source.psa" : "/source.psk");
+      desktop_->openPath(input);
+      QTRY_COMPARE_WITH_TIMEOUT(desktop_->asset().value("path").toString(), input, 20000);
+      QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, mode == "animation" ? "animation" : "model")));
+      QTRY_VERIFY(findWindow()); quick = findWindow();
+      QCOMPARE(quick->modality(), Qt::NonModal);
+      const auto destination = output + "/" + mode; QVERIFY(QDir().mkpath(destination));
+      edit("conversionOutputRoot", destination);
+      auto *content = field("modelExportContent"); QVERIFY(content);
+      QCOMPARE(content->property("currentIndex").toInt(), mode == "animation" ? 2 : 1);
+      if (mode == "combined") {
+        content->setProperty("currentIndex", 0);
+        QVERIFY(QMetaObject::invokeMethod(content, "activated", Q_ARG(int, 0)));
+        edit("modelExportPaired", fixtures + "/source.psa");
+      }
+      if (mode == "animation") {
+        // Invalid explicit pairing must block here; valid standalone PSA semantics
+        // remain the same as the full conversion editor.
+        edit("modelExportPaired", fixtures + "/missing-reference.psk");
+        click("createImagePlan");
+        QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && (!service->error().isEmpty() || service->plan().value("state") == "failed"), 20000);
+        QCOMPARE(quick->property("phase").toString(), QString("preflight"));
+        click("editConversionSettings");
+        edit("modelExportPaired", fixtures + "/source.psk");
+      }
+      if (!workflowHeadless()) { QTest::qWait(100); QVERIFY(captureWindow(quick).save(root_ + "/quick-" + mode + "-settings.png")); }
+      click("createImagePlan");
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+      const auto plan = service->plan();
+      auto losses = false;
+      for (const auto &item : plan.value("items").toList())
+        losses |= !item.toMap().value("preflight").toMap().value("losses").toList().isEmpty();
+      if (losses) {
+        QCOMPARE(quick->property("phase").toString(), QString("preflight"));
+        auto *submit = field("submitImagePlan"); QVERIFY(submit && !submit->isEnabled());
+        auto *ack = field("acknowledgeImageLosses"); QVERIFY(ack);
+        if (!workflowHeadless()) { QTest::qWait(100); QVERIFY(captureWindow(quick).save(root_ + "/quick-" + mode + "-losses.png")); }
+        ack->setProperty("checked", true);
+        click("submitImagePlan");
+      }
+      QTRY_VERIFY_WITH_TIMEOUT(quick->property("phase") == "job", 20000);
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 30000);
+      for (const auto &value : service->job().value("items").toList()) {
+        const auto path = value.toMap().value("result").toMap().value("committed_output").toString();
+        const auto document = formaview::skeletal::FbxDocument::read(std::filesystem::path(path.toStdWString()));
+        QCOMPARE(document.data().meshes.empty(), mode == "animation");
+        QCOMPARE(document.data().clips.empty(), mode == "model");
+      }
+      evidence_["quick_" + mode] = QJsonObject::fromVariantMap(service->job());
+      const auto ownId = service->job().value("id").toString();
+      const auto ownItems = service->job().value("items");
+      service->selectJob(textureJob);
+      auto *pinned = quick->findChild<QObject *>("quickExportJob"); QVERIFY(pinned);
+      QTRY_COMPARE(pinned->property("job").toMap().value("id").toString(), ownId);
+      QCOMPARE(pinned->property("job").toMap().value("items"), ownItems);
+      QCOMPARE(service->job().value("id").toString(), textureJob);
+      QCOMPARE(service->jobSnapshot(ownId).value("items"), ownItems);
+      const auto priorError = service->error();
+      QVERIFY(service->jobSnapshot("unknown-quick-export-job").isEmpty());
+      QCOMPARE(service->error(), priorError);
+      {
+        ImageJobs restored;
+        restored.archivedJobs_.clear();
+        restored.archivedJobs_[ownId] = service->jobSnapshot(ownId);
+        QCOMPARE(restored.jobSnapshot(ownId).value("items"), ownItems);
+        restored.archivedJobs_[ownId] = QVariantMap{{"deleted", true}};
+        QVERIFY(restored.jobSnapshot(ownId).isEmpty());
+      }
+      if (!workflowHeadless()) QVERIFY(captureWindow(quick).save(root_ + "/quick-" + mode + ".png"));
+      quick->close(); QTRY_VERIFY(!quick->isVisible());
+    }
+#endif
+  }
   void conversionEditorPlanBinding() {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
@@ -3304,7 +3444,7 @@ private slots:
     QVERIFY(index >= 0);
     desktop_->select(index);
     QTRY_VERIFY(idle());
-    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     const auto close = qScopeGuard([&] {
       if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
         QMetaObject::invokeMethod(conversion, "close");
@@ -3394,7 +3534,7 @@ private slots:
       QVERIFY(selectedIndex >= 0);
       desktop_->select(selectedIndex);
       QTRY_COMPARE(desktop_->selectedImages(), QStringList{selectedPath});
-      QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, page)));
+      QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, page), Q_ARG(QVariant, "")));
       QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 15000);
       QCOMPARE(service->sourcePaths(), QStringList{selectedPath});
       QTRY_VERIFY(service->plan().isEmpty());
@@ -9440,7 +9580,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages"};
+    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

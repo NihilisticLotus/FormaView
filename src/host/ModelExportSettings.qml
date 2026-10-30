@@ -12,6 +12,7 @@ ColumnLayout {
     signal edited()
     property var selectedClips: []
     property bool animationOnlyPreset: false
+    property bool compact: false
     property string inspectedKey: ""
     readonly property string inspectionKey: JSON.stringify([inputs, paired.text])
     function defaultContentIndex(): int { return inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
@@ -104,7 +105,7 @@ ColumnLayout {
             Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("保留源根运动与真实时长。视口根锁、当前帧和显示骨骼不改变导出。", "Preserve source root motion and duration. Viewport root lock, current frame and bone display do not affect export.", "保留來源根運動與實際時長。視口根鎖、目前影格和顯示骨骼不改變匯出。") }
         }
     }
-    FormGroup { title: Theme.t("导出坐标", "Output coordinates", "匯出座標"); Layout.fillWidth: true
+    FormGroup { visible: !root.compact; title: Theme.t("导出坐标", "Output coordinates", "匯出座標"); Layout.fillWidth: true
         ColumnLayout { anchors.fill: parent; spacing: 12
             RowLayout { Layout.fillWidth: true
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("坐标预设", "Axis preset", "座標預設") }

@@ -673,7 +673,7 @@ void ImageJobs::dispatch(QJsonObject q) {
     if (receiver)
       QMetaObject::invokeMethod(
           receiver,
-          [receiver, response] {
+          [receiver, response, q] {
             if (!receiver)
               return;
             receiver->busy_ = false;
@@ -689,6 +689,8 @@ void ImageJobs::dispatch(QJsonObject q) {
               receiver->discoveryOffset_ = 0;
             }
             receiver->poll();
+            if (q["operation"] == "submit")
+              emit receiver->submissionFinished(q["plan_id"].toString(), response["job_id"].toString());
             emit receiver->changed();
           },
           Qt::QueuedConnection);
@@ -779,6 +781,29 @@ void ImageJobs::removeJob(const QString &id) {
     if (!jobs_.isEmpty()) { job_ = jobs_.first().toMap(); jobId_ = job_.value("id").toString(); }
   }
   saveHistory(); poll(); emit changed();
+}
+QVariantMap ImageJobs::jobSnapshot(const QString &id) const {
+  if (id.isEmpty()) return {};
+  const auto archived = archivedJobs_.value(id).toMap();
+  if (archived.value("deleted").toBool()) return {};
+  if (id == jobId_) return job_;
+  if (!service_) return archived;
+  auto q = request("get_job");
+  q["id"] = id;
+  q["limit"] = 100;
+  const bool grouped = groups_ && groups_->contains(id);
+  auto result = grouped ? groups_->request(q) : service_->request(q);
+  if (result.contains("error")) return archived;
+  auto items = result["items"].toArray();
+  while (!grouped && !result["next_offset"].isNull()) {
+    q["offset"] = result["next_offset"];
+    const auto page = service_->request(q);
+    if (page.contains("error")) return {};
+    for (const auto &item : page["items"].toArray()) items.append(item);
+    result["next_offset"] = page["next_offset"];
+  }
+  result["items"] = items;
+  return result.toVariantMap();
 }
 void ImageJobs::selectJob(const QString &id) {
   jobId_ = id;

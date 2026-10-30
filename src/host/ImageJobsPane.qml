@@ -6,7 +6,21 @@ ColumnLayout {
     id: root
     required property var controller
     readonly property var service: controller.imageJobs
-    readonly property var job: service.job
+    property string fixedJobId: ""
+    property bool compact: false
+    property int snapshotRevision: 0
+    // Poll notifications refresh a pinned job without changing the main task selection.
+    readonly property var job: {
+        const current = service.job
+        const rows = service.jobs
+        const revision = snapshotRevision
+        return !fixedJobId || current.id === fixedJobId ? current : service.jobSnapshot(fixedJobId)
+    }
+    Timer {
+        interval: 200; repeat: true
+        running: root.compact && root.visible && !!root.Window.window?.visible && root.active && !!root.fixedJobId && root.service.job.id !== root.fixedJobId
+        onTriggered: root.snapshotRevision++
+    }
     readonly property var items: job.items || []
     readonly property var categories: Array.from(new Set(service.jobs.map(j => j.category || ""))).filter(c => !!c).sort()
     property string selectedCategory: ""
@@ -19,6 +33,7 @@ ColumnLayout {
     function count(state): int { return items.filter(i => i.status === state).length }
     readonly property int finished: items.filter(i => ["succeeded", "failed", "skipped", "cancelled", "interrupted"].includes(i.status)).length
     function syncJobSelection(): void {
+        if (compact) return
         jobChoice.currentIndex = visibleJobs.findIndex(j => j.id === job.id)
         if (batches.currentIndex !== jobChoice.currentIndex) {
             batches.currentIndex = jobChoice.currentIndex
@@ -30,7 +45,7 @@ ColumnLayout {
     Connections { target: root.service; function onChanged() { Qt.callLater(root.syncJobSelection) } }
     Component.onCompleted: syncJobSelection()
     RowLayout {
-      Layout.fillWidth: true
+      visible: !root.compact; Layout.fillWidth: true
       Label { text: Theme.t("提交批次", "Submission batches", "提交批次"); color: Theme.text; font.bold: true }
       Item { Layout.fillWidth: true }
       Choice {
@@ -43,6 +58,7 @@ ColumnLayout {
     }
     Choice {
         id: jobChoice; objectName: "imageJobChoice"
+        visible: !root.compact
         Layout.fillWidth: true; model: root.visibleJobs.map(j => (j.name || j.id) + " · " + root.categoryLabel(j.category || "") + " · " + Theme.state(j.state))
         onActivated: if (currentIndex >= 0 && currentIndex < root.visibleJobs.length) root.service.selectJob(root.visibleJobs[currentIndex].id)
         Accessible.name: Theme.t("转换任务", "Conversion job", "轉換工作")
@@ -50,7 +66,7 @@ ColumnLayout {
     ListView {
         id: batches; objectName: "conversionBatchList"
         Layout.fillWidth: true; Layout.preferredHeight: visible ? 118 : 0
-        visible: count > 0; orientation: ListView.Horizontal
+        visible: !root.compact && count > 0; orientation: ListView.Horizontal
         model: root.visibleJobs; spacing: 10; clip: true; reuseItems: true
         ScrollBar.horizontal: ScrollBar { policy: batches.contentWidth > batches.width ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded }
         delegate: Button {
