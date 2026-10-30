@@ -534,8 +534,32 @@ private slots:
       return nullptr;
     };
     const auto click = [&](QQuickItem *target) {
-      if (target) QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
-                                  target->mapToScene(QPointF(target->width()/2, target->height()/2)).toPoint());
+      QVERIFY(target);
+      const auto targetName=target->objectName();
+      const auto targetPath=target->property("folderPath").toString();
+      const auto before=target->mapToScene(QPointF(target->width()/2,target->height()/2));
+      QPointer<QQuickItem> initialTarget=target;
+      QSignalSpy readyFrame(window_,&QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!readyFrame.isEmpty());
+      QQuickItem *ready=nullptr;
+      const auto nameBytes=targetName.toUtf8();
+      for(auto *candidate:visualItems(window_->contentItem(),nameBytes.constData()))
+        if(candidate->isVisible() && candidate->isEnabled() && candidate->property("folderPath").toString()==targetPath) { ready=candidate; break; }
+      QVERIFY(ready);
+      const auto position=ready->mapToScene(QPointF(ready->width()/2,ready->height()/2));
+      const bool initialDestroyed=initialTarget.isNull();
+      QPointer<QQuickItem> readyTarget=ready;
+      QTest::mousePress(window_,Qt::LeftButton,Qt::NoModifier,position.toPoint());
+      auto *receiver=window_->mouseGrabberItem();
+      const auto receiverName=receiver ? receiver->objectName() : QString{};
+      while(receiver && receiver!=readyTarget.data()) receiver=receiver->parentItem();
+      const bool hitTarget=receiver && readyTarget;
+      QTest::mouseRelease(window_,Qt::LeftButton,Qt::NoModifier,position.toPoint());
+      auto clicks=evidence_["folder_navigation_clicks"].toArray();
+      clicks.append(QJsonObject{{"name",targetName},{"path",targetPath},{"before_x",before.x()},{"before_y",before.y()},{"ready_x",position.x()},{"ready_y",position.y()},{"initial_destroyed",initialDestroyed},{"receiver",receiverName},{"hit_target",hitTarget}});
+      evidence_["folder_navigation_clicks"]=clicks;
+      QVERIFY(hitTarget);
     };
     const auto model = root_ + "/目录导航/Model";
     const auto session = desktop_->sessionRevision();
