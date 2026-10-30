@@ -397,6 +397,7 @@ struct ImageBatchService::Impl {
       // Hold every readable batch input, including aliases, throughout all
       // commits. Failed opens still retain lexical path protection.
       std::vector<InputLease> leases;
+      std::vector<std::optional<InputSnapshot>> entry_snapshots;
       auto protected_inputs = context.protected_inputs;
       const auto protectFallback = [&](InputSnapshot fallback) {
         try {
@@ -416,31 +417,96 @@ struct ImageBatchService::Impl {
           const auto allocation = ImageAdmission(false, stop);
           leases.push_back(InputLease::open(scope, fallback.resolved_path,
                                             limits.image.input_bytes, stop));
-          protected_inputs.push_back(leases.back().snapshot());
+          entry_snapshots.emplace_back(leases.back().snapshot());
+          protected_inputs.push_back(*entry_snapshots.back());
         } catch (const skeletal::Failure &) {
+          entry_snapshots.emplace_back(std::nullopt);
           protectFallback(std::move(fallback));
         }
       }
 #ifdef FORMAVIEW_MODEL_EXPORT
-      for (const auto &entry : entries) {
+      // This bounded cache covers only the protection-path inspect pass.
+      // Every item still runs its own preflight against its held snapshot.
+      struct CachedInspection {
+        InputSnapshot input;
+        QJsonObject result;
+      };
+      std::map<QString, CachedInspection> inspections;
+      qsizetype inspection_bytes = 0;
+      for (qsizetype item_index = 0; item_index < entries.size();
+           ++item_index) {
+        const auto &entry = entries[item_index];
         const auto request = entry.toObject()["request"].toObject();
         const auto options = request["options"].toObject();
-        if (options["target"] != "fbx") continue;
+        if (options["target"] != "fbx")
+          continue;
         auto auxiliaries = model_export::auxiliary_inputs(request);
-        const auto suffix = QFileInfo(request["input"].toString()).suffix().toLower();
+        const auto suffix =
+            QFileInfo(request["input"].toString()).suffix().toLower();
         if (suffix != "psk" && suffix != "pskx" && suffix != "psa") {
-          auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
-          try {
-            const auto allocation = ImageAdmission(false, stop);
-            const auto source = execute_image_request(inspect, scope, limits.image, stop);
-            for (const auto &value : source["sources"].toArray())
-              auxiliaries.emplace_back(value.toObject()["path"].toString().toStdWString());
-            for (const auto &value : source["referenced_sources"].toArray())
-              auxiliaries.emplace_back(value.toString().toStdWString());
-          } catch (const skeletal::Failure &) {
-            // The per-item pass reports malformed/cancelled inputs. Keep the
-            // base source protected without aborting unrelated batch items.
+          const auto snapshot =
+              entry_snapshots[static_cast<std::size_t>(item_index)];
+          const auto cache_key =
+              QString::fromStdWString(
+                  std::filesystem::path(text(request, "input").toStdWString())
+                      .lexically_normal()
+                      .wstring())
+                  .replace('\\', '/')
+                  .toCaseFolded();
+          auto cached = inspections.find(cache_key);
+          const bool snapshot_matches =
+              snapshot && cached != inspections.end() &&
+              cached->second.input.resolved_path == snapshot->resolved_path &&
+              cached->second.input.file_identity == snapshot->file_identity &&
+              cached->second.input.size_bytes == snapshot->size_bytes &&
+              cached->second.input.modified_ticks == snapshot->modified_ticks &&
+              cached->second.input.content_sha256 == snapshot->content_sha256;
+          QJsonObject source;
+          if (snapshot_matches) {
+            source = cached->second.result;
+          } else {
+            auto inspect = request;
+            inspect["version"] = 1;
+            inspect["operation"] = "inspect";
+            try {
+              const auto allocation = ImageAdmission(false, stop);
+              source =
+                  execute_image_request(inspect, scope, limits.image, stop);
+              const auto inspected = source["input"].toObject();
+              const bool inspected_snapshot_matches =
+                  snapshot &&
+                  inspected["sha256"].toString().toStdString() ==
+                      snapshot->content_sha256 &&
+                  inspected["file_identity"].toString().toStdString() ==
+                      snapshot->file_identity &&
+                  inspected["size"].toInteger() ==
+                      static_cast<qint64>(snapshot->size_bytes) &&
+                  inspected["modified_ticks"].toString().toLongLong() ==
+                      snapshot->modified_ticks &&
+                  QString::fromStdWString(snapshot->resolved_path.wstring())
+                          .replace('\\', '/')
+                          .compare(
+                              inspected["path"].toString().replace('\\', '/'),
+                              Qt::CaseInsensitive) == 0;
+              if (inspected_snapshot_matches && inspections.size() < 16) {
+                const auto bytes =
+                    QJsonDocument(source).toJson(QJsonDocument::Compact).size();
+                if (bytes <= 256 * 1024 &&
+                    inspection_bytes <= 4 * 1024 * 1024 - bytes) {
+                  inspections[cache_key] = {*snapshot, source};
+                  inspection_bytes += bytes;
+                }
+              }
+            } catch (const skeletal::Failure &) {
+              // The per-item pass reports malformed/cancelled inputs. Keep the
+              // base source protected without aborting unrelated batch items.
+            }
           }
+          for (const auto &value : source["sources"].toArray())
+            auxiliaries.emplace_back(
+                value.toObject()["path"].toString().toStdWString());
+          for (const auto &value : source["referenced_sources"].toArray())
+            auxiliaries.emplace_back(value.toString().toStdWString());
         }
         // Preserve approved dependency paths even if the source has become
         // unreadable since preflight. Later per-item validation reports it.

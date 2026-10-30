@@ -10,9 +10,13 @@
 #include <chrono>
 #include <io.h>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <windows.h>
+#ifdef FORMAVIEW_MODEL_EXPORT
+#include <fbxsdk.h>
+#endif
 
 using namespace formaview;
 using namespace formaview::imaging;
@@ -47,6 +51,110 @@ QJsonObject call(ImageBatchService &service, QJsonObject request) {
   return service.request(request);
 }
 QString new_id() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
+#ifdef FORMAVIEW_MODEL_EXPORT
+struct FbxDestroy {
+  template <class T> void operator()(T *value) const {
+    if (value)
+      value->Destroy();
+  }
+};
+void make_many_clip_fbx(const std::filesystem::path &path, int count) {
+  std::unique_ptr<FbxManager, FbxDestroy> manager(FbxManager::Create());
+  require(static_cast<bool>(manager), "Create FBX fixture manager");
+  manager->SetIOSettings(FbxIOSettings::Create(manager.get(), IOSROOT));
+  std::unique_ptr<FbxScene, FbxDestroy> scene(
+      FbxScene::Create(manager.get(), "Repeated clip preflight"));
+  auto *root = FbxNode::Create(scene.get(), "Root");
+  scene->GetRootNode()->AddChild(root);
+  for (int clip = 0; clip < count; ++clip) {
+    const auto name = "Clip_" + std::to_string(clip);
+    auto *stack = FbxAnimStack::Create(scene.get(), name.c_str());
+    auto *layer = FbxAnimLayer::Create(scene.get(), (name + "_Layer").c_str());
+    stack->AddMember(layer);
+    FbxTime start, end;
+    start.SetSecondDouble(0);
+    end.SetSecondDouble(1);
+    FbxTimeSpan span;
+    span.Set(start, end);
+    stack->SetLocalTimeSpan(span);
+    auto *curve = root->LclTranslation.GetCurve(
+        layer, FBXSDK_CURVENODE_COMPONENT_X, true);
+    curve->KeyModifyBegin();
+    for (int key = 0; key < 2; ++key) {
+      FbxTime time;
+      time.SetSecondDouble(key);
+      const auto index = curve->KeyAdd(time);
+      curve->KeySetValue(index, static_cast<float>(clip + key));
+      curve->KeySetInterpolation(index, FbxAnimCurveDef::eInterpolationLinear);
+    }
+    curve->KeyModifyEnd();
+  }
+  std::unique_ptr<FbxExporter, FbxDestroy> exporter(
+      FbxExporter::Create(manager.get(), "Repeated clip fixture"));
+  const auto format = manager->GetIOPluginRegistry()->FindWriterIDByDescription(
+      "FBX binary (*.fbx)");
+  const auto path_text = path.string();
+  require(
+      exporter->Initialize(path_text.c_str(), format, manager->GetIOSettings()),
+      "Initialize FBX fixture writer");
+  require(exporter->Export(scene.get()), "Write repeated clip FBX fixture");
+}
+void repeated_scene_clip_preflight(const std::filesystem::path &root) {
+  const auto directory = root / "repeated-scene-preflight";
+  std::filesystem::create_directories(directory / "journal");
+  const auto input = directory / "many-clips.fbx";
+  make_many_clip_fbx(input, 4);
+  auto policy = scope(directory);
+  ImageBatchService service(policy, directory / "journal");
+  const auto inspected =
+      execute_image_request({{"version", 1},
+                             {"operation", "inspect"},
+                             {"input", qp(input)},
+                             {"options", QJsonObject{{"target", "fbx"}}}},
+                            policy);
+  const auto clips = inspected["clips"].toArray();
+  require(clips.size() == 4, "Multi-animation fixture clip inventory");
+  QJsonArray requests;
+  for (qsizetype index = 0; index < clips.size(); ++index)
+    requests.append(QJsonObject{
+        {"input", qp(input)},
+        {"output", qp(directory / ("clip-" + std::to_string(index) + ".fbx"))},
+        {"conflict", "skip"},
+        {"options", QJsonObject{{"target", "fbx"},
+                                {"clip_id", clips[index].toObject()["id"]},
+                                {"include_mesh", true}}}});
+  auto created =
+      call(service, {{"operation", "create_plan"}, {"items", requests}});
+  require(created.contains("plan_id"), "Create repeated scene clip plan");
+  QJsonObject plan;
+  for (int attempt = 0; attempt < 3000; ++attempt) {
+    plan =
+        call(service, {{"operation", "get_plan"}, {"id", created["plan_id"]}});
+    const auto state = plan["state"].toString();
+    if (state != "planning" && state != "queued" && state != "running")
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  require(plan["state"] == "ready", "Repeated scene clip preflight readiness");
+  const auto items = plan["items"].toArray();
+  require(items.size() == clips.size(), "Repeated clip result count");
+  for (qsizetype index = 0; index < items.size(); ++index) {
+    const auto item_value = items[index].toObject();
+    const auto preflight = item_value["preflight"].toObject();
+    const auto exported = preflight["clips"].toArray();
+    require(item_value["status"] == "ready" && exported.size() == 1 &&
+                exported[0].toObject()["id"] == clips[index].toObject()["id"] &&
+                preflight["encoded_bytes"].toInteger() > 0 &&
+                !preflight["approval_digest"].toString().isEmpty() &&
+                preflight["input"].toObject()["sha256"] ==
+                    inspected["input"].toObject()["sha256"] &&
+                preflight["losses"].isArray(),
+            "Each repeated-source preflight preserves its selected clip and "
+            "evidence");
+  }
+  std::cout << "PASS repeated-source multi-clip scene preflight\n";
+}
+#endif
 void continuous_history(const std::filesystem::path &root) {
   const auto journal = root / "continuous-history";
   std::filesystem::create_directory(journal);
@@ -212,6 +320,9 @@ void run(const std::filesystem::path &root) {
               static_cast<qint64>(encoded.size()),
           "Write input");
   file.close();
+#ifdef FORMAVIEW_MODEL_EXPORT
+  repeated_scene_clip_preflight(root);
+#endif
   continuous_history(root);
   {
     const auto journal = root / "mixed-path-journal";
