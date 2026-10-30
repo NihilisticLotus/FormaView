@@ -61,7 +61,7 @@ ErrorCode error_code(const QString &name) {
   return codes.value(name, ErrorCode::Internal);
 }
 bool active(const QString &s) {
-  return s == "queued" || s == "running" || s == "planning";
+  return s == "queued" || s == "running" || s == "planning" || s == "paused" || s == "pausing";
 }
 QString outputName(const QString &input, qsizetype index,
                    const QString &target, QString name, const QString &clip = {}) {
@@ -229,7 +229,20 @@ ImageJobs::ImageJobs(QObject *parent)
     const auto document = QJsonDocument::fromJson(history.readAll(), &error);
     if (error.error == QJsonParseError::NoError && document.isObject()) {
       archivedJobs_ = document.object().toVariantMap();
-      for (auto it = archivedJobs_.cbegin(); it != archivedJobs_.cend(); ++it) jobs_.append(it.value());
+      for (auto it = archivedJobs_.begin(); it != archivedJobs_.end(); ++it) {
+        auto job = it.value().toMap();
+        if (job.value("deleted").toBool()) continue;
+        auto items = job.value("items").toList();
+        bool unfinished = false;
+        for (auto &value : items) {
+          auto item = value.toMap();
+          if (item.value("status") == "pending" || item.value("status") == "running") {
+            item["status"] = "interrupted"; value = item; unfinished = true;
+          }
+        }
+        if (unfinished) { job["state"] = "interrupted"; job["items"] = items; }
+        it.value() = job; jobs_.append(job);
+      }
       if (!jobs_.isEmpty()) { job_ = jobs_.last().toMap(); jobId_ = job_.value("id").toString(); }
     } else error_ = tr("Cannot read conversion task history");
   }
@@ -301,16 +314,14 @@ bool ImageJobs::activeJobs() const {
     return true;
   auto q = request("list_jobs");
   q["limit"] = 100;
-  const auto r = service_->request(q);
-  for (const auto &v : r["items"].toArray())
-    if (active(v.toObject()["state"].toString()))
-      return true;
-  // The second page is required for the bounded 128-record store.
-  if (!r["next_offset"].isNull()) {
+  for (;;) {
+    const auto r = service_->request(q);
+    // A query failure must not be mistaken for permission to discard work.
+    if (r.contains("error")) return true;
+    for (const auto &v : r["items"].toArray())
+      if (active(v.toObject()["state"].toString())) return true;
+    if (r["next_offset"].isNull()) break;
     q["offset"] = r["next_offset"];
-    for (const auto &v : service_->request(q)["items"].toArray())
-      if (active(v.toObject()["state"].toString()))
-        return true;
   }
   return false;
 }
@@ -382,11 +393,11 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
             parse_image_scope(policy), std::filesystem::path(groupRoot.toStdWString()));
       }
       const auto outputRoots = policy["output_roots"].toArray();
-      if (outputRoots.size() != 1)
+      if (!inputs.isEmpty() && outputRoots.size() != 1)
         throw skeletal::Failure(
             ErrorCode::InvalidArgument,
             "GUI conversion requires one explicit output directory");
-      QJsonArray items;
+      QJsonArray items = QJsonArray::fromVariantList(metadata.value("retry_requests").toList());
       for (qsizetype i = 0; i < inputs.size(); ++i) {
         if (stop.stop_requested())
           throw skeletal::Failure(ErrorCode::Cancelled,
@@ -525,6 +536,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         create["items"] = items;
         create["name"] = metadata.value("name").toString();
         create["category"] = metadata.value("category").toString();
+        create["protected_inputs"] = QJsonArray::fromVariantList(metadata.value("protected_inputs").toList());
         response = existingGroups->request(create, stop);
       }
     } catch (const skeletal::Failure &e) {
@@ -713,10 +725,60 @@ void ImageJobs::cancel(const QString &kind, const QString &id) {
   emit changed();
 }
 void ImageJobs::retry(const QString &id) {
+  if (busy_) return;
+  if (!groups_ || !groups_->contains(id)) {
+    const auto previous = id == jobId_ ? job_ : archivedJobs_.value(id).toMap();
+    if (previous.isEmpty() || active(previous.value("state").toString())) return;
+    QVariantList requests, protectedInputs;
+    QStringList outputs;
+    for (const auto &value : previous.value("items").toList()) {
+      const auto item = value.toMap(), original = item.value("request").toMap();
+      protectedInputs.append(original.value("input"));
+      const auto options = original.value("options").toMap();
+      for (const auto *key : {"reference", "animation"})
+        if (!options.value(key).toString().isEmpty()) protectedInputs.append(options.value(key));
+      const auto approved = item.value("preflight").toMap();
+      for (const auto *key : {"sources", "referenced_sources"})
+        for (const auto &source : approved.value(key).toList()) {
+          const auto path = source.metaType().id() == QMetaType::QString
+                                ? source.toString() : source.toMap().value("path").toString();
+          if (!path.isEmpty()) protectedInputs.append(path);
+        }
+      if (item.value("status") == "succeeded" || item.value("status") == "skipped") continue;
+      requests.append(original);
+      outputs.append(QFileInfo(original.value("output").toString()).absolutePath());
+    }
+    if (requests.isEmpty()) return;
+    outputs.removeDuplicates();
+    auto retryScope = previous.value("scope").toMap();
+    if (retryScope.isEmpty()) retryScope = {{"input_roots", localInputRoots()}, {"output_roots", outputs}, {"allow_overwrite", false}};
+    preflight({}, retryScope, {}, {}, "skip", {},
+              {{"name", previous.value("name")}, {"category", previous.value("category")},
+               {"retry_requests", requests}, {"protected_inputs", protectedInputs}});
+    return;
+  }
   invalidatePlan();
   auto q = request("retry_plan");
   q["id"] = id;
   dispatch(q);
+}
+void ImageJobs::pauseJob(const QString &id, bool pause) {
+  auto q = request(pause ? "pause" : "resume"); q["id"] = id;
+  dispatch(q);
+}
+void ImageJobs::removeJob(const QString &id) {
+  if (busy_ || id.isEmpty()) return;
+  const auto found = std::find_if(jobs_.cbegin(), jobs_.cend(), [&](const auto &v) { return v.toMap().value("id") == id; });
+  if (found == jobs_.cend() || active(found->toMap().value("state").toString())) return;
+  // A durable tombstone hides live-service and restored snapshots alike.
+  // Exported files and service recovery journals are never removed here.
+  archivedJobs_[id] = QVariantMap{{"id", id}, {"deleted", true}};
+  jobs_.removeIf([&](const auto &v) { return v.toMap().value("id") == id; });
+  if (jobId_ == id) {
+    jobId_.clear(); job_.clear(); polledJob_ = {};
+    if (!jobs_.isEmpty()) { job_ = jobs_.first().toMap(); jobId_ = job_.value("id").toString(); }
+  }
+  saveHistory(); poll(); emit changed();
 }
 void ImageJobs::selectJob(const QString &id) {
   jobId_ = id;
@@ -740,13 +802,20 @@ void ImageJobs::poll() {
   }
   auto list = request("list_jobs");
   list["limit"] = 100;
-  const auto listing = service_->request(list);
-  auto rows = listing["items"].toArray().toVariantList();
-  if (!listing["next_offset"].isNull()) {
+  QVariantList rows;
+  for (;;) {
+    const auto listing = service_->request(list);
+    if (listing.contains("error")) {
+      error_ = listing["error"].toObject()["message"].toString();
+      emit changed();
+      return;
+    }
+    rows.append(listing["items"].toArray().toVariantList());
+    if (listing["next_offset"].isNull()) break;
     list["offset"] = listing["next_offset"];
-    rows.append(service_->request(list)["items"].toArray().toVariantList());
   }
   if (groups_) rows.append(groups_->request(request("list_jobs"))["items"].toArray().toVariantList());
+  rows.removeIf([&](const auto &v) { return archivedJobs_.value(v.toMap().value("id").toString()).toMap().value("deleted").toBool(); });
   auto get = [&](const char *operation, const QString &id, bool useCache = true) {
     if (QByteArrayView(operation) == "get_job" && archivedJobs_.contains(id) &&
         std::none_of(rows.cbegin(), rows.cend(), [&](const auto &v) { return v.toMap().value("id") == id; }))
@@ -784,12 +853,13 @@ void ImageJobs::poll() {
     auto completed = get("get_job", id, false);
     if (completed.contains("error")) continue;
     completed["archived"] = true;
+    completed["scope"] = scope_;
     archivedJobs_[id] = completed;
     historyChanged = true;
   }
   if (historyChanged) saveHistory();
   for (auto it = archivedJobs_.cbegin(); it != archivedJobs_.cend(); ++it)
-    if (!liveIds.contains(it.key())) rows.append(it.value());
+    if (!liveIds.contains(it.key()) && !it.value().toMap().value("deleted").toBool()) rows.append(it.value());
   QVariantMap discovery;
   if (!discoveryId_.isEmpty()) {
     auto q = request("get_discovery");

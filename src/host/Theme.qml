@@ -58,6 +58,8 @@ QtObject {
         switch (s) {
         case "queued": return t("排队", "Queued", "排隊")
         case "running": return t("运行中", "Running", "執行中")
+        case "pausing": return t("正在暂停", "Pausing", "正在暫停")
+        case "paused": return t("已暂停", "Paused", "已暫停")
         case "cancelling": return t("取消中", "Cancelling", "取消中")
         case "cancelled": return t("已取消", "Cancelled", "已取消")
         case "succeeded": return t("已完成", "Completed", "已完成")

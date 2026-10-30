@@ -743,14 +743,24 @@ void fbx(const std::filesystem::path &directory) {
             }
         }
     }
-    // Coupled-axis rotation cannot be represented by linear Euler curves at the
-    // source rate. Refinement must meet the world-space tolerance off the bake grid.
+    // A single fixed-axis SLERP arc should choose its motion-aligned chart,
+    // rather than needlessly subdividing a poorly conditioned Euler basis.
     auto coupled = a;
     coupled.sequences.resize(1);
     coupled.sequences[0].frame_count = 2;
     coupled.sequences[0].time.source_end_seconds = 2 / coupled.sequences[0].fps;
     coupled.keys[1].rotation = {0, 0, 0, 1};
     coupled.keys[coupled.bones.size() + 1].rotation = {-0.3, -0.4, -0.2, 0.8};
+    const auto aligned_path = directory / "motion-aligned.fbx";
+    std::filesystem::remove(aligned_path);
+    const auto aligned = write_fbx_traced(coupled, 0, aligned_path, &m);
+    check(aligned.sample_subdivisions == 1 && aligned.audited_world_matrix_error <= 0.0005,
+          "Fixed-axis motion was not represented by a linear Euler channel");
+    // Changing rotation axes still needs refinement. Keep a third source frame
+    // so this fixture cannot be made exact by aligning a single fixed axis.
+    coupled.sequences[0].frame_count = 3;
+    coupled.sequences[0].time.source_end_seconds = 3 / coupled.sequences[0].fps;
+    coupled.keys[2 * coupled.bones.size() + 1].rotation = {0.5, -0.3, 0.2, 0.6};
     sk::FbxWriteOptions unrefined;
     unrefined.max_sample_subdivisions = 1;
     const auto too_coarse = directory / "coupled-coarse.fbx";
@@ -835,7 +845,7 @@ void fbx(const std::filesystem::path &directory) {
     near(coupled_back.data().clips[0].end, coupled.sequences[0].time.source_end_seconds);
     auto fractional = coupled;
     fractional.sequences[0].fps = 30.428571701049805;
-    fractional.sequences[0].time.source_end_seconds = 2 / fractional.sequences[0].fps;
+    fractional.sequences[0].time.source_end_seconds = fractional.sequences[0].frame_count / fractional.sequences[0].fps;
     const auto fractional_path = directory / "fractional-source-rate.fbx";
     std::filesystem::remove(fractional_path);
     const auto fractional_bake = write_fbx_traced(fractional, 0, fractional_path, &m);

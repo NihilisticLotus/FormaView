@@ -15,7 +15,7 @@ Rectangle {
             Label { Layout.fillWidth: true; text: Theme.t("任务中心", "Task center", "工作中心"); color: Theme.text; font.pixelSize: 24 }
             Tool { text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.back() }
         }
-        Label { color: Theme.muted; text: Theme.t("活动任务：", "Active tasks: ", "活動工作：")+root.controller.activeTasks }
+        Label { color: Theme.muted; text: Theme.t("文件任务：%1 · 转换批次：%2 · 已暂停：%3", "File tasks: %1 · Active batches: %2 · Paused: %3", "檔案工作：%1 · 轉換批次：%2 · 已暫停：%3").arg(root.controller.activeTasks).arg(root.controller.imageJobs ? root.controller.imageJobs.jobs.filter(j => ["queued", "running", "pausing"].includes(j.state)).length : 0).arg(root.controller.imageJobs ? root.controller.imageJobs.jobs.filter(j => j.state === "paused").length : 0) }
         TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.fillWidth: true
             PageTab { text: Theme.t("转换任务", "Conversion jobs", "轉換工作") }
             PageTab { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }

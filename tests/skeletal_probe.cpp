@@ -143,6 +143,10 @@ bool verify_clip(const std::filesystem::path &source, const std::filesystem::pat
         times.push_back(std::min(frame * .5 / seq.fps, seq.time.source_end_seconds));
     }
     // Independent, reproducible off-grid checks in addition to all source/half frames.
+    // Dense first-interval checks catch the ShortVault regression where a
+    // converging bake was stopped at 256 subdivisions. Offset from bake keys.
+    for (int sample = 0; sample < 512; ++sample)
+        times.push_back((sample + 0.3819660112501051) / (512.0 * seq.fps));
     std::uint32_t random = 0x46425831u;
     for (int sample = 0; sample < 100; ++sample) {
         random = random * 1664525u + 1013904223u;

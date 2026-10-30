@@ -16,6 +16,7 @@ struct FbxNode {
   SourceMetadata source;
   std::optional<std::uint32_t> parent;
   bool bone{};
+  bool implicit_scene_root{}; // Parser container, never an authored skeleton joint.
   Matrix4 default_local{}, default_world{}, geometry_world{};
   std::vector<FbxMaterial> materials;
   struct LodLevel {
@@ -108,7 +109,8 @@ struct FbxWriteOptions {
   double max_world_matrix_error{
       0.0005}; // Absolute component error, audited within every bake interval.
   std::uint32_t max_sample_subdivisions{
-      256}; // Power of two; budget exhaustion refuses the export.
+      0}; // Zero: refine until accurate, bounded by memory/time representation.
+          // Nonzero power of two: explicit caller work limit (not accuracy).
 };
 struct FbxWriteResult {
   std::uint32_t sample_subdivisions{};

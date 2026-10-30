@@ -189,7 +189,85 @@ void dds_alpha_contract(const ImageSubresource &rgba, const std::filesystem::pat
           "BGRX source channel order/stride changed");
   std::cout << "PASS DDS opaque/straight/premultiplied/unknown alpha, zero/partial/opaque values, RGB padding and BGRX\n";
 }
+void png_uncompressed_default(const std::filesystem::path &root) {
+  // Inspect the actual IDAT DEFLATE blocks: a UI/default-value assertion alone
+  // would miss compression-level remapping in the Qt PNG handler.
+  const auto stored = [](const std::vector<std::byte> &bytes) {
+    QByteArray idat;
+    for (std::size_t at = 8; at + 12 <= bytes.size();) {
+      const auto length = qFromBigEndian<quint32>(bytes.data() + at);
+      require(length <= bytes.size() - at - 12, "Truncated PNG chunk");
+      if (std::memcmp(bytes.data() + at + 4, "IDAT", 4) == 0)
+        idat.append(reinterpret_cast<const char *>(bytes.data() + at + 8), length);
+      at += length + 12;
+    }
+    require(idat.size() >= 11, "Missing PNG stream");
+    qsizetype at = 2; // Skip the zlib header. Stored blocks end on byte boundaries.
+    bool final = false;
+    do {
+      require(at + 5 <= idat.size() - 4, "Truncated stored block");
+      const auto header = static_cast<unsigned char>(idat[at++]);
+      require((header & 6) == 0, "Default PNG used compressed DEFLATE blocks");
+      final = (header & 1) != 0;
+      const auto size = qFromLittleEndian<quint16>(idat.constData() + at);
+      const auto inverse = qFromLittleEndian<quint16>(idat.constData() + at + 2);
+      require((size ^ inverse) == 0xffff, "Invalid stored-block length");
+      at += 4 + size;
+    } while (!final);
+    require(at == idat.size() - 4, "Unexpected PNG stream trailer");
+  };
+  for (const bool wide : {false, true})
+    for (const int channels : {1, 2, 3, 4}) {
+      ImageSubresource source;
+      constexpr std::size_t width = 257, height = 131, pixels = width * height;
+      source.data_window = source.display_window = {0, 0, width, height};
+      for (int c = 0; c < channels; ++c) {
+        Buffer b;
+        b.scalar = wide ? ScalarType::UInt16 : ScalarType::UInt8;
+        b.element_count = pixels;
+        b.bytes.resize(pixels * (wide ? 2 : 1));
+        for (std::size_t i = 0; i < pixels; ++i) {
+          const auto value = static_cast<std::uint16_t>((i + c * 71) % 256 * (wide ? 257 : 1));
+          if (wide) std::memcpy(b.bytes.data() + i * 2, &value, 2);
+          else b.bytes[i] = static_cast<std::byte>(value);
+        }
+        const auto name = channels <= 2 ? std::array{"Y", "A"}[c]
+                                       : std::array{"R", "G", "B", "A"}[c];
+        source.channels.push_back({name, std::move(b), SampleEncoding::UNorm});
+      }
+      RasterEncodeOptions direct;
+      direct.alpha = channels == 2 || channels == 4 ? AlphaMode::Straight : AlphaMode::Absent;
+      const auto path = root / ("stored-" + std::to_string(wide ? 16 : 8) + "-" + std::to_string(channels) + ".png");
+      const auto bytes = encode_raster(source, direct);
+      stored(bytes);
+      write(path, bytes);
+      const auto doc = ImageDocument::open(path);
+      const auto decoded = doc.decode(0);
+      require(decoded.channels.size() == source.channels.size(), "PNG channel count changed");
+      for (std::size_t c = 0; c < source.channels.size(); ++c)
+        require(decoded.channels[c].samples.scalar == source.channels[c].samples.scalar &&
+                decoded.channels[c].samples.bytes == source.channels[c].samples.bytes,
+                "PNG default changed pixel/alpha samples or bit depth");
+      // Exercise omitted protocol options, not only direct encoder defaults.
+      QJsonArray mapping;
+      for (const auto &c : source.channels)
+        mapping.append(QJsonObject{{"source", QString::fromStdString(c.name)},
+                                   {"destination", QString::fromStdString(c.name)}});
+      auto options = parse_image_options({{"target", "png"}, {"channels", mapping}});
+      options.transform.source_alpha = direct.alpha;
+      if (direct.alpha == AlphaMode::Straight) options.transform.alpha_channel = "A";
+      stored(prepare_image_conversion(doc, options).encoded);
+      auto defaults = ImageConversionOptions{};
+      defaults.transform = options.transform;
+      stored(prepare_image_conversion(doc, defaults).encoded);
+      direct.compression = 9;
+      const auto compressed = encode_raster(source, direct);
+      require(compressed.size() < bytes.size(), "Explicit PNG compression stopped working");
+    }
+  std::cout << "PASS PNG stored blocks, 8/16-bit Y/YA/RGB/RGBA exact samples and protocol defaults\n";
+}
 void run(const std::filesystem::path &root) {
+  png_uncompressed_default(root);
   const auto capabilities = execute_image_request(
       {{"version", 1}, {"operation", "capabilities"}}, {});
   require(capabilities["read_formats"].toArray().size() == 11,

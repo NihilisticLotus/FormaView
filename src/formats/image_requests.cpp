@@ -291,7 +291,7 @@ ImageConversionOptions parse_image_options(const QJsonObject &o) {
   result.allow_lossy = boolean(o, "allow_lossy");
   result.quality = static_cast<int>(integer(o, "quality", 90, 100));
   result.png_compression =
-      static_cast<int>(integer(o, "png_compression", 6, 9));
+      static_cast<int>(integer(o, "png_compression", 0, 9));
   result.webp_lossless = boolean(o, "webp_lossless", true);
   result.exr_tiled = boolean(o, "exr_tiled");
   result.dds_format = integer(o, "dds_format", 0);

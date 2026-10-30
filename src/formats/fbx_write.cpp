@@ -140,7 +140,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         options.output_metres_per_unit > 1e6 || options.output_metres_per_unit < 1e-9)
         throw Failure(ErrorCode::InvalidArgument, "Invalid output length unit");
     if (!std::isfinite(options.max_world_matrix_error) || options.max_world_matrix_error <= 0 ||
-        !std::has_single_bit(options.max_sample_subdivisions) || options.max_sample_subdivisions > 1024)
+        (options.max_sample_subdivisions && !std::has_single_bit(options.max_sample_subdivisions)))
         throw Failure(ErrorCode::InvalidArgument, "Invalid FBX bake accuracy or subdivision limit");
     if (model_only && (a.animation || !a.mesh || !options.include_mesh || options.psa_config))
         throw Failure(ErrorCode::InvalidArgument, "Model export requires a PSK mesh without animation options");
@@ -416,36 +416,89 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         : evaluate(a, selection.front(), 0, options.stop));
     // Choose a fixed Euler chart per bone from equivalent axis bases. A rest
     // pose (or even the first frame) may put later motion near XYZ's Y=90
-    // singularity. Minimise the worst pitch over source frames and midpoints;
+    // singularity. Minimise actual midpoint Euler interpolation error;
     // this only conditions the representation, the world-space audit below
     // still decides whether the result meets the unchanged accuracy contract.
-    std::vector<std::array<FbxAMatrix, 7>> basis_candidates(model_only ? 0 : a.bones.size());
-    std::vector<std::array<double, 7>> basis_scores(model_only ? 0 : a.bones.size());
+    std::vector<std::array<FbxAMatrix, 8>> basis_candidates(model_only ? 0 : a.bones.size());
+    std::vector<std::array<double, 8>> basis_scores(model_only ? 0 : a.bones.size());
+    std::vector<std::array<double, 8>> basis_pitches(model_only ? 0 : a.bones.size());
     const std::array<FbxVector4, 7> offsets{{{0,0,0}, {90,0,0}, {-90,0,0},
         {0,90,0}, {0,-90,0}, {0,0,90}, {0,0,-90}}};
     if (!model_only) {
+        const auto next_pose = paired
+            ? evaluate_paired(a, pairing, selection.front(), 1.0 / first_sequence.fps, options.psa_config, options.stop)
+            : evaluate(a, selection.front(), 1.0 / first_sequence.fps, options.stop);
         for (std::size_t j = 0; j < a.bones.size(); ++j) {
             FbxAMatrix first; first.SetR(rotation(first_pose.local[j]));
             for (std::size_t c = 0; c < offsets.size(); ++c) {
                 FbxAMatrix offset; offset.SetR(offsets[c]);
                 basis_candidates[j][c] = (first * offset).Inverse();
             }
+            // SLERP on an interval is rotation about a fixed axis. Align the
+            // chart's Z axis with that motion: Rz(t) * R0 then has a linear Z
+            // Euler channel, even for a large opening rotation. Axis-aligned
+            // +/-90-degree charts alone can leave this arc badly conditioned.
+            FbxAMatrix next; next.SetR(rotation(next_pose.local[j]));
+            const auto delta = (next * first.Inverse()).GetQ();
+            const auto length = std::sqrt(delta[0]*delta[0] + delta[1]*delta[1] + delta[2]*delta[2]);
+            basis_candidates[j][7] = basis_candidates[j][0];
+            if (length > 1e-10) {
+                const auto x = delta[0]/length, y = delta[1]/length, z = delta[2]/length;
+                FbxQuaternion align = z < -0.999999999 ? FbxQuaternion(1,0,0,0)
+                                                     : FbxQuaternion(-y,x,0,1+z);
+                align.Normalize();
+                FbxAMatrix chart; chart.SetQ(align);
+                basis_candidates[j][7] = chart.Inverse();
+            }
         }
         for (const auto selected : selection) {
             const auto &seq = a.sequences[selected];
-            for (std::int64_t frame = 0; frame < 2LL * seq.frame_count; ++frame) {
-                const auto seconds = frame * .5 / seq.fps;
-                const auto pose = paired ? evaluate_paired(a, pairing, selected, seconds, options.psa_config, options.stop)
-                                         : evaluate(a, selected, seconds, options.stop);
+            const auto sample = [&](double seconds) {
+                return paired ? evaluate_paired(a, pairing, selected, seconds, options.psa_config, options.stop)
+                              : evaluate(a, selected, seconds, options.stop);
+            };
+            auto start = sample(0);
+            for (std::int64_t frame = 0; frame + 1 < seq.frame_count; ++frame) {
+                const auto middle = sample((frame + .5) / seq.fps);
+                auto finish = sample((frame + 1.0) / seq.fps);
                 for (std::size_t j = 0; j < a.bones.size(); ++j) {
-                    FbxAMatrix r;
-                    const auto &q = pose.local[j].rotation; r.SetQ(FbxQuaternion(q.x,q.y,q.z,q.w));
-                    for (std::size_t c = 0; c < offsets.size(); ++c)
-                        basis_scores[j][c] = std::max(basis_scores[j][c],
-                            std::abs((basis_candidates[j][c] * r).GetR()[1]));
+                    const auto matrix = [](const Transform &t) {
+                        FbxAMatrix r; const auto &q = t.rotation;
+                        r.SetQ(FbxQuaternion(q.x,q.y,q.z,q.w)); return r;
+                    };
+                    const auto r0 = matrix(start.local[j]), r1 = matrix(finish.local[j]), rm = matrix(middle.local[j]);
+                    for (std::size_t c = 0; c < basis_candidates[j].size(); ++c) {
+                        const auto &basis = basis_candidates[j][c];
+                        const auto from = (basis * r0).GetR();
+                        auto to = (basis * r1).GetR();
+                        basis_pitches[j][c] = std::max({basis_pitches[j][c], std::abs(from[1]),
+                            std::abs(to[1]), std::abs((basis * rm).GetR()[1])});
+                        FbxVector4 alternate(to[0]+180, 180-to[1], to[2]+180);
+                        double distance{}, alternate_distance{};
+                        for (int axis = 0; axis < 3; ++axis) {
+                            to[axis] += 360 * std::round((from[axis]-to[axis])/360);
+                            alternate[axis] += 360 * std::round((from[axis]-alternate[axis])/360);
+                            distance += (to[axis]-from[axis])*(to[axis]-from[axis]);
+                            alternate_distance += (alternate[axis]-from[axis])*(alternate[axis]-from[axis]);
+                        }
+                        if (alternate_distance < distance) to = alternate;
+                        FbxAMatrix interpolated; interpolated.SetR((from+to)*.5);
+                        const auto expected = basis * rm;
+                        for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col)
+                            basis_scores[j][c] = std::max(basis_scores[j][c],
+                                std::abs(interpolated[row][col]-expected[row][col]));
+                    }
                 }
+                start = std::move(finish);
             }
         }
+        // Low midpoint error alone can choose a chart grazing a pole elsewhere
+        // in the clip. Weight by the chart Jacobian's conditioning as well.
+        for (std::size_t j = 0; j < a.bones.size(); ++j)
+            for (std::size_t c = 0; c < basis_scores[j].size(); ++c) {
+                const auto cosine = std::cos(basis_pitches[j][c] * std::acos(-1.0) / 180.0);
+                basis_scores[j][c] /= std::max(1e-12, cosine * cosine);
+            }
     }
     nodes.reserve(a.bones.size());
     for (std::size_t j = 0; j < a.bones.size(); ++j) {
@@ -481,6 +534,10 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         const auto parent = paired ? pairing.parents[j] : a.bones[j].parent;
         (parent ? nodes[*parent] : scene->GetRootNode())->AddChild(nodes[j]);
     }
+    // Candidate charts are only needed during node setup, not during baking.
+    decltype(basis_candidates){}.swap(basis_candidates);
+    decltype(basis_scores){}.swap(basis_scores);
+    decltype(basis_pitches){}.swap(basis_pitches);
     if (!skin_bounds.empty())
         for (std::size_t j = 0; j < nodes.size(); ++j) {
             cancelled(options.stop);
@@ -641,7 +698,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                             world_error = std::max(world_error, delta);
                             if (delta > interval_errors[source]) {
                                 interval_errors[source] = delta;
-                                if (interval_subdivisions[source] == options.max_sample_subdivisions)
+                                if (options.max_sample_subdivisions == 0 || interval_subdivisions[source] == options.max_sample_subdivisions)
                                     interval_diagnostics[source] = "; bone=" + a.bones[j].source.original_name +
                                         "; time=" + std::to_string(seconds) + "; row=" + std::to_string(row) +
                                         "; col=" + std::to_string(col);
@@ -655,7 +712,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                         skin_position_bound = std::max(skin_position_bound, bound);
                         if (bound > interval_errors[source]) {
                             interval_errors[source] = bound;
-                            if (interval_subdivisions[source] == options.max_sample_subdivisions)
+                            if (options.max_sample_subdivisions == 0 || interval_subdivisions[source] == options.max_sample_subdivisions)
                                 interval_diagnostics[source] = "; skin bone=" + a.bones[j].source.original_name +
                                     "; time=" + std::to_string(seconds);
                         }
@@ -670,7 +727,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         }
         for (std::size_t source = 0; source < interval_subdivisions.size(); ++source)
             if (interval_errors[source] > options.max_world_matrix_error) {
-                if (interval_subdivisions[source] == options.max_sample_subdivisions)
+                if (interval_subdivisions[source] == options.max_sample_subdivisions ||
+                    interval_subdivisions[source] > std::numeric_limits<std::uint32_t>::max() / 2)
                     throw Failure(ErrorCode::Unsupported,
                                   "FBX rotation bake cannot meet requested transform accuracy; interval=" +
                                       std::to_string(source) +
@@ -847,6 +905,9 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                       "FBX SDK export failed: " + std::string(exporter->GetStatus().GetErrorString()));
     }
     exporter->Destroy();
+    // Drop SDK curves, mesh, evaluator and export scratch before returning the
+    // encoded bytes to the transaction / starting the next batch item.
+    manager.reset();
     cancelled(stop);
     if (encoded) {
         if (stream.GetError() || stream.data.empty())

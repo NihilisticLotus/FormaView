@@ -35,6 +35,42 @@ int main(int argc, char **argv) {
       wait();
       const auto ms = elapsed.elapsed();
       const auto info = session.info();
+      // Record the actual UI hierarchy, including zero-weight ancestors. A
+      // cluster-count-only check misses parser containers displayed as bones.
+      QJsonArray skeletonTree;
+      const auto treeDocument = readModelDocument(args[i], {});
+      if (treeDocument->skeletonOnly && args[i].endsWith(".fbx", Qt::CaseInsensitive)) {
+        const auto source = formaview::skeletal::FbxDocument::read(
+            std::filesystem::path(args[i].toStdWString()));
+        for (std::size_t c = 0; c < source.data().clips.size(); ++c) {
+          const auto &clip = source.data().clips[c];
+          for (const double fraction : {0.0, .137, .5, .731, 1.0}) {
+            const auto time = clip.start + fraction * (clip.end - clip.start);
+            const auto expected = source.evaluate(c, time);
+            const auto actual = treeDocument->worldAt(c, time);
+            std::size_t j = 0;
+            for (std::size_t nodeIndex = 0; nodeIndex < source.data().nodes.size(); ++nodeIndex)
+              if (!source.data().nodes[nodeIndex].implicit_scene_root) {
+                if (actual.at(j++) != expected.world.at(nodeIndex))
+                  throw std::runtime_error("Scene root removal changed animation worlds");
+              }
+            if (j != actual.size()) throw std::runtime_error("Animation remap cardinality");
+          }
+        }
+      }
+      ModelSkeleton tree;
+      tree.replace(treeDocument.get(), 0, 0);
+      const auto visit = [&](auto &&self, const QModelIndex &parent) -> void {
+        for (int row = 0; row < tree.rowCount(parent); ++row) {
+          const auto index = tree.index(row, 0, parent);
+          skeletonTree.append(QJsonObject{
+              {"id", index.data(ModelSkeleton::NodeKey).toString()},
+              {"name", index.data().toString()},
+              {"parent", parent.data(ModelSkeleton::NodeKey).toString()}});
+          self(self, index);
+        }
+      };
+      visit(visit, QModelIndex{});
       QJsonArray sourceMeshes;
       QJsonArray sourceNodes;
       if (qEnvironmentVariableIsSet("FORMAVIEW_PROBE_SOURCE_DETAILS")) {
@@ -140,6 +176,7 @@ int main(int argc, char **argv) {
             {"lines", lines}};
       }
       records.append(QJsonObject{{"source_nodes", sourceNodes},
+                                 {"skeleton_tree", skeletonTree},
                                  {"source_meshes", sourceMeshes},
                                  {"skeleton", skeletonEvidence},
                                  {"path", args[i]},

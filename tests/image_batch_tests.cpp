@@ -47,6 +47,58 @@ QJsonObject call(ImageBatchService &service, QJsonObject request) {
   return service.request(request);
 }
 QString new_id() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
+void continuous_history(const std::filesystem::path &root) {
+  const auto journal = root / "continuous-history";
+  std::filesystem::create_directory(journal);
+  QJsonObject first_submission;
+  QString first_job;
+  const auto terminal = [&](ImageBatchService &service, const char *op,
+                            const QJsonValue &id) {
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      auto result = call(service, {{"operation", op}, {"id", id}});
+      require(!result.contains("error"), "Continuous history query failed");
+      const auto status = result["state"].toString();
+      if (status != "planning" && status != "queued" && status != "running")
+        return result;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    throw std::runtime_error("Continuous history deadline");
+  };
+  {
+    ImageBatchService service(scope(root), journal);
+    // Every completed batch retains both its plan and its job. Batch 65 used
+    // to fail even though no conversion was queued and all allocations ended.
+    for (int i = 0; i < 66; ++i) {
+      auto request = item(root);
+      request["output"] = qp(root / ("history-" + std::to_string(i) + ".tiff"));
+      auto created = call(service, {{"operation", "create_plan"},
+                                    {"items", QJsonArray{request}}});
+      require(created.contains("plan_id"), "History blocked a later batch");
+      const auto plan = terminal(service, "get_plan", created["plan_id"]);
+      require(plan["state"] == "ready", "History plan failed");
+      QJsonObject submission{{"operation", "submit"}, {"plan_id", plan["id"]},
+                             {"approval_digest", plan["approval_digest"]},
+                             {"idempotency_key", "history-" + QString::number(i)},
+                             {"acknowledge_losses", true}};
+      const auto submitted = call(service, submission);
+      require(submitted.contains("job_id"), "History blocked submission");
+      const auto job = terminal(service, "get_job", submitted["job_id"]);
+      require(job["state"] == "succeeded", "History conversion failed");
+      if (i == 0) { first_submission = submission; first_job = job["id"].toString(); }
+    }
+  }
+  ImageBatchService recovered(scope(root), journal);
+  require(call(recovered, {{"operation", "list_jobs"}})["total"].toInt() == 66,
+          "Restart lost retained history");
+  require(call(recovered, {{"operation", "get_job"}, {"id", first_job}})["state"] == "succeeded",
+          "Restart lost earliest job");
+  const auto repeated = call(recovered, first_submission);
+  require(repeated["reused"].toBool() && repeated["job_id"] == first_job,
+          "Restart lost old submission idempotency");
+  require(call(recovered, {{"operation", "create_plan"},
+                           {"items", QJsonArray{item(root)}}}).contains("plan_id"),
+          "Restarted history still blocks new work");
+}
 void nonlocal_journals(const std::filesystem::path &root) {
   std::vector<std::filesystem::path> paths{
       LR"(\\localhost\formaview-no-such-share\journal)",
@@ -160,6 +212,7 @@ void run(const std::filesystem::path &root) {
               static_cast<qint64>(encoded.size()),
           "Write input");
   file.close();
+  continuous_history(root);
   {
     const auto journal = root / "mixed-path-journal";
     std::filesystem::create_directory(journal);

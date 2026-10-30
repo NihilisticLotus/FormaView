@@ -212,7 +212,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
         std::stop_token stop, std::span<const InputSnapshot> protected_inputs,
         const std::function<void(const QJsonObject &)> &commit_observer,
         std::span<const std::filesystem::path> reserved_outputs,
-        const std::filesystem::path &approved_output) {
+        const std::filesystem::path &approved_output, std::uint64_t export_working_bytes) {
   const auto operation = request["operation"].toString();
   if (operation != "inspect" && operation != "preflight" &&
       operation != "convert")
@@ -282,6 +282,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   }
   sk::FbxWriteOptions write;
   write.limits = limits;
+  write.limits.decoded_bytes = export_working_bytes;
   write.stop = stop;
   write.output_axes = axes(o["output_axes"].toString("source"));
   write.output_metres_per_unit = unit(o["output_unit"].toString("source"));

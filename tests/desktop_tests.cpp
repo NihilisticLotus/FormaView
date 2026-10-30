@@ -46,6 +46,7 @@
 #include <QQuickWindow>
 #include <QSaveFile>
 #include <QScopeGuard>
+#include <QUuid>
 #include <QAbstractNativeEventFilter>
 #include <QScreen>
 #include <QSettings>
@@ -2988,6 +2989,8 @@ private slots:
     QVERIFY(conversion->setProperty("modelInputs", sources));
     QVERIFY(conversion->setProperty("modelMode", true));
     QTRY_VERIFY(item("conversionOutputRoot"));
+    QTRY_VERIFY(item("conversionPngCompression"));
+    QCOMPARE(item("conversionPngCompression")->property("value").toInt(), 0);
     QVERIFY(!item("conversionInputRoot"));
     item("conversionOutputRoot")->setProperty("text", "");
     item("modelExportPaired")->setProperty("text", input + "/reference.psk");
@@ -3005,6 +3008,15 @@ private slots:
     QCOMPARE(service->plan().value("items").toList().size(), 130);
     evidence_["model_scope_ready"] = QJsonObject::fromVariantMap(service->plan());
     service->submit(true);
+    QTRY_VERIFY(!service->busy() && !service->job().value("id").toString().isEmpty());
+    item("conversionSteps")->setProperty("currentIndex", 2);
+    QTRY_VERIFY(item("pauseImageJob"));
+    QVERIFY(QMetaObject::invokeMethod(item("pauseImageJob"), "clicked"));
+    QTRY_COMPARE_WITH_TIMEOUT(service->job().value("state").toString(), QString("paused"), 15000);
+    const auto pausedItems = service->job().value("items");
+    QTest::qWait(200); QCOMPARE(service->job().value("items"), pausedItems);
+    save("task-paused");
+    QVERIFY(QMetaObject::invokeMethod(item("pauseImageJob"), "clicked"));
     QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded",
                              qPrintable(service->error()), 60000);
     const auto outputs = service->job().value("items").toList(); QCOMPARE(outputs.size(), 130);
@@ -3013,6 +3025,11 @@ private slots:
     item("conversionSteps")->setProperty("currentIndex", 2);
     QTRY_VERIFY(item("imageJobChoice"));
     QTRY_VERIFY(item("imageJobChoice")->property("displayText").toString().contains("角色动作批次"));
+    QTRY_VERIFY(item("conversionBatchList"));
+    QTRY_VERIFY(item("selectedBatchHeading")->property("text").toString().contains("角色动作批次"));
+    const auto batchCardName = QString("conversionBatch_") + service->job().value("id").toString();
+    QTRY_VERIFY(item(qPrintable(batchCardName)));
+    QTRY_VERIFY(item(qPrintable(batchCardName))->property("checked").toBool());
     QVERIFY(item("jobCategoryFilter"));
     item("jobCategoryFilter")->setProperty("currentIndex", 1);
     QVERIFY(QMetaObject::invokeMethod(item("jobCategoryFilter"), "activated", Q_ARG(int, 1)));
@@ -3419,6 +3436,30 @@ private slots:
     }
     evidence_["queued_preflight_and_inspection_cancel"] = "passed";
   }
+  void imageHistoryBeyondTwoPages() {
+    const auto journal = root_ + "/history-three-pages";
+    QVERIFY(QDir().mkpath(journal));
+    for (int i = 0; i < 205; ++i) {
+      const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+      QFile f(journal + '/' + id + ".json");
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      const auto data = QJsonDocument(QJsonObject{{"version", 1}, {"id", id},
+          {"kind", "job"}, {"state", "succeeded"}, {"items", QJsonArray{}}}).toJson();
+      QCOMPARE(f.write(data), data.size());
+    }
+    ImageJobs jobs;
+    jobs.archivedJobs_.clear();
+    jobs.historyPath_ = root_ + "/history-three-pages.json";
+    const std::filesystem::path path(journal.toStdWString());
+    formaview::AccessScope scope;
+    scope.input_roots = {path}; scope.output_roots = {path};
+    jobs.service_ = std::make_shared<formaview::imaging::ImageBatchService>(scope, path);
+    jobs.poll();
+    QCOMPARE(jobs.jobs().size(), 205);
+    QCOMPARE(jobs.archivedJobs_.size(), 205);
+    QVERIFY(!jobs.activeJobs());
+    evidence_["image_history_three_pages"] = "passed";
+  }
   void imageHistoryPersistence() {
     const auto path = root_ + "/history-pressure.json";
     const auto read = [](const QString &p) {
@@ -3479,6 +3520,45 @@ private slots:
       QTRY_VERIFY(jobs.error().isEmpty());
     }
     evidence_["history_pressure_close_and_error"] = "passed";
+  }
+  void archivedTaskControls() {
+    const auto previous = qgetenv("FORMAVIEW_IMAGE_STATE_ROOT");
+    const auto restore = qScopeGuard([&] { qputenv("FORMAVIEW_IMAGE_STATE_ROOT", previous); });
+    const auto directory = root_ + "/archived-controls";
+    QVERIFY(QDir().mkpath(directory));
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", directory.toUtf8());
+    const auto completed = directory + "/completed.png", pending = directory + "/exact-name.png";
+    QVERIFY(QFile::copy(small_ + "/唯一图片.png", completed));
+    const auto rawRequest = [&](const QString &output) {
+      QVariantList channels;
+      for (const auto *channel : {"R", "G", "B", "A"})
+        channels.append(QVariantMap{{"source", channel}, {"destination", channel}});
+      return QVariantMap{{"input", small_ + "/唯一图片.png"}, {"output", output},
+                         {"options", QVariantMap{{"target", "png"}, {"channels", channels}, {"alpha_channel", "A"}, {"source_alpha", "straight"}}}, {"conflict", "skip"}};
+    };
+    const QVariantMap old{{"id", "old-batch"}, {"name", "恢复测试"}, {"category", "image"},
+      {"state", "partially_succeeded"}, {"archived", true},
+      {"items", QVariantList{QVariantMap{{"status", "succeeded"}, {"request", rawRequest(completed)}},
+                             QVariantMap{{"status", "pending"}, {"request", rawRequest(pending)}}}}};
+    QFile history(directory + "/desktop-history.json"); QVERIFY(history.open(QIODevice::WriteOnly));
+    history.write(QJsonDocument(QJsonObject{{"old-batch", QJsonObject::fromVariantMap(old)}}).toJson()); history.close();
+    QString newId;
+    {
+      ImageJobs jobs;
+      QCOMPARE(jobs.job().value("state").toString(), QString("interrupted"));
+      jobs.retry("old-batch");
+      QTRY_VERIFY2_WITH_TIMEOUT(!jobs.busy() && jobs.plan().value("state") == "ready", qPrintable(jobs.error()), 15000);
+      QCOMPARE(jobs.plan().value("items").toList().size(), 1);
+      jobs.submit(true);
+      QTRY_VERIFY2_WITH_TIMEOUT(!jobs.busy() && jobs.job().value("state") == "succeeded", qPrintable(jobs.error()), 15000);
+      QVERIFY(QFileInfo::exists(pending)); QVERIFY(QFileInfo::exists(completed));
+      newId = jobs.job().value("id").toString();
+      jobs.removeJob(newId); jobs.removeJob("old-batch");
+      QVERIFY(jobs.jobs().isEmpty()); jobs.poll(); QVERIFY(jobs.jobs().isEmpty());
+    }
+    ImageJobs restored;
+    QVERIFY(restored.jobs().isEmpty());
+    QVERIFY(QFileInfo::exists(pending)); QVERIFY(QFileInfo::exists(completed));
   }
   void imageJobsCancelAndShutdown() {
     const auto input = root_ + "/shutdown-input";
@@ -4674,6 +4754,9 @@ private slots:
         if (jobs[i].toMap().value("id") == id) selected = static_cast<int>(i);
       QVERIFY(selected >= 0);
       QTRY_COMPARE(choice->property("currentIndex").toInt(), selected);
+      QTRY_COMPARE(item("conversionBatchList")->property("currentIndex").toInt(), choice->property("currentIndex").toInt());
+      QTRY_VERIFY(item("selectedBatchHeading")->property("text").toString().contains(
+          service->job().value("name").toString().isEmpty() ? id.toString() : service->job().value("name").toString()));
       const auto state = service->job().value("state").toString();
       const auto expected = state == "partially_succeeded" ? QString("部分成功") : state == "cancelled" ? QString("已取消") : QString("已中断");
       QTRY_VERIFY(choice->property("displayText").toString().endsWith(expected));
@@ -9357,7 +9440,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction"};
+    const QSet<QString> allowed{"settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

@@ -18,7 +18,10 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 struct ImageBatchLimits {
-  std::size_t records{128}, items{64}, queue{16};
+  // Zero retains durable history without imposing a lifetime batch count.
+  // Embedders may still opt into an explicit retained-record limit. Active
+  // work, each journal record and image allocations remain separately bounded.
+  std::size_t records{0}, items{64}, queue{16};
   Limits image{512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256};
 };
 // GUI task groups hold these inputs for the whole group and reserve names

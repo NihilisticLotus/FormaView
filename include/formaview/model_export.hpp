@@ -17,5 +17,7 @@ execute(const QJsonObject &, const AccessScope &, skeletal::Limits = {},
         std::span<const InputSnapshot> protected_inputs = {},
         const std::function<void(const QJsonObject &)> &commit_observer = {},
         std::span<const std::filesystem::path> reserved_outputs = {},
-        const std::filesystem::path &approved_output = {});
+        const std::filesystem::path &approved_output = {},
+        // Export curves/SDK workspace is separate from the input decode limit.
+        std::uint64_t export_working_bytes = 4ULL * 1024 * 1024 * 1024);
 } // namespace formaview::model_export

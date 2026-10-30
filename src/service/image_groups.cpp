@@ -13,6 +13,7 @@
 #include <QSaveFile>
 #include <QUuid>
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -21,7 +22,7 @@
 namespace formaview::imaging {
 namespace {
 [[noreturn]] void fail(ErrorCode c, const char *m) { throw skeletal::Failure(c, m); }
-bool active(const QString &s) { return s == "planning" || s == "queued" || s == "running"; }
+bool active(const QString &s) { return s == "planning" || s == "queued" || s == "running" || s == "paused" || s == "pausing"; }
 QJsonObject query(const char *op, const QString &id = {}) {
   QJsonObject q{{"version", 1}, {"operation", op}};
   if (!id.isEmpty()) q["id"] = id;
@@ -64,6 +65,7 @@ struct ImageTaskGroups::Impl {
   struct Group {
     QJsonObject manifest, plan, job;
     std::stop_source stop;
+    std::atomic_bool pause_requested{};
   };
   AccessScope scope;
   QString directory;
@@ -119,7 +121,10 @@ struct ImageTaskGroups::Impl {
       if (g->manifest.contains("job_id")) {
         for (qsizetype i = 0; i < jobs.size(); ++i) {
           auto item = jobs[i].toObject();
-          if (item["status"] == "pending") item["status"] = "interrupted";
+          if (item["status"] == "pending" || item["status"] == "running") {
+            item["status"] = "interrupted";
+            g->manifest["job_state"] = "interrupted";
+          }
           jobs[i] = item;
         }
         g->job = snapshot(g, true, jobs);
@@ -154,6 +159,7 @@ struct ImageTaskGroups::Impl {
       {"items", items}, {"total", items.size()}, {"grouped", true},
       {"batch_count", g->manifest["batches"].toArray().size()},
       {"cancellation_requested", g->stop.stop_requested()}};
+    o["pause_requested"] = g->pause_requested.load();
     for (const auto key : {"name", "category", "created_at"}) o[key] = g->manifest[key];
     if (job) {
       o["plan_id"] = g->manifest["id"];
@@ -243,6 +249,12 @@ struct ImageTaskGroups::Impl {
       qsizetype offset = 0;
       bool failed = false;
       for (qsizetype i = 0; i < batches.size(); ++i) {
+        while (job && g->pause_requested && !g->stop.stop_requested()) {
+          g->manifest["job_state"] = "paused";
+          { const std::lock_guard lock(state); g->job = snapshot(g, true, items); }
+          std::unique_lock lock(state); wake.wait_for(lock, std::chrono::milliseconds(40));
+        }
+        if (job) g->manifest["job_state"] = "running";
         if (g->stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group cancelled");
         auto b = batches[i].toObject();
         const auto requests = load(path(g) + '/' + QString::number(i) + "/requests.json")["items"].toArray();
@@ -271,6 +283,10 @@ struct ImageTaskGroups::Impl {
         publish(g, job, items);
         QJsonObject result;
         for (;;) {
+          if (job) {
+            const auto control = child.request(query(g->pause_requested ? "pause" : "resume", b["job_id"].toString()));
+            (void)control; // Child may have completed between polling and control.
+          }
           if (g->stop.stop_requested()) {
             auto q = query("cancel", b[job ? "job_id" : "plan_id"].toString());
             q["kind"] = job ? "job" : "plan"; (void)child.request(q);
@@ -281,6 +297,7 @@ struct ImageTaskGroups::Impl {
             auto item = partial[n].toObject(); item["index"] = offset + n; item["batch"] = i;
             items[offset + n] = item;
           }
+          if (job) g->manifest["job_state"] = result["state"] == "paused" ? "paused" : g->pause_requested ? "pausing" : "running";
           { const std::lock_guard lock(state); (job ? g->job : g->plan) = snapshot(g, job, items); }
           if (!active(result["state"].toString())) break;
           std::unique_lock lock(state); wake.wait_for(lock, std::chrono::milliseconds(40));
@@ -297,6 +314,12 @@ struct ImageTaskGroups::Impl {
         publish(g, job, items);
       }
       if (g->stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group cancelled");
+      if (job) for (qsizetype n = 0; n < items.size(); ++n) {
+        auto item = items[n].toObject();
+        if (item["status"] == "pending" || item["status"] == "running") {
+          item["status"] = "interrupted"; items[n] = item; failed = true;
+        }
+      }
       const bool anySucceeded = std::any_of(items.cbegin(), items.cend(), [](const auto &v) {
         const auto status = v.toObject()["status"].toString();
         return status == "ready" || status == "succeeded" || status == "skipped";
@@ -313,7 +336,7 @@ struct ImageTaskGroups::Impl {
       g->manifest["error"] = QJsonObject{{"code", cancelled ? "cancelled" : "io"}, {"message", QString::fromUtf8(e.what())}};
       for (qsizetype i = 0; i < items.size(); ++i) {
         auto item = items[i].toObject();
-        if (item["status"] == "pending") item["status"] = cancelled ? "cancelled" : "interrupted";
+        if (item["status"] == "pending" || item["status"] == "running") item["status"] = cancelled ? "cancelled" : "interrupted";
         items[i] = item;
       }
       try { publish(g, job, items); }
@@ -363,9 +386,14 @@ struct ImageTaskGroups::Impl {
     if (!QDir().mkpath(path(g))) fail(ErrorCode::Io, "Cannot create conversion group directory");
     auto privacy = PrivateDirectory::open(std::filesystem::path(path(g).toStdWString()));
     QJsonArray batches, items;
-    for (qsizetype offset = 0; offset < requests.size(); offset += 64) {
+    // Model results contain sizeable verification evidence. Keep each model
+    // in its own durable record instead of accumulating it past the journal cap.
+    const qsizetype chunkSize = std::any_of(requests.begin(), requests.end(), [](const auto &v) {
+      return v.toObject()["options"].toObject()["target"] == "fbx";
+    }) ? 1 : 64;
+    for (qsizetype offset = 0; offset < requests.size(); offset += chunkSize) {
       QJsonArray chunk;
-      for (qsizetype n = offset; n < std::min(requests.size(), offset + 64); ++n) chunk.append(requests[n]);
+      for (qsizetype n = offset; n < std::min(requests.size(), offset + chunkSize); ++n) chunk.append(requests[n]);
       const auto index = batches.size();
       const auto folder = path(g) + '/' + QString::number(index);
       if (!QDir().mkpath(folder + "/records")) fail(ErrorCode::Io, "Cannot create child batch directory");
@@ -373,7 +401,7 @@ struct ImageTaskGroups::Impl {
       batches.append(QJsonObject{{"count", chunk.size()}});
       for (auto r : chunk) items.append(QJsonObject{{"index", items.size()}, {"batch", index}, {"request", r}, {"status", "pending"}});
     }
-    if (protect.isEmpty()) for (auto r : requests) {
+    for (auto r : requests) {
       const auto request = r.toObject();
       protect.append(request["input"]);
 #ifdef FORMAVIEW_MODEL_EXPORT
@@ -423,8 +451,17 @@ struct ImageTaskGroups::Impl {
       const bool accepted = active(view["state"].toString()) && g->stop.request_stop(); wake.notify_all();
       return {{"accepted", accepted}};
     }
+    if (op == "pause" || op == "resume") {
+      auto g = find(q["id"].toString());
+      const std::lock_guard lock(state);
+      if (!active(g->job["state"].toString()) || g->stop.stop_requested())
+        fail(ErrorCode::Conflict, "Only active groups can pause or resume");
+      g->pause_requested = op == "pause";
+      g->job["pause_requested"] = g->pause_requested.load();
+      wake.notify_all(); return {{"accepted", true}};
+    }
     const std::lock_guard write(mutation);
-    if (op == "create_plan") return create(q["items"].toArray(), {}, q);
+    if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q);
     if (op == "retry_plan") {
       auto g = find(q["id"].toString()); QJsonObject job;
       { const std::lock_guard lock(state); job = g->job; }

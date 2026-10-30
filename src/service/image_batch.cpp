@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <set>
 #include <utility>
 
@@ -92,7 +93,7 @@ void fields(const QJsonObject &o, std::initializer_list<const char *> allowed) {
       fail(ErrorCode::InvalidArgument, "Unknown batch request field");
 }
 bool active(const QString &state) {
-  return state == "planning" || state == "queued" || state == "running";
+  return state == "planning" || state == "queued" || state == "running" || state == "paused" || state == "pausing";
 }
 QJsonObject page(QJsonObject result, const QJsonObject &request) {
   const auto all = result.take("items").toArray();
@@ -151,6 +152,7 @@ struct ImageBatchService::Impl {
   struct Record {
     QJsonObject data;
     std::stop_source stop;
+    bool pause_requested{}; // Guarded by state; applied between file commits.
   };
   AccessScope scope;
   QString directory;
@@ -169,7 +171,7 @@ struct ImageBatchService::Impl {
        ImageBatchContext c)
       : scope(std::move(s)), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
         limits(l), context(std::move(c)), scheduler(scheduler_limits(l)) {
-    if (!dir.is_absolute() || !limits.records || !limits.items ||
+    if (!dir.is_absolute() || !limits.items ||
         limits.items > 64 || !limits.queue)
       fail(ErrorCode::InvalidArgument,
            "Invalid batch service limits or journal path");
@@ -218,7 +220,7 @@ struct ImageBatchService::Impl {
     }
     const auto files =
         QDir(directory).entryList({"*.json"}, QDir::Files, QDir::Name);
-    if (files.size() > static_cast<qsizetype>(limits.records))
+    if (limits.records && static_cast<std::size_t>(files.size()) > limits.records)
       fail(ErrorCode::ResourceLimit, "Journal record limit exceeded");
     for (const auto &file : files) {
       AccessScope journal_scope;
@@ -293,7 +295,9 @@ struct ImageBatchService::Impl {
   }
   QJsonObject copy(const std::shared_ptr<Record> &record) {
     const std::lock_guard lock(state);
-    return record->data;
+    auto data = record->data;
+    data["pause_requested"] = record->pause_requested;
+    return data;
   }
   void reconcile(QJsonObject &item) {
     if (!item["commit_intent"].isObject())
@@ -336,7 +340,7 @@ struct ImageBatchService::Impl {
   void save(const QJsonObject &data) {
     const auto bytes = QJsonDocument(data).toJson(QJsonDocument::Compact);
     if (bytes.size() > 2 * 1024 * 1024)
-      fail(ErrorCode::ResourceLimit, "Journal record exceeds two MiB");
+      throw JournalFailure("Journal record exceeds two MiB");
     QSaveFile file(directory + '/' + text(data, "id") + ".json");
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
@@ -464,6 +468,16 @@ struct ImageBatchService::Impl {
       qsizetype succeeded = 0, failed = 0, cancelled_count = 0;
       auto allocated_outputs = context.reserved_outputs;
       for (qsizetype index = 0; index < entries.size(); ++index) {
+        if (!planning) {
+          for (;;) {
+            bool paused;
+            { const std::lock_guard lock(state); paused = record->pause_requested; }
+            if (!paused || stop.stop_requested()) break;
+            if (copy(record)["state"] != "paused") finish(record, "paused");
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+          }
+          if (copy(record)["state"] == "paused") finish(record, "running");
+        }
         auto entry = entries[index].toObject();
         auto request = entry["request"].toObject();
         try {
@@ -535,6 +549,14 @@ struct ImageBatchService::Impl {
       const std::lock_guard lock(state);
       record->data["state"] = "interrupted";
       record->data["persistence_error"] = QString::fromUtf8(error.what());
+      auto unfinished = record->data["items"].toArray();
+      for (qsizetype i = 0; i < unfinished.size(); ++i) {
+        auto item = unfinished[i].toObject();
+        if (item["status"] == "pending" || item["status"] == "running") {
+          item["status"] = "interrupted"; unfinished[i] = item;
+        }
+      }
+      record->data["items"] = unfinished;
     }
   }
   std::shared_ptr<Record> enqueue(QJsonObject data, bool planning) {
@@ -543,7 +565,7 @@ struct ImageBatchService::Impl {
       const std::lock_guard lock(state);
       if (closing)
         fail(ErrorCode::ShuttingDown, "Service is stopping");
-      if (records.size() >= limits.records)
+      if (limits.records && records.size() >= limits.records)
         fail(ErrorCode::ResourceLimit, "Retained record limit reached");
     }
     const auto stats = scheduler.stats();
@@ -668,7 +690,7 @@ struct ImageBatchService::Impl {
       const std::lock_guard write(mutation);
       {
         const std::lock_guard lock(state);
-        if (records.size() >= limits.records)
+        if (limits.records && records.size() >= limits.records)
           fail(ErrorCode::ResourceLimit, "Retained record limit reached");
       }
       save(record->data);
@@ -726,6 +748,15 @@ struct ImageBatchService::Impl {
               {"accepted", accepted},
               {"state", data["state"]},
               {"cancellation_requested", record->stop.stop_requested()}};
+    }
+    if (operation == "pause" || operation == "resume") {
+      fields(request, {"version", "operation", "id"});
+      const auto record = find(text(request, "id"), "job");
+      const std::lock_guard lock(state);
+      if (!active(record->data["state"].toString()) || record->stop.stop_requested())
+        fail(ErrorCode::Conflict, "Only active jobs can pause or resume");
+      record->pause_requested = operation == "pause";
+      return {{"accepted", true}};
     }
     if (operation == "retry_plan") {
       fields(request, {"version", "operation", "id"});

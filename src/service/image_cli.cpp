@@ -1,5 +1,6 @@
 #include "formaview/image_requests.hpp"
 #include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -38,14 +39,25 @@ int main(int argc, char **argv) {
         throw formaview::skeletal::Failure(formaview::ErrorCode::Io,
                                            "Cannot connect to image service");
       const auto bytes = request.toJson(QJsonDocument::Compact) + '\n';
-      if (socket.write(bytes) != bytes.size() ||
-          !socket.waitForBytesWritten(3000))
+      if (socket.write(bytes) != bytes.size())
         throw formaview::skeletal::Failure(formaview::ErrorCode::Io,
                                            "Cannot send service request");
+      const QDeadlineTimer sendDeadline(3000);
+      while (socket.bytesToWrite() > 0) {
+        // A fast peer may reply and close before Qt observes write completion.
+        // A false wait result alone does not mean that the request was lost.
+        // Never resend: read and validate the one response already received.
+        if (!socket.waitForBytesWritten(sendDeadline.remainingTime())) {
+          if (socket.bytesToWrite() == 0 || socket.canReadLine()) break;
+          throw formaview::skeletal::Failure(formaview::ErrorCode::Io,
+                                             "Cannot send service request");
+        }
+      }
       QByteArray response;
       socket.setReadBufferSize(4 * 1024 * 1024 + 1);
       while (!response.contains('\n')) {
-        if (!socket.bytesAvailable() && !socket.waitForReadyRead(300000))
+        if (!socket.bytesAvailable() && !socket.waitForReadyRead(300000) &&
+            !socket.bytesAvailable())
           throw formaview::skeletal::Failure(formaview::ErrorCode::Io,
                                              "Service response interrupted");
         response += socket.readAll();

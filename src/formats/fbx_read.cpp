@@ -464,6 +464,7 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
     FbxNode node;
     node.source = source(d.source, n->element);
     node.bone = n->bone != nullptr;
+    node.implicit_scene_root = n->is_root;
     if (n->parent)
       node.parent = n->parent->typed_id;
     node.default_local = convert(effective_local(*n, evaluated.values));

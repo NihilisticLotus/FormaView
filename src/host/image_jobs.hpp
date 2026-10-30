@@ -75,6 +75,8 @@ public:
   Q_INVOKABLE void submit(bool acknowledge);
   Q_INVOKABLE void cancel(const QString &kind, const QString &id);
   Q_INVOKABLE void retry(const QString &id);
+  Q_INVOKABLE void pauseJob(const QString &id, bool pause);
+  Q_INVOKABLE void removeJob(const QString &id);
   Q_INVOKABLE void selectJob(const QString &id);
   Q_INVOKABLE void invalidatePlan();
   Q_INVOKABLE QVariantMap nameExamples(const QStringList &inputs,

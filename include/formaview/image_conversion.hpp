@@ -38,7 +38,7 @@ struct ImageConversionOptions {
   WindowPolicy window{WindowPolicy::Preserve};
   MetadataPolicy metadata{MetadataPolicy::PreserveSupported};
   bool allow_lossy{};
-  int quality{90}, png_compression{6};
+  int quality{90}, png_compression{0};
   bool webp_lossless{true}, exr_tiled{};
   TiffCompression tiff_compression{TiffCompression::Deflate};
   std::uint32_t dds_format{};

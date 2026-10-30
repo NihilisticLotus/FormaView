@@ -301,11 +301,18 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
       d->hash = text(data.source.identity.sha256);
       d->name = QFileInfo(path).completeBaseName();
       d->coordinates = QStringLiteral("FBX · source axes preserved · display Y up");
-      for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+      std::vector<std::size_t> visibleNodes;
+      std::vector<std::int32_t> visibleIndex(data.nodes.size(), -1);
+      for (std::size_t i = 0; i < data.nodes.size(); ++i)
+        if (!data.nodes[i].implicit_scene_root) {
+          visibleIndex[i] = static_cast<std::int32_t>(visibleNodes.size());
+          visibleNodes.push_back(i);
+        }
+      for (const auto i : visibleNodes) {
         d->boneNames.push_back(text(data.nodes[i].source.original_name));
         d->boneParents.push_back(
             data.nodes[i].parent
-                ? static_cast<std::int32_t>(*data.nodes[i].parent)
+                ? visibleIndex.at(*data.nodes[i].parent)
                 : std::int32_t{-1});
       }
       for (std::size_t c = 0; c < data.clips.size(); ++c) {
@@ -327,12 +334,21 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
             {"fps", entry.fps},
             {"lastFrame", entry.lastFrame}});
       }
-      d->worldAt = [holder](std::size_t clip, double seconds) {
+      d->worldAt = [holder, visibleNodes](std::size_t clip, double seconds) {
         const auto pose = holder->evaluate(clip, seconds);
-        return pose.world;
+        std::vector<Matrix4> worlds;
+        for (const auto i : visibleNodes) worlds.push_back(pose.world.at(i));
+        return worlds;
       };
-      d->localAt = [holder](std::size_t clip, double seconds) {
-        return holder->evaluate(clip, seconds).local;
+      d->localAt = [holder, visibleNodes, visibleIndex](std::size_t clip, double seconds) {
+        const auto pose = holder->evaluate(clip, seconds);
+        std::vector<Matrix4> locals;
+        for (const auto i : visibleNodes) {
+          const auto parent = holder->data().nodes[i].parent;
+          locals.push_back(parent && visibleIndex.at(*parent) >= 0
+                               ? pose.local.at(i) : pose.world.at(i));
+        }
+        return locals;
       };
       initializeAnimationBounds(*d);
       lease.require_unchanged(lease.snapshot());
@@ -447,9 +463,11 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
           {"stableId", text(node.source.identity.stable_id().value)},
           {"name", text(node.source.original_name)},
           {"parent",
-           node.parent ? QString("node/%1").arg(*node.parent) : QString{}},
+           node.parent && !data.nodes.at(*node.parent).implicit_scene_root
+               ? QString("node/%1").arg(*node.parent) : QString{}},
           {"bone", node.bone},
-          {"local", modelMatrixValues(node.default_local)},
+          {"local", modelMatrixValues(node.parent && data.nodes.at(*node.parent).implicit_scene_root
+                                          ? node.default_world : node.default_local)},
           {"world", modelMatrixValues(node.default_world)},
           {"geometryWorld", modelMatrixValues(node.geometry_world)},
           {"active", true}});

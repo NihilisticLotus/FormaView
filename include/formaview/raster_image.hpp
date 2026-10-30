@@ -25,7 +25,7 @@ enum class RasterTarget { Png, Jpeg, Bmp };
 struct RasterEncodeOptions {
   RasterTarget target{RasterTarget::Png};
   int quality{92};
-  int compression{6};
+  int compression{0}; // PNG defaults to stored (uncompressed) DEFLATE blocks.
   AlphaMode alpha{AlphaMode::Unknown};
   std::vector<std::byte> icc_profile;
 };

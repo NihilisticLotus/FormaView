@@ -43,7 +43,7 @@ QJsonObject wait(ImageTaskGroups &g, const char *op, const QString &id) {
               row["category"] == "Regression" && !row["created_at"].toString().isEmpty(),
               "Concurrent task listing lost published batch metadata");
     }
-    if (s != "planning" && s != "running" && s != "queued") return r;
+    if (s != "planning" && s != "running" && s != "queued" && s != "paused" && s != "pausing") return r;
     require(std::chrono::steady_clock::now() < deadline, "Group wait timed out");
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
@@ -190,6 +190,22 @@ void run(const QString &root) {
       require(plan["state"] == "ready", "Every batch must preflight");
       require(plan["total"] == count && plan["batch_count"] == (count + 63) / 64, "Group membership/batch count");
       const auto q = submission(plan); const auto r = checked(groups.request(q));
+      if (count == 129) {
+        const auto id = r["job_id"].toString();
+        require(checked(groups.request(query("pause", id)))["accepted"].toBool(), "Pause accepted");
+        QJsonObject paused;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        do {
+          paused = checked(groups.request(query("get_job", id)));
+          if (paused["state"] == "paused") break;
+          require(std::chrono::steady_clock::now() < deadline, "Pause deadline");
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        } while (true);
+        require(paused["state"] == "paused", "Pause reaches file boundary");
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        require(checked(groups.request(query("get_job", id)))["items"] == paused["items"], "Paused outputs do not advance");
+        require(checked(groups.request(query("resume", id)))["accepted"].toBool(), "Resume accepted");
+      }
       require(groups.request(q)["job_id"] == r["job_id"], "Idempotent group submission");
       const auto job = wait(groups, "get_job", r["job_id"].toString());
       require(job["state"] == "succeeded", "Every child must execute");
@@ -283,6 +299,26 @@ void run(const QString &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 3 && app.arguments()[1] == "--request-file") {
+      QFile file(app.arguments()[2]); require(file.open(QIODevice::ReadOnly), "Open real regression requests");
+      const auto config = QJsonDocument::fromJson(file.readAll()).object();
+      AccessScope policy;
+      for (auto v : config["input_roots"].toArray()) policy.input_roots.emplace_back(v.toString().toStdWString());
+      for (auto v : config["output_roots"].toArray()) policy.output_roots.emplace_back(v.toString().toStdWString());
+      const auto journal = config["journal"].toString();
+      require(!QFileInfo::exists(journal) && QDir().mkpath(journal), "New regression journal");
+      ImageTaskGroups groups(policy, std::filesystem::path(journal.toStdWString()));
+      const auto plan = start(groups, config["items"].toArray());
+      require(plan["state"] == "ready", "Real batch preflight");
+      const auto submitted = checked(groups.request(submission(plan)));
+      const auto job = wait(groups, "get_job", submitted["job_id"].toString());
+      QFile report(config["report"].toString()); require(report.open(QIODevice::WriteOnly), "Open real regression report");
+      report.write(QJsonDocument(job).toJson()); report.close();
+      require(job["items"].toArray().size() == config["items"].toArray().size(), "All real items retained");
+      require(job["state"] == "succeeded", "All real conversions completed");
+      for (auto v : job["items"].toArray()) require(v.toObject()["status"] == "succeeded", "No unfinished real items");
+      std::cout << "PASS real batch " << job["total"].toInt() << std::endl; return 0;
+    }
     if (argc == 3 && app.arguments()[1] == "--crash-producer") { crashProducer(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--long-journal") {
       const auto root = app.arguments()[2];
