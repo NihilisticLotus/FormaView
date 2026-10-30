@@ -17,6 +17,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+$OutDir = [IO.Path]::GetFullPath($OutDir)
 if (-not $QtRoot) { throw 'Set FORMAVIEW_QT_ROOT or pass -QtRoot.' }
 $bin = Join-Path $BuildDir $Configuration
 $required = 'formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe'
@@ -36,7 +37,10 @@ $deploy = Join-Path $QtRoot 'bin\windeployqt.exe'
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed ($LASTEXITCODE)" }
 # The image service reuses the host's Qt image-format plugins and runtime.
 # Release builds never expose QML debugging services: drop the tooling plugins.
-Remove-Item -LiteralPath (Join-Path $OutDir 'qmltooling') -Recurse -Force -ErrorAction SilentlyContinue
+$resolvedOutput = (Resolve-Path -LiteralPath $OutDir).Path
+$tooling = [IO.Path]::GetFullPath((Join-Path $resolvedOutput 'qmltooling'))
+if (-not $tooling.StartsWith($resolvedOutput.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid QML tooling cleanup path.' }
+if (Test-Path -LiteralPath $tooling) { Remove-Item -LiteralPath $tooling -Recurse -Force }
 
 # Static QML plugin type information used by the compiled FormaView modules.
 foreach ($module in 'Images', 'Models') {
@@ -94,4 +98,9 @@ $manifest = foreach ($file in $files) {
     }
 }
 $manifest | ConvertTo-Json -Depth 3 | Out-File -Encoding utf8 (Join-Path $OutDir 'sha256.json')
+# Verify required components independently of this freshly generated manifest.
+# Evidence stays outside the runtime so it does not invalidate the manifest.
+$checkDir = $OutDir.TrimEnd('\', '/') + '.package-check'
+& (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'verify_runtime.ps1') -RunDir $OutDir -EvidenceDir $checkDir -SourceRoot $repo -ManifestOnly
+if ($LASTEXITCODE -ne 0) { throw 'Runtime payload contract failed.' }
 "Runtime directory ready: $OutDir ($($files.Count) files)"

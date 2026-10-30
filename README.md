@@ -1,5 +1,7 @@
 # FormaView
 
+冻结运行目录必须包含 `mcp/image_stdio.py`、`mcp/requirements.lock`、`mcp/requirements.txt` 和 `README-run.txt`。`tools/package_runtime.ps1` 收集这些源码文件并自动核查；手动制作候选也必须运行 `tools/verify_runtime.ps1 -RunDir <候选> -EvidenceDir <外部证据> -SourceRoot <源码仓库>`，检查清单之外的必要文件契约、逐文件来源、依赖闭包和启动。该验证支持 `sha256.json` 或候选 `payload-manifest.json`；`-ManifestOnly` 仅检查文件，不代表 MCP 运行通过。冻结前还须用锁定 Python 环境执行 `tests/runtime_mcp_tests.py`，通过包内适配器验证真实服务的 initialize/tools/list/call 和正常退出。不得用源码目录脚本替代候选里的脚本。Python/venv 是可选 MCP 的独立前置环境，不随桌面包提供，安装方法见 `README-run.txt`。
+
 Windows x64，C++20，VS2022 v143 14.44.35207，Windows SDK 10.0.26100.0，CMake ≥3.25，Qt 6.12.0 `msvc2022_64`（Quick）。入口提供三语言（简中/繁中/英文）外壳、目录与单文件浏览、按需缩略图和任务状态。启用专业与图片转换目标后接入图片预览（读取 PNG/JPEG/BMP/TGA/TIFF/WebP/GIF/ICO/DDS/HDR/EXR）、批量转换（写出 PNG/JPEG/BMP/TGA/TIFF/WebP/DDS/HDR/EXR）和共用任务服务的 MCP；启用模型目标后接入 FBX/OBJ/glTF/GLB/PSK/PSKX 的模型预览（UV、完整源权重、骨架与绑定、LOD/碰撞）、FBX/glTF/PSA 动画播放与骨架比较，以及到 FBX 的模型/动画导出（PSK/PSKX(+PSA)、OBJ、glTF/GLB、FBX 多动作拆分、PMX、VRM；PMX/VRM 仅作转换输入，无专业预览）。转换前一律预检，损失与错误以三语言说明显示并保留可复制的技术码。`--capabilities` 查询实际编入且处理器可用的能力。ABC 与视频不在本版范围内。功能运行目录见 `tools/package_runtime.ps1` 与 `tools/verify_runtime.ps1`（不是安装包）。
 
 可使用 `formaview.exe --open 文件或目录`，或在窗口中按 `Ctrl+O` 打开文件、`Ctrl+L` 编辑目录，方向键连续浏览、Ctrl／Shift 多选。图片视口支持通道、独立 Alpha、曝光、平铺、像素读数，`F` 适应窗口、`Z` 一个源像素对应一个屏幕物理像素。其他格式的文件读取检查不代表解析成功。转换使用源内容及显式设置，不继承视口状态；先预检、审阅损失再提交。MCP 默认关闭，在设置中应用输入/输出范围后启用，填入独立 Python 环境和适配器路径并复制配置给客户端；停止端点不会自动取消已提交任务。

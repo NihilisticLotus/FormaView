@@ -5,9 +5,12 @@
 #>
 param(
     [Parameter(Mandatory)][string]$RunDir,
-    [Parameter(Mandatory)][string]$EvidenceDir
+    [Parameter(Mandatory)][string]$EvidenceDir,
+    [string]$SourceRoot,
+    [switch]$ManifestOnly
 )
 $ErrorActionPreference = 'Stop'
+$RunDir = [IO.Path]::GetFullPath($RunDir)
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $report = [ordered]@{ run_dir = $RunDir; checks = @() }
 function Add-Check([string]$name, [bool]$ok, [string]$detail) {
@@ -16,14 +19,43 @@ function Add-Check([string]$name, [bool]$ok, [string]$detail) {
 }
 
 # 1. Manifest hashes.
-$manifest = Get-Content -Raw -LiteralPath (Join-Path $RunDir 'sha256.json') | ConvertFrom-Json
+$manifestName = if (Test-Path -LiteralPath (Join-Path $RunDir 'payload-manifest.json')) { 'payload-manifest.json' } else { 'sha256.json' }
+$document = Get-Content -Raw -LiteralPath (Join-Path $RunDir $manifestName) | ConvertFrom-Json
+$manifest = if ($manifestName -eq 'payload-manifest.json') { @($document.files) } else { @($document) }
 $bad = @($manifest | Where-Object {
     $p = Join-Path $RunDir $_.path
-    -not (Test-Path -LiteralPath $p) -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.sha256 })
+    -not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -ne $_.bytes -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.sha256 })
 $listed = @($manifest.path)
 $unlisted = @(Get-ChildItem -LiteralPath $RunDir -Recurse -File | ForEach-Object { $_.FullName.Substring($RunDir.TrimEnd('\').Length + 1).Replace('\', '/') } |
-    Where-Object { $_ -ne 'sha256.json' -and $_ -notin $listed })
-Add-Check 'manifest' (($bad.Count -eq 0) -and ($unlisted.Count -eq 0)) "files=$($manifest.Count) mismatched=$($bad.Count) unlisted=$($unlisted.Count)"
+    Where-Object { $_ -ne $manifestName -and $_ -notin $listed })
+$duplicates = @($listed | Group-Object | Where-Object Count -gt 1)
+Add-Check 'manifest' (($manifest.Count -gt 0) -and ($bad.Count -eq 0) -and ($unlisted.Count -eq 0) -and ($duplicates.Count -eq 0)) "files=$($manifest.Count) mismatched=$($bad.Count) unlisted=$($unlisted.Count) duplicates=$($duplicates.Count)"
+
+# A self-consistent manifest alone cannot detect a runtime component omitted
+# from both the directory and the manifest. Keep these obligations independent.
+$sourceFiles = [ordered]@{
+    'mcp/image_stdio.py' = 'tools/mcp/image_stdio.py'
+    'mcp/requirements.lock' = 'tools/mcp/requirements.lock'
+    'mcp/requirements.txt' = 'tools/mcp/requirements.txt'
+    'README-run.txt' = 'tools/runtime/README-run.txt'
+}
+$required = @('formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe') + @($sourceFiles.Keys)
+$absent = @($required | Where-Object { $_ -notin $listed -or -not (Test-Path -LiteralPath (Join-Path $RunDir $_) -PathType Leaf) })
+Add-Check 'required-runtime-files' ($absent.Count -eq 0) ("missing=" + ($absent -join '; '))
+if ($SourceRoot) {
+    $different = @($sourceFiles.Keys | Where-Object {
+        $packed = Join-Path $RunDir $_
+        $source = Join-Path $SourceRoot $sourceFiles[$_]
+        -not (Test-Path -LiteralPath $packed -PathType Leaf) -or -not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $packed -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    })
+    Add-Check 'packaged-source-files' ($different.Count -eq 0) ("different=" + ($different -join '; '))
+}
+if ($ManifestOnly -or ($report.checks | Where-Object { -not $_.ok })) {
+    $report | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 (Join-Path $EvidenceDir 'verify-runtime.json')
+    if ($report.checks | Where-Object { -not $_.ok }) { exit 1 }
+    exit 0
+}
 
 # 2. Every import resolves inside the directory or System32.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'

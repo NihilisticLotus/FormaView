@@ -31,9 +31,12 @@ This is a functional run directory, not an installer.
 
 MCP（可选 / optional）
   MCP 默认关闭。需要 Python 3.12 与锁定依赖（需 uv）：
+  以下命令在本运行目录中执行；venv 创建在你选择的独立可写目录，不放入安装目录。
     uv venv <venv目录> --python 3.12
     uv pip sync --require-hashes mcp\requirements.lock --python <venv目录>\Scripts\python.exe
   然后在程序“设置 → 权限 / MCP”中：应用输入与输出范围，填入该 venv 的 python.exe 与 mcp\image_stdio.py 的绝对路径，
   启用端点，点击“复制当前端点配置”，把配置粘贴到 MCP 客户端。停止端点不会自动取消已提交的任务。
   MCP is off by default. Create a Python 3.12 venv, sync mcp\requirements.lock with hashes, apply an
   input/output scope in Settings, enable the endpoint and copy the generated client configuration.
+  使用本目录随附的 mcp\image_stdio.py，不要引用源码树或其他旧版本目录中的脚本。
+  Python 虚拟环境不随包提供；仅使用桌面预览/转换不需要 Python，也不需要启用 MCP。

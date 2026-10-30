@@ -31,6 +31,50 @@ def clean_env(**extra):
     return env
 
 
+async def stdio_lifecycle(python, adapter, endpoint):
+    """Require a clean EOF exit, not just the SDK context manager's teardown."""
+    process = await asyncio.create_subprocess_exec(
+        str(python), '-I', '-B', str(adapter), stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=clean_env(FORMAVIEW_IMAGE_ENDPOINT=endpoint))
+    errors = asyncio.create_task(process.stderr.read())
+    transcript = []
+    async def send(message):
+        process.stdin.write((json.dumps(dict(jsonrpc='2.0', **message)) + '\n').encode())
+        await process.stdin.drain()
+    async def request(id, method, params):
+        await send(dict(id=id, method=method, params=params))
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), 20)
+            assert line, f'MCP closed before {method}'
+            response = json.loads(line)
+            transcript.append(response)
+            if response.get('id') == id:
+                assert 'error' not in response, response
+                return response['result']
+    try:
+        initialized = await request(1, 'initialize', dict(protocolVersion='2025-03-26',
+            capabilities={}, clientInfo=dict(name='packaged-lifecycle-test', version='1')))
+        await send(dict(method='notifications/initialized'))
+        listing = await request(2, 'tools/list', {})
+        assert 'get_image_capabilities' in {tool['name'] for tool in listing['tools']}
+        called = await request(3, 'tools/call', dict(name='get_image_capabilities', arguments={}))
+        assert not called.get('isError', False), called
+        caps = json.loads(next(item['text'] for item in called['content'] if item['type'] == 'text'))
+        assert len(caps['read_formats']) == 11 and len(caps['write_targets']) == 9
+        process.stdin.close()
+        await asyncio.wait_for(process.wait(), 10)
+        assert process.returncode == 0, process.returncode
+        return dict(initialize=initialized, toolCount=len(listing['tools']),
+                    transcript=transcript, eofExitCode=process.returncode,
+                    stderr=(await errors).decode('utf-8', 'replace'))
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        await errors
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-dir', type=Path, required=True)
@@ -39,6 +83,11 @@ async def main():
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    packaged = {name: args.run_dir / 'mcp' / name for name in
+                ('image_stdio.py', 'requirements.lock', 'requirements.txt')}
+    for path in packaged.values():
+        assert path.is_file(), f'Missing packaged MCP component: {path}'
+    source_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in packaged.items()}
     args.output.mkdir(parents=True, exist_ok=False)
     fixtures = args.output / 'fixtures'
     shutil.copytree(args.fixtures, fixtures)
@@ -53,7 +102,7 @@ async def main():
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=clean_env())
     try:
         assert json.loads(await asyncio.wait_for(service.stdout.readline(), 20))['ready']
-        params = StdioServerParameters(command=str(args.venv_python), args=[str(args.run_dir / 'mcp' / 'image_stdio.py')],
+        params = StdioServerParameters(command=str(args.venv_python), args=['-I', '-B', str(packaged['image_stdio.py'])],
                                        env=clean_env(FORMAVIEW_IMAGE_ENDPOINT=endpoint))
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
@@ -133,6 +182,10 @@ async def main():
                 final = await terminal('plan', third['plan_id'])
                 assert final['state'] in ('cancelled', 'ready'), final
         (args.output / 'records.json').write_text(json.dumps(records, ensure_ascii=False, indent=1), encoding='utf-8')
+        lifecycle = await stdio_lifecycle(args.venv_python, packaged['image_stdio.py'], endpoint)
+        assert source_hashes == {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in packaged.items()}
+        lifecycle['packagedFiles'] = source_hashes
+        (args.output / 'lifecycle.json').write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding='utf-8')
         print('Runtime MCP flow passed: %d calls' % len(records))
     finally:
         if service.returncode is None:
