@@ -11,6 +11,7 @@
 #endif
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
+#include <QImageReader>
 #include <QFile>
 #include <QFont>
 #include <QGuiApplication>

@@ -3,6 +3,12 @@ libwebp 1.6.0 (including sharpyuv, demux and mux) and zlib 1.3.2.
 Their license and patent notices accompany this file. These dependency
 licenses do not select or grant a license for FormaView itself.
 
+The desktop thumbnail worker also statically links Qt 6.12.0's bundled
+libpng 1.6.58 (Qt6::BundledLibpng, headers Qt6::PngPrivate) for bounded
+scanline PNG thumbnails. It uses the existing pinned Qt installation;
+no separate libpng runtime DLL is required. The unmodified library's
+copyright and license accompany this file in libpng-LICENSE.txt.
+
 Static TIFF codecs deployed here: none, LZW, PackBits, CCITT and Deflate.
 JPEG-in-TIFF, LERC, LZMA, ZSTD, JBIG and WebP-in-TIFF are not deployed.
 The application separately validates sample types and photometric layouts;

@@ -5,6 +5,7 @@
 #include "window_chrome.hpp"
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
+#include <QImageReader>
 #ifdef FORMAVIEW_MODEL_UI
 #include "model_session.hpp"
 #include "model_view.hpp"
@@ -5230,23 +5231,70 @@ private slots:
   }
   void thumbnailBudget() {
     auto provider = ThumbnailProvider{};
-    QSize decoded;
     for (auto i = 0; i < 800; ++i) {
       const auto id = QString::fromLatin1(
-                          QUrl::toPercentEncoding(small_ + "/唯一图片.png")) +
+                          QUrl::toPercentEncoding(small_ + "/唯一图片.png").toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)) +
                       "?version=" + QString::number(i);
-      const auto image = provider.requestImage(id, &decoded, QSize(8192, 8192));
+      const auto response = std::unique_ptr<QQuickImageResponse>(provider.requestImageResponse(id, QSize(8192,8192)));
+      QSignalSpy done(response.get(), &QQuickImageResponse::finished);
+      QVERIFY(done.wait(10000));
+      QVERIFY2(response->errorString().isEmpty(), qPrintable(response->errorString()));
+      const auto factory = std::unique_ptr<QQuickTextureFactory>(response->textureFactory());
+      const auto image = factory->image();
       QVERIFY(!image.isNull());
-      QVERIFY(decoded.width() <= 160 && decoded.height() <= 120);
+      QVERIFY(image.width() <= 160 && image.height() <= 120);
       QVERIFY(provider.cacheKiB() <= 32768);
     }
     evidence_["thumbnail_cache_after_800_revisions_kib"] = provider.cacheKiB();
     provider.clear();
     QCOMPARE(provider.cacheKiB(), 0);
-    const auto invalid = provider.requestImage(
-        QString::fromLatin1(QUrl::toPercentEncoding(small_ + "/missing.png")),
-        &decoded, {});
-    QVERIFY(invalid.isNull());
+    const auto invalid = std::unique_ptr<QQuickImageResponse>(provider.requestImageResponse(
+        QString::fromLatin1(QUrl::toPercentEncoding(small_ + "/missing.png").toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)), {}));
+    QSignalSpy done(invalid.get(), &QQuickImageResponse::finished);
+    QVERIFY(done.wait(10000));
+    QVERIFY(!invalid->errorString().isEmpty());
+  }
+  void imageThumbnailsWorkflow() {
+    const auto folder = root_ + "/thumbnail-ui";
+    QVERIFY(QDir().mkpath(folder));
+    QImage image(4096,4096,QImage::Format_RGBA8888);
+    image.fill(QColor(40,170,80,180));
+    const auto source = folder + "/01 中文 #100%25.png";
+    QVERIFY(image.save(source));
+    image = {};
+    QFile bad(folder + "/02 broken.png"); QVERIFY(bad.open(QIODevice::WriteOnly)); bad.write("broken"); bad.close();
+    QFile model(folder + "/03 model.obj"); QVERIFY(model.open(QIODevice::WriteOnly)); model.write("# synthetic"); model.close();
+    desktop_->navigate(folder); desktop_->filter("",0,0);
+    QTRY_COMPARE(desktop_->count(),3); QTRY_VERIFY(idle());
+    desktop_->preference("thumbnails",true);
+    auto delegate = [&](const QString &name) -> QQuickItem * {
+      for (auto *entry : visualItems(window_->contentItem(),"fileDelegate"))
+        if (entry->property("fileName").toString() == name) return entry;
+      return nullptr;
+    };
+    QTRY_VERIFY(delegate("01 中文 #100%25.png"));
+    auto *first = delegate("01 中文 #100%25.png");
+    QCOMPARE(first->property("fileKind").toString(),QString("image"));
+    auto thumbs = visualItems(first,"fileThumbnail"); QVERIFY(!thumbs.empty());
+    QTRY_COMPARE_WITH_TIMEOUT(thumbs.front()->property("status").toInt(),1,10000);
+    QTRY_VERIFY(delegate("02 broken.png"));
+    auto failed = visualItems(delegate("02 broken.png"),"thumbnailFailure"); QVERIFY(!failed.empty());
+    QTRY_VERIFY(failed.front()->isVisible());
+    auto models = visualItems(delegate("03 model.obj"),"fileThumbnail"); QVERIFY(!models.empty());
+    QCOMPARE(models.front()->property("source").toUrl(),QUrl{});
+    if (!workflowHeadless()) save("thumbnails-ready-and-failed");
+    // Switching views releases the grid's images, then returning creates only
+    // the current folder's requests. List selection/navigation remain usable.
+    desktop_->preference("thumbnails",false);
+    QTRY_VERIFY(item("fileList")->isVisible());
+    desktop_->select(0); QCOMPARE(desktop_->selectedCount(),1);
+    desktop_->preference("thumbnails",true);
+    desktop_->navigate(small_);
+    QTRY_COMPARE(desktop_->directory(),small_); QTRY_COMPARE(desktop_->count(),1);
+    QTRY_VERIFY(delegate("唯一图片.png"));
+    auto current = visualItems(delegate("唯一图片.png"),"fileThumbnail"); QVERIFY(!current.empty());
+    QTRY_COMPARE_WITH_TIMEOUT(current.front()->property("status").toInt(),1,10000);
+    desktop_->preference("thumbnails",false);
   }
   void measuredDeferredDeleteIsSafe() {
     struct SlowDelete final : QObject { ~SlowDelete() override { QThread::msleep(12); } };

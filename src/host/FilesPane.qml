@@ -116,10 +116,19 @@ Rectangle {
                     Keys.onPressed: event => root.handleKey(event)
                     contentItem: Item {
                         Image {
+                            id: thumbnail
+                            objectName: "fileThumbnail"
                             anchors.top: parent.top; width: parent.width; height: 84; visible: root.thumbnails
-                            source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+encodeURIComponent(entry.filePath)+"?"+entry.fileModified : ""
+                            source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
                             sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert") ? "model" : "file"; size: 24; variant: "muted" }
+                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
+                            Label {
+                                objectName: "thumbnailFailure"
+                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                visible: thumbnail.status === Image.Error
+                                text: Theme.t("缩略图不可用", "Thumbnail unavailable", "縮圖無法使用")
+                                color: Theme.muted; font.pixelSize: 10
+                            }
                         }
                         RowLayout {
                             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
