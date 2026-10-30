@@ -202,6 +202,8 @@ std::vector<std::byte> encode_professional(const ImageSubresource &s,
   if (tga && s.channels.size() != 1 && s.channels.size() != 3 &&
       s.channels.size() != 4)
     invalid("TGA requires Y/RGB/RGBA");
+  if (!hdr && !tga && s.channels.size() == 4 && o.alpha == AlphaMode::Absent)
+    invalid("DDS A channel conflicts with absent alpha; drop the channel explicitly");
   const auto &first = s.channels.front();
   for (const auto &c : s.channels)
     if (c.samples.scalar != first.samples.scalar ||

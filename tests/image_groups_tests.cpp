@@ -37,6 +37,12 @@ QJsonObject wait(ImageTaskGroups &g, const char *op, const QString &id) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(groupWaitMinutes);
   for (;;) {
     const auto r = checked(g.request(query(op, id))); const auto s = r["state"].toString();
+    for (const auto &value : checked(g.request(query("list_jobs")))["items"].toArray()) {
+      const auto row = value.toObject();
+      require(!row["id"].toString().isEmpty() && row["name"] == "Named export batch" &&
+              row["category"] == "Regression" && !row["created_at"].toString().isEmpty(),
+              "Concurrent task listing lost published batch metadata");
+    }
     if (s != "planning" && s != "running" && s != "queued") return r;
     require(std::chrono::steady_clock::now() < deadline, "Group wait timed out");
     std::this_thread::sleep_for(std::chrono::milliseconds(20));

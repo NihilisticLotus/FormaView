@@ -118,7 +118,8 @@ async def main():
                 initialized = await session.initialize()
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
-                    'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan'}
+                    'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
+                    'inspect_model', 'create_model_export_plan'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})

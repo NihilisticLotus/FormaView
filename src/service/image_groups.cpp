@@ -155,7 +155,10 @@ struct ImageTaskGroups::Impl {
       {"batch_count", g->manifest["batches"].toArray().size()},
       {"cancellation_requested", g->stop.stop_requested()}};
     for (const auto key : {"name", "category", "created_at"}) o[key] = g->manifest[key];
-    if (job) o["plan_id"] = g->manifest["id"];
+    if (job) {
+      o["plan_id"] = g->manifest["id"];
+      o["submission_digest"] = g->manifest["submission_digest"];
+    }
     else if (g->manifest.contains("approval_digest")) o["approval_digest"] = g->manifest["approval_digest"];
     if (g->manifest.contains("error")) o["error"] = g->manifest["error"];
     return o;
@@ -408,7 +411,9 @@ struct ImageTaskGroups::Impl {
     }
     if (op == "list_jobs") {
       QJsonArray items; const std::lock_guard lock(state);
-      for (const auto &[id, g] : groups) { (void)id; if (!g->job.isEmpty()) items.append(QJsonObject{{"id", g->job["id"]}, {"plan_id", g->plan["id"]}, {"state", g->job["state"]}, {"grouped", true}, {"name", g->manifest["name"]}, {"category", g->manifest["category"]}, {"created_at", g->manifest["created_at"]}, {"total", g->job["total"]}}); }
+      // The worker mutates manifest outside state; only published snapshots
+      // may be read here while a batch is running.
+      for (const auto &[id, g] : groups) { (void)id; if (!g->job.isEmpty()) items.append(QJsonObject{{"id", g->job.value("id")}, {"plan_id", g->plan.value("id")}, {"state", g->job.value("state")}, {"grouped", true}, {"name", g->job.value("name")}, {"category", g->job.value("category")}, {"created_at", g->job.value("created_at")}, {"total", g->job.value("total")}}); }
       return {{"items", items}, {"next_offset", QJsonValue::Null}};
     }
     if (op == "cancel") {
@@ -435,7 +440,7 @@ struct ImageTaskGroups::Impl {
       auto g = find(q["plan_id"].toString());
       { const std::lock_guard lock(state);
         if (!g->job.isEmpty()) {
-          if (g->manifest["submission_digest"] != hash(q)) fail(ErrorCode::Conflict, "Group already submitted with different parameters");
+          if (g->job.value("submission_digest") != hash(q)) fail(ErrorCode::Conflict, "Group already submitted with different parameters");
           return {{"job_id", g->job["id"]}, {"reused", true}};
         }
         if (g->plan["state"] != "ready" || g->plan["approval_digest"] != q["approval_digest"])

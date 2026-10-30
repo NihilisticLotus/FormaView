@@ -28,6 +28,13 @@ SchedulerLimits controlLimits() {
   l.foreground_reserve = {0, 0, 0, 0};
   return l;
 }
+void writeHistory(const QString &path, const QVariantMap &history) {
+  const auto bytes = QJsonDocument(QJsonObject::fromVariantMap(history)).toJson(QJsonDocument::Compact);
+  QDir().mkpath(QFileInfo(path).absolutePath());
+  QSaveFile file(path); file.setDirectWriteFallback(false);
+  if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+    throw std::runtime_error("Cannot persist conversion task history");
+}
 QJsonObject request(const char *operation) {
   return {{"version", 1}, {"operation", operation}};
 }
@@ -230,22 +237,57 @@ ImageJobs::ImageJobs(QObject *parent)
   connect(&timer_, &QTimer::timeout, this, &ImageJobs::poll);
 }
 void ImageJobs::saveHistory() {
+  ++historyRevision_;
+  historyDirty_ = true;
+  timer_.start();
+  pollHistory();
+}
+void ImageJobs::pollHistory() {
+  bool notify = false;
+  if (historyTask_) {
+    const auto completed = historyTask_->snapshot();
+    if (!completed.result) return;
+    if (completed.result->error) {
+      error_ = tr("Cannot persist conversion task history");
+      notify = true;
+    } else {
+      historyPersistedRevision_ = historySubmittedRevision_;
+      if (error_ == tr("Cannot persist conversion task history")) {
+        error_.clear();
+        notify = true;
+      }
+    }
+    historyTask_.reset();
+  }
+  if (!historyDirty_) {
+    if (notify) emit changed();
+    return;
+  }
   const auto path = historyPath_;
   const auto history = archivedJobs_;
   TaskRequest task;
   task.priority = Priority::Background;
   task.work = [path, history](std::stop_token) {
-    const auto bytes = QJsonDocument(QJsonObject::fromVariantMap(history)).toJson(QJsonDocument::Compact);
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QSaveFile file(path); file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
-      throw std::runtime_error("Cannot persist conversion task history");
+    writeHistory(path, history);
     return TaskResult{};
   };
-  (void)control_.submit(std::move(task));
+  const auto submitted = control_.submit(std::move(task));
+  if (submitted.task) {
+    historyTask_ = submitted.task;
+    historySubmittedRevision_ = historyRevision_;
+    historyDirty_ = false;
+  } // Queue pressure retains the latest snapshot for the next timer tick.
+  if (notify) emit changed();
 }
 ImageJobs::~ImageJobs() {
+  timer_.stop();
   control_.shutdown();
+  // Shutdown cancels queued tasks. Flush after joining so an older asynchronous
+  // snapshot cannot overwrite the final history during normal application exit.
+  if (historyRevision_ != historyPersistedRevision_) {
+    try { writeHistory(historyPath_, archivedJobs_); }
+    catch (const std::exception &e) { qWarning("%s", e.what()); }
+  }
   endpoint_.reset();
   retiredEndpoints_.clear();
   groups_.reset();
@@ -536,6 +578,7 @@ void ImageJobs::inspectModelInputs(const QStringList &inputs, const QVariantMap 
     error_ = tr("Select at least one input"); emit changed(); return;
   }
   busy_ = true;
+  timer_.start(); // Queued cancellation has no worker completion callback.
   error_.clear();
   modelSources_.clear();
   const auto revision = revision_;
@@ -681,6 +724,7 @@ void ImageJobs::selectJob(const QString &id) {
   poll();
 }
 void ImageJobs::poll() {
+  pollHistory();
   std::erase_if(retiredEndpoints_, [](const auto &e) { return e->idle(); });
   if (busy_ && preparation_) {
     const auto state = preparation_->snapshot();
@@ -690,8 +734,10 @@ void ImageJobs::poll() {
       emit changed();
     }
   }
-  if (!service_)
+  if (!service_) {
+    if (!busy_ && retiredEndpoints_.empty() && !historyTask_ && !historyDirty_) timer_.stop();
     return;
+  }
   auto list = request("list_jobs");
   list["limit"] = 100;
   const auto listing = service_->request(list);
@@ -763,7 +809,7 @@ void ImageJobs::poll() {
   // Idle polling burns GUI-thread wakeups at 10 Hz: once nothing is in
   // flight, stop; every action (preflight/dispatch/endpoint change) restarts.
   const auto watching =
-      busy_ || !retiredEndpoints_.empty() || !discoveryId_.isEmpty() ||
+      busy_ || historyTask_ || historyDirty_ || !retiredEndpoints_.empty() || !discoveryId_.isEmpty() ||
       active(plan_.value("state").toString()) ||
       active(job_.value("state").toString()) ||
       std::any_of(rows.cbegin(), rows.cend(), [](const auto &v) {

@@ -119,6 +119,8 @@ Layout layout(DXGI_FORMAT f) {
     return {ScalarType::UInt8, 4, true};
   case DXGI_FORMAT_B8G8R8A8_UNORM:
   case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+  case DXGI_FORMAT_B8G8R8X8_UNORM:
+  case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
     return {ScalarType::UInt8, 4, true, true};
   case DXGI_FORMAT_R8G8_UNORM:
     return {ScalarType::UInt8, 2, true};
@@ -291,10 +293,13 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
           "Stored channel values; all-zero alpha preserved; origin normalized "
           "by DirectXTex";
     p->desc.source.properties["dxgi_format"] = std::to_string(meta.format);
+    if (!p->hdr && !p->tga)
+      p->desc.source.properties["dds_alpha_mode"] = std::to_string(meta.GetAlphaMode());
     p->desc.colour_space =
         DirectX::IsSRGB(meta.format) ? "sRGB" : "unspecified";
     p->desc.alpha =
-        p->hdr || (p->tga && p->tga_channels != 4) ? AlphaMode::Absent
+        p->hdr || (p->tga && p->tga_channels != 4) ||
+                (!p->tga && !DirectX::HasAlpha(meta.format)) ? AlphaMode::Absent
         : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_PREMULTIPLIED
             ? AlphaMode::Premultiplied
         : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_STRAIGHT
@@ -415,6 +420,32 @@ ImageSubresource ImageFile::decode(std::size_t index,
       l.count = 3;
     if (impl_->tga)
       l.count = impl_->tga_channels;
+    if (!impl_->hdr && !impl_->tga && l.count == 4 &&
+        impl_->desc.alpha == AlphaMode::Absent) {
+      // Opaque DDS padding is not a semantic A channel. Reject contradictory
+      // declarations rather than silently discard meaningful stored samples.
+      if (DirectX::HasAlpha(source_format)) {
+        for (std::size_t y = 0; y < native->height; ++y) {
+          cancel(stop);
+          for (std::size_t x = 0; x < native->width; ++x) {
+            const auto *a = native->pixels + y * native->rowPitch +
+                            (x * stored_count + 3) * scalar_size(l.type);
+            bool opaque = false;
+            if (l.type == ScalarType::UInt8) opaque = *a == 255;
+            else if (l.type == ScalarType::UInt16 || l.type == ScalarType::Half) {
+              std::uint16_t v; std::memcpy(&v, a, sizeof(v));
+              opaque = v == (l.type == ScalarType::Half ? 0x3c00 : 65535);
+            } else if (l.type == ScalarType::Float32) {
+              float v; std::memcpy(&v, a, sizeof(v)); opaque = v == 1.F;
+            } else if (l.type == ScalarType::UInt32) {
+              std::uint32_t v; std::memcpy(&v, a, sizeof(v)); opaque = v == 1;
+            }
+            if (!opaque) fail("DDS opaque alpha declaration conflicts with stored values");
+          }
+        }
+      }
+      l.count = 3;
+    }
     auto names = l.bgra ? std::array<std::string, 4>{"B", "G", "R", "A"}
                         : std::array<std::string, 4>{"R", "G", "B", "A"};
     if (impl_->tga && l.count == 1)

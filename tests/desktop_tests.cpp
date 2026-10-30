@@ -3388,6 +3388,98 @@ private slots:
     }
   }
 
+  void imageQueuedPreparationCancel() {
+    const auto source = root_ + "/queued-cancel.png";
+    QImage image(4, 4, QImage::Format_RGBA8888); image.fill(Qt::red);
+    QVERIFY(image.save(source));
+    const auto output = root_ + "/queued-cancel-output";
+    QVERIFY(QDir().mkpath(output));
+    const QVariantMap scope{{"input_roots", QStringList{root_}},
+                            {"output_roots", QStringList{output}}};
+    for (const bool inspect : {false, true}) {
+      ImageJobs jobs;
+      std::atomic<bool> entered{}, release{};
+      const auto unblock = qScopeGuard([&] { release = true; jobs.control_.shutdown(); });
+      formaview::TaskRequest hold;
+      hold.work = [&](std::stop_token stop) {
+        entered = true;
+        while (!release && !stop.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return formaview::TaskResult{};
+      };
+      QVERIFY(jobs.control_.submit(std::move(hold)).task);
+      QTRY_VERIFY(entered.load());
+      if (inspect) jobs.inspectModelInputs({source}, scope, {});
+      else jobs.preflight({source}, scope, {{"target", "png"}}, "{name}.{ext}", "skip");
+      QVERIFY(jobs.busy());
+      QTest::qWait(250); // The preparation must remain observable without a service yet.
+      jobs.cancelPreparation();
+      QTRY_VERIFY_WITH_TIMEOUT(!jobs.busy(), 5000);
+      QVERIFY(!jobs.error().isEmpty());
+      QCOMPARE(jobs.control_.stats().queued, std::size_t(0));
+    }
+    evidence_["queued_preflight_and_inspection_cancel"] = "passed";
+  }
+  void imageHistoryPersistence() {
+    const auto path = root_ + "/history-pressure.json";
+    const auto read = [](const QString &p) {
+      QFile f(p);
+      return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object().toVariantMap() : QVariantMap{};
+    };
+    {
+      ImageJobs jobs; jobs.historyPath_ = path;
+      std::atomic<bool> entered{}, release{};
+      const auto unblock = qScopeGuard([&] { release = true; jobs.control_.shutdown(); });
+      formaview::TaskRequest hold;
+      hold.work = [&](std::stop_token stop) {
+        entered = true;
+        while (!release && !stop.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return formaview::TaskResult{};
+      };
+      QVERIFY(jobs.control_.submit(std::move(hold)).task);
+      QTRY_VERIFY(entered.load());
+      for (int i = 0; i < 4; ++i) {
+        formaview::TaskRequest filler;
+        filler.work = [](std::stop_token) { return formaview::TaskResult{}; };
+        QVERIFY(jobs.control_.submit(std::move(filler)).task);
+      }
+      jobs.archivedJobs_ = {{"batch-one", QVariantMap{{"state", "succeeded"}}}};
+      jobs.saveHistory();
+      jobs.archivedJobs_["batch-two"] = QVariantMap{{"state", "succeeded"}};
+      jobs.saveHistory();
+      release = true;
+      QTRY_COMPARE_WITH_TIMEOUT(read(path), jobs.archivedJobs_, 10000);
+    }
+    const auto closingPath = root_ + "/history-close.json";
+    {
+      auto jobs = std::make_unique<ImageJobs>(); jobs->historyPath_ = closingPath;
+      std::atomic<bool> entered{};
+      const auto stop = qScopeGuard([&] { if (jobs) jobs->control_.shutdown(); });
+      formaview::TaskRequest hold;
+      hold.work = [&](std::stop_token token) {
+        entered = true;
+        while (!token.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return formaview::TaskResult{};
+      };
+      QVERIFY(jobs->control_.submit(std::move(hold)).task);
+      QTRY_VERIFY(entered.load());
+      jobs->archivedJobs_ = {{"closed-batch", QVariantMap{{"state", "succeeded"}}}};
+      jobs->saveHistory();
+      jobs.reset();
+      QVERIFY(read(closingPath).contains("closed-batch"));
+    }
+    {
+      ImageJobs jobs; jobs.historyPath_ = root_ + "/history-error.json";
+      QVERIFY(QDir().mkpath(jobs.historyPath_)); // A directory cannot be replaced as a file.
+      jobs.archivedJobs_ = {{"retry-batch", QVariantMap{{"state", "succeeded"}}}};
+      jobs.saveHistory();
+      QTRY_VERIFY_WITH_TIMEOUT(!jobs.error().isEmpty(), 10000);
+      QVERIFY(QDir().rmdir(jobs.historyPath_));
+      jobs.saveHistory();
+      QTRY_COMPARE_WITH_TIMEOUT(read(jobs.historyPath_), jobs.archivedJobs_, 10000);
+      QTRY_VERIFY(jobs.error().isEmpty());
+    }
+    evidence_["history_pressure_close_and_error"] = "passed";
+  }
   void imageJobsCancelAndShutdown() {
     const auto input = root_ + "/shutdown-input";
     QVERIFY(QDir().mkpath(input));

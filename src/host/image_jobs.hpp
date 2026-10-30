@@ -87,6 +87,7 @@ signals:
   void sourcesChanged();
 
 private:
+  friend class DesktopTests; // Deterministic scheduler pressure/close regressions.
   void dispatch(QJsonObject);
   void poll();
   bool activeJobs() const;
@@ -98,6 +99,10 @@ private:
   QVariantMap archivedJobs_;
   QString historyPath_;
   void saveHistory();
+  void pollHistory();
+  std::optional<formaview::TaskHandle> historyTask_;
+  quint64 historyRevision_{}, historySubmittedRevision_{}, historyPersistedRevision_{};
+  bool historyDirty_{};
   QJsonObject polledPlan_, polledJob_;
   QVariantList jobs_;
   QVariantList inputInfo_;

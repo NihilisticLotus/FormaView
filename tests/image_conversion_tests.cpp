@@ -132,6 +132,63 @@ void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &
   } else std::cout << "SKIP external CMYK ICC: FORMAVIEW_TEST_CMYK_PROFILE is unset\n";
   std::cout << "PASS RGB/gray ICC output models, exact profile bytes and explicit metadata drop\n";
 }
+void dds_alpha_contract(const ImageSubresource &rgba, const std::filesystem::path &root) {
+  // Alpha presence follows the format and declaration, never its pixel values.
+  for (const auto mode : {AlphaMode::Absent, AlphaMode::Straight,
+                         AlphaMode::Premultiplied, AlphaMode::Unknown}) {
+    for (const auto sample : {0U, 127U, 255U}) {
+      auto input = rgba;
+      std::fill(input.channels[3].samples.bytes.begin(), input.channels[3].samples.bytes.end(), std::byte(sample));
+      ProfessionalEncodeOptions encoded;
+      encoded.target = ProfessionalTarget::Dds; encoded.alpha = mode;
+      if (mode == AlphaMode::Absent) {
+        rejects([&] { (void)encode_professional(input, encoded); });
+        input.channels.pop_back();
+      }
+      const auto name = "dds-alpha-" + std::to_string(static_cast<int>(mode)) + '-' + std::to_string(sample);
+      write(root / (name + ".dds"), encode_professional(input, encoded));
+      const auto doc = ImageDocument::open(root / (name + ".dds"));
+      require(doc.description().alpha == mode, "DDS alpha declaration changed");
+      const auto decoded = doc.decode(0);
+      require(decoded.channels.size() == (mode == AlphaMode::Absent ? 3 : 4),
+              "DDS opaque padding was exposed as a real alpha channel");
+      ImageConversionOptions options;
+      options.target = ImageTarget::Tga;
+      options.transform.source_alpha = mode;
+      for (const auto &channel : decoded.channels) options.transform.channels.push_back({channel.name, channel.name});
+      if (mode != AlphaMode::Absent) options.transform.alpha_channel = "A";
+      auto result = prepare_image_conversion(doc, options);
+      write(root / (name + ".tga"), result.encoded);
+      const auto roundtrip = ImageDocument::open(root / (name + ".tga")).decode(0);
+      require(roundtrip.channels.size() == decoded.channels.size(), "DDS/TGA alpha presence changed");
+      for (std::size_t c = 0; c < roundtrip.channels.size(); ++c)
+        require(roundtrip.channels[c].samples.bytes == input.channels[c].samples.bytes,
+                "DDS/TGA hidden RGB or alpha values changed");
+    }
+  }
+  // Native RGB uses RGBA storage in UInt8 DDS, but the fourth component is padding.
+  auto rgb = rgba; rgb.channels.pop_back();
+  ProfessionalEncodeOptions encoded; encoded.target = ProfessionalTarget::Dds;
+  auto bytes = encode_professional(rgb, encoded);
+  write(root / "dds-rgb-padding.dds", bytes);
+  require(ImageDocument::open(root / "dds-rgb-padding.dds").decode(0).channels.size() == 3,
+          "RGB DDS round trip fabricated alpha");
+  auto broken = bytes;
+  broken[151] = std::byte{};
+  write(root / "dds-opaque-contradiction.dds", broken);
+  rejects([&] { (void)ImageDocument::open(root / "dds-opaque-contradiction.dds").decode(0); });
+  // An X8 format has no alpha even when its metadata says unknown (legacy DDS).
+  qToLittleEndian<quint32>(88, reinterpret_cast<uchar *>(bytes.data()) + 128); // B8G8R8X8_UNORM
+  qToLittleEndian<quint32>(0, reinterpret_cast<uchar *>(bytes.data()) + 144);
+  write(root / "dds-bgrx-unknown.dds", bytes);
+  const auto bgrx = ImageDocument::open(root / "dds-bgrx-unknown.dds");
+  require(bgrx.description().alpha == AlphaMode::Absent, "X8 DDS must not claim alpha");
+  const auto decoded = bgrx.decode(0);
+  require(decoded.channels.size() == 3 && decoded.channels[0].name == "B" &&
+          decoded.channels[0].samples.bytes == rgb.channels[0].samples.bytes,
+          "BGRX source channel order/stride changed");
+  std::cout << "PASS DDS opaque/straight/premultiplied/unknown alpha, zero/partial/opaque values, RGB padding and BGRX\n";
+}
 void run(const std::filesystem::path &root) {
   const auto capabilities = execute_image_request(
       {{"version", 1}, {"operation", "capabilities"}}, {});
@@ -150,6 +207,7 @@ void run(const std::filesystem::path &root) {
                                SampleEncoding::UNorm});
   }
   RasterEncodeOptions png;
+  dds_alpha_contract(source, root);
   png.alpha = AlphaMode::Straight;
   write(root / "source.png", encode_raster(source, png));
   profile_layouts(source, root);
