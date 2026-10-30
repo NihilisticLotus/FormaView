@@ -39,6 +39,7 @@
 #include <QMimeData>
 #include <QMetaProperty>
 #include <QProcess>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlIncubationController>
@@ -545,14 +546,35 @@ private slots:
     QVERIFY(arrow->width() >= 32 && arrow->height() >= 32);
     auto *preview = item("previewPane");
     const auto previewHeight = preview ? preview->height() : 0;
+    QElapsedTimer menuClock; menuClock.start();
     click(arrow);
     QTRY_COMPARE(desktop_->folderMenu().value("entries").toList().size(), 3);
+    QTRY_VERIFY(!desktop_->folderMenu().value("busy").toBool());
+    const auto entriesReadyMs=menuClock.elapsed();
     QCOMPARE(desktop_->sessionRevision(), session);
     if (preview) QCOMPARE(preview->height(), previewHeight);
     auto *sibling = findPath("folderChild", model + "/场景");
     QTRY_VERIFY((sibling = findPath("folderChild", model + "/场景")));
     QCOMPARE(sibling->height(), 36.0);
-    click(sibling);
+    const auto delegateReadyMs=menuClock.elapsed();
+    QPointer<QQuickItem> initialSibling=sibling;
+    const auto positionBeforeLayout=sibling->mapToScene(QPointF(sibling->width()/2,sibling->height()/2));
+    QSignalSpy menuFrame(window_,&QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!menuFrame.isEmpty());
+    const auto frameReadyMs=menuClock.elapsed();
+    // ListView can recycle/recreate an initial delegate during its first layout.
+    // Resolve the requested path again after presentation, then click it.
+    QTRY_VERIFY((sibling=findPath("folderChild",model + "/场景")));
+    const auto positionAfterLayout=sibling->mapToScene(QPointF(sibling->width()/2,sibling->height()/2));
+    const auto initialPathAfterFrame=initialSibling ? initialSibling->property("folderPath").toString() : QString("destroyed");
+    QTest::mousePress(window_,Qt::LeftButton,Qt::NoModifier,positionAfterLayout.toPoint());
+    auto *grabber=window_->mouseGrabberItem();
+    while(grabber && grabber->objectName()!="folderChild") grabber=grabber->parentItem();
+    const auto hitPath=grabber ? grabber->property("folderPath").toString() : QString{};
+    QTest::mouseRelease(window_,Qt::LeftButton,Qt::NoModifier,positionAfterLayout.toPoint());
+    evidence_["folder_menu_layout"]=QJsonObject{{"entries_ready_ms",entriesReadyMs},{"delegate_ready_ms",delegateReadyMs},{"frame_ready_ms",frameReadyMs},{"before_x",positionBeforeLayout.x()},{"before_y",positionBeforeLayout.y()},{"after_x",positionAfterLayout.x()},{"after_y",positionAfterLayout.y()},{"pressed_folder",hitPath},{"initial_delegate_after_frame",initialPathAfterFrame}};
+    QCOMPARE(hitPath,model + "/场景");
     QTRY_COMPARE(desktop_->directory(), model + "/场景");
     QTRY_VERIFY(idle());
     auto *childrenPopup=window_->findChild<QObject *>("folderChildrenPopup");
