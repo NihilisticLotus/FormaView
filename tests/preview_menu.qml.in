@@ -1,0 +1,39 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import QtTest
+TestCase {
+ id: root
+ name: "PreviewMenuGeometry"
+ when: windowShown
+ width: 640; height: 480
+ property var controller: ({ asset: {kind: "model", path: "synthetic"}, reveal: function(p) {}, clearAsset: function() {} })
+ property string lastExport: ""
+ function exportShortcut(preset) { lastExport = preset }
+@@MENU@@
+ function cleanup() { actions.close() }
+ function test_contexts_data() { return [
+  {tag:"model",kind:"model",expected:["打开所在位置","导出模型…","导出动画…","关闭当前文件"]},
+  {tag:"image",kind:"image",expected:["打开所在位置","导出贴图…","关闭当前文件"]},
+  {tag:"animation",kind:"animation",expected:["打开所在位置","导出动画…","关闭当前文件"]},
+  {tag:"convert",kind:"convert",expected:["打开所在位置","导出模型…","导出动画…","关闭当前文件"]},
+  {tag:"other",kind:"other",expected:["打开所在位置","关闭当前文件"]}
+ ] }
+ function test_contexts(data) {
+  controller = {asset:{kind:data.kind,path:"synthetic"}, reveal:function(p){},clearAsset:function(){}}
+  actions.open()
+  tryCompare(actions,"opened",true)
+  wait(50)
+  let y = 0; let labels = []
+  for(let i=0;i<actions.count;++i) {
+   const item = actions.itemAt(i)
+   if(item.visible) { compare(item.y,y,"visible rows must be adjacent: "+item.text); y+=item.height; labels.push(item.text) }
+   else compare(item.height,0,"hidden action must not reserve a row")
+  }
+  compare(labels,data.expected)
+  compare(actions.height, y+actions.topPadding+actions.bottomPadding)
+  actions.close();tryCompare(actions,"opened",false)
+  actions.open();tryCompare(actions,"opened",true)
+  compare(actions.height,y+actions.topPadding+actions.bottomPadding)
+  actions.close();tryCompare(actions,"opened",false)
+ }
+}
