@@ -129,7 +129,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                               const ActorAsset *paired, const FbxWriteOptions &options, bool model_only,
                               std::vector<std::byte> *encoded = nullptr,
                               std::span<const std::size_t> clips = {},
-                              std::vector<FbxWriteResult> *clip_results = nullptr) {
+                              std::vector<FbxWriteResult> *clip_results = nullptr,
+                              bool validate_only = false) {
     cancelled(options.stop);
     if (!model_only && (!a.animation || first_clip >= a.sequences.size() || a.bones.empty()))
         throw Failure(ErrorCode::InvalidArgument, "Writer requires an ActorX animation first_clip");
@@ -281,6 +282,7 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                 throw Failure(ErrorCode::Unsupported,
                               "Morph chunks are retained by reader but not supported by this writer");
     }
+    if (validate_only) return {};
     // A normalized blend of nonnegative influences stays within the largest
     // influence error. Bound each influence over its bind-local point box, so
     // the animation audit also covers vertices away from the joint origin.
@@ -726,6 +728,12 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         }
         for (const auto &material : m.materials) {
             auto *mat = FbxSurfacePhong::Create(scene, material.name.c_str());
+            for (std::size_t k = 0; k < material.properties.size(); ++k) {
+                const auto name = "ActorX_Property_" + std::to_string(k);
+                auto property = FbxProperty::Create(mat, FbxIntDT, name.c_str());
+                property.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+                property.Set(static_cast<FbxInt>(material.properties[k]));
+            }
             mesh_node->AddMaterial(mat);
         }
         auto *mats = mesh->CreateElementMaterial();
@@ -852,6 +860,11 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                       "Cannot commit FBX output");
     temporary.path.clear();
     return result;
+}
+void validate_fbx_export(const ActorAsset &asset, std::span<const std::size_t> clips,
+                         const ActorAsset *paired, const FbxWriteOptions &options) {
+    (void)write_actor_fbx(asset, clips.empty() ? 0 : clips.front(), {}, paired,
+                         options, !asset.animation, nullptr, clips, nullptr, true);
 }
 FbxWriteResult write_fbx_clip(const ActorAsset &animation, std::size_t clip,
                               const std::filesystem::path &output, const ActorAsset *paired,

@@ -7,7 +7,7 @@ Rectangle {
     required property var controller
     signal back()
     signal retryImageJob(string id)
-    readonly property bool hasImageJobs: !!controller.imageJobs && controller.imageJobs.configured
+    readonly property bool hasImageJobs: !!controller.imageJobs && (controller.imageJobs.configured || controller.imageJobs.jobs.length > 0)
     color: Theme.base
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 20; spacing: 16

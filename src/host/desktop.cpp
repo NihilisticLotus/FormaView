@@ -153,6 +153,16 @@ void FileList::select(int row, int modifiers) {
   if (rowCount())
     emit dataChanged(index(0), index(rowCount() - 1), {Selected});
 }
+int Desktop::activeTasks() const {
+  int count = active_;
+#ifdef FORMAVIEW_IMAGE_UI
+  if (imageJobs_) for (const auto &v : static_cast<ImageJobs *>(imageJobs_.get())->jobs()) {
+    const auto state = v.toMap().value("state").toString();
+    if (state == "queued" || state == "running") ++count;
+  }
+#endif
+  return count;
+}
 void Desktop::styleToolWindow(QObject *window) {
   installWindowChrome(qobject_cast<QQuickWindow *>(window));
 }
@@ -164,6 +174,7 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
 #ifdef FORMAVIEW_IMAGE_UI
   image_ = std::make_unique<ImageSession>();
   imageJobs_ = std::make_unique<ImageJobs>();
+  connect(static_cast<ImageJobs *>(imageJobs_.get()), &ImageJobs::changed, this, &Desktop::tasksChanged);
 #endif
   auto settings = QSettings{};
   language_ = settings.value("language", "zh-CN").toString();

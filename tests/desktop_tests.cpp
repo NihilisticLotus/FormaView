@@ -2973,7 +2973,7 @@ private slots:
     QVERIFY(QDir().mkpath(input)); QVERIFY(QDir().mkpath(output));
     QVERIFY(QFile::copy(fixtures + "/source.psk", input + "/reference.psk"));
     QStringList sources;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 65; ++i) {
       const auto source = input + QString("/animation-%1.psa").arg(i);
       QVERIFY(QFile::copy(fixtures + "/source.psa", source)); sources.append(source);
     }
@@ -2987,50 +2987,45 @@ private slots:
     const auto cleanup = qScopeGuard([&] { QMetaObject::invokeMethod(conversion, "close"); });
     QVERIFY(conversion->setProperty("modelInputs", sources));
     QVERIFY(conversion->setProperty("modelMode", true));
-    QTRY_VERIFY(item("conversionInputRoot") && item("conversionOutputRoot"));
-    item("conversionInputRoot")->setProperty("text", "");
-    item("conversionOutputRoot")->setProperty("text", output);
+    QTRY_VERIFY(item("conversionOutputRoot"));
+    QVERIFY(!item("conversionInputRoot"));
+    item("conversionOutputRoot")->setProperty("text", "");
     item("modelExportPaired")->setProperty("text", input + "/reference.psk");
+    item("conversionTaskName")->setProperty("text", "角色动作批次");
+    item("conversionTaskCategory")->setProperty("text", "回归验证");
     auto *preflight = item("createImagePlan"); QVERIFY(preflight);
-    const QVariantMap emptyInput{{"input_roots", QStringList{QString{}}}, {"output_roots", QStringList{output}}};
+    QTRY_VERIFY(!preflight->isEnabled());
     const QVariantMap options{{"target", "fbx"}, {"export_content", "animation"},
         {"paired_file", input + "/reference.psk"}, {"file_organization", "per-clip"}};
-    const bool emptyButtonEnabled = preflight->isEnabled();
-    service->preflight(sources, emptyInput, options, "{name}-{clip}.{ext}", "skip");
-    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
-    const QJsonObject observed{{"scope", QJsonObject::fromVariantMap(emptyInput)},
-        {"options", QJsonObject::fromVariantMap(options)}, {"inputs", QJsonArray::fromStringList(sources)},
-        {"button_enabled", emptyButtonEnabled}, {"error", service->error()},
-        {"plan", QJsonObject::fromVariantMap(service->plan())}};
-    QFile repro(root_ + "/empty-scope-observation.json"); QVERIFY(repro.open(QIODevice::WriteOnly));
-    repro.write(QJsonDocument(observed).toJson()); repro.close();
-    save("model-empty-input-scope");
-    // The original UI enabled preflight for [""] and returned only "Empty path".
-    QVERIFY2(!emptyButtonEnabled, "Empty input scope must disable GUI preflight");
-    QVERIFY2(service->error().contains("Input scope root must not be empty"), qPrintable(service->error()));
-    QVERIFY(service->plan().isEmpty());
-    QVERIFY(QDir(output).entryList(QDir::Files).isEmpty());
-    item("conversionInputRoot")->setProperty("text", "  ");
-    QTRY_VERIFY(!preflight->isEnabled());
-    item("conversionInputRoot")->setProperty("text", input);
-    item("conversionOutputRoot")->setProperty("text", "  ");
-    QTRY_VERIFY(!preflight->isEnabled());
-    QVERIFY(item("conversionOutputScopeHint"));
-    service->preflight(sources, {{"input_roots", QStringList{input}}, {"output_roots", QStringList{QString{}}}},
-                       options, "{name}-{clip}.{ext}", "skip");
-    QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
-    QVERIFY2(service->error().contains("Output scope root must not be empty"), qPrintable(service->error()));
     item("conversionOutputRoot")->setProperty("text", output);
     QTRY_VERIFY(preflight->isEnabled());
     QVERIFY(QMetaObject::invokeMethod(preflight, "clicked"));
     QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
                              qPrintable(service->error()), 30000);
-    QCOMPARE(service->plan().value("items").toList().size(), 12);
+    QCOMPARE(service->plan().value("items").toList().size(), 130);
     evidence_["model_scope_ready"] = QJsonObject::fromVariantMap(service->plan());
     service->submit(true);
     QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded",
                              qPrintable(service->error()), 60000);
-    const auto outputs = service->job().value("items").toList(); QCOMPARE(outputs.size(), 12);
+    const auto outputs = service->job().value("items").toList(); QCOMPARE(outputs.size(), 130);
+    QCOMPARE(service->job().value("name").toString(), QString("角色动作批次"));
+    QCOMPARE(service->job().value("category").toString(), QString("回归验证"));
+    item("conversionSteps")->setProperty("currentIndex", 2);
+    QTRY_VERIFY(item("imageJobChoice"));
+    QTRY_VERIFY(item("imageJobChoice")->property("displayText").toString().contains("角色动作批次"));
+    QVERIFY(item("jobCategoryFilter"));
+    item("jobCategoryFilter")->setProperty("currentIndex", 1);
+    QVERIFY(QMetaObject::invokeMethod(item("jobCategoryFilter"), "activated", Q_ARG(int, 1)));
+    QTRY_VERIFY(item("imageJobChoice")->property("displayText").toString().contains("回归验证"));
+    save("named-model-batch");
+    QTRY_VERIFY(QFileInfo::exists(root_ + "/image-journal/desktop-history.json"));
+    {
+      ImageJobs reopened;
+      QVERIFY(!reopened.jobs().isEmpty());
+      const auto restored = reopened.jobs().last().toMap();
+      QCOMPARE(restored.value("name").toString(), QString("角色动作批次"));
+      QCOMPARE(restored.value("items").toList().size(), 130);
+    }
     for (const auto &v : outputs) {
       const auto result = v.toMap().value("result").toMap();
       const auto path = result.value("committed_output").toString();
@@ -3249,7 +3244,7 @@ private slots:
         if (!ack->property("checked").toBool()) click("acknowledgeImageLosses");
       }
       click("submitImagePlan");
-      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 20000);
+      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("plan_id") == service->plan().value("id") && service->job().value("state") == "succeeded", qPrintable(service->error()), 20000);
       for (const auto &v : service->job().value("items").toList()) {
         const auto entry = v.toMap();
         const auto result = entry.value("result").toMap();
@@ -3794,9 +3789,10 @@ private slots:
                  QJsonDocument(QJsonObject::fromVariantMap(service->plan()))
                      .toJson())));
     service->submit(true);
-    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() &&
+                                 service->job().value("plan_id") == service->plan().value("id") &&
                                  service->job().value("state") == "succeeded",
-                             15000);
+                             qPrintable(service->error()), 15000);
     QCOMPARE(service->job()["items"].toList()[0].toMap()["status"].toString(),
              QString("skipped"));
     service->preflight({source}, scope, options, "../escape.{ext}", "skip");
@@ -4413,15 +4409,15 @@ private slots:
     service->addSourceFiles(boundary); QTRY_VERIFY(!service->importing());
     QCOMPARE(service->sourcePaths().size(), 4096);
     service->addSourceFiles({directory + "/limit-extra.png"}); QTRY_VERIFY(!service->importing());
-    QCOMPARE(service->sourcePaths().size(), 4096); QVERIFY(service->importResult().contains("error"));
+    QCOMPARE(service->sourcePaths().size(), 4097); QVERIFY(!service->importResult().contains("error"));
     service->clearSources();
     QStringList roots;
     for (int i = 0; i < 64; ++i) roots.append(directory + QString("/root-%1/image.png").arg(i));
     service->addSourceFiles(roots); QTRY_VERIFY(!service->importing());
     QCOMPARE(service->sourceRoots().size(), 64);
     service->addSourceFiles({directory + "/root-extra/image.png"}); QTRY_VERIFY(!service->importing());
-    QCOMPARE(service->sourcePaths().size(), 64); QCOMPARE(service->sourceRoots().size(), 64);
-    QVERIFY(service->importResult().contains("error"));
+    QCOMPARE(service->sourcePaths().size(), 65); QCOMPARE(service->sourceRoots().size(), 65);
+    QVERIFY(!service->importResult().contains("error"));
 #endif
   }
   void approvedPageReviewCleanup() {

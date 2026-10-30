@@ -10,6 +10,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QStandardPaths>
+#include <QSaveFile>
 #include <QUuid>
 #include <algorithm>
 #include <set>
@@ -73,6 +74,11 @@ QString outputName(const QString &input, qsizetype index,
   return name;
 }
 } // namespace
+QStringList ImageJobs::localInputRoots() const {
+  QStringList roots;
+  for (const auto &drive : QDir::drives()) roots.append(drive.absoluteFilePath());
+  return roots;
+}
 void ImageJobs::setSourceInputs(const QStringList &paths) {
   cancelImport();
   sourcePaths_.clear(); sourceRoots_.clear(); importResult_.clear();
@@ -120,7 +126,7 @@ void ImageJobs::importSources(QStringList paths, QString folder, bool recursive)
         AccessScope scope; scope.input_roots = {root};
         std::vector<std::wstring_view> views;
         for (const auto &v : extensions) views.push_back(v);
-        const auto found = discover_files(scope, root, recursive, views, stop);
+        const auto found = discover_files(scope, root, recursive, views, stop, false);
         for (const auto &p : found.files) paths.append(QString::fromStdWString(p.wstring()));
         incomingRoots.append(QString::fromStdWString(root.wstring()));
         result["ignored"] = static_cast<qulonglong>(found.ignored_files);
@@ -154,7 +160,6 @@ void ImageJobs::importSources(QStringList paths, QString folder, bool recursive)
         if (keys.contains(p.toCaseFolded())) { ++duplicates; continue; }
         keys.insert(p.toCaseFolded()); merged.append(p);
       }
-      if (merged.size() > 4096) throw skeletal::Failure(ErrorCode::ResourceLimit, "Conversion inputs exceed 4096 images");
       if (!normalized.isEmpty()) mergedRoots.append(incomingRoots);
       QStringList reduced;
       std::sort(mergedRoots.begin(), mergedRoots.end(), [](const auto &a, const auto &b) { return a.size() < b.size(); });
@@ -164,7 +169,6 @@ void ImageJobs::importSources(QStringList paths, QString folder, bool recursive)
           return r.compare(existing, Qt::CaseInsensitive) == 0 || r.startsWith(existing.endsWith('/') ? existing : existing + '/', Qt::CaseInsensitive);
         })) reduced.append(r);
       }
-      if (reduced.size() > 64) throw skeletal::Failure(ErrorCode::ResourceLimit, "Conversion inputs exceed 64 source folders");
       mergedRoots = reduced;
       result["added"] = merged.size() - previous.size(); result["duplicates"] = duplicates;
       result["empty"] = normalized.isEmpty();
@@ -192,8 +196,7 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
                                     const QString &nameTemplate,
                                     const QString &target,
                                     const QVariantList &itemOverrides) const {
-  if (inputs.size() > (target == "fbx" ? 64 : 4096) ||
-      (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size()))
+  if (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size())
     return {{"error", tr("Input and per-item options do not match")}};
   QStringList names;
   try {
@@ -211,8 +214,35 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
 }
 ImageJobs::ImageJobs(QObject *parent)
     : QObject(parent), control_(controlLimits()) {
+  historyPath_ = qEnvironmentVariable("FORMAVIEW_IMAGE_STATE_ROOT",
+      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/image-journal") + "/desktop-history.json";
+  QFile history(historyPath_);
+  if (history.open(QIODevice::ReadOnly)) {
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(history.readAll(), &error);
+    if (error.error == QJsonParseError::NoError && document.isObject()) {
+      archivedJobs_ = document.object().toVariantMap();
+      for (auto it = archivedJobs_.cbegin(); it != archivedJobs_.cend(); ++it) jobs_.append(it.value());
+      if (!jobs_.isEmpty()) { job_ = jobs_.last().toMap(); jobId_ = job_.value("id").toString(); }
+    } else error_ = tr("Cannot read conversion task history");
+  }
   timer_.setInterval(100);
   connect(&timer_, &QTimer::timeout, this, &ImageJobs::poll);
+}
+void ImageJobs::saveHistory() {
+  const auto path = historyPath_;
+  const auto history = archivedJobs_;
+  TaskRequest task;
+  task.priority = Priority::Background;
+  task.work = [path, history](std::stop_token) {
+    const auto bytes = QJsonDocument(QJsonObject::fromVariantMap(history)).toJson(QJsonDocument::Compact);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path); file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+      throw std::runtime_error("Cannot persist conversion task history");
+    return TaskResult{};
+  };
+  (void)control_.submit(std::move(task));
 }
 ImageJobs::~ImageJobs() {
   control_.shutdown();
@@ -245,14 +275,9 @@ bool ImageJobs::activeJobs() const {
 void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                           const QVariantMap &options,
                           const QString &nameTemplate, const QString &conflict,
-                          const QVariantList &itemOverrides) {
+                          const QVariantList &itemOverrides, const QVariantMap &metadata) {
   if (busy_)
     return;
-  if (inputs.size() > (options.value("target") == "fbx" ? 64 : 4096)) {
-    error_ = tr("Input count exceeds the conversion limit");
-    emit changed();
-    return;
-  }
   if (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size()) {
     error_ = tr("Per-item options must match the fixed input list");
     emit changed();
@@ -292,7 +317,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
   task.priority = Priority::Foreground;
   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
   task.work = [receiver, existing, existingGroups, inputs, policy, requestedScope, options,
-               nameTemplate, conflict, journalRoot, itemOverrides,
+               nameTemplate, conflict, journalRoot, itemOverrides, metadata,
                revision](std::stop_token stop) mutable {
     QJsonObject response;
     QVariantList inputInfo;
@@ -393,8 +418,6 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           if (content == "model" && !source["has_mesh"].toBool() && !source.contains("error"))
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
           const auto append_model = [&](QJsonObject parameters, const QString &clip_name) {
-            if (items.size() >= 64)
-              throw skeletal::Failure(ErrorCode::ResourceLimit, "Expanded plan exceeds 64 outputs; select fewer clips");
             items.append(QJsonObject{{"input", inputs[i]},
                 {"output", QDir(outputRoots[0].toString()).filePath(outputName(inputs[i], items.size(), "fbx", nameTemplate, clip_name))},
                 {"options", parameters}, {"conflict", conflict}});
@@ -458,8 +481,9 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
       else {
         auto create = request("create_plan");
         create["items"] = items;
-        response = items.size() > 64 ? existingGroups->request(create, stop)
-                                     : existing->request(create, stop);
+        create["name"] = metadata.value("name").toString();
+        create["category"] = metadata.value("category").toString();
+        response = existingGroups->request(create, stop);
       }
     } catch (const skeletal::Failure &e) {
       response = image_error_json(e);
@@ -508,8 +532,8 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
 }
 void ImageJobs::inspectModelInputs(const QStringList &inputs, const QVariantMap &scope, const QString &paired) {
   if (busy_) return;
-  if (inputs.isEmpty() || inputs.size() > 64) {
-    error_ = tr("Select between 1 and 64 inputs"); emit changed(); return;
+  if (inputs.isEmpty()) {
+    error_ = tr("Select at least one input"); emit changed(); return;
   }
   busy_ = true;
   error_.clear();
@@ -632,6 +656,7 @@ void ImageJobs::submit(bool acknowledge) {
   q["approval_digest"] = plan_["approval_digest"].toString();
   q["idempotency_key"] = idempotency_;
   q["acknowledge_losses"] = acknowledge;
+  jobId_.clear(); job_.clear(); polledJob_ = {};
   dispatch(q);
 }
 void ImageJobs::cancel(const QString &kind, const QString &id) {
@@ -652,6 +677,7 @@ void ImageJobs::retry(const QString &id) {
 }
 void ImageJobs::selectJob(const QString &id) {
   jobId_ = id;
+  if (!service_ && archivedJobs_.contains(id)) { job_ = archivedJobs_.value(id).toMap(); emit changed(); return; }
   poll();
 }
 void ImageJobs::poll() {
@@ -675,7 +701,10 @@ void ImageJobs::poll() {
     rows.append(service_->request(list)["items"].toArray().toVariantList());
   }
   if (groups_) rows.append(groups_->request(request("list_jobs"))["items"].toArray().toVariantList());
-  auto get = [&](const char *operation, const QString &id) {
+  auto get = [&](const char *operation, const QString &id, bool useCache = true) {
+    if (QByteArrayView(operation) == "get_job" && archivedJobs_.contains(id) &&
+        std::none_of(rows.cbegin(), rows.cend(), [&](const auto &v) { return v.toMap().value("id") == id; }))
+      return archivedJobs_.value(id).toMap();
     auto q = request(operation);
     q["id"] = id;
     q["limit"] = 100;
@@ -692,13 +721,29 @@ void ImageJobs::poll() {
     result["items"] = items;
     const bool isPlan = QByteArrayView(operation) == "get_plan";
     auto &cached = isPlan ? polledPlan_ : polledJob_;
-    if (result == cached) return isPlan ? plan_ : job_;
-    cached = result;
+    if (useCache && result == cached) return isPlan ? plan_ : job_;
+    if (useCache) cached = result;
     return result.toVariantMap();
   };
   const auto plan =
       planId_.isEmpty() ? QVariantMap{} : get("get_plan", planId_);
   const auto job = jobId_.isEmpty() ? QVariantMap{} : get("get_job", jobId_);
+  bool historyChanged = false;
+  QSet<QString> liveIds;
+  for (const auto &row : rows) {
+    const auto summary = row.toMap();
+    const auto id = summary.value("id").toString();
+    liveIds.insert(id);
+    if (active(summary.value("state").toString()) || archivedJobs_.contains(id)) continue;
+    auto completed = get("get_job", id, false);
+    if (completed.contains("error")) continue;
+    completed["archived"] = true;
+    archivedJobs_[id] = completed;
+    historyChanged = true;
+  }
+  if (historyChanged) saveHistory();
+  for (auto it = archivedJobs_.cbegin(); it != archivedJobs_.cend(); ++it)
+    if (!liveIds.contains(it.key())) rows.append(it.value());
   QVariantMap discovery;
   if (!discoveryId_.isEmpty()) {
     auto q = request("get_discovery");
@@ -763,7 +808,7 @@ void ImageJobs::setMcpEnabled(bool enabled) {
     endpointName_ = "formaview-" +
                     QString::number(QCoreApplication::applicationPid()) + '-' +
                     QUuid::createUuid().toString(QUuid::WithoutBraces);
-    endpoint_ = std::make_unique<ImageEndpoint>(service_, endpointName_);
+    endpoint_ = std::make_unique<ImageEndpoint>(service_, endpointName_, nullptr, groups_);
     endpoint_->workChanged = [this] {
       // Observe on the next event-loop turn: poll() may retire this endpoint.
       // Do not erase the callback owner inside its own completion event.

@@ -49,7 +49,7 @@ ColumnLayout {
         }
     }
     Readout { objectName: "conversionSourceRoots"; form: true; Layout.fillWidth: true; label: Theme.t("来源目录", "Source folders", "來源資料夾"); value: root.service.sourceRoots.join("\n") || "—" }
-    Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("继续添加会追加并去重；文件夹默认只读取当前层。超过 64 张自动分批，最多 4096 张。", "Additions are appended and deduplicated. Folders include this level by default. More than 64 images are split into batches; maximum 4096.", "繼續加入會追加並去重；資料夾預設只讀取目前層。超過 64 張自動分批，最多 4096 張。") }
+    Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("继续添加会追加并去重；文件夹默认只读取当前层。一次提交的文件自动分段处理，没有固定数量上限。", "Additions are appended and deduplicated. Folders include this level by default. One submission is processed in chunks, with no fixed file-count limit.", "繼續加入會追加並去重；資料夾預設只讀取目前層。一次提交的檔案自動分段處理，沒有固定數量上限。") }
     FileDialog {
         id: files; objectName: "conversionImageFileDialog"; fileMode: FileDialog.OpenFiles
         title: Theme.t("添加转换图片", "Add conversion images", "加入轉換影像")

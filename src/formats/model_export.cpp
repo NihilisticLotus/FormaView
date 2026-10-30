@@ -101,7 +101,7 @@ std::vector<std::byte> bytes(const QString &p, std::uint64_t limit) {
 void loss(QJsonArray &out, const char *code, const QString &detail) {
   out.append(QJsonObject{{"code", code}, {"detail", detail}});
 }
-void actor_losses(const sk::ActorAsset &a, QJsonArray &out, bool include_mesh) {
+void actor_losses(const sk::ActorAsset &a, QJsonArray &out, QJsonArray &notices, bool include_mesh) {
   const std::set<std::string> supported{
       "ACTRHEAD",    "ANIMHEAD",  "PNTS0000", "VTXW0000",   "FACE0000",
       "FACE3200",    "MATT0000",  "REFSKELT", "RAWWEIGHTS", "VTXNORMS",
@@ -114,7 +114,7 @@ void actor_losses(const sk::ActorAsset &a, QJsonArray &out, bool include_mesh) {
       loss(out, "actorx_chunk_omitted", QString::fromStdString(c.name));
   }
   if (a.mesh && include_mesh) {
-    loss(out, "actorx_material_slots",
+    loss(notices, "actorx_material_slots",
          "ActorX material names and slots are retained; source files contain "
          "no resolved shading or texture graph");
     if (std::any_of(a.mesh->materials.begin(), a.mesh->materials.end(),
@@ -123,8 +123,8 @@ void actor_losses(const sk::ActorAsset &a, QJsonArray &out, bool include_mesh) {
                                          m.properties.end(),
                                          [](auto v) { return v != 0; });
                     }))
-      loss(out, "actorx_material_flags",
-           "ActorX engine material flags are not FBX shading semantics");
+      loss(notices, "actorx_material_flags",
+           "ActorX engine material flags are retained as custom properties, not interpreted as FBX shading");
     if (std::any_of(a.mesh->faces.begin(), a.mesh->faces.end(),
                     [](const auto &f) { return f.auxiliary_material != 0; }))
       loss(out, "actorx_auxiliary_material",
@@ -393,10 +393,10 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
     fail(ErrorCode::Conflict, "Approved name is occupied; preflight again");
   for (const auto &s : inputs)
     (void)inspect_output(scope, output.path, s, conflict);
-  QJsonArray losses;
-  actor_losses(source, losses, write.include_mesh);
+  QJsonArray losses, notices;
+  actor_losses(source, losses, notices, write.include_mesh);
   if (secondary)
-    actor_losses(*secondary, losses, write.include_mesh);
+    actor_losses(*secondary, losses, notices, write.include_mesh);
   if (companion)
     for (const auto &warning : companion->warnings)
       loss(losses, "psa_companion_unmatched_rule",
@@ -420,7 +420,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
             {"scope_outputs", roots_out},
             {"overwrite", scope.allow_overwrite},
             {"revision", QString::fromStdString(scope.policy_revision)},
-            {"implementation", "M08-actorx-fbx-v4-output-coordinates"}});
+            {"implementation", "actorx-fbx-v7-fast-preflight"}});
   if (operation == "convert") {
     if (request["approval_digest"] != approval)
       fail(ErrorCode::InputChanged,
@@ -430,7 +430,10 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
            "Model export losses require acknowledgement");
   }
   std::vector<sk::FbxWriteResult> bakes;
-  const auto encoded = animation ? sk::encode_fbx_clips(*animation, selected,
+  std::vector<std::byte> encoded;
+  if (operation == "preflight")
+    sk::validate_fbx_export(animation ? *animation : source, selected, model, write);
+  else encoded = animation ? sk::encode_fbx_clips(*animation, selected,
                                                         model, write, &bakes)
                                  : sk::encode_fbx_model(source, write);
   QJsonArray exported_clips;
@@ -443,11 +446,15 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
         {"name", QString::fromStdString(seq.source.original_name)},
         {"start", seq.time.source_start_seconds},
         {"end", seq.time.source_end_seconds},
-        {"fps", seq.fps},
-        {"bake_samples", static_cast<qint64>(bakes[i].samples)},
-        {"audited_world_matrix_error", bakes[i].audited_world_matrix_error}});
-    bake_samples += bakes[i].samples;
-    audit_error = std::max(audit_error, bakes[i].audited_world_matrix_error);
+        {"fps", seq.fps}});
+    if (i < bakes.size()) {
+      auto clip = exported_clips.last().toObject();
+      clip["bake_samples"] = static_cast<qint64>(bakes[i].samples);
+      clip["audited_world_matrix_error"] = bakes[i].audited_world_matrix_error;
+      exported_clips.replace(exported_clips.size() - 1, clip);
+      bake_samples += bakes[i].samples;
+      audit_error = std::max(audit_error, bakes[i].audited_world_matrix_error);
+    }
   }
   QJsonObject result{
       {"version", 1},
@@ -467,6 +474,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
                              write.output_metres_per_unit != .01}}},
       {"root_motion", "source"},
       {"losses", losses},
+      {"notices", notices},
       {"approval_digest", approval},
       {"encoded_bytes", static_cast<qint64>(encoded.size())},
       {"clips", exported_clips},
@@ -476,8 +484,14 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
            : QJsonValue(QJsonValue::Null)},
       {"bake_samples", static_cast<qint64>(bake_samples)},
       {"audited_world_matrix_error", audit_error}};
-  if (operation == "preflight")
+  if (operation == "preflight") {
+    result.remove("encoded_bytes");
+    result.remove("bake_samples");
+    result.remove("audited_world_matrix_error");
+    result["validation_stage"] = "source-and-options";
     return result;
+  }
+  result["validation_stage"] = "encoded-and-audited";
   const auto output_hash = QString::fromStdString(sk::sha256(encoded, stop));
   OutputTransaction transaction(scope, output.path, input, conflict, inputs);
   auto observe = [&](const OutputIntent &intent) {

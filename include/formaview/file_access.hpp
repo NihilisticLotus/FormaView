@@ -50,7 +50,7 @@ struct FileDiscovery {
 [[nodiscard]] FileDiscovery
 discover_files(const AccessScope &, const std::filesystem::path &,
                bool recursive, std::span<const std::wstring_view> extensions,
-               std::stop_token = {});
+               std::stop_token = {}, bool bounded_membership = true);
 struct FileCommit {
   bool skipped{};
   std::filesystem::path path;

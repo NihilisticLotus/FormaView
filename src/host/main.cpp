@@ -14,6 +14,7 @@
 #include <QFile>
 #include <QFont>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -152,6 +153,7 @@ int main(int argc, char *argv[]) {
   app.setFont(font);
   QCoreApplication::setOrganizationName("FormaView");
   QCoreApplication::setApplicationName("FormaView");
+  QGuiApplication::setWindowIcon(QIcon(":/formaview/icons/formaview.svg"));
 #ifdef QT_QML_DEBUG
   // Development preview sessions must not overwrite the user's settings or
   // jobs.

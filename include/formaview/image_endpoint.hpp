@@ -4,12 +4,13 @@
 #include <functional>
 
 namespace formaview::imaging {
+class ImageTaskGroups;
 // Explicitly enabled local transport over an existing shared job service.
 // Stopping this endpoint disconnects clients; it does not own job cancellation.
 class ImageEndpoint final : public QObject {
 public:
   ImageEndpoint(std::shared_ptr<ImageBatchService>, const QString &name,
-                QObject *parent = nullptr);
+                QObject *parent = nullptr, std::shared_ptr<ImageTaskGroups> groups = {});
   ~ImageEndpoint() override;
   void stop();
   [[nodiscard]] bool idle() const;

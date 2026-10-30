@@ -136,4 +136,7 @@ void write_fbx_model(const ActorAsset &model, const std::filesystem::path &outpu
     std::span<const std::size_t> clips, const ActorAsset *paired_mesh = nullptr,
     const FbxWriteOptions &options = {}, std::vector<FbxWriteResult> *results = nullptr);
 [[nodiscard]] std::string fbx_writer_version();
+// Validate source, pairing and initial resource requirements without baking.
+void validate_fbx_export(const ActorAsset &, std::span<const std::size_t> clips,
+                         const ActorAsset *paired, const FbxWriteOptions &);
 } // namespace formaview::skeletal

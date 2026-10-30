@@ -1,6 +1,9 @@
 #include "formaview/image_endpoint.hpp"
+#include "formaview/image_groups.hpp"
 #include "formaview/scheduler.hpp"
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <cmath>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QPointer>
@@ -34,13 +37,45 @@ void respond(QLocalSocket *socket, const QJsonObject &response) {
 } // namespace
 struct ImageEndpoint::Impl {
   std::shared_ptr<ImageBatchService> service;
+  std::shared_ptr<ImageTaskGroups> groups;
+  QJsonObject dispatch(const QJsonObject &request, std::stop_token stop = {}) {
+    const auto operation = request["operation"].toString();
+    const auto id = request.value("plan_id").toString(request.value("id").toString());
+    const bool grouped = groups && groups->contains(id);
+    if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
+    auto result = grouped ? groups->request(request, stop) : QJsonObject{};
+    if (operation != "list_jobs" && operation != "get_job" && operation != "get_plan") return result;
+    QJsonArray all;
+    if (operation == "list_jobs") {
+      auto page = request; page["offset"] = 0; page["limit"] = 100;
+      do {
+        result = service->request(page, stop);
+        if (result.contains("error")) return result;
+        for (const auto &row : result["items"].toArray()) all.append(row);
+        page["offset"] = result["next_offset"];
+      } while (!result["next_offset"].isNull());
+      for (const auto &row : groups->request(request, stop)["items"].toArray()) all.append(row);
+    } else all = result["items"].toArray();
+    const auto offset = request.value("offset").toDouble(0), limit = request.value("limit").toDouble(100);
+    if ((request.contains("offset") && !request["offset"].isDouble()) ||
+        (request.contains("limit") && !request["limit"].isDouble()) ||
+        !std::isfinite(offset) || !std::isfinite(limit) || offset < 0 || offset > all.size() ||
+        limit < 1 || limit > 100 || std::floor(offset) != offset || std::floor(limit) != limit)
+      return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument, "Invalid result page"));
+    QJsonArray page;
+    const auto end = std::min(all.size(), static_cast<qsizetype>(offset + limit));
+    for (auto n = static_cast<qsizetype>(offset); n < end; ++n) page.append(all[n]);
+    result["items"] = page; result["total"] = static_cast<qint64>(all.size());
+    result["next_offset"] = end < all.size() ? QJsonValue(static_cast<qint64>(end)) : QJsonValue(QJsonValue::Null);
+    return result;
+  }
   Scheduler control{limits()};
   QLocalServer server;
   int clients{};
   std::vector<TaskHandle> requests;
   Impl(ImageEndpoint *owner, std::shared_ptr<ImageBatchService> s,
-       const QString &name)
-      : service(std::move(s)) {
+       const QString &name, std::shared_ptr<ImageTaskGroups> g)
+      : service(std::move(s)), groups(std::move(g)) {
     if (!QRegularExpression("^[A-Za-z0-9_-]{1,128}$").match(name).hasMatch())
       throw skeletal::Failure(ErrorCode::InvalidArgument,
                               "Invalid local endpoint name");
@@ -107,7 +142,7 @@ struct ImageEndpoint::Impl {
                   if (QStringList{"get_plan", "get_job", "list_jobs",
                                   "get_discovery", "cancel"}
                           .contains(operation)) {
-                    const auto result = service->request(request);
+                    const auto result = dispatch(request);
                     if (operation == "cancel" && owner->workChanged)
                       owner->workChanged();
                     respond(socket, result);
@@ -116,9 +151,9 @@ struct ImageEndpoint::Impl {
                   QPointer<QLocalSocket> receiver(socket);
                   TaskRequest task;
                   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
-                  task.work = [s = service, owner, receiver,
+                  task.work = [this, owner, receiver,
                                request](std::stop_token stop) {
-                    const auto result = s->request(request, stop);
+                    const auto result = dispatch(request, stop);
                     QMetaObject::invokeMethod(
                         owner,
                         [owner, receiver, result, operation = request.value("operation").toString()] {
@@ -161,9 +196,9 @@ struct ImageEndpoint::Impl {
   }
 };
 ImageEndpoint::ImageEndpoint(std::shared_ptr<ImageBatchService> service,
-                             const QString &name, QObject *parent)
+                             const QString &name, QObject *parent, std::shared_ptr<ImageTaskGroups> groups)
     : QObject(parent),
-      impl_(std::make_unique<Impl>(this, std::move(service), name)) {}
+      impl_(std::make_unique<Impl>(this, std::move(service), name, std::move(groups))) {}
 ImageEndpoint::~ImageEndpoint() = default;
 void ImageEndpoint::stop() { impl_->stop(); }
 bool ImageEndpoint::idle() const {

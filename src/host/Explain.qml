@@ -22,7 +22,7 @@ QtObject {
         "lossy_codec": ["有损编码：{d}，重新编码会损失部分画质。", "Lossy encoding ({d}); re-encoding reduces quality.", "有損編碼：{d}，重新編碼會損失部分畫質。"],
         "actorx_chunk_omitted": ["ActorX 数据块 {d} 无法写入 FBX，已省略。", "ActorX chunk {d} cannot be written to FBX and is omitted.", "ActorX 資料區塊 {d} 無法寫入 FBX，已省略。"],
         "actorx_material_slots": ["保留 ActorX 材质名称与槽位；源文件不含已解析的着色或贴图网络。", "ActorX material names and slots are kept; the source has no resolved shading or texture graph.", "保留 ActorX 材質名稱與槽位；來源檔不含已解析的著色或貼圖網路。"],
-        "actorx_material_flags": ["ActorX 引擎材质标志不是 FBX 着色语义，不会写出。", "ActorX engine material flags are not FBX shading semantics and are not written.", "ActorX 引擎材質旗標不是 FBX 著色語意，不會寫出。"],
+        "actorx_material_flags": ["ActorX 引擎材质标志保存在自定义属性中，不会自动生成着色网络。", "ActorX engine material flags are kept as custom properties; no shader graph is generated.", "ActorX 引擎材質旗標保存在自訂屬性中，不會自動產生著色網路。"],
         "actorx_auxiliary_material": ["辅助材质索引不会导出。", "Auxiliary material indices are not exported.", "輔助材質索引不會匯出。"],
         "psa_companion_unmatched_rule": ["PSA 同名 .config 中有规则没有匹配到任何轨道：{d}", "A rule in the PSA .config matched no track: {d}", "PSA 同名 .config 中有規則沒有比對到任何軌道：{d}"],
         "external_texture_unavailable": ["贴图无法读取或找不到，输出将缺少该贴图：{d}", "A texture could not be read or found; the output will lack it: {d}", "貼圖無法讀取或找不到，輸出將缺少該貼圖：{d}"],

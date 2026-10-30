@@ -24,7 +24,6 @@ FocusScope {
             modelInputs = models
             modelMode = modelAvailable && models.length > 0 && selected.length === 0
             selectionSnapshot = snapshot
-            settings.inputRoot = controller.directory
             service.invalidatePlan()
         }
         initialized = true
@@ -62,7 +61,7 @@ FocusScope {
                 onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.service.addSourceFiles(paths) }
                 onEdited: { root.service.invalidatePlan(); results.acknowledged = false }
                 onBack: root.close()
-                onPreflight: (scope, options, nameTemplate, conflict) => { root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides()); tabs.currentIndex = 1 }
+                onPreflight: (scope, options, nameTemplate, conflict, metadata) => { root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides(), metadata); tabs.currentIndex = 1 }
             }
             ConversionResults {
                 id: results; controller: root.controller; snapshot: root.service.plan

@@ -44,7 +44,14 @@ QJsonObject wait(ImageTaskGroups &g, const char *op, const QString &id) {
 }
 QJsonObject start(ImageTaskGroups &g, const QJsonArray &items) {
   auto q = query("create_plan"); q["items"] = items;
-  return wait(g, "get_plan", checked(g.request(q))["plan_id"].toString());
+  q["name"] = "Named export batch"; q["category"] = "Regression";
+  const auto plan = wait(g, "get_plan", checked(g.request(q))["plan_id"].toString());
+  const auto before = checked(g.request(query("list_jobs")))["items"].toArray().size();
+  require(!g.contains("missing-job"), "Unknown task is absent");
+  require(g.request(query("get_job", "missing-job")).contains("error"), "Unknown task lookup fails");
+  require(checked(g.request(query("list_jobs")))["items"].toArray().size() == before,
+          "Read-only lookups cannot manufacture a submitted task");
+  return plan;
 }
 QJsonObject submission(const QJsonObject &plan) {
   return {{"version", 1}, {"operation", "submit"}, {"plan_id", plan["id"]},
@@ -232,11 +239,11 @@ void run(const QString &root) {
     require(retryPlan["total"] == 1, "Retry must omit successful inputs");
     std::cout << "PASS retry includes only unfinished items" << std::endl;
     auto q = query("create_plan"); q["items"] = requests(root, 4097, "over-");
-    require(groups.request(q).contains("error"), "4097 images rejected atomically");
-    q["items"] = requests(root, 4096, "boundary-"); r = checked(groups.request(q));
+    r = checked(groups.request(q));
+    require(groups.request(query("get_plan", r["plan_id"].toString()))["total"] == 4097, "4097 inputs accepted without a fixed cap");
     q = query("cancel", r["plan_id"].toString()); q["kind"] = "plan"; checked(groups.request(q));
     require(wait(groups, "get_plan", r["plan_id"].toString())["state"] == "cancelled", "Cancel spans all pending child batches");
-    std::cout << "PASS 4096 boundary, 4097 rejection, group cancellation" << std::endl;
+    std::cout << "PASS 4097 inputs accepted, group cancellation" << std::endl;
     auto longInputs = requests(root, 4096, "long-");
     for (qsizetype i = 0; i < longInputs.size(); ++i) {
       auto item = longInputs[i].toObject();
@@ -260,6 +267,8 @@ void run(const QString &root) {
       const auto job = checked(recovered.request(query("get_job", v.toObject()["id"].toString())));
       require(job["state"] != "running" && job["state"] != "queued", "Recovery never resumes writes");
       require(job["total"].toInt() > 0, "Recover full item snapshots");
+      require(job["name"] == "Named export batch" && job["category"] == "Regression" &&
+              !job["created_at"].toString().isEmpty(), "Recover batch name, category and submission time");
     }
     std::cout << "PASS group journal recovery" << std::endl;
   }

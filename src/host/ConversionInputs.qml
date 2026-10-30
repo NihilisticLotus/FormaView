@@ -19,7 +19,7 @@ ColumnLayout {
     })
     signal accepted(var paths)
     function toggle(path, checked): void {
-        if (checked && selected.length < 64 && !selected.includes(path)) selected = selected.concat([path])
+        if (checked && !selected.includes(path)) selected = selected.concat([path])
         else if (!checked) selected = selected.filter(v => v !== path)
     }
     Connections {
@@ -45,7 +45,7 @@ ColumnLayout {
                 onClicked: { root.pendingDirectory = root.scope.input_roots[0]; root.pendingRecursive = recursive.checked; root.service.configureScope(root.scope); root.preparing = root.service.busy }
             }
         }
-        Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("列表只固定目录成员；预检会重新读取并校验内容。重解析点不跟随。每次最多选择 64 项。", "The list fixes membership only; preflight rereads and validates content. Reparse points are not followed. Select up to 64 items.", "清單只固定資料夾成員；預檢會重新讀取並驗證內容。不跟隨重新解析點。每次最多選擇 64 項。") }
+        Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("列表只固定目录成员；预检会重新读取并校验内容。重解析点不跟随。可跨页追加选择。", "The list fixes membership only; preflight rereads and validates content. Reparse points are not followed. Selections can span pages.", "清單只固定資料夾成員；預檢會重新讀取並驗證內容。不跟隨重新解析點。可跨頁追加選取。") }
         Readout { Layout.fillWidth: true; visible: !!root.snapshotId; label: Theme.t("本次目录列表", "Current folder list", "本次資料夾清單"); value: (root.service.discovery.directory || "") + "\n" + (root.service.discovery.total || 0) + Theme.t(" 项 · 已选 ", " items · Selected ", " 項 · 已選 ") + root.selected.length }
         RowLayout {
             visible: !!root.snapshotId; Layout.fillWidth: true
@@ -62,7 +62,6 @@ ColumnLayout {
                 width: ListView.view.width; height: 40
                 text: modelData.input.replace(/\\/g, "/").split("/").pop()
                 checked: root.selected.includes(modelData.input)
-                enabled: checked || root.selected.length < 64
                 Accessible.name: modelData.input
                 ToolTip.visible: hovered; ToolTip.text: modelData.input
                 onToggled: root.toggle(modelData.input, checked)
@@ -73,7 +72,7 @@ ColumnLayout {
             Tool { objectName: "discoveryPrevious"; iconName: "return"; enabled: root.service.discoveryOffset > 0; Accessible.name: Theme.t("上一页输入", "Previous input page", "上一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset - 100) }
             Label { textFormat: Text.PlainText; color: Theme.muted; text: (root.service.discoveryOffset + 1) + " / " + (root.service.discovery.total || 0) }
             Tool { objectName: "discoveryNext"; iconName: "return"; iconRotation: 180; enabled: root.service.discovery.next_offset !== null && root.service.discovery.next_offset !== undefined; Accessible.name: Theme.t("下一页输入", "Next input page", "下一頁輸入"); onClicked: root.service.discoveryPage(root.service.discoveryOffset + 100) }
-            Tool { objectName: "selectDiscoveredPage"; text: Theme.t("选择本页筛选项", "Select filtered page", "選取本頁篩選項"); enabled: root.visibleItems.length > 0 && root.selected.length < 64; onClicked: { for (const item of root.visibleItems) root.toggle(item.input, true) } }
+            Tool { objectName: "selectDiscoveredPage"; text: Theme.t("选择本页筛选项", "Select filtered page", "選取本頁篩選項"); enabled: root.visibleItems.length > 0; onClicked: { for (const item of root.visibleItems) root.toggle(item.input, true) } }
             Tool { text: Theme.t("清空选择", "Clear selection", "清空選擇"); onClicked: root.selected = [] }
         }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; visible: (root.service.discovery.rejected_reparse_points || []).length > 0; text: Theme.t("已跳过重解析点：", "Skipped reparse points: ", "已略過重新解析點：") + (root.service.discovery.rejected_reparse_points || []).length }

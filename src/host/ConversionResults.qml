@@ -17,7 +17,7 @@ ColumnLayout {
     signal back()
     spacing: 10
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.accent; wrapMode: Text.WordWrap; text: root.controller.imageJobs.busy ? Theme.t("正在固定输入与准备预检…", "Preparing fixed inputs and preflight…", "正在固定輸入與準備預檢…") : Theme.state(root.snapshot.state || "") + " · " + (root.snapshot.total || 0) }
-    Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WrapAnywhere; text: root.snapshot.id ? Theme.t("已固定输入与参数快照；修改设置后需重新预检。", "Inputs and settings are fixed to this plan; edits require preflight again.", "已固定輸入與參數快照；修改設定後須重新預檢。") : Theme.t("修改参数后需重新预检。", "Changed parameters require a new preflight.", "修改參數後需重新預檢。") }
+    Label { textFormat: Text.PlainText; Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WrapAnywhere; text: root.snapshot.id ? Theme.t("源数据与设置检查完成后即可转换；烘焙精度在转换时校验，失败不会写出文件。", "Source and settings checks precede conversion. Bake accuracy is checked during conversion; failed outputs are not published.", "來源資料與設定檢查完成後即可轉換；烘焙精度在轉換時驗證，失敗不會寫出檔案。") : Theme.t("修改参数后需重新预检。", "Changed parameters require a new preflight.", "修改參數後需重新預檢。") }
     PreflightFilters { id: filters; Layout.fillWidth: true; items: root.snapshot.items || []; onFilterChanged: results.positionViewAtBeginning() }
     RowLayout {
         Layout.fillWidth: true; spacing: 24
@@ -44,6 +44,6 @@ ColumnLayout {
         Tool { visible: root.snapshot.state === "planning"; enabled: !root.snapshot.cancellation_requested; text: root.snapshot.cancellation_requested ? Theme.t("取消中", "Cancelling", "取消中") : Theme.t("取消预检", "Cancel preflight", "取消預檢"); onClicked: root.controller.imageJobs.cancel("plan", root.snapshot.id) }
         Tool { quiet: true; enabled: !!root.snapshot.id; text: Theme.t("复制计划快照", "Copy plan snapshot", "複製計畫快照"); onClicked: root.controller.copy(JSON.stringify(root.snapshot, null, 2)) }
         Item { Layout.fillWidth: true }
-        Tool { primary: true; objectName: "submitImagePlan"; text: Theme.t("提交此计划", "Submit this plan", "提交此計畫"); enabled: root.snapshot.state === "ready" && !root.controller.imageJobs.busy && (!root.hasLoss || acknowledge.checked); onClicked: root.submit() }
+        Tool { primary: true; objectName: "submitImagePlan"; text: Theme.t("开始转换", "Start conversion", "開始轉換"); enabled: root.snapshot.state === "ready" && !root.controller.imageJobs.busy && (!root.hasLoss || acknowledge.checked); onClicked: root.submit() }
     }
 }

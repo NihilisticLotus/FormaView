@@ -325,7 +325,7 @@ const InputSnapshot &InputLease::snapshot() const { return impl_->snapshot; }
 FileDiscovery discover_files(const AccessScope &scope,
                              const std::filesystem::path &root, bool recursive,
                              std::span<const std::wstring_view> extensions,
-                             std::stop_token stop) {
+                             std::stop_token stop, bool bounded_membership) {
   const auto full = normal(root);
   authorize(full, scope.input_roots);
   std::vector<std::filesystem::path> pending{full};
@@ -360,7 +360,7 @@ FileDiscovery discover_files(const AccessScope &scope,
       const std::wstring name(data.cFileName);
       if (name == L"." || name == L"..")
         continue;
-      if (++result.visited_entries > 100000)
+      if (++result.visited_entries > 100000 && bounded_membership)
         fail(ErrorCode::ResourceLimit, "Discovery exceeds 100000 entries");
       std::filesystem::path path;
       try {
@@ -372,7 +372,7 @@ FileDiscovery discover_files(const AccessScope &scope,
           fail(ErrorCode::ResourceLimit, "Discovery exceeds 100 rejected path entries");
         const auto rejected = current / name;
         path_bytes += rejected.wstring().size() * sizeof(wchar_t);
-        if (path_bytes > 1024 * 1024)
+        if (path_bytes > (bounded_membership ? 1024ULL * 1024 : 128ULL * 1024 * 1024))
           fail(ErrorCode::ResourceLimit, "Discovery membership exceeds bounded storage");
         result.rejected_paths.push_back({rejected, error.error});
         continue;
@@ -386,7 +386,7 @@ FileDiscovery discover_files(const AccessScope &scope,
       }
       if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
         if (recursive) {
-          if (pending.size() + directories >= 512)
+          if (pending.size() + directories >= 512 && bounded_membership)
             fail(ErrorCode::ResourceLimit, "Discovery exceeds 512 directories");
           pending.push_back(path);
         }
@@ -400,7 +400,8 @@ FileDiscovery discover_files(const AccessScope &scope,
         continue;
       }
       path_bytes += path.wstring().size() * sizeof(wchar_t);
-      if (result.files.size() >= 4096 || path_bytes > 1024 * 1024)
+      if ((bounded_membership && result.files.size() >= 4096) ||
+          path_bytes > (bounded_membership ? 1024ULL * 1024 : 128ULL * 1024 * 1024))
         fail(ErrorCode::ResourceLimit,
              "Discovery membership exceeds bounded storage");
       result.files.push_back(path);

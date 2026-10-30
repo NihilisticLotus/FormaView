@@ -106,7 +106,7 @@ public:
   QVariantMap asset() const { return asset_; }
   qulonglong sessionRevision() const { return sessionRevision_; }
   QVariantList tasks() const { return taskRows_; }
-  int activeTasks() const { return active_; }
+  int activeTasks() const;
   QString language() const { return language_; }
   void setLanguage(const QString &);
   QVariantMap preferences() const { return preferences_; }

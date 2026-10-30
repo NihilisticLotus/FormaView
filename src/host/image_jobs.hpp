@@ -28,6 +28,7 @@ class ImageJobs final : public QObject {
   Q_PROPERTY(QStringList sourceRoots READ sourceRoots NOTIFY sourcesChanged)
   Q_PROPERTY(bool importing READ importing NOTIFY sourcesChanged)
   Q_PROPERTY(QVariantMap importResult READ importResult NOTIFY sourcesChanged)
+  Q_PROPERTY(QStringList localInputRoots READ localInputRoots CONSTANT)
 public:
   explicit ImageJobs(QObject *parent = nullptr);
   ~ImageJobs() override;
@@ -53,6 +54,7 @@ public:
   QStringList sourceRoots() const { return sourceRoots_; }
   bool importing() const { return importing_; }
   QVariantMap importResult() const { return importResult_; }
+  QStringList localInputRoots() const;
   Q_INVOKABLE void setSourceInputs(const QStringList &);
   Q_INVOKABLE void addSourceFiles(const QStringList &);
   Q_INVOKABLE void addSourceFolder(const QString &, bool recursive);
@@ -68,7 +70,8 @@ public:
   Q_INVOKABLE void
   preflight(const QStringList &inputs, const QVariantMap &scope,
             const QVariantMap &options, const QString &nameTemplate,
-            const QString &conflict, const QVariantList &itemOverrides = {});
+            const QString &conflict, const QVariantList &itemOverrides = {},
+            const QVariantMap &metadata = {});
   Q_INVOKABLE void submit(bool acknowledge);
   Q_INVOKABLE void cancel(const QString &kind, const QString &id);
   Q_INVOKABLE void retry(const QString &id);
@@ -92,6 +95,9 @@ private:
   std::shared_ptr<formaview::imaging::ImageTaskGroups> groups_;
   QTimer timer_;
   QVariantMap scope_, plan_, job_;
+  QVariantMap archivedJobs_;
+  QString historyPath_;
+  void saveHistory();
   QJsonObject polledPlan_, polledJob_;
   QVariantList jobs_;
   QVariantList inputInfo_;
