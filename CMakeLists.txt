@@ -48,6 +48,7 @@ if(FORMAVIEW_UBSAN)
 endif()
 
 find_package(Threads REQUIRED)
+include(cmake/WindowsResources.cmake)
 add_subdirectory(src/core)
 include(cmake/SkeletalDependencies.cmake)
 include(cmake/ModelDependencies.cmake)
