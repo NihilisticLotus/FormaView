@@ -16,6 +16,8 @@ RowLayout {
     property bool editing: false
     property string menuLabel: ""
     property var menuAnchor: null
+    property var driveAnchor: null
+    property var driveChoices: []
     property string lastDirectory: controller.directory
     readonly property Item popupOverlay: root.Overlay.overlay
     readonly property real popupAvailableWidth: popupOverlay ? popupOverlay.width : 0
@@ -43,15 +45,27 @@ RowLayout {
     readonly property var hiddenCrumbs: root.crumbs.filter(crumb => !root.visibleCrumbs.some(shown => shown.path === crumb.path))
     FontMetrics { id: metrics; font.pixelSize: Theme.compactText; font.family: root.controller.language === "en" ? "Segoe UI Variable Text" : "Microsoft YaHei UI" }
     function addressFocus() {
-        childrenPopup.close(); ancestorsMenu.close()
+        childrenPopup.close(); ancestorsMenu.close(); drivesPopup.close()
         editing = true
         address.text = controller.directory
         address.forceActiveFocus(); address.selectAll()
     }
     function go(path) { beforeNavigate(); controller.navigate(path) }
+    function refreshDrives() {
+        const available = controller.drives()
+        // Enumeration is already a system drive-list query, not a volume or
+        // network readiness probe. Preserve keyboard focus if nothing changed.
+        if (JSON.stringify(available) !== JSON.stringify(driveChoices)) driveChoices = available
+    }
+    function showDrives(anchor) {
+        childrenPopup.close(); ancestorsMenu.close()
+        driveAnchor = anchor
+        refreshDrives()
+        drivesPopup.popup(anchor, 0, anchor.height)
+    }
     function showChildren(anchor, crumb) {
         if (!root.popupOverlay) return
-        ancestorsMenu.close()
+        ancestorsMenu.close(); drivesPopup.close()
         menuAnchor = anchor; menuLabel = crumb.name
         controller.listFolders(crumb.path)
         const point = anchor.mapToItem(root.popupOverlay, 0, anchor.height + 6)
@@ -73,9 +87,9 @@ RowLayout {
         target: root.controller
         function onChanged() {
             if (root.lastDirectory === root.controller.directory) return
-            const restoreFocus = root.hasFocus() || childrenPopup.opened
+            const restoreFocus = root.hasFocus() || childrenPopup.opened || drivesPopup.opened
             root.lastDirectory = root.controller.directory
-            childrenPopup.close(); ancestorsMenu.close()
+            childrenPopup.close(); ancestorsMenu.close(); drivesPopup.close()
             if (!address.activeFocus) root.editing = false
             if (restoreFocus) Qt.callLater(root.focusCurrent)
         }
@@ -84,7 +98,7 @@ RowLayout {
                 Qt.callLater(childList.selectPath)
         }
     }
-    onVisibleChanged: if (!visible) { childrenPopup.close(); ancestorsMenu.close(); editing = false }
+    onVisibleChanged: if (!visible) { childrenPopup.close(); ancestorsMenu.close(); drivesPopup.close(); editing = false }
     Tool {
         objectName: "folderBack"; iconName: "return"; enabled: root.controller.canBack
         hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左")
@@ -105,22 +119,30 @@ RowLayout {
         objectName: "folderDriveButton"
         iconName: "assets"
         hint: Theme.t("选择磁盘或卷", "Choose a drive", "選擇磁碟或磁碟區")
-        onClicked: drivesPopup.open()
+        onClicked: root.showDrives(this)
         AppPopupMenu {
             id: drivesPopup
-            y: driveButton.height
+            objectName: "folderDrivesPopup"
+            onAboutToShow: root.refreshDrives()
+            Timer { interval: 1000; repeat: true; running: drivesPopup.visible; onTriggered: root.refreshDrives() }
             Repeater {
-                model: drivesPopup.visible ? root.controller.drives() : []
+                // Keep menu rows alive while its view finishes closing/layout.
+                model: root.driveChoices
                 AppMenuItem {
                     required property var modelData
                     objectName: "folderDriveOption"
+                    property string folderPath: modelData.path
                     text: modelData.name
                     checkable: true
                     checked: String(modelData.path).toLowerCase() === root.controller.directory.slice(0, String(modelData.path).length).toLowerCase()
-                    onTriggered: { root.beforeNavigate(); root.controller.navigate(modelData.path) }
+                    // Navigation performs the existing asynchronous read. If
+                    // a drive disappears or is inaccessible, the current
+                    // directory survives and its normal error UI explains it.
+                    onTriggered: root.go(modelData.path)
                 }
             }
-            onClosed: driveButton.forceActiveFocus()
+            AppMenuItem { visible: root.driveChoices.length === 0; enabled: false; text: Theme.t("没有可用磁盘", "No drives available", "沒有可用磁碟") }
+            onClosed: if (root.driveAnchor && root.driveAnchor.visible) root.driveAnchor.forceActiveFocus()
         }
     }
     Rectangle {
@@ -141,6 +163,7 @@ RowLayout {
                     id: crumb
                     required property var modelData
                     required property int index
+                    readonly property bool driveRoot: /^[A-Za-z]:\/$/.test(String(modelData.path))
                     spacing: 0
                     Layout.fillWidth: index === root.visibleCrumbs.length - 1
                     Layout.minimumWidth: 50 + (index === 0 && root.hiddenCrumbs.length ? 32 : 0)
@@ -150,17 +173,17 @@ RowLayout {
                     Tool {
                         id: nameButton; objectName: "breadcrumbName"; property string folderPath: crumb.modelData.path
                         Layout.fillWidth: true; Layout.minimumWidth: 18
-                        quiet: true; text: crumb.modelData.name; hint: crumb.modelData.path
+                        quiet: true; text: crumb.modelData.name; hint: crumb.driveRoot ? Theme.t("选择磁盘或卷", "Choose a drive", "選擇磁碟或磁碟區") : crumb.modelData.path
                         leftPadding: 6; rightPadding: 6
-                        Accessible.name: Theme.t("跳转到 ", "Go to ", "跳至 ") + crumb.modelData.path
-                        onClicked: root.go(crumb.modelData.path)
+                        Accessible.name: crumb.driveRoot ? Theme.t("选择磁盘 · ", "Choose drive · ", "選擇磁碟 · ") + crumb.modelData.name : Theme.t("跳转到 ", "Go to ", "跳至 ") + crumb.modelData.path
+                        onClicked: if (crumb.driveRoot) root.showDrives(this); else root.go(crumb.modelData.path)
                     }
                     Tool {
                         objectName: "breadcrumbChildren"; property string folderPath: crumb.modelData.path
                         Layout.minimumWidth: 32; Layout.preferredWidth: 32; Layout.minimumHeight: 32; implicitWidth: 32; quiet: true; iconName: "expand"; iconRotation: 90
-                        checked: childrenPopup.opened && root.menuAnchor === this
-                        hint: Theme.t("展开子目录 · ", "Show subfolders · ", "展開子資料夾 · ") + crumb.modelData.name
-                        onClicked: root.showChildren(this, crumb.modelData)
+                        checked: crumb.driveRoot ? drivesPopup.opened && root.driveAnchor === this : childrenPopup.opened && root.menuAnchor === this
+                        hint: crumb.driveRoot ? Theme.t("选择磁盘或卷", "Choose a drive", "選擇磁碟或磁碟區") : Theme.t("展开子目录 · ", "Show subfolders · ", "展開子資料夾 · ") + crumb.modelData.name
+                        onClicked: if (crumb.driveRoot) root.showDrives(this); else root.showChildren(this, crumb.modelData)
                     }
                     Tool {
                         id: overflow; objectName: "hiddenAncestors"; visible: crumb.index === 0 && root.hiddenCrumbs.length > 0

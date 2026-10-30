@@ -648,6 +648,95 @@ private slots:
     QTRY_VERIFY(idle());
     evidence_["folder_navigation"] = "Name/arrow separate clicks; sibling, ancestor, history, clipboard, inline IME path, long-path overflow and narrow keyboard";
   }
+  void driveBreadcrumbSelection() {
+    QTest::failOnWarning(QRegularExpression(".*DelegateModel::cancel.*"));
+    desktop_->navigate(small_); desktop_->filter("",0,0);
+    QTRY_COMPARE(desktop_->directory(),small_); QTRY_VERIFY(idle());
+    const auto currentRoot = desktop_->breadcrumbs(small_).front().toMap()["path"].toString();
+    const auto drives = desktop_->drives();
+    QStringList actual, system;
+    for (const auto &drive : drives) actual << drive.toMap()["path"].toString();
+    for (const auto &drive : QDir::drives()) system << QDir::fromNativeSeparators(drive.absoluteFilePath());
+    QCOMPARE(actual,system);
+    QVERIFY(actual.contains(currentRoot));
+    const auto findPath = [&](const char *name,const QString &path) -> QQuickItem * {
+      for(auto *entry:visualItems(window_->contentItem(),name))
+        if(entry->property("folderPath").toString()==path) return entry;
+      return nullptr;
+    };
+    const auto click = [&](QQuickItem *target) {
+      if(target) QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,target->mapToScene(QPointF(target->width()/2,target->height()/2)).toPoint());
+    };
+    auto *name=findPath("breadcrumbName",currentRoot);
+    QTRY_VERIFY((name=findPath("breadcrumbName",currentRoot)));
+    click(name);
+    auto *popup=window_->findChild<QObject *>("folderDrivesPopup"); QVERIFY(popup);
+    QTRY_VERIFY(popup->property("opened").toBool());
+    QCOMPARE(desktop_->directory(),small_);
+    QStringList choices;
+    for(auto *entry:visualItems(window_->contentItem(),"folderDriveOption"))
+      if(entry->isVisible()) choices << entry->property("folderPath").toString();
+    QCOMPARE(choices,actual);
+    save("drive-breadcrumb-menu");
+    QTest::keyClick(window_,Qt::Key_Escape);
+    QTRY_VERIFY(!popup->property("visible").toBool());
+    auto *arrow=findPath("breadcrumbChildren",currentRoot); QVERIFY(arrow); click(arrow);
+    QTRY_VERIFY(popup->property("opened").toBool());
+    QVERIFY(desktop_->folderMenu().isEmpty());
+    QTest::keyClick(window_,Qt::Key_Escape);
+    QTRY_VERIFY(!popup->property("visible").toBool());
+    QTRY_VERIFY(arrow->hasActiveFocus());
+    for(int repeat=0;repeat<30;++repeat) {
+      click(findPath("breadcrumbName",currentRoot));
+      QTRY_VERIFY(popup->property("opened").toBool());
+      QTest::keyClick(window_,Qt::Key_Escape);
+      QTRY_VERIFY(!popup->property("visible").toBool());
+    }
+    QString missing;
+    for(char letter='A'; letter<='Z'; ++letter) {
+      const auto candidate=QString(QChar(letter))+":/";
+      if(!actual.contains(candidate)) { missing=candidate; break; }
+    }
+    if(!missing.isEmpty()) {
+      desktop_->navigate(missing);
+      QTRY_VERIFY(!desktop_->error().isEmpty()); QTRY_VERIFY(idle());
+      QCOMPARE(desktop_->directory(),small_);
+      desktop_->dismissError();
+    }
+    QStringList alternatives=actual;
+    alternatives.removeAll(currentRoot);
+    if(alternatives.isEmpty()) QSKIP("No second system drive is present; menu and unavailable-drive checks completed");
+    // Prefer the already accessible temporary-files volume if it differs,
+    // without assuming a particular Windows drive letter. Readiness remains
+    // an asynchronous navigation result, not a blocking volume probe.
+    const auto tempCrumbs=desktop_->breadcrumbs(QDir::tempPath());
+    if(!tempCrumbs.isEmpty()) {
+      const auto tempRoot=tempCrumbs.front().toMap()["path"].toString();
+      if(alternatives.removeAll(tempRoot)) alternatives.prepend(tempRoot);
+    }
+    QString chosen;
+    for(const auto &candidate:alternatives) {
+      click(findPath("breadcrumbName",currentRoot));
+      QTRY_VERIFY(popup->property("opened").toBool());
+      auto *option=findPath("folderDriveOption",candidate);
+      if(!option) { QTest::keyClick(window_,Qt::Key_Escape); continue; }
+      QTest::qWait(50); // Menu row layout must finish before hit testing.
+      click(option);
+      QTRY_VERIFY(!popup->property("visible").toBool());
+      QTRY_VERIFY(idle());
+      if(!desktop_->error().isEmpty()) {
+        QCOMPARE(desktop_->directory(),small_);
+        desktop_->dismissError();
+        continue;
+      }
+      QCOMPARE(desktop_->directory(),candidate);
+      chosen=candidate;
+      break;
+    }
+    if(chosen.isEmpty()) QSKIP("No second enumerated drive is accessible; failure paths kept the original directory");
+    evidence_["drive_menu_selected_actual_root"]=chosen;
+    desktop_->history(-1); QTRY_COMPARE(desktop_->directory(),small_); QTRY_VERIFY(idle());
+  }
   void imageAliasClassification() {
     const auto dir = root_ + "/image-aliases";
     QVERIFY(QDir().mkpath(dir));
