@@ -637,7 +637,7 @@ void fbx(const std::filesystem::path &directory) {
         const auto path = clip == 0 ? directory / std::filesystem::path(u8"骨骼动画-0.fbx")
                                     : directory / ("synthetic-" + std::to_string(clip) + ".fbx");
         std::filesystem::remove(path);
-        write_fbx_traced(a, clip, path, &m);
+        const auto written = write_fbx_traced(a, clip, path, &m);
         const auto f = read_fbx_traced(path);
         const auto &d = f.data();
         check(d.clips.size() == 1 && d.meshes.size() == 1, "FBX scene counts");
@@ -645,10 +645,12 @@ void fbx(const std::filesystem::path &directory) {
                   d.source.coordinates.forward == formaview::Axis::PositiveX &&
                   d.source.coordinates.handedness == formaview::Handedness::Right,
               "FBX source axes lost");
-        near(d.fps, a.sequences[clip].fps);
+        auto editing_rate = std::max(1.0, std::round(a.sequences[clip].fps));
+        while (editing_rate < written.bake_fps * 0.02) editing_rate *= 2;
+        near(d.fps, editing_rate);
         near(d.clips[0].end, a.sequences[clip].time.source_end_seconds);
         for (int frame = 0; frame < a.sequences[clip].frame_count; ++frame) {
-            const auto seconds = static_cast<double>(frame) / d.fps;
+            const auto seconds = static_cast<double>(frame) / a.sequences[clip].fps;
             const auto src = sk::evaluate(a, clip, seconds);
             const auto dst = f.evaluate(0, seconds);
             for (std::size_t j = 0; j < a.bones.size(); ++j) {
@@ -826,8 +828,23 @@ void fbx(const std::filesystem::path &directory) {
         }
     }
     near(bake.source_fps, coupled.sequences[0].fps);
-    near(coupled_back.data().fps, bake.bake_fps);
+    auto coupled_editing_rate = std::max(1.0, std::round(coupled.sequences[0].fps));
+    while (coupled_editing_rate < bake.bake_fps * 0.02) coupled_editing_rate *= 2;
+    near(coupled_back.data().fps, coupled_editing_rate);
+    check(coupled_back.data().fps < bake.bake_fps, "Bake frequency leaked into timeline");
     near(coupled_back.data().clips[0].end, coupled.sequences[0].time.source_end_seconds);
+    auto fractional = coupled;
+    fractional.sequences[0].fps = 30.428571701049805;
+    fractional.sequences[0].time.source_end_seconds = 2 / fractional.sequences[0].fps;
+    const auto fractional_path = directory / "fractional-source-rate.fbx";
+    std::filesystem::remove(fractional_path);
+    const auto fractional_bake = write_fbx_traced(fractional, 0, fractional_path, &m);
+    const auto fractional_back = read_fbx_traced(fractional_path);
+    auto fractional_editing_rate = 30.0;
+    while (fractional_editing_rate < fractional_bake.bake_fps * 0.02) fractional_editing_rate *= 2;
+    near(fractional_back.data().fps, fractional_editing_rate);
+    near(fractional_bake.source_fps, fractional.sequences[0].fps);
+    near(fractional_back.data().clips[0].end, fractional.sequences[0].time.source_end_seconds);
     auto collapsed = coupled;
     collapsed.sequences[0].fps = 1e30;
     collapsed.sequences[0].time.source_end_seconds = 2e-30;

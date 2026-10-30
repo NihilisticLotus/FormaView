@@ -389,7 +389,10 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
         FbxAxisSystem::eZAxis, static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
         FbxAxisSystem::eRightHanded));
     scene->GetGlobalSettings().SetTimeMode(FbxTime::eCustom);
-    scene->GetGlobalSettings().SetCustomFrameRate(model_only ? 30 : first_sequence.fps);
+    // Blender places imported keys using integer scene FPS but plays them using
+    // FPS / fps_base. An integer editing rate avoids that importer mismatch;
+    // original fractional FPS stays in clip metadata and key times stay in seconds.
+    scene->GetGlobalSettings().SetCustomFrameRate(model_only ? 30 : std::max(1.0, std::round(first_sequence.fps)));
     auto *info = FbxDocumentInfo::Create(manager.get(), "Source information");
     info->mTitle = model_only ? "ActorX model" : first_sequence.source.original_name.c_str();
     info->mAuthor = "FormaView";
@@ -487,7 +490,8 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                 throw Failure(ErrorCode::Unsupported, "FBX bind pose cannot preserve skinned vertex accuracy: " + a.bones[j].source.original_name);
         }
     FbxWriteResult result;
-    double scene_bake_fps{}, scene_end{};
+    double scene_end{};
+    double editing_fps = model_only ? 30 : std::max(1.0, std::round(first_sequence.fps));
     std::size_t profile_index{};
     for (const auto selected : selection) {
     const auto &profile = profiles[profile_index++];
@@ -690,14 +694,16 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     if (!skin_bounds.empty()) metadata("FormaViewAuditedSkinPositionBound", skin_position_bound);
     metadata("FormaViewCurveKeys", static_cast<double>(profile.source_keys +
         (result.samples - samples) * profile.rotation_channels));
-    // FBX importers may resample at the declared file rate before running any
-    // import pipeline. Declare the finest bake grid, preserving the original
-    // ActorX rate/count separately rather than allowing that resample to discard keys.
+    // Timeline rate describes source playback. Adaptive subframe keys retain
+    // their exact FBX tick times independently of this display/editing rate.
     auto source_id = FbxProperty::Create(stack, FbxStringDT, "FormaViewSourceClipID");
     source_id.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
     source_id.Set(FbxString(seq.source.identity.stable_id().value.c_str()));
-    scene_bake_fps = std::max(scene_bake_fps, result.bake_fps);
-    scene->GetGlobalSettings().SetCustomFrameRate(scene_bake_fps);
+    // Blender FCurve.update() deduplicates keys within 0.01 frame. Keep
+    // at least 0.02 frame between the finest bake samples, without declaring
+    // the entire bake frequency as the timeline rate. No curve is resampled.
+    while (editing_fps < result.bake_fps * 0.02) editing_fps *= 2;
+    scene->GetGlobalSettings().SetCustomFrameRate(editing_fps);
     estimate += (result.samples - samples) * profile.rotation_channels * 256;
     total_curve_samples += result.samples - samples;
     if (clip_results) clip_results->push_back(result);
@@ -736,19 +742,6 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                 mesh->AddPolygon(static_cast<int>(m.wedges[*it].point));
             mesh->EndPolygon();
         }
-        auto uv = [&](const char *name, const std::vector<Vec2> *extra) {
-            auto *set = mesh->CreateElementUV(name);
-            set->SetMappingMode(FbxLayerElement::eByPolygonVertex);
-            set->SetReferenceMode(FbxLayerElement::eDirect);
-            for (const auto &face : m.faces)
-                for (auto it = face.wedges.rbegin(); it != face.wedges.rend(); ++it) {
-                    const auto value = extra ? (*extra)[*it] : m.wedges[*it].uv;
-                    set->GetDirectArray().Add(FbxVector2(value.x, 1 - value.y));
-                }
-        };
-        uv("UV0", nullptr);
-        for (const auto &[name, values] : m.extra_uvs)
-            uv(name.c_str(), &values);
         if (!m.normals.empty()) {
             auto *ns = mesh->CreateElementNormal();
             ns->SetMappingMode(FbxLayerElement::eByControlPoint);
@@ -767,6 +760,21 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
                         FbxColor(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, c[3] / 255.0));
                 }
         }
+        // Put shared attributes on layer zero before extra UV sets create layers.
+        // Some importers read only the first normal/color element.
+        auto uv = [&](const char *name, const std::vector<Vec2> *extra) {
+            auto *set = mesh->CreateElementUV(name);
+            set->SetMappingMode(FbxLayerElement::eByPolygonVertex);
+            set->SetReferenceMode(FbxLayerElement::eDirect);
+            for (const auto &face : m.faces)
+                for (auto it = face.wedges.rbegin(); it != face.wedges.rend(); ++it) {
+                    const auto value = extra ? (*extra)[*it] : m.wedges[*it].uv;
+                    set->GetDirectArray().Add(FbxVector2(value.x, 1 - value.y));
+                }
+        };
+        uv("UV0", nullptr);
+        for (const auto &[name, values] : m.extra_uvs)
+            uv(name.c_str(), &values);
         if (!nodes.empty()) {
         auto *skin = fbxsdk::FbxSkin::Create(scene, "ActorXSkin");
         skin->SetSkinningType(fbxsdk::FbxSkin::eLinear);
