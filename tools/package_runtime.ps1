@@ -58,7 +58,9 @@ $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Componen
 $dumpbin = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC') -Recurse -Filter dumpbin.exe |
     Where-Object FullName -Match 'Hostx64\\x64' | Select-Object -First 1 -ExpandProperty FullName
 function Get-Imports([string]$file) {
-    & $dumpbin /dependents $file | ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $Matches[1] } }
+    $lines = & $dumpbin /dependents $file
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect runtime imports for $(Split-Path -Leaf $file) (dumpbin exit $LASTEXITCODE)" }
+    $lines | ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $Matches[1] } }
 }
 $system = Join-Path $env:WINDIR 'System32'
 # App-local Visual C++ runtime so a clean machine needs no redistributable install.
