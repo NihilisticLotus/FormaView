@@ -7211,6 +7211,17 @@ private slots:
         }
         auto *bar = item("modelAnimationBarHost");
         QVERIFY(bar);
+        auto *timeline = item("modelAnimationBar");
+        QVERIFY(timeline);
+        timeline->setProperty("detailsVisible", false);
+        QTest::qWait(60);
+        const auto compactHeight = timeline->height();
+        QVERIFY(!item("animStart")->isVisible());
+        for (const auto *name : {"animPlay", "animSpeed", "animClip", "animDetailsToggle", "animRootLock"})
+          QVERIFY2(item(name) && item(name)->isVisible(), name);
+        timeline->setProperty("detailsVisible", true);
+        QTest::qWait(60);
+        QVERIFY(timeline->height() > compactHeight);
         for (const auto *name : {"animControls", "animTime", "animScrubber", "animStart", "animEnd"}) {
           auto *control = item(name);
           QVERIFY2(control, name);
@@ -7223,6 +7234,7 @@ private slots:
         QVERIFY(item("animEnd")->property("text").toString().contains(
             QString::number(info.value("end").toDouble(), 'f', 3)));
         save("m07-animation-" + language + "-" + QString::number(size.width()));
+        timeline->setProperty("detailsVisible", false);
       }
     }
     window_->resize(oldSize);
