@@ -13,6 +13,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <windows.h>
 
 namespace {
 void require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
@@ -67,6 +68,132 @@ void cleanActorFixture(const QString &source, const QString &destination) {
     offset += length;
   }
   QFile out(destination); require(out.open(QIODevice::WriteOnly) && out.write(clean) == clean.size(), "Write lossless synthetic ActorX fixture");
+}
+void queuedSourceReplacement(const QString &root, QJsonObject first, int variant) {
+  using namespace formaview;
+  using namespace formaview::imaging;
+  require(QDir().mkpath(root + "/journal"), "Create queue race fixture");
+  const auto write = [](const QString &path, const QByteArray &bytes) {
+    QFile file(path); require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Write race fixture");
+  };
+  const float points[]{0,0,0, 1,0,0, 0,1,0};
+  const QByteArray geometry(reinterpret_cast<const char *>(points), sizeof(points));
+  write(root + "/old.bin", geometry); write(root + "/new.fbx", geometry);
+  const auto model = [&](const char *buffer) {
+    return QByteArray("{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"") + buffer +
+      "\",\"byteLength\":36}],\"bufferViews\":[{\"buffer\":0,\"byteLength\":36}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+  };
+  const auto modelPath = root + (variant == 3 || variant == 5 ? "/model.obj" : "/model.gltf");
+  write(modelPath, variant == 3 || variant == 5 ? QByteArray("mtllib missing.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl mat\nf 1 2 3\n") : model("old.bin"));
+  if (variant == 5) write(root + "/missing.mtl", "newmtl mat\nmap_Kd late.png\n");
+  const auto parent = std::filesystem::path(QFileInfo(root).absolutePath().toStdWString());
+  ImageTaskGroups groups({{parent}, {parent}, true, "queue-race"}, std::filesystem::path((root + "/journal").toStdWString()));
+  const auto request = [&](const char *op, const QString &id = QString{}, QJsonArray items = {}) {
+    QJsonObject q{{"version",1}, {"operation",op}};
+    if (std::string_view(op) == "cancel") q["kind"] = "job";
+    if (!id.isEmpty()) q["id"] = id;
+    if (!items.isEmpty()) q["items"] = items;
+    const auto result = groups.request(q);
+    if (result.contains("error") && !result.contains("kind")) throw std::runtime_error(std::string(op) + ": " + QJsonDocument(result).toJson().toStdString());
+    return result;
+  };
+  QJsonArray block;
+  for (int i = 0; i != 16; ++i) { auto item = first; item["output"] = root + "/block-" + QString::number(i) + ".fbx"; block.append(item); }
+  const auto blocker = request("create_job", {}, block)["job_id"].toString();
+  request("pause", blocker);
+  wait([&] { return request("get_job", blocker)["state"] == "paused"; });
+  first["output"] = root + "/new.fbx"; first["conflict"] = "overwrite";
+  if (variant == 1) {
+    require(CreateHardLinkW((root + "/alias.fbx").toStdWString().c_str(), (root + "/new.fbx").toStdWString().c_str(), nullptr), "Create queued output hardlink");
+    first["output"] = root + "/alias.fbx";
+  }
+  const QJsonObject second{{"input",modelPath}, {"output",root + "/model.fbx"}, {"conflict","skip"},
+    {"options",QJsonObject{{"target","fbx"},{"coordinates","source"},{"include_mesh",true}}}};
+  const auto target = request("create_job", {}, {first, second})["job_id"].toString();
+  require(request("get_job", target)["state"] == "queued", "Race target must remain behind paused worker");
+  if (variant == 4) {
+    require(request("cancel", target)["accepted"].toBool(), "Cancel queued guarded job");
+  } else if (variant == 0) {
+    require(QFile::rename(modelPath, root + "/before.gltf"), "Scan lease released before worker");
+    write(modelPath, model("new.fbx"));
+  } else if (variant == 3) {
+    write(root + "/missing.mtl", "newmtl mat\nmap_Kd new.fbx\n");
+  } else if (variant == 5) {
+    write(root + "/late.png", geometry);
+  } else {
+    const auto changed = variant == 1 ? modelPath : root + "/old.bin";
+    const auto handle = CreateFileW(changed.toStdWString().c_str(), FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    require(handle != INVALID_HANDLE_VALUE, "Open original timestamp");
+    FILETIME original{}; require(GetFileTime(handle, nullptr, nullptr, &original), "Read original timestamp");
+    CloseHandle(handle);
+    auto replacement = variant == 1 ? model("new.fbx") : geometry;
+    if (variant == 2) replacement[0] = char(1);
+    write(changed, replacement);
+    const auto restored = CreateFileW(changed.toStdWString().c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
+      FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    require(restored != INVALID_HANDLE_VALUE && SetFileTime(restored, nullptr, nullptr, &original), "Restore timestamp after equal-size in-place edit");
+    CloseHandle(restored);
+  }
+  request("resume", blocker);
+  wait([&] { return !active(request("get_job", target).toVariantMap()); });
+  const auto result = request("get_job", target);
+  save(root + "/result.json", result.toVariantMap());
+  QFile victim(root + "/new.fbx"); require(victim.open(QIODevice::ReadOnly), "Read protected replacement dependency");
+  require(victim.readAll() == geometry, "Queued replacement must not overwrite newly referenced source");
+  require(result["state"] == (variant == 4 ? "cancelled" : "failed"), "Changed/cancelled inventory stops before any output");
+  require(result["error"].toObject()["code"] == (variant == 4 ? "cancelled" : variant == 3 ? "invalid_argument" : "input_changed"), "Inventory change retains structured diagnosis");
+  if (variant == 1) { QFile alias(root + "/alias.fbx"); require(alias.open(QIODevice::ReadOnly) && alias.readAll() == geometry, "Queued hardlink output not replaced"); }
+  std::cout << "PASS scan/queue dependency barrier variant=" << variant << '\n';
+}
+void recoveredSourceGuard(const QString &root, QJsonObject item, int variant) {
+  using namespace formaview;
+  using namespace formaview::imaging;
+  require(QDir().mkpath(root + "/journal"), "Create guard recovery fixture");
+  const auto source = root + "/source.fbx", output = root + "/out.fbx";
+  require(QFile::copy(item["input"].toString(), source), "Copy guard recovery source");
+  item["input"] = source; item["output"] = output;
+  const auto path = std::filesystem::path(root.toStdWString());
+  const AccessScope scope{{path}, {path}, true, "guard-recovery"};
+  const auto journal = path / "journal";
+  auto groups = std::make_unique<ImageTaskGroups>(scope, journal);
+  const auto call = [&](QJsonObject q) {
+    q["version"] = 1;
+    const auto result = groups->request(q);
+    if (result.contains("error") && !result.contains("kind")) throw std::runtime_error(QJsonDocument(result).toJson().toStdString());
+    return result;
+  };
+  const auto planId = call({{"operation","create_plan"},{"items",QJsonArray{item}}})["plan_id"].toString();
+  QJsonObject plan;
+  wait([&] { plan = call({{"operation","get_plan"},{"id",planId}}); return !active(plan.toVariantMap()); });
+  require(plan["state"] == "ready", "Recovery plan ready");
+  groups.reset();
+  if (variant == 1) {
+    require(QFile::rename(source, root + "/previous.fbx") && QFile::copy(root + "/previous.fbx", source), "Replace source identity after shutdown");
+  } else if (variant == 2) {
+    QFile file(root + "/journal/" + planId.mid(6) + "/index.json");
+    require(file.open(QIODevice::ReadOnly), "Read legacy fixture index");
+    auto manifest = QJsonDocument::fromJson(file.readAll()).object(); file.close();
+    manifest.remove("source_guard_fragments");
+    require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "Write legacy fixture index");
+    file.write(QJsonDocument(manifest).toJson()); file.close();
+  }
+  groups = std::make_unique<ImageTaskGroups>(scope, journal);
+  const auto jobId = call({{"operation","submit"},{"plan_id",planId},{"approval_digest",plan["approval_digest"]},
+    {"idempotency_key",QUuid::createUuid().toString()},{"acknowledge_losses",true}})["job_id"].toString();
+  QJsonObject job;
+  wait([&] { job = call({{"operation","get_job"},{"id",jobId}}); return !active(job.toVariantMap()); });
+  save(root + "/result.json", job.toVariantMap());
+  require(job["state"] == (variant == 0 ? "succeeded" : "failed"), "Recovered guards validate before writing");
+  require(QFileInfo::exists(output) == (variant == 0), "Changed/legacy recovered plan cannot publish");
+  if (variant != 0) {
+    require(job["error"].toObject()["code"] == "input_changed", "Recovery asks for fresh preflight");
+    const auto fresh = call({{"operation","retry_plan"},{"id",jobId}})["plan_id"].toString();
+    QJsonObject retried;
+    wait([&] { retried = call({{"operation","get_plan"},{"id",fresh}}); return !active(retried.toVariantMap()); });
+    require(retried["state"] == "ready", "Retry rebuilds dependency inventory");
+  }
+  std::cout << "PASS persistent source guard / retry variant=" << variant << '\n';
 }
 }
 
@@ -141,6 +268,10 @@ public:
     require(jobs.job().value("state") == "succeeded", "Repaired source actually exports");
     std::cout << "PASS missing-source retry retains export semantics and writes output\n";
     const auto actorFixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    for (int variant = 0; variant != 6; ++variant)
+      queuedSourceReplacement(root + "/queue-race-" + QString::number(variant), QJsonObject::fromVariantMap(baselineJob.value("items").toList().first().toMap().value("request").toMap()), variant);
+    for (int variant = 0; variant != 3; ++variant)
+      recoveredSourceGuard(root + "/guard-recovery-" + QString::number(variant), QJsonObject::fromVariantMap(baselineJob.value("items").toList().first().toMap().value("request").toMap()), variant);
     if (actorFixtures.isEmpty()) { std::cout << "SKIP optional synthetic ActorX fixture regression\n"; return; }
     const auto psk = root + "/reference.psk", psa = root + "/repaired.psa";
     cleanActorFixture(actorFixtures + "/source.psk", psk);

@@ -156,6 +156,9 @@ struct AccessScope {
     std::vector<std::filesystem::path> input_roots, output_roots;
     bool allow_overwrite{};
     std::string policy_revision;
+    // Internal captured dependency graph: reads that were unavailable during
+    // inventory stay unavailable for this execution, even if created later.
+    std::vector<std::filesystem::path> unavailable_inputs{};
 };
 struct ResourceEstimate {
     std::optional<std::uint64_t> peak_memory_bytes, peak_gpu_bytes, input_bytes, output_bytes;

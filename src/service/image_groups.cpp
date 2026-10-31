@@ -207,6 +207,16 @@ struct ImageTaskGroups::Impl {
     }
     return inputs;
   }
+  QJsonArray sourceGuards(const std::shared_ptr<Group> &g) {
+    QJsonArray result;
+    const auto count = g->manifest["source_guard_fragments"].toInt();
+    for (int i = 0; i < count; ++i) {
+      const auto chunk = load(path(g) + "/source-guard-" + QString::number(i) + ".json")["sources"].toArray();
+      if (chunk.isEmpty() || chunk.size() > 64) fail(ErrorCode::Io, "Invalid source guard fragment");
+      for (const auto &v : chunk) result.append(v);
+    }
+    return result;
+  }
   void run(const std::shared_ptr<Group> &g, bool job, std::stop_token schedulerStop) {
     std::stop_callback callback(schedulerStop, [&] { g->stop.request_stop(); });
     auto items = (job ? g->job : g->plan)["items"].toArray();
@@ -227,8 +237,67 @@ struct ImageTaskGroups::Impl {
       g->manifest[job ? "job_state" : "plan_state"] = job ? "running" : "planning";
       publish(g, job, items);
       const auto all = allRequests(g);
+#ifdef FORMAVIEW_MODEL_EXPORT
+      if (!g->manifest.contains("source_guard_fragments"))
+        for (const auto &v : all) {
+          const auto item = v.toObject();
+          const auto suffix = QFileInfo(item["input"].toString()).suffix().toLower();
+          if (!item.contains("preparation_error") && item["options"].toObject()["target"] == "fbx" &&
+              suffix != "psk" && suffix != "pskx" && suffix != "psa")
+            fail(ErrorCode::InputChanged, "Scene inventory predates dependency guards; retry preflight");
+        }
+#endif
       std::vector<InputIdentityLease> leases;
+      std::vector<InputLease> scannedLeases;
+      auto executionScope = scope;
+      std::set<QString> guardedPaths;
+      std::map<QString, std::size_t> guardedIndices;
       std::vector<InputSnapshot> protectedInputs;
+      // Validate the complete scanned graph before any child can publish.
+      // The very handles used for hashing remain alive through every child.
+      for (const auto &v : sourceGuards(g)) {
+        if (g->stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group cancelled");
+        const auto guard = v.toObject();
+        const auto p = validated_local_path(std::filesystem::path(guard["path"].toString().toStdWString()));
+        if (guard["scan_failed"].toBool())
+          fail(ErrorCode::InvalidArgument, ("Scene dependency inventory incomplete; retry preflight: " +
+               guard["error"].toObject()["message"].toString()).toUtf8().constData());
+        if (guard["unavailable"].toBool()) {
+          bool readable = false;
+          if (!guard["scan_failed"].toBool()) {
+            try { const auto pin = InputIdentityLease::open(scope, p, g->stop.get_token()); readable = true; }
+            catch (const skeletal::Failure &e) { if (e.error.code == ErrorCode::Cancelled) throw; }
+          }
+          if (readable) fail(ErrorCode::InputChanged, "Scene dependency became readable after inventory; retry preflight");
+          executionScope.unavailable_inputs.push_back(p);
+          continue;
+        }
+        InputSnapshot expected;
+        expected.resolved_path = p;
+        expected.size_bytes = static_cast<std::uint64_t>(guard["size"].toInteger(-1));
+        expected.modified_ticks = guard["modified_ticks"].toString().toLongLong();
+        expected.file_identity = guard["file_identity"].toString().toStdString();
+        expected.content_sha256 = guard["sha256"].toString().toStdString();
+        if (guard["size"].toInteger(-1) < 0 || expected.content_sha256.size() != 64 || expected.file_identity.empty())
+          fail(ErrorCode::Io, "Invalid scanned source snapshot");
+        try {
+          const auto key = QString::fromStdWString(p.wstring()).toCaseFolded();
+          if (const auto it = guardedIndices.find(key); it != guardedIndices.end()) {
+            scannedLeases[it->second].require_unchanged(expected);
+            continue;
+          }
+          // Size is the already budgeted scan size, never an unlimited hash.
+          auto pin = InputLease::open(scope, p, expected.size_bytes, g->stop.get_token());
+          pin.require_unchanged(expected);
+          if (guardedPaths.insert(key).second) {
+            guardedIndices.emplace(key, scannedLeases.size());
+            protectedInputs.push_back(pin.snapshot()); scannedLeases.push_back(std::move(pin));
+          }
+        } catch (const skeletal::Failure &e) {
+          if (e.error.code == ErrorCode::Cancelled) throw;
+          fail(ErrorCode::InputChanged, "Scene dependency changed after inventory; retry preflight");
+        }
+      }
       if (job) {
         // A member may have been renamed or replaced since approval. Retain
         // its approved identity as well as the currently readable identities,
@@ -254,6 +323,7 @@ struct ImageTaskGroups::Impl {
         const auto p = std::filesystem::path(v.toString().toStdWString());
         auto key = QString::fromStdWString(validated_local_path(p).wstring()).toCaseFolded();
         if (!protectedPathsSeen.insert(key).second) continue;
+        if (guardedPaths.contains(key)) continue;
         try {
           const ImageAdmission admission(false, g->stop.get_token());
           // Pin identity without decoding; each child enforces its own format
@@ -295,7 +365,7 @@ struct ImageTaskGroups::Impl {
               if (!out.isEmpty()) context.reserved_outputs.emplace_back(out.toStdWString());
             }
         const auto recordPath = path(g) + '/' + QString::number(i) + "/records";
-        ImageBatchService child(scope, std::filesystem::path(recordPath.toStdWString()), {}, std::move(context));
+        ImageBatchService child(executionScope, std::filesystem::path(recordPath.toStdWString()), {}, std::move(context));
         if (direct) {
           // Desktop-only one-item check/commit pipeline. Public MCP submit still
           // requires the complete approved plan and its original digest.
@@ -437,6 +507,9 @@ struct ImageTaskGroups::Impl {
       const bool cancelled = g->stop.stop_requested();
       g->manifest[job ? "job_state" : "plan_state"] = cancelled ? "cancelled" : "failed";
       g->manifest["error"] = QJsonObject{{"code", cancelled ? "cancelled" : "io"}, {"message", QString::fromUtf8(e.what())}};
+      if (!cancelled)
+        if (const auto *structured = dynamic_cast<const skeletal::Failure *>(&e))
+          g->manifest["error"] = image_error_json(*structured)["error"];
       for (qsizetype i = 0; i < items.size(); ++i) {
         auto item = items[i].toObject();
         if (item["status"] == "pending" || item["status"] == "running") item["status"] = cancelled ? "cancelled" : "interrupted";
@@ -523,6 +596,7 @@ struct ImageTaskGroups::Impl {
     }
     std::set<QString> inspectedPaths;
     std::vector<InputIdentityLease> inspectionLeases;
+    QJsonArray guards;
     int protectionInspections = 0;
     for (auto r : requests) {
       if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
@@ -540,15 +614,41 @@ struct ImageTaskGroups::Impl {
           // Failed leases are not cached: each item retains its real failure.
           try {
             inspectionLeases.push_back(InputIdentityLease::open(scope, sourcePath, stop));
-          } catch (const skeletal::Failure &e) { if (e.error.code == ErrorCode::Cancelled) throw; continue; }
+          } catch (const skeletal::Failure &e) {
+            if (e.error.code == ErrorCode::Cancelled) throw;
+            guards.append(QJsonObject{{"path", request["input"]}, {"unavailable", true}, {"scan_failed", true}, {"error", image_error_json(e)["error"]}});
+            continue;
+          }
           inspectedPaths.insert(sourceKey);
           ++protectionInspections;
           auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
-          const auto source = execute_image_request(inspect, scope, {}, stop);
+          QJsonObject source;
+          try { source = execute_image_request(inspect, scope, {}, stop); }
+          catch (const skeletal::Failure &e) {
+            if (e.error.code == ErrorCode::Cancelled) throw;
+            guards.append(QJsonObject{{"path", request["input"]}, {"unavailable", true}, {"scan_failed", true}, {"error", image_error_json(e)["error"]}});
+            continue;
+          }
+          if (source.contains("error")) {
+            guards.append(QJsonObject{{"path", request["input"]}, {"unavailable", true}, {"scan_failed", true}, {"error", source["error"]}});
+            continue;
+          }
+          std::set<QString> captured;
+          if (source["sources"].toArray().isEmpty()) fail(ErrorCode::Io, "Scene inventory lacks content snapshots");
+          for (const auto &v : source["sources"].toArray()) {
+            const auto snapshot = v.toObject();
+            if (snapshot["sha256"].toString().size() != 64) fail(ErrorCode::Io, "Scene inventory lacks content snapshots");
+            captured.insert(snapshot["path"].toString().replace('\\', '/').toCaseFolded());
+            guards.append(snapshot);
+          }
           for (const auto key : {"sources", "referenced_sources"})
             for (const auto &v : source[key].toArray()) {
               const auto sourceName = v.isString() ? v.toString() : v.toObject()["path"].toString();
-              if (!sourceName.isEmpty()) protect.append(sourceName);
+              if (!sourceName.isEmpty()) {
+                protect.append(sourceName);
+                if (!captured.contains(QString(sourceName).replace('\\', '/').toCaseFolded()))
+                  guards.append(QJsonObject{{"path", sourceName}, {"unavailable", true}});
+              }
             }
         }
       }
@@ -561,6 +661,13 @@ struct ImageTaskGroups::Impl {
       save(path(g) + "/protected-" + QString::number(protectionFragments++) + ".json", {{"inputs", chunk}});
     }
     g->manifest["protection_fragments"] = protectionFragments;
+    int guardFragments = 0;
+    for (qsizetype offset = 0; offset < guards.size(); offset += 64) {
+      QJsonArray chunk;
+      for (qsizetype n = offset; n < std::min(guards.size(), offset + 64); ++n) chunk.append(guards[n]);
+      save(path(g) + "/source-guard-" + QString::number(guardFragments++) + ".json", {{"sources", chunk}});
+    }
+    g->manifest["source_guard_fragments"] = guardFragments;
     g->manifest["batches"] = batches;
     save(path(g) + "/index.json", g->manifest);
     { const std::lock_guard lock(state); g->plan = snapshot(g, false, items); groups.emplace(g->manifest["id"].toString(), g); }

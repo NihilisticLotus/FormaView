@@ -330,6 +330,9 @@ InputIdentityLease InputIdentityLease::open(const AccessScope &scope,
   auto p = std::make_unique<Impl>();
   const auto full = normal(path);
   authorize(full, scope.input_roots);
+  for (const auto &unavailable : scope.unavailable_inputs)
+    if (equal(full.native(), normal(unavailable).native()))
+      fail(ErrorCode::Io, "Input unavailable in captured dependency graph");
   p->parents = parents(full.parent_path());
   p->file = Handle(CreateFileW(
       extended(full).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,

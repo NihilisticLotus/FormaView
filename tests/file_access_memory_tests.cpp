@@ -115,6 +115,31 @@ void run(const std::filesystem::path &root) {
   // All leases are gone: the source must be available for write again.
   Handle writer{CreateFileW(large.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr)};
   require(writer.value != INVALID_HANDLE_VALUE, "Cancelled hashing releases the source");
+  // A captured unavailable dependency must not silently enter the graph later.
+  const auto late = root / "late.bin";
+  auto frozen = scope; frozen.unavailable_inputs.push_back(late);
+  { std::ofstream file(late, std::ios::binary); file << "later"; }
+  rejects([&] { (void)InputLease::open(frozen, late, mib); }, ErrorCode::Io);
+  require(InputLease::open(scope, late, mib).snapshot().size_bytes == 5, "Only captured scope excludes the late file");
+  auto deep = root;
+  for (int i = 0; i != 8; ++i) deep /= "nested";
+  std::filesystem::create_directories(deep);
+  std::vector<std::filesystem::path> paths;
+  for (int i = 0; i != 128; ++i) {
+    const auto path = deep / (std::to_string(i) + ".bin");
+    { std::ofstream file(path, std::ios::binary); file << 'x'; } paths.push_back(path);
+  }
+  DWORD beforeHandles{}, heldHandles{}, afterHandles{};
+  require(GetProcessHandleCount(GetCurrentProcess(), &beforeHandles), "Read baseline handle count");
+  {
+    std::vector<InputIdentityLease> held;
+    for (const auto &path : paths) held.push_back(InputIdentityLease::open(scope, path));
+    require(GetProcessHandleCount(GetCurrentProcess(), &heldHandles), "Read pinned handle count");
+  }
+  require(GetProcessHandleCount(GetCurrentProcess(), &afterHandles), "Read released handle count");
+  require(heldHandles >= beforeHandles + 128 && afterHandles == beforeHandles, "Deep-path leases release all handles");
+  std::cout << "PASS captured missing dependency; handle sample unique_sources=128 extra_depth=8 held_delta="
+            << heldHandles - beforeHandles << " released_delta=" << afterHandles - beforeHandles << '\n';
   std::cout << "PASS streamed SHA256 and cancellation; peak_commit_delta=" << peakDelta
             << " peak_working_set=" << peak.PeakWorkingSetSize << " cancel_ms=" << cancelMs << '\n';
 }
