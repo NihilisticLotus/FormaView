@@ -1315,6 +1315,7 @@ void ModelSession::clear() {
   reset(false);
 }
 void ModelSession::reset(bool opening) {
+  mode_ = 0;
   ++generation_;
   ++frameRequest_;
   ++poseRequest_;

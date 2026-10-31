@@ -11,6 +11,9 @@ Item {
     required property var controller
     readonly property var session: controller.model
     property int tab: 0
+    onTabChanged: {
+        if (tab!==1 && session.mode===2) session.setMode(0)
+    }
     ColumnLayout {
         anchors.fill: parent; spacing: 10
         RowLayout {

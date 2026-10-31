@@ -125,9 +125,25 @@ ColumnLayout {
     Tool {
         objectName: "modelBoneHeat"
         Layout.fillWidth: true
-        text: Theme.t("查看权重热力", "Show weight heat map", "檢視權重熱力")
-        enabled: !!root.selected.inPalette
-        onClicked: { root.session.selectBone(root.selected.boneIndex); root.session.setMode(2) }
+        checkable: true
+        checked: root.session.mode===2
+        text: checked ? Theme.t("关闭权重热力", "Hide weight heat map", "關閉權重熱力")
+                      : Theme.t("查看权重热力", "Show weight heat map", "檢視權重熱力")
+        enabled: root.session.mode===2 || !!root.selected.inPalette
+        onClicked: {
+            if (root.session.mode===2) root.session.setMode(0)
+            else { root.session.selectBone(root.selected.boneIndex); root.session.setMode(2) }
+        }
+    }
+    Label {
+        objectName: "modelBoneHeatFeedback"
+        Layout.fillWidth: true
+        visible: !root.selected.inPalette || !(root.selected.points > 0)
+        wrapMode: Text.Wrap
+        color: Theme.muted
+        text: !root.selected.inPalette
+              ? Theme.t("当前选择没有可显示的骨骼权重。", "No bone weights are available for this selection.", "目前選取項目沒有可顯示的骨骼權重。")
+              : Theme.t("此骨骼没有影响源点，热力图显示为零权重。", "This bone affects no source points; the heat map shows zero weight.", "此骨骼沒有影響來源點，熱力圖顯示為零權重。")
     }
     SectionHeader { id: advanced; objectName: "modelBindingMatrices"; Layout.fillWidth: true; text: Theme.t("高级详情", "Advanced details", "進階詳情") }
     ScrollView {

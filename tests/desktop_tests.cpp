@@ -6261,6 +6261,94 @@ private slots:
     evidence_["lod_native_flow"]=QJsonObject{{"source",path},{"info",QJsonObject::fromVariantMap(session->info())},{"levels",QJsonArray::fromVariantList(session->lodLevels())},{"boundary","Actual QML buttons/ComboBox driven by Qt window mouse/key events; not OS input latency."}};
     desktop_->clearAsset();
   }
+  void modelWeightHeatToggle() {
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_HEAT_FIXTURE"));
+    QVERIFY2(QFileInfo::exists(path), "Set FORMAVIEW_HEAT_FIXTURE to a synthetic skinned FBX");
+    const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
+    desktop_->setLanguage("zh-CN");
+    const auto payload=[&] {
+      const auto frame=session->frame();
+      return frame && frame->geometry ? frame->geometry : frame;
+    };
+    const auto click=[&](const char *name) {
+      QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+      window_->update(); QTRY_VERIFY(!presented.isEmpty());
+      auto *control=item(name);
+      QVERIFY(control && control->isVisible() && control->isEnabled());
+      QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,
+                       control->mapToScene({control->width()/2,control->height()/2}).toPoint());
+    };
+    const auto open=[&](const QString &source) {
+      desktop_->openPath(source);
+      QTRY_COMPARE_WITH_TIMEOUT(session->path(),source,10000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && modelPanelsReady(),10000);
+    };
+    open(path);
+    click("modelInspectorTab1");
+    QVERIFY(session->skeletonSelection().value("inPalette").toBool());
+    const auto normal=payload();
+    QVERIFY(normal && !normal->heat && normal->lit);
+    for (int i=0;i<2;++i) {
+      click("modelBoneHeat");
+      QTRY_VERIFY(session->inspectable() && payload()->heat);
+      QCOMPARE(session->mode(),2);
+      click("modelBoneHeat");
+      QTRY_COMPARE(session->mode(),0);
+      QTRY_VERIFY(session->inspectable() && !payload()->heat && payload()->lit);
+      QVERIFY(!item("modelBoneHeat")->property("checked").toBool());
+      QCOMPARE(payload()->vertices.size(),normal->vertices.size());
+      QCOMPARE(payload()->rgba,normal->rgba);
+      for (std::size_t v=0;v<normal->vertices.size();++v) {
+        const auto &before=normal->vertices[v], &after=payload()->vertices[v];
+        QCOMPARE(after.r,before.r); QCOMPARE(after.g,before.g); QCOMPARE(after.b,before.b);
+        QCOMPARE(after.alpha,before.alpha);
+      }
+    }
+    for (const auto *target : {"modelInspectorTab0", "modelInspectorTab2", "modelModeTab0", "modelModeTab1"}) {
+      click("modelInspectorTab1");
+      click("modelBoneHeat");
+      QTRY_VERIFY(session->inspectable() && payload()->heat);
+      QVERIFY(item("modelBoneHeat")->property("checked").toBool());
+      QCOMPARE(item("modelBoneHeat")->property("text").toString(),QString("关闭权重热力"));
+      click(target);
+      QTRY_VERIFY(session->mode()!=2 && session->inspectable() && !payload()->heat);
+    }
+    click("modelInspectorTab1"); click("modelBoneHeat");
+    QTRY_COMPARE(session->mode(),2);
+    desktop_->clearAsset();
+    QCOMPARE(session->mode(),0);
+    QVERIFY(!session->frame());
+    open(path);
+    QCOMPARE(session->mode(),0);
+    click("modelInspectorTab1"); click("modelBoneHeat");
+    QTRY_VERIFY(session->inspectable() && payload()->heat);
+    const auto unweighted=root_+"/无权重.obj";
+    QFile obj(unweighted); QVERIFY(obj.open(QIODevice::WriteOnly));
+    obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"); obj.close();
+    open(unweighted);
+    QCOMPARE(session->mode(),0);
+    QVERIFY(!payload()->heat);
+    click("modelInspectorTab1");
+    QVERIFY(!item("modelBoneHeat")->isEnabled());
+    QVERIFY(item("modelBoneHeatFeedback"));
+    click("modelModeTab2");
+    QTRY_COMPARE(session->mode(),2);
+    QVERIFY(item("modelBoneHeat")->isEnabled());
+    click("modelBoneHeat");
+    QTRY_VERIFY(session->mode()==0 && session->inspectable() && !payload()->heat);
+    save("weight-heat-exited-unweighted");
+    open(path);
+    click("modelInspectorTab1"); click("modelBoneHeat");
+    QTRY_VERIFY(session->inspectable() && payload()->heat);
+    session->open(root_+"/missing-model.fbx");
+    QTRY_VERIFY(!session->busy());
+    QCOMPARE(session->mode(),0);
+    QVERIFY(!session->error().isEmpty());
+    open(path);
+    QVERIFY(!payload()->heat);
+  }
   void modelMultipleBindingsNativeFlow() {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
