@@ -17,7 +17,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <map>
-#include <limits>
 #include <mutex>
 #include <set>
 
@@ -228,7 +227,7 @@ struct ImageTaskGroups::Impl {
       g->manifest[job ? "job_state" : "plan_state"] = job ? "running" : "planning";
       publish(g, job, items);
       const auto all = allRequests(g);
-      std::vector<InputLease> leases;
+      std::vector<InputIdentityLease> leases;
       std::vector<InputSnapshot> protectedInputs;
       if (job) {
         // A member may have been renamed or replaced since approval. Retain
@@ -259,7 +258,7 @@ struct ImageTaskGroups::Impl {
           const ImageAdmission admission(false, g->stop.get_token());
           // Pin identity without decoding; each child enforces its own format
           // budget. Even an oversized future input must retain hard-link protection.
-          leases.push_back(InputLease::open(scope, p, std::numeric_limits<std::uint64_t>::max(), g->stop.get_token()));
+          leases.push_back(InputIdentityLease::open(scope, p, g->stop.get_token()));
           protectedInputs.push_back(leases.back().snapshot());
         } catch (const skeletal::Failure &e) {
           if (e.error.code == ErrorCode::Cancelled) throw;
@@ -523,7 +522,7 @@ struct ImageTaskGroups::Impl {
       for (auto r : chunk) items.append(QJsonObject{{"index", items.size()}, {"batch", index}, {"request", r}, {"status", "pending"}});
     }
     std::set<QString> inspectedPaths;
-    std::vector<InputLease> inspectionLeases;
+    std::vector<InputIdentityLease> inspectionLeases;
     int protectionInspections = 0;
     for (auto r : requests) {
       if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
@@ -540,7 +539,7 @@ struct ImageTaskGroups::Impl {
           // A held lease makes one scan per path sufficient for all clips.
           // Failed leases are not cached: each item retains its real failure.
           try {
-            inspectionLeases.push_back(InputLease::open(scope, sourcePath, std::numeric_limits<std::uint64_t>::max(), stop));
+            inspectionLeases.push_back(InputIdentityLease::open(scope, sourcePath, stop));
           } catch (const skeletal::Failure &e) { if (e.error.code == ErrorCode::Cancelled) throw; continue; }
           inspectedPaths.insert(sourceKey);
           ++protectionInspections;

@@ -6,7 +6,7 @@ target_link_libraries(formaview_core PUBLIC Threads::Threads PRIVATE formaview_o
 if(WIN32)
     target_sources(formaview_core PRIVATE file_access_win.cpp)
     set_source_files_properties(file_access_win.cpp PROPERTIES COMPILE_DEFINITIONS "NOMINMAX;WIN32_LEAN_AND_MEAN")
-    target_link_libraries(formaview_core PRIVATE ole32 advapi32)
+    target_link_libraries(formaview_core PRIVATE ole32 advapi32 bcrypt)
 endif()
 
 # R13 evidence kernel is not linked into the host until adapters are accepted.

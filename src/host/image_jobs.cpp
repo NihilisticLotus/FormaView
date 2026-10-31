@@ -14,7 +14,6 @@
 #include <QSaveFile>
 #include <QUuid>
 #include <algorithm>
-#include <limits>
 #include <set>
 
 namespace {
@@ -431,7 +430,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
       QJsonArray items;
       QJsonArray protectedSources = QJsonArray::fromVariantList(metadata.value("protected_inputs").toList());
       QHash<QString, QJsonObject> inspections;
-      std::vector<InputLease> inspectionLeases;
+      std::vector<InputIdentityLease> inspectionLeases;
       const auto access = parse_image_scope(policy);
       int inspectionCount = 0;
       const auto inspectOnce = [&](const QJsonObject &q) {
@@ -443,7 +442,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
         if (inspections.contains(key)) return inspections.value(key);
         // This lease only pins identity; inspect applies the format's decode
         // budget. An image-specific limit must not reject a larger model here.
-        auto lease = InputLease::open(access, path, std::numeric_limits<std::uint64_t>::max(), stop);
+        auto lease = InputIdentityLease::open(access, path, stop);
         ++inspectionCount;
         auto result = existing->request(q, stop);
         if (!result.contains("error")) {

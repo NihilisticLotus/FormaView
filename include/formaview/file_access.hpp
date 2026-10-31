@@ -25,6 +25,23 @@ private:
 };
 // Windows worker APIs. Holds checked ancestor and file handles for the whole
 // conversion; denies reparse traversal and concurrent input write/delete.
+// Identity only: does not read content. The snapshot has no content hash or
+// asset ID and must not be used as content approval. InputLease provides that.
+class InputIdentityLease {
+public:
+  static InputIdentityLease open(const AccessScope &, const std::filesystem::path &,
+                                 std::stop_token = {});
+  InputIdentityLease(InputIdentityLease &&) noexcept;
+  InputIdentityLease &operator=(InputIdentityLease &&) noexcept;
+  ~InputIdentityLease();
+  [[nodiscard]] const InputSnapshot &snapshot() const;
+
+private:
+  friend class InputLease;
+  struct Impl;
+  explicit InputIdentityLease(std::unique_ptr<Impl>);
+  std::unique_ptr<Impl> impl_;
+};
 class InputLease {
 public:
   static InputLease open(const AccessScope &, const std::filesystem::path &,

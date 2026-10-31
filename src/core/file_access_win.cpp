@@ -2,12 +2,14 @@
 #include "formaview/skeletal.hpp"
 #include <aclapi.h>
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <iomanip>
 #include <objbase.h>
 #include <sstream>
 #include <utility>
 #include <windows.h>
+#include <bcrypt.h>
 
 namespace formaview {
 namespace {
@@ -145,18 +147,46 @@ std::string hash_file(const Handle &handle, std::uint64_t size,
                       std::uint64_t maximum, std::stop_token stop) {
   if (size > maximum || size > SIZE_MAX)
     fail(ErrorCode::ResourceLimit, "Input exceeds snapshot budget");
-  std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-  for (std::size_t offset = 0; offset < bytes.size();) {
+  cancel(stop);
+  struct Hash {
+    BCRYPT_ALG_HANDLE algorithm{};
+    BCRYPT_HASH_HANDLE value{};
+    ~Hash() {
+      if (value) BCryptDestroyHash(value);
+      if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    }
+  } hash;
+  if (BCryptOpenAlgorithmProvider(&hash.algorithm, BCRYPT_SHA256_ALGORITHM,
+                                  nullptr, 0) < 0 ||
+      BCryptCreateHash(hash.algorithm, &hash.value, nullptr, 0, nullptr, 0, 0) < 0)
+    fail(ErrorCode::Internal, "Cannot initialize input SHA256");
+  // Bounded scratch space independent of file length. Hash each read before
+  // reusing the buffer, keeping cancellation checks between 1 MiB blocks.
+  std::vector<unsigned char> bytes(1024 * 1024);
+  for (std::uint64_t offset = 0; offset < size;) {
     cancel(stop);
     const auto n = static_cast<DWORD>(
-        std::min<std::size_t>(1024 * 1024, bytes.size() - offset));
+        std::min<std::uint64_t>(bytes.size(), size - offset));
     DWORD got = 0;
-    if (!ReadFile(handle.h, bytes.data() + offset, n, &got, nullptr) ||
+    if (!ReadFile(handle.h, bytes.data(), n, &got, nullptr) ||
         got != n)
       fail(ErrorCode::Io, "Input snapshot read failed", GetLastError());
+    if (BCryptHashData(hash.value, bytes.data(), got, 0) < 0)
+      fail(ErrorCode::Internal, "Input SHA256 update failed");
     offset += got;
   }
-  return skeletal::sha256(bytes, stop);
+  cancel(stop);
+  std::array<unsigned char, 32> digest{};
+  if (BCryptFinishHash(hash.value, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
+    fail(ErrorCode::Internal, "Input SHA256 finish failed");
+  constexpr char digits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(64);
+  for (const auto value : digest) {
+    result.push_back(digits[value >> 4]);
+    result.push_back(digits[value & 15]);
+  }
+  return result;
 }
 std::wstring unique_name() {
   GUID id{};
@@ -284,18 +314,18 @@ PrivateDirectory PrivateDirectory::open(const std::filesystem::path &path) {
     fail(ErrorCode::Io, "Cannot restrict journal access", secured);
   return PrivateDirectory(std::move(result));
 }
-struct InputLease::Impl {
+struct InputIdentityLease::Impl {
   std::vector<Handle> parents;
   Handle file;
   InputSnapshot snapshot;
 };
-InputLease::InputLease(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
-InputLease::InputLease(InputLease &&) noexcept = default;
-InputLease &InputLease::operator=(InputLease &&) noexcept = default;
-InputLease::~InputLease() = default;
-InputLease InputLease::open(const AccessScope &scope,
+InputIdentityLease::InputIdentityLease(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
+InputIdentityLease::InputIdentityLease(InputIdentityLease &&) noexcept = default;
+InputIdentityLease &InputIdentityLease::operator=(InputIdentityLease &&) noexcept = default;
+InputIdentityLease::~InputIdentityLease() = default;
+InputIdentityLease InputIdentityLease::open(const AccessScope &scope,
                             const std::filesystem::path &path,
-                            std::uint64_t maximum, std::stop_token stop) {
+                            std::stop_token stop) {
   cancel(stop);
   auto p = std::make_unique<Impl>();
   const auto full = normal(path);
@@ -317,7 +347,26 @@ InputLease InputLease::open(const AccessScope &scope,
       (static_cast<std::uint64_t>(i.ftLastWriteTime.dwHighDateTime) << 32) |
       i.ftLastWriteTime.dwLowDateTime);
   s.file_identity = identity(i);
-  s.content_sha256 = hash_file(p->file, s.size_bytes, maximum, stop);
+  cancel(stop);
+  return InputIdentityLease(std::move(p));
+}
+const InputSnapshot &InputIdentityLease::snapshot() const { return impl_->snapshot; }
+struct InputLease::Impl {
+  InputIdentityLease identity;
+  InputSnapshot snapshot;
+  explicit Impl(InputIdentityLease pin)
+      : identity(std::move(pin)), snapshot(identity.snapshot()) {}
+};
+InputLease::InputLease(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
+InputLease::InputLease(InputLease &&) noexcept = default;
+InputLease &InputLease::operator=(InputLease &&) noexcept = default;
+InputLease::~InputLease() = default;
+InputLease InputLease::open(const AccessScope &scope,
+                            const std::filesystem::path &path,
+                            std::uint64_t maximum, std::stop_token stop) {
+  auto p = std::make_unique<Impl>(InputIdentityLease::open(scope, path, stop));
+  auto &s = p->snapshot;
+  s.content_sha256 = hash_file(p->identity.impl_->file, s.size_bytes, maximum, stop);
   s.asset = asset_id_from_sha256(s.content_sha256);
   return InputLease(std::move(p));
 }

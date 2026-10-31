@@ -148,6 +148,12 @@ void run(const std::filesystem::path &root) {
         [&] { (void)InputLease::open(scope, outside / "escape.bin", 1024); },
         ErrorCode::OutOfScope);
     rejects(
+        [&] { (void)InputIdentityLease::open(scope, outside / "escape.bin"); },
+        ErrorCode::OutOfScope);
+    rejects(
+        [&] { (void)InputIdentityLease::open(scope, input / "junction" / "escape.bin"); },
+        ErrorCode::OutOfScope);
+    rejects(
         [&] {
           (void)InputLease::open(scope, input / "junction" / "escape.bin",
                                  1024);
