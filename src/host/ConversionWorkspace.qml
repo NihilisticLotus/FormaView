@@ -63,7 +63,15 @@ FocusScope {
                 onChooseInputs: paths => { if (root.modelMode) root.modelInputs = paths; else root.service.addSourceFiles(paths) }
                 onEdited: { root.service.invalidatePlan(); results.acknowledged = false }
                 onBack: root.close()
-                onPreflight: (scope, options, nameTemplate, conflict, metadata) => { root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides(), metadata); tabs.currentIndex = 1 }
+                onPreflight: (scope, options, nameTemplate, conflict, metadata) => {
+                    if (root.modelMode) {
+                        tabs.currentIndex = 2
+                        root.service.startExport(root.inputs, scope, options, nameTemplate, conflict, metadata)
+                    } else {
+                        root.service.preflight(root.inputs, scope, options, nameTemplate, conflict, settings.itemOverrides(), metadata)
+                        tabs.currentIndex = 1
+                    }
+                }
             }
             ConversionResults {
                 id: results; controller: root.controller; snapshot: root.service.plan

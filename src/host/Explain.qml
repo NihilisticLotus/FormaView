@@ -80,6 +80,7 @@ QtObject {
 
     // Specific messages; first match wins and replaces the generic headline.
     readonly property var messages: ([
+        [/Direct export requires loss acknowledgement/i, ["此项需要确认损失，尚未导出。点击“继续未完成项”可在本窗口查看并确认。", "This item needs loss review and was not exported. Use Continue unfinished items to review and confirm here.", "此項需要確認損失，尚未匯出。點擊「繼續未完成項目」可在本視窗查看並確認。"]],
         [/Input scope root must not be empty/i, ["只读输入范围为空。请在来源与输出中选择包含输入及配对文件的目录，再开始预检。", "The read-only input scope is empty. Under Source and output, choose a folder containing the inputs and paired file, then preflight again.", "唯讀輸入範圍為空。請在來源與輸出中選擇包含輸入及配對檔的資料夾，再開始預檢。"]],
         [/Output scope root must not be empty/i, ["输出范围为空。请在来源与输出中选择输出目录，再开始预检。", "The output scope is empty. Choose the output folder under Source and output, then preflight again.", "輸出範圍為空。請在來源與輸出中選擇輸出資料夾，再開始預檢。"]],
         [/TIFF WhiteIsZero grayscale requires an explicit photometric conversion/i, ["此 TIFF 使用反向灰度（0 表示白色），当前尚不支持正确保留其含义，已停止读取和转换。请先在图像编辑器中另存为常规灰度（0 表示黑色）；只修改类型标记会反转明暗。", "This TIFF uses WhiteIsZero grayscale (0 means white), whose interpretation is not yet supported. Reading and conversion stopped. Save a copy as BlackIsZero grayscale in an image editor first; changing only the tag would reverse brightness.", "此 TIFF 使用反向灰階（0 表示白色），目前尚不支援正確保留其含義，已停止讀取與轉換。請先在影像編輯器中另存為一般灰階（0 表示黑色）；只修改類型標記會反轉明暗。"]],

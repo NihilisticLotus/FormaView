@@ -9,7 +9,7 @@ Rectangle {
     property bool preflight: false
     property bool expanded: false
     readonly property var request: entry.request || ({})
-    readonly property var result: preflight ? entry.preflight || ({}) : entry.result || ({})
+    readonly property var result: preflight ? entry.preflight || ({}) : entry.result || entry.preflight || ({})
     readonly property string output: result.committed_output || result.output || request.output || ""
     readonly property bool modelExport: request.options?.target === "fbx"
     readonly property string clipSummary: (result.clips || []).map(c => c.name + " · " + Number(c.start).toFixed(3) + "–" + Number(c.end).toFixed(3) + " s").join("\n")
@@ -36,7 +36,7 @@ Rectangle {
                 Label { Layout.fillWidth: true; color: root.entry.status === "failed" ? Theme.error : Theme.accent; wrapMode: Text.WordWrap; text: Theme.state(root.entry.status) + (root.result.output_exists ? Theme.t(" · 目标存在", " · Target exists", " · 目標已存在") : "") }
                 ExplainedText { objectName: "conversionItemError"; Layout.fillWidth: true; kind: "error"; raw: root.entry.error ? root.entry.error.code + ": " + root.entry.error.message : "" }
                 Repeater {
-                    model: root.preflight ? (root.result.losses || []).concat(root.result.notices || []) : []
+                    model: root.preflight || root.entry.status === "failed" ? (root.result.losses || []).concat(root.result.notices || []) : []
                     ExplainedText { required property var modelData; objectName: "conversionItemLoss"; Layout.fillWidth: true; kind: "loss"; code: modelData.code; detail: modelData.detail; tone: (root.result.notices || []).some(n => n.code === modelData.code) ? Theme.muted : Theme.accent }
                 }
                 Label { Layout.fillWidth: true; visible: !!root.entry.temporary_cleanup_error || !!root.entry.outcome_uncertain; color: Theme.error; wrapMode: Text.WordWrap; text: Theme.t("需检查中断或临时文件清理结果。", "Review interrupted output or temporary-file cleanup.", "需檢查中斷或暫存檔清理結果。") }

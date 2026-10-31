@@ -73,6 +73,9 @@ public:
             const QString &conflict, const QVariantList &itemOverrides = {},
             const QVariantMap &metadata = {});
   Q_INVOKABLE void submit(bool acknowledge);
+  Q_INVOKABLE void startExport(const QStringList &inputs, const QVariantMap &scope,
+            const QVariantMap &options, const QString &nameTemplate,
+            const QString &conflict, const QVariantMap &metadata = {});
   Q_INVOKABLE void cancel(const QString &kind, const QString &id);
   Q_INVOKABLE void retry(const QString &id);
   Q_INVOKABLE void pauseJob(const QString &id, bool pause);
@@ -86,12 +89,16 @@ public:
                                       const QVariantList &itemOverrides) const;
   Q_INVOKABLE void cancelPreparation();
 signals:
+  void directExportFinished(const QString &jobId);
   void submissionFinished(const QString &planId, const QString &jobId);
   void changed();
   void sourcesChanged();
 
 private:
+  void prepare(const QStringList &, const QVariantMap &, const QVariantMap &,
+               const QString &, const QString &, const QVariantList &, const QVariantMap &, bool);
   friend class DesktopTests; // Deterministic scheduler pressure/close regressions.
+  friend class ExportFlowTests; // QCoreApplication-only orchestration regressions.
   void dispatch(QJsonObject);
   void poll();
   bool activeJobs() const;
@@ -114,6 +121,7 @@ private:
   QString error_, planId_, jobId_, idempotency_;
   bool busy_{};
   quint64 revision_{};
+  quint64 jobSelectionRevision_{};
   std::optional<formaview::TaskHandle> preparation_;
   std::unique_ptr<formaview::imaging::ImageEndpoint> endpoint_;
   std::vector<std::unique_ptr<formaview::imaging::ImageEndpoint>>

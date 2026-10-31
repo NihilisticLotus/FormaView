@@ -295,6 +295,69 @@ void run(const QString &root) {
     std::cout << "PASS group journal recovery" << std::endl;
   }
 }
+void directExport(const QString &root) {
+  require(QDir().mkpath(root), "Create direct test root");
+  require(QDir().mkpath(root + "/direct-groups") && QDir().mkpath(root + "/public-service"), "Create direct journals");
+  fixture(root + "/source.tga");
+  const auto sourceBytes = [&] { QFile f(root + "/source.tga"); require(f.open(QIODevice::ReadOnly), "Read protected source"); return f.readAll(); }();
+  QJsonObject completed;
+  {
+    ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/direct-groups").toStdWString()));
+    auto items = requests(root, 10, "direct-");
+    auto missing = items[1].toObject(); missing["input"] = root + "/missing.tga"; items[1] = missing;
+    auto protectedItem = items[2].toObject(); protectedItem["output"] = root + "/source.tga"; protectedItem["conflict"] = "overwrite"; items[2] = protectedItem;
+    fixture(root + "/direct-4.tga");
+    auto lossy = items[4].toObject(); auto options = lossy["options"].toObject();
+    auto channels = options["channels"].toArray(); channels.removeLast(); options["channels"] = channels;
+    options["alpha_action"] = "drop"; lossy["options"] = options; items[4] = lossy;
+    auto q = query("create_job"); q["items"] = items; q["name"] = "Named export batch"; q["category"] = "Regression";
+    const auto id = checked(groups.request(q))["job_id"].toString(); require(!id.isEmpty(), "Direct export immediately returns a durable job");
+    completed = wait(groups, "get_job", id);
+    require(completed["state"] == "partially_succeeded", "Direct failures do not prevent remaining outputs");
+    const auto result = completed["items"].toArray();
+    require(result.size() == 10, "Every direct item is retained");
+    for (int i = 0; i < 10; ++i) {
+      const auto expected = i == 1 || i == 2 || i == 4 ? "failed" : i == 3 ? "skipped" : "succeeded";
+      require(result[i].toObject()["status"] == expected, "Direct item outcome differs from expected");
+    }
+    require(!result[4].toObject()["preflight"].toObject()["losses"].toArray().isEmpty(), "Losses are retained for review");
+    require(!QFileInfo::exists(root + "/direct-5.tga"), "Unacknowledged losses never write output");
+    const auto timing = completed["timings"].toObject();
+    require(timing.contains("first_output_ms") && timing["first_output_ms"].toDouble() < timing["last_check_ms"].toDouble(), "First write precedes final item preflight");
+    QFile report(root + "/direct-result.json"); require(report.open(QIODevice::WriteOnly), "Save direct evidence"); report.write(QJsonDocument(completed).toJson());
+    QFile source(root + "/source.tga"); require(source.open(QIODevice::ReadOnly) && source.readAll() == sourceBytes, "Cross-item source protection remains intact");
+    auto duplicates = requests(root, 2, "duplicate-direct-");
+    auto duplicate = duplicates[1].toObject();
+    duplicate["output"] = duplicates[0].toObject()["output"];
+    duplicate["conflict"] = "overwrite"; duplicates[1] = duplicate;
+    q["items"] = duplicates;
+    const auto duplicateId = checked(groups.request(q))["job_id"].toString();
+    const auto duplicateResult = wait(groups, "get_job", duplicateId)["items"].toArray();
+    require(duplicateResult[0].toObject()["status"] == "succeeded" && duplicateResult[1].toObject()["status"] == "failed", "Duplicate direct output cannot overwrite an earlier item");
+    q["items"] = requests(root, 32, "cancel-");
+    const auto cancelledId = checked(groups.request(q))["job_id"].toString();
+    checked(groups.request(query("pause", cancelledId)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    require(checked(groups.request(query("get_job", cancelledId)))["pause_requested"].toBool(), "Direct pause is recorded");
+    checked(groups.request(query("resume", cancelledId)));
+    auto cancel = query("cancel", cancelledId); cancel["kind"] = "job";
+    checked(groups.request(cancel));
+    const auto cancelled = wait(groups, "get_job", cancelledId);
+    require(cancelled["state"] == "cancelled", "Direct cancellation settles");
+    for (const auto &v : cancelled["items"].toArray()) {
+      const auto status = v.toObject()["status"].toString();
+      require(status != "pending" && status != "running" && status != "ready", "Cancellation leaves no nonterminal item");
+    }
+    ImageBatchService publicService(scope(root), std::filesystem::path((root + "/public-service").toStdWString()));
+    require(publicService.request(q).contains("error"), "Public MCP service refuses desktop direct operation");
+  }
+  {
+    ImageTaskGroups recovered(scope(root), std::filesystem::path((root + "/direct-groups").toStdWString()));
+    const auto after = checked(recovered.request(query("get_job", completed["id"].toString())));
+    require(after["items"] == completed["items"], "Direct success, failure and loss evidence survives restart");
+  }
+  std::cout << "PASS direct per-item checks/exports, partial failures, losses, protection, pause/cancel, recovery and MCP boundary" << std::endl;
+}
 }
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
@@ -319,6 +382,7 @@ int main(int argc, char **argv) {
       for (auto v : job["items"].toArray()) require(v.toObject()["status"] == "succeeded", "No unfinished real items");
       std::cout << "PASS real batch " << job["total"].toInt() << std::endl; return 0;
     }
+    if (argc == 3 && app.arguments()[1] == "--direct") { directExport(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--crash-producer") { crashProducer(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--long-journal") {
       const auto root = app.arguments()[2];

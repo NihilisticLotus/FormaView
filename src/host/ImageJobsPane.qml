@@ -8,13 +8,20 @@ ColumnLayout {
     readonly property var service: controller.imageJobs
     property string fixedJobId: ""
     property bool compact: false
+    property bool awaitingJob: false
+    property bool failuresOnly: false
+    Label {
+        visible: root.service.busy && !root.job.id
+        Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted
+        text: Theme.t("正在读取片段列表，随后逐项检查并导出…", "Reading the clip list, then checking and exporting each item…", "正在讀取片段清單，隨後逐項檢查並匯出…")
+    }
     property int snapshotRevision: 0
     // Poll notifications refresh a pinned job without changing the main task selection.
     readonly property var job: {
         const current = service.job
         const rows = service.jobs
         const revision = snapshotRevision
-        return !fixedJobId || current.id === fixedJobId ? current : service.jobSnapshot(fixedJobId)
+        return awaitingJob ? ({}) : !fixedJobId || current.id === fixedJobId ? current : service.jobSnapshot(fixedJobId)
     }
     Timer {
         interval: 200; repeat: true
@@ -22,6 +29,7 @@ ColumnLayout {
         onTriggered: root.snapshotRevision++
     }
     readonly property var items: job.items || []
+    readonly property var shownItems: failuresOnly ? items.filter(i => i.status === "failed" || i.status === "interrupted") : items
     readonly property var categories: Array.from(new Set(service.jobs.map(j => j.category || ""))).filter(c => !!c).sort()
     property string selectedCategory: ""
     readonly property var visibleJobs: service.jobs.filter(j => !selectedCategory || j.category === selectedCategory).slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
@@ -106,6 +114,11 @@ ColumnLayout {
         contentItem: Item { implicitHeight: 4; Rectangle { width: parent.width * (root.finished / Math.max(1, root.items.length)); height: parent.height; radius: 2; color: Theme.accent } }
     }
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("成功 %1 · 失败 %2 · 跳过 %3 · 取消 %4 · 中断 %5", "Success %1 · Failed %2 · Skipped %3 · Cancelled %4 · Interrupted %5", "成功 %1 · 失敗 %2 · 略過 %3 · 取消 %4 · 中斷 %5").arg(root.count("succeeded")).arg(root.count("failed")).arg(root.count("skipped")).arg(root.count("cancelled")).arg(root.count("interrupted")) }
+    Flow {
+        Layout.fillWidth: true; spacing: 6; visible: !!root.job.id
+        Tool { objectName: "jobShowAll"; checkable: true; checked: !root.failuresOnly; text: Theme.t("全部 %1", "All %1", "全部 %1").arg(root.items.length); onClicked: root.failuresOnly = false }
+        Tool { objectName: "jobShowFailures"; checkable: true; checked: root.failuresOnly; text: Theme.t("失败 / 中断 %1", "Failed / interrupted %1", "失敗 / 中斷 %1").arg(root.count("failed") + root.count("interrupted")); onClicked: root.failuresOnly = true }
+    }
     RowLayout {
         Layout.fillWidth: true; spacing: 24
         Label { Layout.fillWidth: true; Layout.preferredWidth: 30; color: Theme.muted; font.pixelSize: Theme.compactText; text: Theme.t("来源 / 选择", "Source / Selection", "來源 / 選擇") }
@@ -115,15 +128,17 @@ ColumnLayout {
     }
     ListView {
         objectName: "imageJobsTable"
-        Layout.fillWidth: true; Layout.fillHeight: true; model: root.items; clip: true; reuseItems: true; spacing: 6
+        Layout.fillWidth: true; Layout.fillHeight: true; model: root.shownItems; clip: true; reuseItems: true; spacing: 6
         ScrollBar.vertical: ScrollBar {}
         delegate: ConversionItemRow {
             required property var modelData
             width: ListView.view.width; controller: root.controller; entry: modelData; preflight: false
         }
         Label { textFormat: Text.PlainText; anchors.centerIn: parent; visible: !root.job.id; color: Theme.muted; text: Theme.t("尚未提交转换任务", "No conversion job submitted", "尚未提交轉換工作") }
+        Label { anchors.centerIn: parent; visible: !!root.job.id && root.failuresOnly && !root.shownItems.length; color: Theme.muted; text: Theme.t("暂无失败或中断项", "No failed or interrupted items", "暫無失敗或中斷項目") }
     }
-    RowLayout {
+    Flow {
+        Layout.fillWidth: true; spacing: 6
         Tool { objectName: "pauseImageJob"; text: root.job.pause_requested || root.job.state === "paused" ? Theme.t("继续任务", "Resume", "繼續工作") : Theme.t("暂停任务", "Pause", "暫停工作"); visible: root.active; enabled: !root.service.busy && !root.job.cancellation_requested; hint: Theme.t("当前文件完成后暂停，继续时不重复已完成文件", "Pause after the current file; resume without repeating completed files", "目前檔案完成後暫停，繼續時不重複已完成檔案"); onClicked: root.service.pauseJob(root.job.id, !(root.job.pause_requested || root.job.state === "paused")) }
         Tool { objectName: "cancelImageJob"; text: root.job.cancellation_requested ? Theme.t("取消中", "Cancelling", "取消中") : Theme.t("取消任务", "Cancel job", "取消工作"); visible: root.active; enabled: !root.job.cancellation_requested; onClicked: root.service.cancel("job", root.job.id) }
         Tool { objectName: "retryImageJob"; text: Theme.t("继续未完成项…", "Continue unfinished items…", "繼續未完成項目…"); enabled: !!root.job.id && !root.service.busy && !root.active && root.items.some(i => !["succeeded", "skipped"].includes(i.status)); hint: Theme.t("重新检查未完成文件，通过预检后继续转换", "Recheck unfinished files, then continue conversion", "重新檢查未完成檔案，通過預檢後繼續轉換"); onClicked: root.retry(root.job.id) }

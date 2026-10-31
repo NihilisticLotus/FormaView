@@ -2934,7 +2934,7 @@ private slots:
     desktop_->filter("", 0, 0); QTRY_VERIFY(idle());
     const auto index = static_cast<FileList *>(desktop_->files())->indexOf(fixtures + "/source.glb");
     QVERIFY(index >= 0); desktop_->select(index); QTRY_VERIFY(idle());
-    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     QTRY_VERIFY(item("modelExportContent"));
     QCOMPARE(item("modelExportPairing")->property("currentIndex").toInt(), 1);
     const auto cleanup = qScopeGuard([&] { if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(conversion, "close"); });
@@ -3118,7 +3118,7 @@ private slots:
     for (const auto &path : sources + QStringList{input + "/reference.psk"}) {
       QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); originalSources[path] = file.readAll();
     }
-    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     auto *conversion = window_->findChild<QObject *>("conversionWorkspace");
     QVERIFY(conversion);
     const auto cleanup = qScopeGuard([&] { QMetaObject::invokeMethod(conversion, "close"); });
@@ -3241,7 +3241,7 @@ private slots:
     QVERIFY(index >= 0);
     desktop_->select(index);
     QTRY_VERIFY(idle());
-    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     QTRY_VERIFY(item("modelExportContent"));
     const auto cleanup = qScopeGuard([&] {
       if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
@@ -3310,7 +3310,7 @@ private slots:
     QCOMPARE(service->modelSources().front().toMap().value("clips").toList().size(), 2);
     QJsonArray jobs;
     for (int mode = 0; mode < 4; ++mode) {
-      if (mode) click("editConversionSettings");
+      if (mode) { auto *steps = item("conversionSteps"); QVERIFY(steps); steps->setProperty("currentIndex", 0); }
       choose("modelExportContent", mode == 0 ? 0 : mode == 2 ? 1 : 2);
       if (mode != 2) choose("modelExportPairing", mode % 2);
       if (mode == 1) {
@@ -3366,38 +3366,31 @@ private slots:
       }
       save("model-settings-" + QString::number(mode));
       click("createImagePlan");
-      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
-          qPrintable("mode=" + QByteArray::number(mode) + " error=" + service->error().toUtf8() +
-                     " plan=" + QJsonDocument(QJsonObject::fromVariantMap(service->plan())).toJson(QJsonDocument::Compact) +
-                     " sources=" + QJsonDocument(QJsonArray::fromVariantList(service->modelSources())).toJson(QJsonDocument::Compact) +
-                     " qml=" + [&] {
-                        QStringList parts;
-                        if (auto *settings = window_->findChild<QQuickItem *>("modelExportSettings"))
-                          parts << "selectedClips=" + settings->property("selectedClips").toStringList().join(",");
-                        if (auto *mode = window_->findChild<QQuickItem *>("modelExportClipMode"))
-                          parts << "clipMode=" + QString::number(mode->property("currentIndex").toInt());
-                        if (auto *clip = window_->findChild<QQuickItem *>("modelExportClip"))
-                          parts << "clipChecked=" + QString::number(clip->property("checked").toBool())
-                                << "clipEnabled=" + QString::number(clip->property("enabled").toBool());
-                        return parts.join(" "); }()), 20000);
-      const auto items = service->plan().value("items").toList();
-      save("model-preflight-" + QString::number(mode));
+      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && !service->job().value("id").toString().isEmpty() &&
+          !(QStringList{"queued", "running", "planning"}).contains(service->job().value("state").toString()), qPrintable(service->error()), 30000);
+      QCOMPARE(item("conversionSteps")->property("currentIndex").toInt(), 2);
+      const auto items = service->job().value("items").toList();
+      save("model-direct-" + QString::number(mode));
       QCOMPARE(items.size(), mode == 0 ? 2 : 1);
       for (const auto &v : items) {
         const auto entry = v.toMap();
         const auto request = entry.value("request").toMap();
         if (mode != 2) QCOMPARE(request.value("options").toMap().value("pairing_policy").toString(),
                                mode % 2 ? QString("reference-skeleton") : QString("strict-records"));
-        QVERIFY(!QFile::exists(request.value("output").toString()));
+        if (entry.value("status") == "failed") QVERIFY(!QFile::exists(request.value("output").toString()));
         const auto preflight = entry.value("preflight").toMap();
         QCOMPARE(preflight.value("clips").toList().size(), mode == 2 ? 0 : mode == 1 ? 2 : 1);
         QCOMPARE(preflight.value("root_motion").toString(), QString("source"));
       }
-      if (auto *ack = item("acknowledgeImageLosses")) {
-        if (!ack->property("checked").toBool()) click("acknowledgeImageLosses");
+      if (service->job().value("state") != "succeeded") {
+        click("retryImageJob");
+        QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
+        if (auto *ack = item("acknowledgeImageLosses")) {
+          if (!ack->property("checked").toBool()) click("acknowledgeImageLosses");
+        }
+        click("submitImagePlan");
       }
-      click("submitImagePlan");
-      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("plan_id") == service->plan().value("id") && service->job().value("state") == "succeeded", qPrintable(service->error()), 20000);
+      QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", qPrintable(service->error()), 20000);
       for (const auto &v : service->job().value("items").toList()) {
         const auto entry = v.toMap();
         const auto result = entry.value("result").toMap();
@@ -3417,9 +3410,6 @@ private slots:
         }
       }
       jobs.append(QJsonObject::fromVariantMap(service->job()));
-      // Return from Jobs to Preflight before the next edit.
-      auto *steps = item("conversionSteps"); QVERIFY(steps);
-      steps->setProperty("currentIndex", 1);
     }
     evidence_["model_export_gui"] = jobs;
   }
@@ -3439,11 +3429,18 @@ private slots:
     auto *workspace = item("workspace"); QVERIFY(workspace);
     desktop_->openPath(small_ + "/唯一图片.png");
     QTRY_COMPARE(desktop_->asset().value("path").toString(), small_ + "/唯一图片.png");
-    for (const auto quickMode : {false, true}) {
+    for (const auto mode : {0, 1, 2}) {
+      if (qEnvironmentVariableIsSet("FORMAVIEW_FOLDER_NATIVE_CAPTURE") &&
+          mode != qEnvironmentVariableIntValue("FORMAVIEW_FOLDER_NATIVE_MODE")) continue;
       QObject *container = window_;
       QQuickWindow *quick = nullptr;
-      if (quickMode) {
-        QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, "texture")));
+      if (mode) {
+        if (mode == 2) {
+          const auto animation = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES") + "/source.psa";
+          desktop_->openPath(animation);
+          QTRY_COMPARE(desktop_->asset().value("path").toString(), animation);
+        }
+        QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, mode == 2 ? "animation" : "texture")));
         QTRY_VERIFY(([&] {
           for (auto *w : QGuiApplication::topLevelWindows())
             if (w->objectName() == "quickExportWindow" && w->isVisible()) {
@@ -3469,12 +3466,86 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
         QTRY_VERIFY(dialog->property("visible").toBool());
         QCOMPARE(dialog->property("currentFolder").toUrl(), expected);
+        if (entered == folder && qEnvironmentVariableIsSet("FORMAVIEW_FOLDER_NATIVE_CAPTURE")) {
+          const auto marker = root_ + "/native-" + QString::number(mode);
+          QFile ready(marker + ".ready"); QVERIFY(ready.open(QIODevice::WriteOnly)); ready.write(folder.toUtf8()); ready.close();
+          QElapsedTimer wait; wait.start();
+          while (!QFileInfo::exists(marker + ".continue") && wait.elapsed() < 60000) QTest::qWait(100);
+          QVERIFY2(QFileInfo::exists(marker + ".continue"), "Native dialog observation must complete before resuming");
+          QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+          QTRY_VERIFY(!dialog->property("visible").toBool());
+          QCOMPARE(field->property("text").toString(), entered);
+          QTest::qWait(200); // Allow the native shell dialog thread to unwind before owner teardown.
+          break;
+        }
         QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
         QTRY_VERIFY(!dialog->property("visible").toBool());
         QCOMPARE(field->property("text").toString(), entered);
       }
     }
   }
+
+#ifdef FORMAVIEW_MODEL_EXPORT
+  void modelDirectExportBatch() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs()); QVERIFY(service);
+    const auto originalFixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES"); QVERIFY(!originalFixtures.isEmpty());
+    const auto fixtures = root_ + "/lossless-fixtures"; QVERIFY(QDir().mkpath(fixtures));
+    // Existing synthetic fixtures intentionally contain an unsupported FUTURE
+    // chunk to test loss confirmation. This benchmark uses lossless inputs.
+    for (const auto &extension : {QString("psk"), QString("psa")}) {
+      QFile input(originalFixtures + "/source." + extension); QVERIFY(input.open(QIODevice::ReadOnly));
+      const auto data = input.readAll(); QByteArray clean;
+      for (qsizetype offset = 0; offset < data.size();) {
+        QVERIFY(data.size() - offset >= 32);
+        qint32 size{}, count{};
+        std::memcpy(&size, data.constData() + offset + 24, 4);
+        std::memcpy(&count, data.constData() + offset + 28, 4);
+        QVERIFY(size >= 0 && count >= 0);
+        const auto length = 32 + qint64(size) * count; QVERIFY(length <= data.size() - offset);
+        if (!data.mid(offset, 20).startsWith("FUTURE")) clean.append(data.mid(offset, length));
+        offset += length;
+      }
+      QFile destination(fixtures + "/source." + extension); QVERIFY(destination.open(QIODevice::WriteOnly));
+      QCOMPARE(destination.write(clean), clean.size());
+    }
+    const auto output = root_ + "/direct-55"; QVERIFY(QDir().mkpath(output));
+    QStringList inputs;
+    for (int i = 0; i < 27; ++i) inputs.append(fixtures + "/source.psa");
+    inputs.insert(1, fixtures + "/missing-animation.psa");
+    const QVariantMap scope{{"input_roots", QStringList{fixtures}}, {"output_roots", QStringList{output}}, {"allow_overwrite", false}};
+    const QVariantMap options{{"target", "fbx"}, {"export_content", "animation"},
+      {"file_organization", "per-clip"}, {"paired_file", fixtures + "/source.psk"}, {"pairing_policy", "reference-skeleton"}};
+    QElapsedTimer elapsed; elapsed.start();
+    service->startExport(inputs, scope, options, "{index}-{clip}.{ext}", "skip", {{"name", "Synthetic 55 outputs"}});
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && !service->job().value("id").toString().isEmpty(), 30000);
+    const auto preparedMs = elapsed.elapsed();
+    QTRY_VERIFY_WITH_TIMEOUT(!QStringList({"queued", "running", "planning"}).contains(service->job().value("state").toString()), 90000);
+    QCOMPARE(service->job().value("state").toString(), QString("partially_succeeded"));
+    const auto job = service->job();
+    const auto items = job.value("items").toList(); QCOMPARE(items.size(), 55);
+    int succeeded = 0, failed = 0;
+    for (const auto &value : items) {
+      const auto item = value.toMap();
+      if (item.value("status") == "failed") {
+        ++failed; QVERIFY(item.value("request").toMap().value("input").toString().endsWith("missing-animation.psa"));
+        QVERIFY(!item.value("error").toMap().value("message").toString().isEmpty());
+      } else {
+        QCOMPARE(item.value("status").toString(), QString("succeeded")); ++succeeded;
+        const auto path = item.value("result").toMap().value("committed_output").toString();
+        const auto doc = formaview::skeletal::FbxDocument::read(std::filesystem::path(path.toStdWString()));
+        QVERIFY(doc.data().meshes.empty()); QCOMPARE(doc.data().clips.size(), size_t(1));
+        QVERIFY(doc.data().clips.front().end > doc.data().clips.front().start);
+      }
+    }
+    QCOMPARE(succeeded, 54); QCOMPARE(failed, 1);
+    const auto timing = job.value("timings").toMap();
+    QVERIFY(timing.contains("first_output_ms"));
+    QVERIFY(timing.value("first_output_ms").toLongLong() < timing.value("last_check_ms").toLongLong());
+    evidence_["direct_55"] = QJsonObject::fromVariantMap(job);
+    evidence_["direct_55_prepared_ms"] = preparedMs;
+    evidence_["direct_55_total_ms"] = elapsed.elapsed();
+  }
+#endif
 
   void quickExportWorkflow() {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
@@ -3563,19 +3634,22 @@ private slots:
         // remain the same as the full conversion editor.
         edit("modelExportPaired", fixtures + "/missing-reference.psk");
         click("createImagePlan");
-        QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && (!service->error().isEmpty() || service->plan().value("state") == "failed"), 20000);
-        QCOMPARE(quick->property("phase").toString(), QString("preflight"));
-        click("editConversionSettings");
+        QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "failed", 20000);
+        QCOMPARE(quick->property("phase").toString(), QString("job"));
+        QVERIFY(!service->job().value("items").toList().first().toMap().value("error").toMap().isEmpty());
+        click("quickExportEdit");
         edit("modelExportPaired", fixtures + "/source.psk");
       }
       if (!workflowHeadless()) { QTest::qWait(100); QVERIFY(captureWindow(quick).save(root_ + "/quick-" + mode + "-settings.png")); }
       click("createImagePlan");
-      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
-      const auto plan = service->plan();
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && quick->property("phase") == "job" &&
+          !(QStringList{"queued", "running", "planning"}).contains(service->job().value("state").toString()), 30000);
       auto losses = false;
-      for (const auto &item : plan.value("items").toList())
+      for (const auto &item : service->job().value("items").toList())
         losses |= !item.toMap().value("preflight").toMap().value("losses").toList().isEmpty();
       if (losses) {
+        click("retryImageJob");
+        QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
         QCOMPARE(quick->property("phase").toString(), QString("preflight"));
         auto *submit = field("submitImagePlan"); QVERIFY(submit && !submit->isEnabled());
         auto *ack = field("acknowledgeImageLosses"); QVERIFY(ack);
@@ -3614,6 +3688,23 @@ private slots:
       if (!workflowHeadless()) QVERIFY(captureWindow(quick).save(root_ + "/quick-" + mode + ".png"));
       quick->close(); QTRY_VERIFY(!quick->isVisible());
     }
+    // Close immediately after Export while preparation is still on the worker.
+    // The captured submission must survive its nonmodal result window.
+    const auto countBeforeClose = service->jobs().size();
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, "animation")));
+    QTRY_VERIFY(findWindow()); quick = findWindow();
+    const auto detachedOutput = output + "/detached"; QVERIFY(QDir().mkpath(detachedOutput));
+    edit("conversionOutputRoot", detachedOutput);
+    edit("modelExportPaired", fixtures + "/source.psk");
+    click("createImagePlan");
+    QCOMPARE(quick->property("phase").toString(), QString("direct"));
+    quick->close(); QTRY_VERIFY(!quick->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->jobs().size() == countBeforeClose + 1 &&
+        !QStringList({"queued", "running", "planning"}).contains(service->job().value("state").toString()), 30000);
+    QVERIFY(!service->job().value("cancellation_requested").toBool());
+    QVERIFY(service->job().value("state") == "succeeded" || service->job().value("state") == "failed");
+    QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
+    evidence_["quick_closed_submission"] = QJsonObject::fromVariantMap(service->job());
 #endif
   }
   void conversionEditorPlanBinding() {
@@ -4711,7 +4802,7 @@ private slots:
       desktop_->preference("density", preferences.value("density"));
       desktop_->setLanguage("zh-CN"); window_->resize(originalSize);
     });
-    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     auto *workspace = window_->findChild<QObject *>("conversionWorkspace"); QVERIFY(workspace);
     workspace->setProperty("modelMode", false);
     originalTemplate = item("conversionNamingTemplate")->property("text").toString();
@@ -4837,7 +4928,7 @@ private slots:
     const auto ambiguous = CreateFileW(ambiguousPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     QVERIFY(ambiguous != INVALID_HANDLE_VALUE); CloseHandle(ambiguous);
 #endif
-    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0)));
+    QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     const auto closeConversion = qScopeGuard([&] {
       if (auto *w = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(w, "close");
       service->clearSources();

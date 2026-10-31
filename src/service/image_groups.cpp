@@ -6,6 +6,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <map>
+#include <limits>
 #include <mutex>
 #include <set>
 
@@ -66,6 +68,7 @@ struct ImageTaskGroups::Impl {
     QJsonObject manifest, plan, job;
     std::stop_source stop;
     std::atomic_bool pause_requested{};
+    QElapsedTimer queued;
   };
   AccessScope scope;
   QString directory;
@@ -95,12 +98,10 @@ struct ImageTaskGroups::Impl {
         fail(ErrorCode::Io, "Invalid conversion group manifest");
       QJsonArray plans, jobs;
       auto batches = g->manifest["batches"].toArray();
-      qsizetype total = 0;
       for (qsizetype i = 0; i < batches.size(); ++i) {
         auto b = batches[i].toObject();
         const auto requests = load(path + '/' + QString::number(i) + "/requests.json")["items"].toArray();
         if (requests.isEmpty() || requests.size() > 64) fail(ErrorCode::Io, "Invalid conversion group batch");
-        total += requests.size();
         const auto records = path + '/' + QString::number(i) + "/records";
         ImageBatchService child(scope, std::filesystem::path(records.toStdWString()));
         // Recover a submission committed just before its group index update.
@@ -110,8 +111,11 @@ struct ImageTaskGroups::Impl {
           if (data["kind"] == "job") b["job_id"] = data["id"];
         }
         append(plans, childSnapshot(child, b["plan_id"].toString(), "get_plan", requests), i);
-        if (g->manifest.contains("job_id"))
-          append(jobs, childSnapshot(child, b["job_id"].toString(), "get_job", requests), i);
+        if (g->manifest.contains("job_id")) {
+          const auto directResult = path + '/' + QString::number(i) + "/direct-result.json";
+          append(jobs, QFileInfo::exists(directResult) ? load(directResult)["items"].toArray()
+              : childSnapshot(child, b["job_id"].toString(), "get_job", requests), i);
+        }
         batches[i] = b;
       }
       g->manifest["batches"] = batches;
@@ -160,6 +164,10 @@ struct ImageTaskGroups::Impl {
       {"batch_count", g->manifest["batches"].toArray().size()},
       {"cancellation_requested", g->stop.stop_requested()}};
     o["pause_requested"] = g->pause_requested.load();
+    if (g->manifest["direct"].toBool()) {
+      o["direct"] = true;
+      o["timings"] = g->manifest["timings"];
+    }
     for (const auto key : {"name", "category", "created_at"}) o[key] = g->manifest[key];
     if (job) {
       o["plan_id"] = g->manifest["id"];
@@ -203,6 +211,19 @@ struct ImageTaskGroups::Impl {
   void run(const std::shared_ptr<Group> &g, bool job, std::stop_token schedulerStop) {
     std::stop_callback callback(schedulerStop, [&] { g->stop.request_stop(); });
     auto items = (job ? g->job : g->plan)["items"].toArray();
+    const bool direct = job && g->manifest["direct"].toBool();
+    QElapsedTimer elapsed; elapsed.start();
+    const auto fromRequest = [&]() -> qint64 {
+      const auto timing = g->manifest["timings"].toObject();
+      return timing.contains("request_started_ms")
+          ? elapsed.msecsSinceReference() + elapsed.elapsed() - timing["request_started_ms"].toInteger()
+          : timing["preparation_ms"].toInteger() + timing["queue_setup_ms"].toInteger() + (g->queued.isValid() ? g->queued.elapsed() : elapsed.elapsed());
+    };
+    if (direct) {
+      auto timing = g->manifest["timings"].toObject();
+      timing["queue_wait_ms"] = g->queued.isValid() ? g->queued.elapsed() : 0;
+      g->manifest["timings"] = timing;
+    }
     try {
       g->manifest[job ? "job_state" : "plan_state"] = job ? "running" : "planning";
       publish(g, job, items);
@@ -236,7 +257,9 @@ struct ImageTaskGroups::Impl {
         if (!protectedPathsSeen.insert(key).second) continue;
         try {
           const ImageAdmission admission(false, g->stop.get_token());
-          leases.push_back(InputLease::open(scope, p, ImageBatchLimits{}.image.input_bytes, g->stop.get_token()));
+          // Pin identity without decoding; each child enforces its own format
+          // budget. Even an oversized future input must retain hard-link protection.
+          leases.push_back(InputLease::open(scope, p, std::numeric_limits<std::uint64_t>::max(), g->stop.get_token()));
           protectedInputs.push_back(leases.back().snapshot());
         } catch (const skeletal::Failure &e) {
           if (e.error.code == ErrorCode::Cancelled) throw;
@@ -259,8 +282,13 @@ struct ImageTaskGroups::Impl {
         auto b = batches[i].toObject();
         const auto requests = load(path(g) + '/' + QString::number(i) + "/requests.json")["items"].toArray();
         ImageBatchContext context{protectedInputs, allocated};
-        for (qsizetype n = offset + requests.size(); n < all.size(); ++n)
-          context.reserved_outputs.emplace_back(all[n].toObject()["output"].toString().toStdWString());
+        for (qsizetype n = offset + requests.size(); n < all.size(); ++n) {
+          const auto future = all[n].toObject();
+          // Rejected preparation rows cannot write. Reserving their placeholder
+          // or duplicate destination would also reject an earlier valid row.
+          if (direct && future["preparation_error"].isObject()) continue;
+          context.reserved_outputs.emplace_back(future["output"].toString().toStdWString());
+        }
         if (job)
           for (qsizetype n = 0; n < items.size(); ++n)
             if (n < offset || n >= offset + requests.size()) {
@@ -269,6 +297,69 @@ struct ImageTaskGroups::Impl {
             }
         const auto recordPath = path(g) + '/' + QString::number(i) + "/records";
         ImageBatchService child(scope, std::filesystem::path(recordPath.toStdWString()), {}, std::move(context));
+        if (direct) {
+          // Desktop-only one-item check/commit pipeline. Public MCP submit still
+          // requires the complete approved plan and its original digest.
+          QJsonObject planned;
+          const auto preparationError = requests.first().toObject()["preparation_error"].toObject();
+          if (!preparationError.isEmpty()) {
+            planned = {{"state", "failed"}, {"items", QJsonArray{QJsonObject{
+              {"request", requests.first()}, {"status", "failed"}, {"error", preparationError}}}}};
+          } else {
+            auto q = query("create_plan"); q["items"] = requests;
+            const auto created = child.request(q, g->stop.get_token());
+            if (created.contains("error")) {
+              planned = {{"state", "failed"}, {"items", QJsonArray{QJsonObject{
+                {"request", requests.first()}, {"status", "failed"}, {"error", created["error"]}}}}};
+            } else {
+              b["plan_id"] = created["plan_id"];
+              batches[i] = b; g->manifest["batches"] = batches;
+              for (;;) {
+                if (g->stop.stop_requested()) {
+                  auto cancel = query("cancel", b["plan_id"].toString()); cancel["kind"] = "plan";
+                  (void)child.request(cancel);
+                }
+                planned = checked(child.request(query("get_plan", b["plan_id"].toString())));
+                auto item = planned["items"].toArray().first().toObject();
+                item["index"] = offset; item["batch"] = i;
+                if (active(planned["state"].toString()) || item["status"] == "ready") item["status"] = "running";
+                items[offset] = item;
+                { const std::lock_guard lock(state); g->job = snapshot(g, true, items); }
+                if (!active(planned["state"].toString())) break;
+                std::unique_lock lock(state); wake.wait_for(lock, std::chrono::milliseconds(40));
+              }
+            }
+          }
+          auto timing = g->manifest["timings"].toObject();
+          timing["last_check_ms"] = elapsed.elapsed();
+          if (!timing.contains("first_check_ms")) timing["first_check_ms"] = elapsed.elapsed();
+          g->manifest["timings"] = timing;
+          if (g->stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group cancelled");
+          auto item = planned["items"].toArray().first().toObject();
+          const auto approved = item["preflight"].toObject();
+          const auto out = approved["output"].toString();
+          if (!out.isEmpty()) allocated.emplace_back(out.toStdWString());
+          const bool losses = !approved["losses"].toArray().isEmpty();
+          if (planned["state"] != "ready" || losses) {
+            item["index"] = offset; item["batch"] = i; item["status"] = "failed";
+            if (losses) item["error"] = QJsonObject{{"code", "invalid_argument"},
+              {"message", "Direct export requires loss acknowledgement; retry preflight to review the listed losses"}};
+            if (!item.contains("error")) item["error"] = planned["error"];
+            items[offset] = item; failed = true;
+            save(path(g) + '/' + QString::number(i) + "/direct-result.json", {{"items", QJsonArray{item}}});
+            batches[i] = b; g->manifest["batches"] = batches; offset += requests.size();
+            publish(g, true, items);
+            continue;
+          }
+          b["approval_digest"] = planned["approval_digest"];
+          while (g->pause_requested && !g->stop.stop_requested()) {
+            g->manifest["job_state"] = "paused";
+            { const std::lock_guard lock(state); g->job = snapshot(g, true, items); }
+            std::unique_lock lock(state); wake.wait_for(lock, std::chrono::milliseconds(40));
+          }
+          if (g->stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group cancelled");
+          g->manifest["job_state"] = "running";
+        }
         if (job) {
           auto q = query("submit"); q["plan_id"] = b["plan_id"];
           q["approval_digest"] = b["approval_digest"];
@@ -310,6 +401,15 @@ struct ImageTaskGroups::Impl {
           }
         }
         if (result["state"] != (job ? "succeeded" : "ready")) failed = true;
+        if (direct) {
+          auto timing = g->manifest["timings"].toObject();
+          for (const auto &value : result["items"].toArray())
+            if (value.toObject()["status"] == "succeeded" && !timing.contains("first_output_ms")) {
+              timing["first_output_ms"] = elapsed.elapsed();
+              timing["first_output_from_request_ms"] = fromRequest();
+            }
+          g->manifest["timings"] = timing;
+        }
         offset += requests.size(); g->manifest["batches"] = batches;
         publish(g, job, items);
       }
@@ -325,6 +425,10 @@ struct ImageTaskGroups::Impl {
         return status == "ready" || status == "succeeded" || status == "skipped";
       });
       g->manifest[job ? "job_state" : "plan_state"] = failed ? (anySucceeded ? "partially_succeeded" : "failed") : (job ? "succeeded" : "ready");
+      if (direct) {
+        auto timing = g->manifest["timings"].toObject(); timing["total_from_request_ms"] = fromRequest();
+        g->manifest["timings"] = timing;
+      }
       if (!job && !failed) {
         g->manifest["approval_digest"] = hash({{"id", g->manifest["id"]}, {"batches", batches},
           {"policy_revision", QString::fromStdString(scope.policy_revision)}});
@@ -347,6 +451,7 @@ struct ImageTaskGroups::Impl {
     }
   }
   void enqueue(const std::shared_ptr<Group> &g, bool job) {
+    g->queued.start();
     TaskRequest task; task.priority = Priority::Background; task.resources = {1, 1, 0, 0};
     task.work = [this, g, job](std::stop_token s) { run(g, job, s); return TaskResult{}; };
     const auto submitted = scheduler.submit(std::move(task));
@@ -357,25 +462,40 @@ struct ImageTaskGroups::Impl {
       fail(submitted.error->code, submitted.error->message.c_str());
     }
   }
-  QJsonObject create(const QJsonArray &requests, QJsonArray protect = {}, const QJsonObject &metadata = {}) {
+  QJsonObject create(QJsonArray requests, QJsonArray protect = {}, const QJsonObject &metadata = {}, bool direct = false, std::stop_token stop = {}) {
+    QElapsedTimer preparation; preparation.start();
     if (requests.isEmpty()) fail(ErrorCode::InvalidArgument, "Conversion group needs at least one input");
     std::set<QString> outputs;
-    for (auto v : requests) {
-      const auto r = v.toObject();
+    for (qsizetype index = 0; index < requests.size(); ++index) {
+      if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
+      auto r = requests[index].toObject();
       if (!r["input"].isString() || !r["output"].isString() || !r["options"].isObject())
         fail(ErrorCode::InvalidArgument, "Conversion groups require input, output and options");
+      if (direct && r["preparation_error"].isObject()) continue;
 #ifdef FORMAVIEW_MODEL_EXPORT
       if (r["options"].toObject()["target"] == "fbx") model_export::validate_options(r["options"].toObject());
       else
 #endif
         (void)parse_image_options(r["options"].toObject());
       auto key = r["output"].toString(); key.replace('\\', '/');
-      if (r["conflict"] != "rename" && !outputs.insert(key.toCaseFolded()).second)
-        fail(ErrorCode::Conflict, "Non-renaming group destinations must be distinct");
+      if (r["conflict"] != "rename" && !outputs.insert(key.toCaseFolded()).second) {
+        if (!direct) fail(ErrorCode::Conflict, "Non-renaming group destinations must be distinct");
+        r["preparation_error"] = QJsonObject{{"code", "conflict"}, {"message", "Non-renaming group destinations must be distinct"}};
+        requests[index] = r;
+      }
     }
     auto g = std::make_shared<Group>();
     const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     g->manifest = {{"version", 1}, {"id", "group-" + uuid}, {"plan_state", "planning"}};
+    if (direct) {
+      g->manifest["direct"] = true;
+      g->manifest["plan_state"] = "interrupted"; // Not a publicly approvable batch plan.
+      g->manifest["job_id"] = "group-" + uuid + "-job";
+      g->manifest["job_state"] = "queued";
+      g->manifest["idempotency_key"] = uuid;
+      g->manifest["acknowledge_losses"] = false;
+      g->manifest["timings"] = metadata["timings"].toObject();
+    }
     g->manifest["created_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
     const auto fallback = QFileInfo(requests.first().toObject()["input"].toString()).completeBaseName()
         + " · " + QDateTime::currentDateTime().toString("MM-dd HH:mm:ss");
@@ -388,10 +508,11 @@ struct ImageTaskGroups::Impl {
     QJsonArray batches, items;
     // Model results contain sizeable verification evidence. Keep each model
     // in its own durable record instead of accumulating it past the journal cap.
-    const qsizetype chunkSize = std::any_of(requests.begin(), requests.end(), [](const auto &v) {
+    const qsizetype chunkSize = direct || std::any_of(requests.begin(), requests.end(), [](const auto &v) {
       return v.toObject()["options"].toObject()["target"] == "fbx";
     }) ? 1 : 64;
     for (qsizetype offset = 0; offset < requests.size(); offset += chunkSize) {
+      if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
       QJsonArray chunk;
       for (qsizetype n = offset; n < std::min(requests.size(), offset + chunkSize); ++n) chunk.append(requests[n]);
       const auto index = batches.size();
@@ -401,18 +522,35 @@ struct ImageTaskGroups::Impl {
       batches.append(QJsonObject{{"count", chunk.size()}});
       for (auto r : chunk) items.append(QJsonObject{{"index", items.size()}, {"batch", index}, {"request", r}, {"status", "pending"}});
     }
+    std::set<QString> inspectedPaths;
+    std::vector<InputLease> inspectionLeases;
+    int protectionInspections = 0;
     for (auto r : requests) {
+      if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
       const auto request = r.toObject();
       protect.append(request["input"]);
 #ifdef FORMAVIEW_MODEL_EXPORT
-      if (request["options"].toObject()["target"] == "fbx") {
+      if (!request.contains("preparation_error") && request["options"].toObject()["target"] == "fbx") {
         for (const auto &p : model_export::auxiliary_inputs(request)) protect.append(QString::fromStdWString(p.wstring()));
         const auto suffix = QFileInfo(request["input"].toString()).suffix().toLower();
         if (suffix != "psk" && suffix != "pskx" && suffix != "psa") {
+          const auto sourcePath = std::filesystem::path(request["input"].toString().toStdWString());
+          const auto sourceKey = QString::fromStdWString(validated_local_path(sourcePath).wstring()).toCaseFolded();
+          if (inspectedPaths.contains(sourceKey)) continue;
+          // A held lease makes one scan per path sufficient for all clips.
+          // Failed leases are not cached: each item retains its real failure.
+          try {
+            inspectionLeases.push_back(InputLease::open(scope, sourcePath, std::numeric_limits<std::uint64_t>::max(), stop));
+          } catch (const skeletal::Failure &e) { if (e.error.code == ErrorCode::Cancelled) throw; continue; }
+          inspectedPaths.insert(sourceKey);
+          ++protectionInspections;
           auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
-          const auto source = execute_image_request(inspect, scope);
+          const auto source = execute_image_request(inspect, scope, {}, stop);
           for (const auto key : {"sources", "referenced_sources"})
-            for (const auto &v : source[key].toArray()) protect.append(v.toObject()["path"]);
+            for (const auto &v : source[key].toArray()) {
+              const auto sourceName = v.isString() ? v.toString() : v.toObject()["path"].toString();
+              if (!sourceName.isEmpty()) protect.append(sourceName);
+            }
         }
       }
 #endif
@@ -427,10 +565,17 @@ struct ImageTaskGroups::Impl {
     g->manifest["batches"] = batches;
     save(path(g) + "/index.json", g->manifest);
     { const std::lock_guard lock(state); g->plan = snapshot(g, false, items); groups.emplace(g->manifest["id"].toString(), g); }
+    if (direct) {
+      auto timing = g->manifest["timings"].toObject(); timing["queue_setup_ms"] = preparation.elapsed();
+      timing["protection_inspections"] = protectionInspections;
+      g->manifest["timings"] = timing;
+      publish(g, true, items); enqueue(g, true);
+      return {{"version", 1}, {"job_id", g->manifest["job_id"]}};
+    }
     enqueue(g, false);
     return {{"version", 1}, {"plan_id", g->manifest["id"]}};
   }
-  QJsonObject dispatch(const QJsonObject &q) {
+  QJsonObject dispatch(const QJsonObject &q, std::stop_token stop) {
     const auto op = q["operation"].toString();
     if (op == "get_plan" || op == "get_job") {
       auto g = find(q["id"].toString()); const std::lock_guard lock(state);
@@ -461,7 +606,8 @@ struct ImageTaskGroups::Impl {
       wake.notify_all(); return {{"accepted", true}};
     }
     const std::lock_guard write(mutation);
-    if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q);
+    if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, false, stop);
+    if (op == "create_job") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, true, stop);
     if (op == "retry_plan") {
       auto g = find(q["id"].toString()); QJsonObject job;
       { const std::lock_guard lock(state); job = g->job; }
@@ -469,9 +615,14 @@ struct ImageTaskGroups::Impl {
       QJsonArray items;
       for (auto v : job["items"].toArray()) {
         const auto item = v.toObject();
-        if (item["status"] != "succeeded" && item["status"] != "skipped") items.append(item["request"]);
+        if (item["status"] != "succeeded" && item["status"] != "skipped") {
+          auto retry = item["request"].toObject();
+          if (retry.contains("gui_source")) fail(ErrorCode::InvalidArgument, "Source preparation must be retried through the desktop export settings");
+          retry.remove("preparation_error");
+          items.append(retry);
+        }
       }
-      return create(items, protectedPaths(g), g->manifest);
+      return create(items, protectedPaths(g), g->manifest, false, stop);
     }
     if (op == "submit") {
       auto g = find(q["plan_id"].toString());
@@ -505,7 +656,7 @@ ImageTaskGroups::~ImageTaskGroups() = default;
 QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop) {
   try {
     if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group request cancelled");
-    return impl_->dispatch(q);
+    return impl_->dispatch(q, stop);
   } catch (const skeletal::Failure &e) { return image_error_json(e); }
   catch (const std::exception &e) { return image_error_json(skeletal::Failure(ErrorCode::Internal, e.what())); }
 }

@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
@@ -13,6 +14,7 @@
 #include <QSaveFile>
 #include <QUuid>
 #include <algorithm>
+#include <limits>
 #include <set>
 
 namespace {
@@ -329,6 +331,20 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                           const QVariantMap &options,
                           const QString &nameTemplate, const QString &conflict,
                           const QVariantList &itemOverrides, const QVariantMap &metadata) {
+  prepare(inputs, scope, options, nameTemplate, conflict, itemOverrides, metadata, false);
+}
+void ImageJobs::startExport(const QStringList &inputs, const QVariantMap &scope,
+                          const QVariantMap &options, const QString &nameTemplate,
+                          const QString &conflict, const QVariantMap &metadata) {
+  if (options.value("target") != "fbx") {
+    error_ = tr("Direct export requires model or animation options"); emit changed(); return;
+  }
+  prepare(inputs, scope, options, nameTemplate, conflict, {}, metadata, true);
+}
+void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
+                          const QVariantMap &options,
+                          const QString &nameTemplate, const QString &conflict,
+                          const QVariantList &itemOverrides, const QVariantMap &metadata, bool direct) {
   if (busy_)
     return;
   if (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size()) {
@@ -353,6 +369,9 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
     return;
   }
   invalidatePlan();
+  if (direct) { ++jobSelectionRevision_; jobId_.clear(); job_.clear(); polledJob_ = {}; }
+  const auto selectionRevision = jobSelectionRevision_;
+  QElapsedTimer requested; requested.start();
   busy_ = true;
   error_.clear();
   timer_.start();
@@ -371,9 +390,10 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
   task.work = [receiver, existing, existingGroups, inputs, policy, requestedScope, options,
                nameTemplate, conflict, journalRoot, itemOverrides, metadata,
-               revision](std::stop_token stop) mutable {
+               revision, selectionRevision, requested, direct](std::stop_token stop) mutable {
     QJsonObject response;
     QVariantList inputInfo;
+    QElapsedTimer elapsed; elapsed.start();
     try {
       if (!existing) {
         (void)validated_local_path(std::filesystem::path(journalRoot.toStdWString()));
@@ -397,28 +417,73 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         throw skeletal::Failure(
             ErrorCode::InvalidArgument,
             "GUI conversion requires one explicit output directory");
-      QJsonArray items = QJsonArray::fromVariantList(metadata.value("retry_requests").toList());
+      const auto setupMs = elapsed.elapsed();
+      QJsonArray pending = QJsonArray::fromVariantList(metadata.value("retry_requests").toList());
       for (qsizetype i = 0; i < inputs.size(); ++i) {
+        auto parameters = QJsonObject::fromVariantMap(options);
+        if (!itemOverrides.isEmpty()) {
+          const auto overrides = QJsonObject::fromVariantMap(itemOverrides[i].toMap());
+          for (auto it = overrides.begin(); it != overrides.end(); ++it) parameters[it.key()] = it.value();
+        }
+        pending.append(QJsonObject{{"gui_source", QJsonObject{{"input", inputs[i]}, {"options", parameters},
+          {"name_template", nameTemplate}, {"conflict", conflict}, {"output_directory", outputRoots[0]}}}});
+      }
+      QJsonArray items;
+      QJsonArray protectedSources = QJsonArray::fromVariantList(metadata.value("protected_inputs").toList());
+      QHash<QString, QJsonObject> inspections;
+      std::vector<InputLease> inspectionLeases;
+      const auto access = parse_image_scope(policy);
+      int inspectionCount = 0;
+      const auto inspectOnce = [&](const QJsonObject &q) {
+        try {
+        // Hold each source against write/delete for this preparation. Do not
+        // share results across paths: relative auxiliary references may differ.
+        const auto path = validated_local_path(std::filesystem::path(q["input"].toString().toStdWString()));
+        const auto key = QString::fromStdWString(path.wstring()).toCaseFolded() + ':' + QString::number(q["subresource"].toInt());
+        if (inspections.contains(key)) return inspections.value(key);
+        // This lease only pins identity; inspect applies the format's decode
+        // budget. An image-specific limit must not reject a larger model here.
+        auto lease = InputLease::open(access, path, std::numeric_limits<std::uint64_t>::max(), stop);
+        ++inspectionCount;
+        auto result = existing->request(q, stop);
+        if (!result.contains("error")) {
+          inspectionLeases.push_back(std::move(lease));
+          inspections.insert(key, result);
+        }
+        return result;
+        } catch (const skeletal::Failure &e) {
+          if (e.error.code == ErrorCode::Cancelled) throw;
+          return image_error_json(e);
+        }
+      };
+      for (const auto &pendingValue : pending) {
         if (stop.stop_requested())
           throw skeletal::Failure(ErrorCode::Cancelled,
                                   "Plan preparation cancelled");
-        auto itemOptions = QJsonObject::fromVariantMap(options);
-        if (!itemOverrides.isEmpty()) {
-          const auto overrideOptions =
-              QJsonObject::fromVariantMap(itemOverrides[i].toMap());
-          for (auto it = overrideOptions.begin(); it != overrideOptions.end();
-               ++it)
-            itemOptions[it.key()] = it.value();
-        }
+        const auto pendingItem = pendingValue.toObject();
+        auto guiSource = pendingItem["gui_source"].toObject();
+        if (guiSource.isEmpty()) { items.append(pendingItem); continue; }
+        const auto input = guiSource["input"].toString();
+        const auto itemTemplate = guiSource["name_template"].toString();
+        const auto itemConflict = guiSource["conflict"].toString();
+        const auto outputDirectory = guiSource["output_directory"].toString();
+        protectedSources.append(input);
+        const auto originalPair = guiSource["options"].toObject()["paired_file"].toString();
+        if (!originalPair.isEmpty()) protectedSources.append(originalPair);
+        const auto initialSize = items.size();
+        const auto outputIndex = guiSource.contains("output_index") ? guiSource["output_index"].toInteger() : initialSize;
+        guiSource["output_index"] = outputIndex;
+        try {
+        auto itemOptions = guiSource["options"].toObject();
         auto inspect = request("inspect");
-        inspect["input"] = inputs[i];
+        inspect["input"] = input;
         inspect["subresource"] = itemOptions.value("subresource").toInt();
-        const auto source = existing->request(inspect, stop);
+        const auto source = inspectOnce(inspect);
         if (itemOptions["target"] == "fbx") {
           const auto content = itemOptions.take("export_content").toString("combined");
           const auto organization = itemOptions.take("file_organization").toString("per-clip");
           const auto paired = itemOptions.take("paired_file").toString();
-          const auto suffix = QFileInfo(inputs[i]).suffix().toLower();
+          const auto suffix = QFileInfo(input).suffix().toLower();
           const bool actorx = suffix == "psk" || suffix == "pskx" || suffix == "psa";
           itemOptions["coordinates"] = actorx ? "actorx-z-up-x-forward-rh-cm" : "source";
           if (!actorx) itemOptions.remove("pairing_policy");
@@ -438,7 +503,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
               itemOptions["animation"] = paired;
               auto inspect_animation = request("inspect");
               inspect_animation["input"] = paired;
-              animation_source = existing->request(inspect_animation, stop);
+              animation_source = inspectOnce(inspect_animation);
             } else itemOptions["reference"] = paired;
           }
           itemOptions["include_mesh"] = content != "animation";
@@ -453,7 +518,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           if (content != "model")
             for (const auto &v : animation_info.value("clips").toArray())
               if (!selection_explicit || selection.contains(v.toObject()["id"])) clips.append(v);
-          inputInfo.append(QVariantMap{{"input", inputs[i]}, {"clips", clips.toVariantList()},
+          inputInfo.append(QVariantMap{{"input", input}, {"clips", clips.toVariantList()},
               {"error", inspect_error.toVariantMap()}});
           if (content != "model" && !inspect_error.isEmpty()) {
             // Surface the real inspection failure instead of fabricating a
@@ -464,16 +529,16 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                     inspect_error.value("message").toString().toStdString());
           }
           if (content != "model" && clips.isEmpty()) {
-            if (selection_explicit) continue;
+            if (selection_explicit && !direct) continue;
             throw skeletal::Failure(ErrorCode::InvalidArgument,
                 "No source animation selected; choose model-only, or supply an ActorX animation pair");
           }
           if (content == "model" && !source["has_mesh"].toBool() && !source.contains("error"))
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
           const auto append_model = [&](QJsonObject parameters, const QString &clip_name) {
-            items.append(QJsonObject{{"input", inputs[i]},
-                {"output", QDir(outputRoots[0].toString()).filePath(outputName(inputs[i], items.size(), "fbx", nameTemplate, clip_name))},
-                {"options", parameters}, {"conflict", conflict}});
+            items.append(QJsonObject{{"input", input},
+                {"output", QDir(outputDirectory).filePath(outputName(input, outputIndex + items.size() - initialSize, "fbx", itemTemplate, clip_name))},
+                {"options", parameters}, {"conflict", itemConflict}});
           };
           if (content == "model" || clips.isEmpty()) append_model(itemOptions, "model");
           else if (organization == "multiple-stacks") {
@@ -489,7 +554,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
           continue;
         }
         inputInfo.append(QVariantMap{
-            {"input", inputs[i]},
+            {"input", input},
             {"channels",
              source.value("selected_channels").toArray().toVariantList()},
             {"error", source.value("error").toObject().toVariantMap()},
@@ -519,25 +584,39 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
         }
         if (!itemOptions.contains("source_alpha") && source.contains("alpha"))
           itemOptions["source_alpha"] = source["alpha"];
-        const auto name = outputName(inputs[i], i,
-                                    itemOptions["target"].toString(), nameTemplate);
+        const auto name = outputName(input, outputIndex,
+                                    itemOptions["target"].toString(), itemTemplate);
         items.append(QJsonObject{
-            {"input", inputs[i]},
-            {"output", QDir(outputRoots[0].toString()).filePath(name)},
+            {"input", input},
+            {"output", QDir(outputDirectory).filePath(name)},
             {"options", itemOptions},
-            {"conflict", conflict}});
+            {"conflict", itemConflict}});
+        } catch (const skeletal::Failure &e) {
+          if (!direct || e.error.code == ErrorCode::Cancelled) throw;
+          items.append(QJsonObject{{"input", input},
+            {"output", QDir(outputDirectory).filePath(QFileInfo(input).completeBaseName() + "-failed.fbx")},
+            {"options", QJsonObject{{"target", "fbx"}}}, {"conflict", itemConflict}, {"gui_source", guiSource},
+            {"preparation_error", image_error_json(e)["error"]}});
+        }
       }
       if (items.isEmpty() && !inputs.isEmpty())
         throw skeletal::Failure(ErrorCode::InvalidArgument, "No selected source clips match the current inputs");
       if (items.isEmpty())
         response = {{"configured", true}};
       else {
-        auto create = request("create_plan");
+        auto create = request(direct ? "create_job" : "create_plan");
         create["items"] = items;
         create["name"] = metadata.value("name").toString();
         create["category"] = metadata.value("category").toString();
-        create["protected_inputs"] = QJsonArray::fromVariantList(metadata.value("protected_inputs").toList());
+        create["protected_inputs"] = protectedSources;
+        if (direct) create["timings"] = QJsonObject{{"preparation_ms", requested.elapsed()},
+            {"request_started_ms", requested.msecsSinceReference()}, {"dispatch_wait_ms", requested.elapsed() - elapsed.elapsed()},
+            {"setup_ms", setupMs}, {"expansion_ms", elapsed.elapsed() - setupMs}, {"source_inspections", inspectionCount}};
         response = existingGroups->request(create, stop);
+        if (direct && stop.stop_requested() && response.contains("job_id")) {
+          auto cancel = request("cancel"); cancel["kind"] = "job"; cancel["id"] = response["job_id"];
+          (void)existingGroups->request(cancel);
+        }
       }
     } catch (const skeletal::Failure &e) {
       response = image_error_json(e);
@@ -548,7 +627,7 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
     if (receiver)
       QMetaObject::invokeMethod(
           receiver,
-          [receiver, existing, existingGroups, requestedScope, response, revision, inputInfo] {
+          [receiver, existing, existingGroups, requestedScope, response, revision, selectionRevision, inputInfo, direct] {
             if (!receiver)
               return;
             receiver->busy_ = false;
@@ -557,20 +636,22 @@ void ImageJobs::preflight(const QStringList &inputs, const QVariantMap &scope,
                 receiver->discoveryId_.clear();
                 receiver->discovery_.clear();
                 receiver->discoveryOffset_ = 0;
-                receiver->jobId_.clear();
+                if (selectionRevision == receiver->jobSelectionRevision_) receiver->jobId_.clear();
               }
               receiver->service_ = existing;
               receiver->groups_ = existingGroups;
               receiver->scope_ = requestedScope;
               receiver->timer_.start();
             }
-            if (revision == receiver->revision_) {
+            if (direct || revision == receiver->revision_) {
               receiver->inputInfo_ = inputInfo;
               receiver->error_ = errorText(response);
               receiver->planId_ = response["plan_id"].toString();
+              if (direct && selectionRevision == receiver->jobSelectionRevision_) receiver->jobId_ = response["job_id"].toString();
             } else if (!response["plan_id"].toString().isEmpty())
               receiver->cancel("plan", response["plan_id"].toString());
             receiver->poll();
+            if (direct) emit receiver->directExportFinished(response["job_id"].toString());
             emit receiver->changed();
           },
           Qt::QueuedConnection);
@@ -663,17 +744,18 @@ void ImageJobs::dispatch(QJsonObject q) {
   emit changed();
   const auto service = service_;
   const auto groups = groups_;
+  const auto selectionRevision = jobSelectionRevision_;
   QPointer<ImageJobs> receiver(this);
   TaskRequest task;
   task.priority = Priority::Foreground;
-  task.work = [service, groups, receiver, q](std::stop_token stop) {
+  task.work = [service, groups, receiver, q, selectionRevision](std::stop_token stop) {
     const auto id = q.value("plan_id").toString(q.value("id").toString());
     const auto response = groups && groups->contains(id) ? groups->request(q, stop)
                                                         : service->request(q, stop);
     if (receiver)
       QMetaObject::invokeMethod(
           receiver,
-          [receiver, response, q] {
+          [receiver, response, q, selectionRevision] {
             if (!receiver)
               return;
             receiver->busy_ = false;
@@ -682,7 +764,7 @@ void ImageJobs::dispatch(QJsonObject q) {
               receiver->planId_ = response["plan_id"].toString();
               receiver->idempotency_.clear();
             }
-            if (response.contains("job_id"))
+            if (response.contains("job_id") && selectionRevision == receiver->jobSelectionRevision_)
               receiver->jobId_ = response["job_id"].toString();
             if (response.contains("discovery_id")) {
               receiver->discoveryId_ = response["discovery_id"].toString();
@@ -713,6 +795,7 @@ void ImageJobs::submit(bool acknowledge) {
   q["approval_digest"] = plan_["approval_digest"].toString();
   q["idempotency_key"] = idempotency_;
   q["acknowledge_losses"] = acknowledge;
+  ++jobSelectionRevision_;
   jobId_.clear(); job_.clear(); polledJob_ = {};
   dispatch(q);
 }
@@ -728,8 +811,12 @@ void ImageJobs::cancel(const QString &kind, const QString &id) {
 }
 void ImageJobs::retry(const QString &id) {
   if (busy_) return;
-  if (!groups_ || !groups_->contains(id)) {
-    const auto previous = id == jobId_ ? job_ : archivedJobs_.value(id).toMap();
+  const auto previous = jobSnapshot(id);
+  const auto previousItems = previous.value("items").toList();
+  const bool needsExpansion = std::any_of(previousItems.begin(), previousItems.end(), [](const auto &v) {
+    return v.toMap().value("request").toMap().contains("gui_source");
+  });
+  if (!groups_ || !groups_->contains(id) || needsExpansion) {
     if (previous.isEmpty() || active(previous.value("state").toString())) return;
     QVariantList requests, protectedInputs;
     QStringList outputs;
@@ -737,6 +824,8 @@ void ImageJobs::retry(const QString &id) {
       const auto item = value.toMap(), original = item.value("request").toMap();
       protectedInputs.append(original.value("input"));
       const auto options = original.value("options").toMap();
+      const auto guiPair = original.value("gui_source").toMap().value("options").toMap().value("paired_file").toString();
+      if (!guiPair.isEmpty()) protectedInputs.append(guiPair);
       for (const auto *key : {"reference", "animation"})
         if (!options.value(key).toString().isEmpty()) protectedInputs.append(options.value(key));
       const auto approved = item.value("preflight").toMap();
@@ -747,12 +836,15 @@ void ImageJobs::retry(const QString &id) {
           if (!path.isEmpty()) protectedInputs.append(path);
         }
       if (item.value("status") == "succeeded" || item.value("status") == "skipped") continue;
-      requests.append(original);
+      auto retryRequest = original;
+      retryRequest.remove("preparation_error");
+      requests.append(retryRequest);
       outputs.append(QFileInfo(original.value("output").toString()).absolutePath());
     }
     if (requests.isEmpty()) return;
     outputs.removeDuplicates();
     auto retryScope = previous.value("scope").toMap();
+    if (retryScope.isEmpty() && groups_ && groups_->contains(id)) retryScope = scope_;
     if (retryScope.isEmpty()) retryScope = {{"input_roots", localInputRoots()}, {"output_roots", outputs}, {"allow_overwrite", false}};
     preflight({}, retryScope, {}, {}, "skip", {},
               {{"name", previous.value("name")}, {"category", previous.value("category")},
@@ -806,6 +898,7 @@ QVariantMap ImageJobs::jobSnapshot(const QString &id) const {
   return result.toVariantMap();
 }
 void ImageJobs::selectJob(const QString &id) {
+  ++jobSelectionRevision_;
   jobId_ = id;
   if (!service_ && archivedJobs_.contains(id)) { job_ = archivedJobs_.value(id).toMap(); emit changed(); return; }
   poll();
