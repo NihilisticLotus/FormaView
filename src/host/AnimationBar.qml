@@ -137,6 +137,10 @@ Rectangle {
                         text = root.speedText(root.session.speed);
                     }
                     Accessible.name: Theme.t("播放速度（正数，回车确认）", "Playback speed (positive number, press Enter)", "播放速度（正數，按 Enter 確認）")
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: Accessible.name
+                    hoverEnabled: true
                 }
                 Label {
                     anchors.verticalCenter: parent.verticalCenter
