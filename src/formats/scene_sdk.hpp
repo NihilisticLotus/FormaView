@@ -21,6 +21,8 @@ struct Scene {
   QString callback_error;
   QJsonArray losses;
   QJsonObject metadata;
+  QJsonArray clip_catalog;
+  bool has_clip_catalog{};
   std::uint64_t allocated{};
   std::unique_ptr<FbxManager, ManagerDelete> manager;
   FbxScene *scene{};

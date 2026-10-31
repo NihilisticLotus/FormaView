@@ -1,4 +1,5 @@
 #include "image_jobs.hpp"
+#include "../src/formats/fbx_selection.hpp"
 #include <fbxsdk.h>
 #include <QCoreApplication>
 #include <QDir>
@@ -26,13 +27,14 @@ template<class F> void wait(F done, int timeout = 90000) {
   require(done(), "Noninteractive export-flow timeout");
 }
 struct FbxDestroy { template<class T> void operator()(T *p) const { if (p) p->Destroy(); } };
-void fixture(const QString &path, int clips) {
+void fixture(const QString &path, int clips, const char *version = nullptr) {
   std::unique_ptr<FbxManager, FbxDestroy> manager(FbxManager::Create());
   manager->SetIOSettings(FbxIOSettings::Create(manager.get(), IOSROOT));
   std::unique_ptr<FbxScene, FbxDestroy> scene(FbxScene::Create(manager.get(), "Export flow"));
   auto *node = FbxNode::Create(scene.get(), "Root"); scene->GetRootNode()->AddChild(node);
   for (int i = 0; i < clips; ++i) {
-    auto *stack = FbxAnimStack::Create(scene.get(), ("Clip_" + std::to_string(i)).c_str());
+    const auto clipName = i == 0 ? std::string("Model|Clip_0") : "Clip_" + std::to_string(i);
+    auto *stack = FbxAnimStack::Create(scene.get(), clipName.c_str());
     auto *layer = FbxAnimLayer::Create(scene.get(), "Layer"); stack->AddMember(layer);
     FbxTime start, end; start.SetSecondDouble(0); end.SetSecondDouble(1);
     FbxTimeSpan span(start, end); stack->SetLocalTimeSpan(span);
@@ -47,6 +49,7 @@ void fixture(const QString &path, int clips) {
   }
   std::unique_ptr<FbxExporter, FbxDestroy> writer(FbxExporter::Create(manager.get(), "Fixture"));
   require(writer->Initialize(path.toUtf8().constData(), manager->GetIOPluginRegistry()->FindWriterIDByDescription("FBX binary (*.fbx)"), manager->GetIOSettings()), "Initialize fixture");
+  if (version) require(writer->SetFileExportVersion(version), "Set binary fixture version");
   require(writer->Export(scene.get()), "Write multi-animation fixture");
 }
 void save(const QString &path, const QVariantMap &data) {
@@ -68,6 +71,38 @@ void cleanActorFixture(const QString &source, const QString &destination) {
     offset += length;
   }
   QFile out(destination); require(out.open(QIODevice::WriteOnly) && out.write(clean) == clean.size(), "Write lossless synthetic ActorX fixture");
+}
+void binarySelection(const QString &root) {
+  using namespace formaview;
+  require(QDir().mkpath(root),"Create binary selection fixture");
+  const AccessScope scope{{std::filesystem::path(root.toStdWString())},{std::filesystem::path(root.toStdWString())},false,"binary-selection"};
+  for (const auto *version : {FBX_2014_00_COMPATIBLE,FBX_2020_00_COMPATIBLE}) {
+    const auto path=root+'/'+version+".fbx";
+    fixture(path,3,version);
+    const auto info=imaging::execute_image_request({{"version",1},{"operation","inspect"},{"input",path}},scope);
+    const auto clips=info["clips"].toArray();require(clips.size()==3,"Binary source clip inventory");
+    QFile file(path);require(file.open(QIODevice::ReadOnly),"Read binary selection fixture");const auto bytes=file.readAll();
+    const auto selected=scene_export::select_fbx_takes(bytes,clips,{clips[1].toObject()["id"]},{});
+    require(selected.has_value() && selected->size()<bytes.size(),"Binary take selection reduces data without fallback");
+    const auto output=root+'/'+version+"-selected.fbx";
+    QFile result(output);require(result.open(QIODevice::WriteOnly) && result.write(*selected)==selected->size(),"Write isolated selected binary");result.close();
+    std::unique_ptr<FbxManager,FbxDestroy> manager(FbxManager::Create());manager->SetIOSettings(FbxIOSettings::Create(manager.get(),IOSROOT));
+    std::unique_ptr<FbxScene,FbxDestroy> scene(FbxScene::Create(manager.get(),"readback"));
+    std::unique_ptr<FbxImporter,FbxDestroy> reader(FbxImporter::Create(manager.get(),"readback"));
+    require(reader->Initialize(output.toUtf8().constData(),-1,manager->GetIOSettings()) && reader->Import(scene.get()),"SDK reads rewritten binary offsets");
+    require(scene->GetSrcObjectCount<FbxAnimStack>()==1 && scene->GetSrcObjectCount<FbxAnimCurve>()==1,"Only selected animation dependency graph retained");
+    require(QString::fromUtf8(scene->GetSrcObject<FbxAnimStack>()->GetName())=="Clip_1","Selected clip identity retained");
+    const auto *curve=scene->GetSrcObject<FbxAnimCurve>();
+    require(curve->KeyGetCount()==2 && curve->KeyGetValue(0)==1 && curve->KeyGetValue(1)==2 && curve->KeyGetTime(1).GetSecondDouble()==1,"Original curve keys retained exactly");
+    auto malformed=bytes;for(int i=27;i<35;++i) malformed[i]=char(-1);
+    require(!scene_export::select_fbx_takes(malformed,clips,{clips[1].toObject()["id"]},{}),"Malformed offsets safely use original decoder");
+    require(!scene_export::select_fbx_takes(QByteArray("ASCII FBX"),clips,{clips[1].toObject()["id"]},{}),"Nonbinary files use original decoder");
+    std::stop_source stop;stop.request_stop();bool cancelled=false;
+    try { (void)scene_export::select_fbx_takes(bytes,clips,{clips[1].toObject()["id"]},stop.get_token()); }
+    catch(const skeletal::Failure &e) { cancelled=e.error.code==ErrorCode::Cancelled; }
+    require(cancelled,"Binary selection respects cancellation");
+  }
+  std::cout << "PASS 32/64-bit FBX binary take graphs, exact SDK keys, malformed fallback and cancellation\n";
 }
 void queuedSourceReplacement(const QString &root, QJsonObject first, int variant) {
   using namespace formaview;
@@ -328,9 +363,38 @@ void actorSourceGuard(const QString &root, const QString &fixtures, int variant)
 
 class ExportFlowTests {
 public:
+  static void realExport(const QString &root, const QString &input) {
+    require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "New isolated real-export evidence root required");
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
+    ImageJobs jobs;
+    const QVariantMap scope{{"input_roots", QStringList{QFileInfo(input).absolutePath()}}, {"output_roots",QStringList{root + "/out"}}, {"allow_overwrite",false}};
+    const QVariantMap options{{"target","fbx"},{"export_content","animation"},{"file_organization","per-clip"}};
+    QElapsedTimer clock; clock.start();
+    qint64 submitted = -1, firstFile = -1, nextReport = 1000;
+    QObject::connect(&jobs,&ImageJobs::directExportFinished,&jobs,[&](const QString &id) {
+      submitted = clock.elapsed();
+      std::cout << "job_submitted_ms=" << submitted << " id=" << id.toStdString() << std::endl;
+    });
+    jobs.startExport({input},scope,options,"{name}-{clip}.{ext}","skip");
+    wait([&] {
+      if (firstFile < 0 && !QDir(root + "/out").entryList({"*.fbx"},QDir::Files).isEmpty()) {
+        firstFile = clock.elapsed(); std::cout << "first_file_ms=" << firstFile << std::endl;
+      }
+      if (clock.elapsed() >= nextReport) {
+        save(root + "/progress.json",{{"elapsed_ms",clock.elapsed()},{"busy",jobs.busy()},{"error",jobs.error()},
+          {"job",jobs.job()},{"submitted_ms",submitted},{"first_file_ms",firstFile}});
+        nextReport = clock.elapsed() + 1000;
+      }
+      return !jobs.busy() && ((!jobs.job().isEmpty() && !active(jobs.job())) || !jobs.error().isEmpty());
+    },1800000);
+    save(root + "/result.json",{{"elapsed_ms",clock.elapsed()},{"submitted_ms",submitted},{"first_file_ms",firstFile},
+      {"input_bytes",QFileInfo(input).size()},{"input_info",jobs.inputInfo()},{"error",jobs.error()},{"job",jobs.job()}});
+    std::cout << "complete_ms=" << clock.elapsed() << " state=" << jobs.job().value("state").toString().toStdString() << std::endl;
+  }
   static void run(const QString &root) {
     require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "Use a new external test directory");
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
+    binarySelection(root + "/binary-selection");
     ImageJobs jobs;
     const QVariantMap scope{{"input_roots", QStringList{root}}, {"output_roots", QStringList{root + "/out"}}, {"allow_overwrite", false}};
     const QVariantMap options{{"target", "fbx"}, {"export_content", "animation"}, {"file_organization", "per-clip"}};
@@ -346,6 +410,7 @@ public:
     save(root + "/multi-job.json", baselineJob);
     require(baselineJob.value("state") == "succeeded", "48 multi-animation outputs succeed");
     require(baselineJob.value("items").toList().size() == 48, "Every selected clip is retained");
+    require(QFileInfo::exists(root + "/out/1-Model_Clip_0.fbx"), "FBX metadata separators are safe filename tokens");
     const auto timing = baselineJob.value("timings").toMap();
     require(timing.value("source_inspections").toInt() == 1, "Prepare parses repeated source once");
     require(timing.value("protection_inspections").toInt() == 1, "Protection parses multi-clip source once");
@@ -433,6 +498,17 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     require(argc == 2 || argc == 4, "External evidence root required");
+    if (argc == 4 && app.arguments()[2] == "--real-inspect") {
+      const auto root = app.arguments()[1], input = app.arguments()[3];
+      require(!QFileInfo::exists(root) && QDir().mkpath(root), "New isolated inspection evidence root required");
+      const formaview::AccessScope scope{{std::filesystem::path(QFileInfo(input).absolutePath().toStdWString())},
+        {std::filesystem::path(root.toStdWString())},false,"real-inspect"};
+      const auto result = formaview::imaging::execute_image_request({{"version",1},{"operation","inspect"},{"input",input}},scope);
+      save(root + "/result.json",result.toVariantMap()); return 0;
+    }
+    if (argc == 4 && app.arguments()[2] == "--real-export") {
+      ExportFlowTests::realExport(app.arguments()[1],app.arguments()[3]); return 0;
+    }
     if (argc == 4 && app.arguments()[2] == "--actor-guard") {
       require(!QFileInfo::exists(app.arguments()[1]), "New isolated ActorX test root required");
       actorSourceGuard(app.arguments()[1],qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES"),app.arguments()[3].toInt()); return 0;

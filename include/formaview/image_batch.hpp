@@ -29,6 +29,9 @@ struct ImageBatchLimits {
 struct ImageBatchContext {
   std::vector<InputSnapshot> protected_inputs;
   std::vector<std::filesystem::path> reserved_outputs;
+  // Parent has verified its complete persisted graph and holds all positive
+  // leases plus frozen negative dependencies through this child's lifetime.
+  bool guarded_inventory{};
 };
 // One owner per journal directory. Mutations may flush journal data and belong
 // on a control worker; get_plan/get_job/list_jobs/cancel only inspect memory.

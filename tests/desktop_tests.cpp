@@ -7217,8 +7217,19 @@ private slots:
         QTest::qWait(60);
         const auto compactHeight = timeline->height();
         QVERIFY(!item("animStart")->isVisible());
-        for (const auto *name : {"animPlay", "animSpeed", "animClip", "animDetailsToggle", "animRootLock"})
+        for (const auto *name : {"animPlay", "animSpeed", "animClip", "animRootOptions", "animRootLock"})
           QVERIFY2(item(name) && item(name)->isVisible(), name);
+        auto *lock = item("animRootLock"), *arrow = item("animRootOptions");
+        QCOMPARE(lock->parentItem(),arrow->parentItem());
+        QVERIFY(qAbs(lock->y()-arrow->y()) < 1);
+        QVERIFY(qAbs(arrow->x()-(lock->x()+lock->width())) < 1);
+        const auto rootControlsPosition=lock->parentItem()->mapToItem(bar,QPointF());
+        QVERIFY(rootControlsPosition.x() >= -1 && rootControlsPosition.x()+lock->parentItem()->width() <= bar->width()+1);
+        QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,arrow->mapToScene(QPointF(arrow->width()/2,arrow->height()/2)).toPoint());
+        QTRY_VERIFY(item("animRootBaseFirst")->isVisible());
+        QCOMPARE(item("animRootBaseReference")->isEnabled(),session->rootLockInfo().value("referenceAvailable").toBool());
+        QCOMPARE(item("animRootBaseFirst")->property("checked").toBool(),session->rootBase() == 0);
+        QTest::keyClick(window_,Qt::Key_Escape);
         timeline->setProperty("detailsVisible", true);
         QTest::qWait(60);
         QVERIFY(timeline->height() > compactHeight);

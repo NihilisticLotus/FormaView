@@ -443,7 +443,7 @@ struct ImageBatchService::Impl {
         auto auxiliaries = model_export::auxiliary_inputs(request);
         const auto suffix =
             QFileInfo(request["input"].toString()).suffix().toLower();
-        if (suffix != "psk" && suffix != "pskx" && suffix != "psa") {
+        if (!context.guarded_inventory && suffix != "psk" && suffix != "pskx" && suffix != "psa") {
           const auto snapshot =
               entry_snapshots[static_cast<std::size_t>(item_index)];
           const auto cache_key =

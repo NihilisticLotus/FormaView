@@ -9,7 +9,8 @@ using Loader = std::function<QByteArray(const std::filesystem::path &)>;
 class Document {
 public:
   static Document read(const std::filesystem::path &, const QByteArray &,
-                       Loader, skeletal::Limits, std::stop_token);
+                       Loader, skeletal::Limits, std::stop_token,
+                       bool inventory_only = false, const QJsonArray *selected_clips = nullptr);
   Document(Document &&) noexcept;
   ~Document();
   QJsonObject inspect() const;

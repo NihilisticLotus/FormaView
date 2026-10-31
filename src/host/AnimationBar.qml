@@ -15,6 +15,8 @@ Rectangle {
     readonly property int controlHeight: 28
     readonly property var clipData: root.session.clipInfo
     readonly property bool ready: root.session.animated && root.clipData && root.clipData.name !== undefined
+    ButtonGroup { id: rootBaseGroup }
+    ButtonGroup { id: rootBoneGroup }
     function speedText(value: real): string {
         return value >= 0.01 && value < 1e21 && Number(value.toFixed(2)) === value ? value.toFixed(2) : value.toString();
     }
@@ -163,24 +165,83 @@ Rectangle {
                     Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
                 }
             }
-            OptionCheck {
-                objectName: "animRootLock"
+            Row {
+                objectName: "animRootControls"
                 height: root.controlHeight
-                text: Theme.t("根锁定", "Root lock", "根鎖定")
-                checked: root.session.rootLockOn
-                enabled: root.ready && (root.session.rootLockOn || root.session.rootLockInfo.rootMapped !== false)
-                onToggled: root.session.setRootLock(checked)
-                Accessible.name: Theme.t("锁定根节点平移与旋转，保留缩放；仅预览，不改源数据", "Lock root translation/rotation, keep scale; preview only", "鎖定根節點平移與旋轉，保留縮放；僅預覽")
-            }
-            Tool {
-                objectName: "animDetailsToggle"
-                height: root.controlHeight
-                iconName: "settings"
-                quiet: true
-                checkable: true
-                checked: root.detailsVisible
-                hint: Theme.t("动画选项与片段信息", "Animation options and clip information", "動畫選項與片段資訊")
-                onToggled: root.detailsVisible = checked
+                spacing: 0
+                OptionCheck {
+                    objectName: "animRootLock"
+                    height: root.controlHeight
+                    text: Theme.t("根锁定", "Root lock", "根鎖定")
+                    checked: root.session.rootLockOn
+                    enabled: root.ready && (root.session.rootLockOn || root.session.rootLockInfo.rootMapped !== false)
+                    onToggled: root.session.setRootLock(checked)
+                    Accessible.name: Theme.t("锁定根节点平移与旋转，保留缩放；仅预览，不改源数据", "Lock root translation/rotation, keep scale; preview only", "鎖定根節點平移與旋轉，保留縮放；僅預覽")
+                }
+                Tool {
+                    objectName: "animRootOptions"
+                    height: root.controlHeight
+                    iconName: "expand"
+                    quiet: true
+                    enabled: root.ready
+                    hint: Theme.t("选择根锁定参考基准与根骨骼", "Choose root-lock reference and root bone", "選擇根鎖定參考基準與根骨骼")
+                    onClicked: rootOptions.open()
+                    AppPopupMenu {
+                        id: rootOptions
+                        objectName: "animRootMenu"
+                        y: parent.height
+                        AppMenuItem {
+                            objectName: "animRootBaseFirst"
+                            text: Theme.t("动画首帧", "Animation first frame", "動畫首幀")
+                            checkable: true
+                            ButtonGroup.group: rootBaseGroup
+                            checked: root.session.rootBase === 0
+                            onTriggered: root.session.setRootBase(0)
+                        }
+                        AppMenuItem {
+                            objectName: "animRootBaseReference"
+                            text: root.session.rootLockInfo.referenceAvailable === false
+                                ? Theme.t("参考姿态（当前资源不可用）", "Reference pose (unavailable)", "參考姿態（目前資源不可用）")
+                                : Theme.t("参考姿态", "Reference pose", "參考姿態")
+                            enabled: root.session.rootLockInfo.referenceAvailable === true
+                            checkable: true
+                            ButtonGroup.group: rootBaseGroup
+                            checked: root.session.rootBase === 1
+                            onTriggered: root.session.setRootBase(1)
+                            Accessible.description: Theme.t("使用当前资源的参考姿态；不选择外部 PSK", "Use this asset's reference pose; does not select an external PSK", "使用目前資源的參考姿態；不選擇外部 PSK")
+                        }
+                        AppMenuItem {
+                            objectName: "animRootBaseZero"
+                            text: Theme.t("零点", "Zero", "零點")
+                            checkable: true
+                            ButtonGroup.group: rootBaseGroup
+                            checked: root.session.rootBase === 2
+                            onTriggered: root.session.setRootBase(2)
+                        }
+                        Instantiator {
+                            objectName: "animRootBone"
+                            model: root.session.rootCandidates.length > 1 ? root.session.rootCandidates : []
+                            delegate: AppMenuItem {
+                                required property var modelData
+                                objectName: "animRootBone-" + modelData.index
+                                text: Theme.t("根骨骼 · ", "Root bone · ", "根骨骼 · ") + modelData.name
+                                checkable: true
+                                ButtonGroup.group: rootBoneGroup
+                                checked: root.session.rootLockInfo.root === modelData.index
+                                onTriggered: root.session.setRootIndex(modelData.index)
+                            }
+                            onObjectAdded: (index, object) => rootOptions.insertItem(3 + index, object)
+                            onObjectRemoved: (index, object) => rootOptions.removeItem(object)
+                        }
+                        AppMenuItem {
+                            objectName: "animDetailsToggle"
+                            text: Theme.t("片段信息与资源配对", "Clip details and asset pairing", "片段資訊與資源配對")
+                            checkable: true
+                            checked: root.detailsVisible
+                            onTriggered: root.detailsVisible = checked
+                        }
+                    }
+                }
             }
             Tool {
                 objectName: "animBarCollapse"
@@ -240,33 +301,6 @@ Rectangle {
             Layout.fillWidth: true
             visible: root.detailsVisible
             spacing: 6
-            Choice {
-                objectName: "animRootBase"
-                width: 108
-                height: root.controlHeight
-                model: [Theme.t("动画首帧", "Anim first frame", "動畫首幀"), Theme.t("参考姿态", "Reference pose", "參考姿態"), Theme.t("零点", "Zero", "零點")]
-                currentIndex: root.session.rootBase
-                enabled: root.ready
-                onActivated: index => root.session.setRootBase(index)
-                Accessible.name: Theme.t("根锁定基准", "Root lock base", "根鎖定基準")
-            }
-            Choice {
-                objectName: "animRootBone"
-                width: 120
-                height: root.controlHeight
-                visible: root.session.rootCandidates.length > 1
-                enabled: root.ready
-                model: root.session.rootCandidates
-                textRole: "name"
-                currentIndex: {
-                    for (var i = 0; i < root.session.rootCandidates.length; ++i)
-                        if (root.session.rootCandidates[i].index === root.session.rootLockInfo.root)
-                            return i;
-                    return -1;
-                }
-                onActivated: index => root.session.setRootIndex(root.session.rootCandidates[index].index)
-                Accessible.name: Theme.t("选择根骨骼", "Choose root bone", "選擇根骨骼")
-            }
             Tool {
                 objectName: "animPairMeshToggle"
                 checkable: true

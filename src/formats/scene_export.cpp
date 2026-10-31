@@ -1,6 +1,8 @@
 #include "scene_sdk.hpp"
+#include "fbx_selection.hpp"
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstring>
+#include <cstdio>
 #include <set>
 
 namespace formaview::scene_export {
@@ -16,6 +19,20 @@ namespace sk = skeletal;
   throw sk::Failure(ErrorCode::InvalidArgument, message);
 }
 namespace {
+class ProfileStage {
+public:
+  explicit ProfileStage(const char *name) : name_(name), enabled_(qEnvironmentVariableIsSet("FORMAVIEW_EXPORT_PROFILE")) {
+    timer_.start();
+    if (enabled_) { std::fprintf(stderr,"export_profile begin %s\n",name_); std::fflush(stderr); }
+  }
+  ~ProfileStage() {
+    if (enabled_) { std::fprintf(stderr,"export_profile end %s ms=%lld\n",name_,static_cast<long long>(timer_.elapsed())); std::fflush(stderr); }
+  }
+private:
+  const char *name_;
+  bool enabled_;
+  QElapsedTimer timer_;
+};
 struct Destroy {
   template <class T> void operator()(T *p) const {
     if (p)
@@ -312,7 +329,9 @@ bool handles(const QString &s) {
 }
 Document Document::read(const std::filesystem::path &path,
                         const QByteArray &bytes, Loader loader,
-                        sk::Limits limits, std::stop_token stop) {
+                        sk::Limits limits, std::stop_token stop,
+                        bool inventory_only, const QJsonArray *selected_clips) {
+  ProfileStage profile("scene_read");
   auto impl = std::make_unique<Impl>(path, std::move(loader), limits, stop);
   auto &s = impl->source;
   const auto ext =
@@ -332,6 +351,7 @@ Document Document::read(const std::filesystem::path &path,
 #endif
   else if (ext == "fbx") {
     Stream stream(bytes, limits.input_bytes, stop, false);
+    std::unique_ptr<Stream> selectedStream;
     const std::unique_ptr<FbxImporter, Destroy> importer(
         FbxImporter::Create(s.manager.get(), "source"));
     const auto format =
@@ -339,18 +359,72 @@ Document Document::read(const std::filesystem::path &path,
     if (!importer->Initialize(&stream, nullptr, format,
                               s.manager->GetIOSettings()))
       invalid(importer->GetStatus().GetErrorString());
+    // The FBX take directory supplies stable source order and time spans.
+    // Inventory needs the full dependency graph, not millions of curve keys.
+    // A per-clip export imports only its selected takes, retaining SDK-native
+    // curves and interpolation rather than resampling or pruning precision.
+    if (inventory_only || selected_clips) {
+      std::set<QString> names;
+      const auto count = importer->GetAnimStackCount();
+      // An absent take directory does not prove that the object graph has no
+      // animation: legacy files may carry stacks without directory entries.
+      bool unambiguous = count > 0;
+      if (count > static_cast<int>(limits.clips))
+        throw sk::Failure(ErrorCode::ResourceLimit,"Scene clip budget exceeded");
+      for (int i = 0; i < count; ++i) {
+        const auto *take = importer->GetTakeInfo(i);
+        if (!take || (take->mImportName.GetLen() && take->mImportName != take->mName) ||
+            take->mLocalTimeSpan.GetStop() <= take->mLocalTimeSpan.GetStart() ||
+            !names.insert(QString::fromUtf8(take->mName.Buffer())).second) { unambiguous = false; break; }
+        s.clip_catalog.append(QJsonObject{{"id",id(s,i)},{"name",QString::fromUtf8(take->mName.Buffer())},
+          {"start",take->mLocalTimeSpan.GetStart().GetSecondDouble()},{"end",take->mLocalTimeSpan.GetStop().GetSecondDouble()}});
+      }
+      s.has_clip_catalog = unambiguous;
+      if (unambiguous) {
+        for (int i = 0; i < count; ++i)
+          importer->GetTakeInfo(i)->mSelect = !inventory_only && selected_clips && selected_clips->contains(id(s,i));
+        if (!inventory_only && selected_clips && selected_clips->size() == 1)
+          for (int i = 0; i < count; ++i)
+            if (selected_clips->contains(id(s,i)))
+              s.manager->GetIOSettings()->SetStringProp(IMP_FBX_CURRENT_TAKE_NAME,importer->GetTakeInfo(i)->mName);
+        if (inventory_only || (selected_clips && selected_clips->isEmpty()))
+          s.manager->GetIOSettings()->SetBoolProp(IMP_FBX_ANIMATION,false);
+      } else s.clip_catalog = {}; // Preserve the full-load path for ambiguous take names.
+    }
+    if (s.has_clip_catalog && !inventory_only && selected_clips) {
+      if (auto selectedBytes = select_fbx_takes(bytes,s.clip_catalog,*selected_clips,stop)) {
+        if (qEnvironmentVariableIsSet("FORMAVIEW_EXPORT_PROFILE")) {
+          std::fprintf(stderr,"export_profile selected_binary_bytes=%lld original_bytes=%lld\n",static_cast<long long>(selectedBytes->size()),static_cast<long long>(bytes.size()));
+          std::fflush(stderr);
+        }
+        selectedStream=std::make_unique<Stream>(std::move(*selectedBytes),limits.input_bytes,stop,false);
+        if (!importer->Initialize(selectedStream.get(),nullptr,format,s.manager->GetIOSettings()))
+          invalid(importer->GetStatus().GetErrorString());
+      }
+    }
     auto *callback =
         FbxEmbeddedFileCallback::Create(s.manager.get(), "source media");
     callback->RegisterReadFunction(read_media, &s);
     importer->SetEmbeddedFileReadCallback(callback);
     importer->SetProgressCallback(progress, &s);
-    if (!importer->Import(s.scene)) {
+    bool imported;
+    { ProfileStage importProfile("sdk_import"); imported = importer->Import(s.scene); }
+    if (!imported) {
       s.check();
       invalid(importer->GetStatus().GetErrorString());
     }
     if (!s.callback_error.isEmpty())
       invalid(s.callback_error.toUtf8().constData());
-    s.preload_media();
+    if (qEnvironmentVariableIsSet("FORMAVIEW_EXPORT_PROFILE")) {
+      std::fprintf(stderr,"export_profile sdk_scene stacks=%d curves=%d nodes=%d\n",s.scene->GetSrcObjectCount<FbxAnimStack>(),s.scene->GetSrcObjectCount<FbxAnimCurve>(),s.scene->GetNodeCount());
+      std::fflush(stderr);
+    }
+    for (qsizetype i = 0; i < s.clip_catalog.size(); ++i) {
+      auto clip = s.clip_catalog[i].toObject();
+      clip["fps"] = FbxTime::GetFrameRate(s.scene->GetGlobalSettings().GetTimeMode());
+      s.clip_catalog[i] = clip;
+    }
+    { ProfileStage mediaProfile("preload_media"); s.preload_media(); }
   } else
     invalid("Unsupported scene input");
   s.check();
@@ -360,6 +434,7 @@ Document Document::read(const std::filesystem::path &path,
     throw sk::Failure(ErrorCode::ResourceLimit,
                       "Scene node/clip budget exceeded");
   std::uint64_t elements{};
+  ProfileStage inventoryProfile("scene_inventory");
   for (int i = 0; i < s.scene->GetSrcObjectCount<FbxMesh>(); ++i) {
     const auto *mesh = s.scene->GetSrcObject<FbxMesh>(i);
     elements += static_cast<std::uint64_t>(mesh->GetControlPointsCount()) +
@@ -386,6 +461,7 @@ QJsonObject Document::inspect() const {
         {"fps",
          FbxTime::GetFrameRate(s.scene->GetGlobalSettings().GetTimeMode())}});
   }
+  if (s.has_clip_catalog) clips = s.clip_catalog;
   return {{"clips", clips},
           {"has_mesh", s.scene->GetSrcObjectCount<FbxMesh>() > 0},
           {"nodes", s.scene->GetNodeCount()},
@@ -395,6 +471,7 @@ QJsonObject Document::inspect() const {
           {"root_motion", "source"}};
 }
 QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
+  ProfileStage profile("scene_encode");
   auto &s = impl_->source;
   const auto source = inspect();
   QJsonArray selected, exported;
@@ -403,16 +480,22 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
   else if (options.contains("clip_id"))
     selected.append(options["clip_id"]);
   std::vector<FbxAnimStack *> remove;
-  int index = 0;
   for (const auto &v : source["clips"].toArray()) {
     if (selected.contains(v.toObject()["id"]))
       exported.append(v);
-    else
-      remove.push_back(s.scene->GetSrcObject<FbxAnimStack>(index));
-    ++index;
   }
   if (selected.size() != exported.size())
     invalid("Select existing source clip IDs");
+  const auto stackCount = s.scene->GetSrcObjectCount<FbxAnimStack>();
+  for (int i = 0; i < stackCount; ++i) {
+    auto *stack = s.scene->GetSrcObject<FbxAnimStack>(i);
+    bool keep = false;
+    if (s.has_clip_catalog) {
+      for (const auto &v : exported)
+        if (v.toObject()["name"].toString() == QString::fromUtf8(stack->GetName())) { keep = true; break; }
+    } else keep = selected.contains(id(s,i));
+    if (!keep) remove.push_back(stack);
+  }
   for (auto *stack : remove)
     stack->Destroy();
   if (s.scene->GetSrcObjectCount<FbxAnimStack>()) {
@@ -484,12 +567,15 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
                     const std::function<void(const QJsonObject &)> &observer,
                     std::span<const std::filesystem::path> reserved,
                     const std::filesystem::path &approved) {
+  const auto operationName = request["operation"].toString().toUtf8();
+  ProfileStage profile(operationName.constData());
   std::vector<InputLease> leases;
   std::vector<InputSnapshot> inputs(protected_inputs.begin(),
                                     protected_inputs.end());
   QJsonArray sources, references;
   std::uint64_t total{};
   const auto load = [&](const std::filesystem::path &path) {
+    ProfileStage loadProfile("source_snapshot_and_read");
     // Even missing or out-of-scope resources remain source paths. A tolerated
     // texture-read loss must never make that path eligible for publication.
     InputSnapshot referenced;
@@ -523,9 +609,13 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
       std::filesystem::path(request["input"].toString().toStdWString());
   const auto bytes = load(path);
   const auto input = leases.front().snapshot();
-  auto document =
-      Document::read(input.resolved_path, bytes, load, limits, stop);
   const auto operation = request["operation"].toString();
+  const auto options = request["options"].toObject();
+  QJsonArray selected;
+  if (options.contains("clip_ids")) selected = options["clip_ids"].toArray();
+  else if (options.contains("clip_id")) selected.append(options["clip_id"]);
+  auto document = Document::read(input.resolved_path, bytes, load, limits, stop,
+                                 operation == "inspect", operation == "inspect" ? nullptr : &selected);
   if (operation == "inspect") {
     auto result = document.inspect();
     result["version"] = 1;
@@ -534,7 +624,6 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
     result["referenced_sources"] = references;
     return result;
   }
-  const auto options = request["options"].toObject();
   model_export::validate_options(options);
   for (const auto key_name :
        {"reference", "animation", "companion", "pairing_policy"})
@@ -584,7 +673,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
       {"overwrite", scope.allow_overwrite},
       {"output", QString::fromStdWString(output.path.wstring())},
       {"policy", QString::fromStdString(scope.policy_revision)},
-      {"implementation", "M08-scene-v3-media"}};
+      {"implementation", "M12-scene-v4-take-selection"}};
   const auto approval = QString::fromLatin1(
       QCryptographicHash::hash(
           QJsonDocument(approval_data).toJson(QJsonDocument::Compact),

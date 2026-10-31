@@ -69,7 +69,19 @@ QString outputName(const QString &input, qsizetype index,
   if (name.contains("{clip}")) {
     if (clip.isEmpty()) throw skeletal::Failure(ErrorCode::InvalidArgument,
         "{clip} needs one selected animation per output; use {name}-animations.{ext} for multiple stacks");
-    name.replace("{clip}", clip);
+    // Clip labels are asset metadata, not filesystem names (FBX commonly
+    // uses 'model|take'). Keep the source label unchanged; sanitize only the
+    // generated filename token. Existing collision policy still applies.
+    auto filename = clip;
+    for (auto &c : filename)
+      if (c.unicode() < 32 || QStringLiteral("/\\:*?\"<>|{}").contains(c)) c = QChar('_');
+    while (!filename.isEmpty() && (filename.endsWith('.') || filename.endsWith(' '))) filename.chop(1);
+    if (filename.isEmpty()) filename = "clip";
+    const auto stem = filename.section('.',0,0).toUpper();
+    if (QStringList{"CON","PRN","AUX","NUL"}.contains(stem) ||
+        (stem.size() == 4 && (stem.startsWith("COM") || stem.startsWith("LPT")) && stem[3] >= '0' && stem[3] <= '9'))
+      filename.prepend('_');
+    name.replace("{clip}", filename);
   }
   name.replace("{name}", QFileInfo(input).completeBaseName());
   name.replace("{index}", QString::number(index + 1));

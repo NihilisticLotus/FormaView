@@ -358,6 +358,7 @@ struct ImageTaskGroups::Impl {
         auto b = batches[i].toObject();
         const auto requests = load(path(g) + '/' + QString::number(i) + "/requests.json")["items"].toArray();
         ImageBatchContext context{protectedInputs, allocated};
+        context.guarded_inventory = g->manifest.contains("source_guard_fragments");
         for (qsizetype n = offset + requests.size(); n < all.size(); ++n) {
           const auto future = all[n].toObject();
           // Rejected preparation rows cannot write. Reserving their placeholder
