@@ -69,6 +69,7 @@ Copy-Item -Path (Join-Path $crt.FullName '*.dll') -Destination $OutDir
 $queue = [System.Collections.Generic.Queue[string]]::new()
 Get-ChildItem -LiteralPath $OutDir -Recurse -Include *.exe, *.dll | ForEach-Object { $queue.Enqueue($_.FullName) }
 $seen = @{}
+$unresolved = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 while ($queue.Count) {
     $file = $queue.Dequeue()
     if ($seen[$file]) { continue }
@@ -80,8 +81,11 @@ while ($queue.Count) {
         if ($found -and (Test-Path -LiteralPath $found)) {
             Copy-Item -LiteralPath $found -Destination $OutDir
             $queue.Enqueue((Join-Path $OutDir $dll))
-        } else { Write-Warning "Unresolved import $dll required by $(Split-Path -Leaf $file)" }
+        } else { [void]$unresolved.Add("$dll required by $(Split-Path -Leaf $file)") }
     }
+}
+if ($unresolved.Count) {
+    throw ("Unresolved runtime imports: " + (($unresolved | Sort-Object) -join '; '))
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'mcp'), (Join-Path $OutDir 'licenses') | Out-Null
