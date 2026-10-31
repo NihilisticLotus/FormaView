@@ -238,14 +238,14 @@ struct ImageTaskGroups::Impl {
       publish(g, job, items);
       const auto all = allRequests(g);
 #ifdef FORMAVIEW_MODEL_EXPORT
-      if (!g->manifest.contains("source_guard_fragments"))
-        for (const auto &v : all) {
-          const auto item = v.toObject();
-          const auto suffix = QFileInfo(item["input"].toString()).suffix().toLower();
-          if (!item.contains("preparation_error") && item["options"].toObject()["target"] == "fbx" &&
-              suffix != "psk" && suffix != "pskx" && suffix != "psa")
-            fail(ErrorCode::InputChanged, "Scene inventory predates dependency guards; retry preflight");
-        }
+      for (const auto &v : all) {
+        const auto item = v.toObject();
+        const auto suffix = QFileInfo(item["input"].toString()).suffix().toLower();
+        const bool actor = suffix == "psk" || suffix == "pskx" || suffix == "psa";
+        if (!item.contains("preparation_error") && item["options"].toObject()["target"] == "fbx" &&
+            (!g->manifest.contains("source_guard_fragments") || (actor && !g->manifest["actor_source_guards"].toBool())))
+          fail(ErrorCode::InputChanged, "Source inventory predates dependency guards; retry preflight");
+      }
 #endif
       std::vector<InputIdentityLease> leases;
       std::vector<InputLease> scannedLeases;
@@ -260,15 +260,22 @@ struct ImageTaskGroups::Impl {
         const auto guard = v.toObject();
         const auto p = validated_local_path(std::filesystem::path(guard["path"].toString().toStdWString()));
         if (guard["scan_failed"].toBool())
-          fail(ErrorCode::InvalidArgument, ("Scene dependency inventory incomplete; retry preflight: " +
+          fail(ErrorCode::InvalidArgument, ("Source dependency inventory incomplete; retry preflight: " +
                guard["error"].toObject()["message"].toString()).toUtf8().constData());
         if (guard["unavailable"].toBool()) {
+          if (guard["absent"].toBool()) {
+            std::error_code error;
+            const auto status = std::filesystem::symlink_status(p,error);
+            if ((error && error != std::errc::no_such_file_or_directory) ||
+                status.type() != std::filesystem::file_type::not_found)
+              fail(ErrorCode::InputChanged, "Automatic PSA companion appeared after inventory; retry preflight");
+          }
           bool readable = false;
           if (!guard["scan_failed"].toBool()) {
             try { const auto pin = InputIdentityLease::open(scope, p, g->stop.get_token()); readable = true; }
             catch (const skeletal::Failure &e) { if (e.error.code == ErrorCode::Cancelled) throw; }
           }
-          if (readable) fail(ErrorCode::InputChanged, "Scene dependency became readable after inventory; retry preflight");
+          if (readable) fail(ErrorCode::InputChanged, "Source dependency became readable after inventory; retry preflight");
           executionScope.unavailable_inputs.push_back(p);
           continue;
         }
@@ -295,7 +302,7 @@ struct ImageTaskGroups::Impl {
           }
         } catch (const skeletal::Failure &e) {
           if (e.error.code == ErrorCode::Cancelled) throw;
-          fail(ErrorCode::InputChanged, "Scene dependency changed after inventory; retry preflight");
+          fail(ErrorCode::InputChanged, "Source dependency changed after inventory; retry preflight");
         }
       }
       if (job) {
@@ -596,6 +603,8 @@ struct ImageTaskGroups::Impl {
     }
     std::set<QString> inspectedPaths;
     std::vector<InputIdentityLease> inspectionLeases;
+    std::vector<InputLease> actorLeases;
+    std::set<QString> actorPaths, absentActorPaths;
     QJsonArray guards;
     int protectionInspections = 0;
     for (auto r : requests) {
@@ -606,7 +615,46 @@ struct ImageTaskGroups::Impl {
       if (!request.contains("preparation_error") && request["options"].toObject()["target"] == "fbx") {
         for (const auto &p : model_export::auxiliary_inputs(request)) protect.append(QString::fromStdWString(p.wstring()));
         const auto suffix = QFileInfo(request["input"].toString()).suffix().toLower();
-        if (suffix != "psk" && suffix != "pskx" && suffix != "psa") {
+        if (suffix == "psk" || suffix == "pskx" || suffix == "psa") {
+          // ActorX has an explicit finite graph: primary, paired asset and PSA
+          // config. Hash without decoding/baking, once per unique input, while
+          // retaining these handles until the durable group is complete.
+          const auto options = request["options"].toObject();
+          const bool automaticConfig = !options.contains("companion") &&
+              QFileInfo(options["animation"].toString(request["input"].toString())).suffix().compare("psa", Qt::CaseInsensitive) == 0;
+          auto paths = model_export::auxiliary_inputs(request);
+          paths.insert(paths.begin(), std::filesystem::path(request["input"].toString().toStdWString()));
+          for (std::size_t i = 0; i < paths.size(); ++i) {
+            const auto p = validated_local_path(paths[i]);
+            const auto name = QString::fromStdWString(p.wstring()), key = name.toCaseFolded();
+            const bool optional = automaticConfig && i > 0 && i + 1 == paths.size();
+            if (actorPaths.contains(key) || (optional && absentActorPaths.contains(key))) continue;
+            try {
+              if (optional) {
+                std::error_code error;
+                const auto status = std::filesystem::symlink_status(p,error);
+                if (error && error != std::errc::no_such_file_or_directory)
+                  fail(ErrorCode::Io, "Cannot inventory automatic PSA companion");
+                // Only genuine absence is optional. An unreadable file or
+                // reparse point must fail through the checked input lease.
+                if (status.type() == std::filesystem::file_type::not_found) {
+                  guards.append(QJsonObject{{"path",name},{"unavailable",true},{"absent",true}});
+                  absentActorPaths.insert(key);
+                  continue;
+                }
+              }
+              actorLeases.push_back(InputLease::open(scope,p,skeletal::Limits{}.input_bytes,stop));
+              const auto &s = actorLeases.back().snapshot();
+              guards.append(QJsonObject{{"path",QString::fromStdWString(s.resolved_path.wstring())},
+                {"sha256",QString::fromStdString(s.content_sha256)},{"file_identity",QString::fromStdString(s.file_identity)},
+                {"size",static_cast<qint64>(s.size_bytes)},{"modified_ticks",QString::number(s.modified_ticks)}});
+              actorPaths.insert(key);
+            } catch (const skeletal::Failure &e) {
+              if (e.error.code == ErrorCode::Cancelled) throw;
+              guards.append(QJsonObject{{"path",name},{"scan_failed",true},{"error",image_error_json(e)["error"]}});
+            }
+          }
+        } else {
           const auto sourcePath = std::filesystem::path(request["input"].toString().toStdWString());
           const auto sourceKey = QString::fromStdWString(validated_local_path(sourcePath).wstring()).toCaseFolded();
           if (inspectedPaths.contains(sourceKey)) continue;
@@ -668,6 +716,7 @@ struct ImageTaskGroups::Impl {
       save(path(g) + "/source-guard-" + QString::number(guardFragments++) + ".json", {{"sources", chunk}});
     }
     g->manifest["source_guard_fragments"] = guardFragments;
+    g->manifest["actor_source_guards"] = true;
     g->manifest["batches"] = batches;
     save(path(g) + "/index.json", g->manifest);
     { const std::lock_guard lock(state); g->plan = snapshot(g, false, items); groups.emplace(g->manifest["id"].toString(), g); }

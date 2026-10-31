@@ -77,7 +77,11 @@ std::filesystem::path companion_candidate(const QJsonObject &request) {
   candidate.replace_extension(L".config");
   return candidate;
 }
-bool companion_exists(const std::filesystem::path &candidate) {
+bool companion_exists(const AccessScope &scope, const std::filesystem::path &candidate) {
+  const auto normalized = qpath(validated_local_path(candidate));
+  for (const auto &unavailable : scope.unavailable_inputs)
+    if (normalized.compare(qpath(validated_local_path(unavailable)), Qt::CaseInsensitive) == 0)
+      return false; // Keep one batch's absent automatic config absent for every clip.
   std::error_code error;
   const auto status = std::filesystem::symlink_status(candidate, error);
   if (error && error != std::errc::no_such_file_or_directory)
@@ -298,7 +302,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   const bool found_companion =
       !candidate.empty() &&
       (explicit_companion ||
-       (automatic_companion && companion_exists(candidate)));
+       (automatic_companion && companion_exists(scope, candidate)));
   QJsonObject companion_info{
       {"mode", explicit_companion ? "explicit" : "automatic"},
       {"status", animation ? "not_found" : "not_applicable"}};
@@ -503,7 +507,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
            {"file_identity", QString::fromStdString(intent.file_identity)},
            {"output_sha256", output_hash},
            {"result", result}});
-    if (automatic_companion && !found_companion && companion_exists(candidate))
+    if (automatic_companion && !found_companion && companion_exists(scope, candidate))
       fail(ErrorCode::InputChanged,
            "PSA config appeared after preflight; preflight again to apply it");
   };

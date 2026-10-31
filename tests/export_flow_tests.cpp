@@ -195,6 +195,135 @@ void recoveredSourceGuard(const QString &root, QJsonObject item, int variant) {
   }
   std::cout << "PASS persistent source guard / retry variant=" << variant << '\n';
 }
+void actorSourceGuard(const QString &root, const QString &fixtures, int variant) {
+  using namespace formaview;
+  using namespace formaview::imaging;
+  require(QDir().mkpath(root + "/journal"), "Create ActorX guard fixture");
+  const auto psa = root + "/source.psa", psk = root + "/source.psk";
+  const auto config = root + (variant == 5 ? "/explicit.config" : "/source.config");
+  cleanActorFixture(fixtures + "/source.psa", psa);
+  cleanActorFixture(fixtures + "/source.psk", psk);
+  const auto write = [](const QString &p, const QByteArray &bytes) {
+    QFile f(p); require(f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(bytes) == bytes.size(), "Write ActorX guard fixture");
+  };
+  const QByteArray original("[RemoveTracks]\nclip0.0=trans\n");
+  const bool existing = variant == 1 || variant == 5 || variant == 6 || variant == 8 || variant == 10 || variant == 12;
+  if (existing) write(config, original);
+  const auto path = std::filesystem::path(root.toStdWString());
+  const AccessScope scope{{path}, {path}, true, "actor-guards"};
+  const auto journal = path / "journal";
+  auto groups = std::make_unique<ImageTaskGroups>(scope, journal);
+  const auto call = [&](QJsonObject q) {
+    q["version"] = 1;
+    const auto result = groups->request(q);
+    if (result.contains("error") && !result.contains("kind")) throw std::runtime_error(QJsonDocument(result).toJson().toStdString());
+    return result;
+  };
+  const auto inspect = execute_image_request({{"version",1},{"operation","inspect"},{"input",psa},{"options",QJsonObject{{"target","fbx"}}}}, scope);
+  require(!inspect["clips"].toArray().isEmpty(), "Actor guard clip inventory");
+  QJsonObject options{{"target","fbx"},{"coordinates","actorx-z-up-x-forward-rh-cm"},
+    {"include_mesh",false},{"reference",psk},{"pairing_policy","reference-skeleton"},
+    {"clip_id",inspect["clips"].toArray().first().toObject()["id"]}};
+  if (variant == 5 || variant == 17) options["companion"] = config;
+  if (variant == 14 || variant == 15) {
+    options.remove("reference"); options["include_mesh"] = true;
+    if (variant == 14) { options.remove("clip_id"); options.remove("pairing_policy"); }
+    else options["animation"] = psa;
+  }
+  const QJsonObject item{{"input",variant == 14 || variant == 15 ? psk : psa},{"output",root + "/out.fbx"},{"conflict","skip"},{"options",options}};
+  const auto get = [&](const char *op, const QString &id) { return call({{"operation",op},{"id",id}}); };
+  const auto replace = [&](const QString &p) {
+    require(QFile::rename(p, p + ".previous") && QFile::copy(p + ".previous", p), "Replace queued ActorX source identity");
+  };
+  QString id;
+  const bool recovery = variant >= 9 && variant <= 13;
+  if (recovery) {
+    const auto planId = call({{"operation","create_plan"},{"items",QJsonArray{item}}})["plan_id"].toString();
+    QJsonObject plan;
+    wait([&] { plan = get("get_plan",planId); return !active(plan.toVariantMap()); });
+    require(plan["state"] == "ready", "ActorX recovery plan ready");
+    groups.reset();
+    if (variant == 9) write(config, original);
+    if (variant == 10) write(config, "[RemoveTracks]\nclip0.0=all\n");
+    if (variant == 11) {
+      QFile f(root + "/journal/" + planId.mid(6) + "/index.json");
+      require(f.open(QIODevice::ReadOnly), "Read pre-ActorX guard manifest");
+      auto manifest = QJsonDocument::fromJson(f.readAll()).object(); f.close();
+      manifest.remove("actor_source_guards");
+      write(f.fileName(), QJsonDocument(manifest).toJson());
+    }
+    groups = std::make_unique<ImageTaskGroups>(scope,journal);
+    id = call({{"operation","submit"},{"plan_id",planId},{"approval_digest",plan["approval_digest"]},
+      {"idempotency_key",QUuid::createUuid().toString()},{"acknowledge_losses",true}})["job_id"].toString();
+  } else {
+    const auto blockFile = root + "/block.fbx"; fixture(blockFile,1);
+    QJsonArray blockers;
+    for (int n = 0; n != 16; ++n) blockers.append(QJsonObject{{"input",blockFile},{"output",root + "/block-" + QString::number(n) + ".fbx"},
+      {"conflict","skip"},{"options",QJsonObject{{"target","fbx"},{"coordinates","source"},{"include_mesh",true}}}});
+    const auto blocker = call({{"operation","create_job"},{"items",blockers}})["job_id"].toString();
+    get("pause",blocker);
+    wait([&] { return get("get_job",blocker)["state"] == "paused"; });
+    QJsonArray items;
+    for (int n = 0; n != (variant == 7 || variant == 8 ? 24 : 2); ++n) {
+      auto r = item; r["output"] = root + "/out-" + QString::number(n) + ".fbx"; items.append(r);
+    }
+    id = call({{"operation","create_job"},{"items",items}})["job_id"].toString();
+    require(get("get_job",id)["state"] == "queued", "ActorX target stays behind paused worker");
+    if (variant == 0 || variant == 15 || variant == 17) write(config,original);
+    if (variant == 16) require(QDir().mkpath(config), "A directory appearing at absent config is not silently ignored");
+    if (variant == 1 || variant == 5) {
+      // Same identity, size and restored timestamp: only the content hash differs.
+      const auto h = CreateFileW(config.toStdWString().c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,OPEN_EXISTING,0,nullptr);
+      FILETIME t{}; require(h != INVALID_HANDLE_VALUE && GetFileTime(h,nullptr,nullptr,&t), "Read config time"); CloseHandle(h);
+      auto changed = original; changed.replace("clip0.0", "clip0.1"); write(config,changed);
+      const auto restored = CreateFileW(config.toStdWString().c_str(),FILE_WRITE_ATTRIBUTES,FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+      require(restored != INVALID_HANDLE_VALUE && SetFileTime(restored,nullptr,nullptr,&t), "Restore config time"); CloseHandle(restored);
+    }
+    if (variant == 2) replace(psa);
+    if (variant == 3 || variant == 14) replace(psk);
+    if (variant == 4) call({{"operation","cancel"},{"kind","job"},{"id",id}});
+    if (variant == 6) require(QFile::remove(config), "Remove queued config");
+    get("resume",blocker);
+    if (variant == 7 || variant == 8) {
+      wait([&] { return QFileInfo::exists(root + "/out-0.fbx"); });
+      get("pause",id);
+      wait([&] { return get("get_job",id)["state"] == "paused"; });
+      const auto outputs = QDir(root).entryList({"out-*.fbx"},QDir::Files).size();
+      require(outputs > 0 && outputs < 24, "Pause strictly between ActorX outputs");
+      if (variant == 7) write(config,original);
+      else { QFile f(config); require(!f.open(QIODevice::WriteOnly), "Existing config stays pinned between clips"); }
+      get("resume",id);
+    }
+  }
+  QJsonObject result;
+  wait([&] { result = get("get_job",id); return !active(result.toVariantMap()); });
+  save(root + "/result.json",result.toVariantMap());
+  const bool success = variant == 7 || variant == 8 || variant == 12 || variant == 13;
+  require(result["state"] == (success ? "succeeded" : variant == 4 ? "cancelled" : "failed"), "ActorX batch must preserve captured inputs/config semantics");
+  if (!success) {
+    require(result["error"].toObject()["code"] == (variant == 4 ? "cancelled" : variant == 17 ? "invalid_argument" : "input_changed"), "ActorX snapshot change diagnosed before output");
+    require(QDir(root).entryList({"out*.fbx"},QDir::Files).isEmpty(), "ActorX changed inventory writes no output");
+    if (variant != 4) {
+      if (variant == 16) require(QDir().rmdir(config), "Remove synthetic empty config directory before retry");
+      const auto retry = call({{"operation","retry_plan"},{"id",id}})["plan_id"].toString();
+      QJsonObject plan;
+      wait([&] { plan = get("get_plan",retry); return !active(plan.toVariantMap()); });
+      require(plan["state"] == "ready", "ActorX retry captures new configuration");
+      const auto next = call({{"operation","submit"},{"plan_id",retry},{"approval_digest",plan["approval_digest"]},
+        {"idempotency_key",QUuid::createUuid().toString()},{"acknowledge_losses",true}})["job_id"].toString();
+      QJsonObject retried;
+      wait([&] { retried = get("get_job",next); return !active(retried.toVariantMap()); });
+      save(root + "/retry.json",retried.toVariantMap());
+      require(retried["state"] == "succeeded", "ActorX retry actually exports updated inventory");
+    }
+  } else {
+    for (const auto &v : result["items"].toArray()) {
+      const auto preflight = v.toObject()["preflight"].toObject();
+      require(preflight["psa_companion"].toObject()["status"] == (existing ? "applied" : "not_found"), "All clips use the same captured config presence");
+    }
+  }
+  std::cout << "PASS ActorX queue/config/recovery variant=" << variant << '\n';
+}
 }
 
 class ExportFlowTests {
@@ -273,6 +402,8 @@ public:
     for (int variant = 0; variant != 3; ++variant)
       recoveredSourceGuard(root + "/guard-recovery-" + QString::number(variant), QJsonObject::fromVariantMap(baselineJob.value("items").toList().first().toMap().value("request").toMap()), variant);
     if (actorFixtures.isEmpty()) { std::cout << "SKIP optional synthetic ActorX fixture regression\n"; return; }
+    for (int variant = 0; variant != 18; ++variant)
+      actorSourceGuard(root + "/actor-guard-" + QString::number(variant),actorFixtures,variant);
     const auto psk = root + "/reference.psk", psa = root + "/repaired.psa";
     cleanActorFixture(actorFixtures + "/source.psk", psk);
     const QVariantMap actorOptions{{"target", "fbx"}, {"export_content", "combined"},
@@ -301,7 +432,11 @@ public:
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
-    require(argc == 2, "External evidence root required");
+    require(argc == 2 || argc == 4, "External evidence root required");
+    if (argc == 4 && app.arguments()[2] == "--actor-guard") {
+      require(!QFileInfo::exists(app.arguments()[1]), "New isolated ActorX test root required");
+      actorSourceGuard(app.arguments()[1],qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES"),app.arguments()[3].toInt()); return 0;
+    }
     ExportFlowTests::run(app.arguments()[1]); return 0;
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }
