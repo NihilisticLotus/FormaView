@@ -81,6 +81,17 @@ QString stateName(formaview::TaskState state) {
   return "unknown";
 }
 } // namespace
+QUrl Desktop::existingFolderUrl(const QString &path) const {
+  auto candidate = localPath(path.trimmed().isEmpty() ? directory_ : path);
+  while (!candidate.isEmpty()) {
+    const QFileInfo info(candidate);
+    if (info.isDir()) return QUrl::fromLocalFile(info.absoluteFilePath());
+    const auto parent = info.absolutePath();
+    if (parent == candidate) break;
+    candidate = parent;
+  }
+  return QUrl::fromLocalFile(QDir::homePath());
+}
 int FileList::rowCount(const QModelIndex &parent) const {
   return parent.isValid() ? 0 : static_cast<int>(entries_.size());
 }

@@ -87,6 +87,7 @@ public:
   Q_INVOKABLE QString localFile(const QUrl &url) const {
     return url.isLocalFile() ? url.toLocalFile() : QString{};
   }
+  Q_INVOKABLE QUrl existingFolderUrl(const QString &path) const;
   QString directory() const { return directory_; }
   QString query() const { return query_; }
   int typeFilter() const { return type_; }

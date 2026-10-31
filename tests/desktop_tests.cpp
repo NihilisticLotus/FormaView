@@ -3425,6 +3425,57 @@ private slots:
   }
 #endif
 
+  void exportFolderPicker() {
+    const auto folder = root_ + "/输出 空格 #100%";
+    QVERIFY(QDir().mkpath(folder));
+    const auto expected = QUrl::fromLocalFile(folder);
+    QCOMPARE(desktop_->existingFolderUrl(folder), expected);
+    QCOMPARE(desktop_->existingFolderUrl(folder + "/未创建/子目录"), expected);
+    QCOMPARE(desktop_->existingFolderUrl(QDir::toNativeSeparators(folder)), expected);
+    QCOMPARE(desktop_->existingFolderUrl(expected.toString()), expected);
+    for (const auto &drive : QDir::drives())
+      QCOMPARE(desktop_->existingFolderUrl(drive.absoluteFilePath()),
+               QUrl::fromLocalFile(drive.isDir() ? drive.absoluteFilePath() : QDir::homePath()));
+    auto *workspace = item("workspace"); QVERIFY(workspace);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), small_ + "/唯一图片.png");
+    for (const auto quickMode : {false, true}) {
+      QObject *container = window_;
+      QQuickWindow *quick = nullptr;
+      if (quickMode) {
+        QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, "texture")));
+        QTRY_VERIFY(([&] {
+          for (auto *w : QGuiApplication::topLevelWindows())
+            if (w->objectName() == "quickExportWindow" && w->isVisible()) {
+              quick = qobject_cast<QQuickWindow *>(w); return true;
+            }
+          return false;
+        })());
+        container = quick;
+      } else {
+        QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
+      }
+      auto *field = container->findChild<QObject *>("conversionOutputRoot"); QVERIFY(field);
+      auto *button = container->findChild<QObject *>("chooseConversionOutput"); QVERIFY(button);
+      auto *dialog = container->findChild<QObject *>("conversionOutputDialog"); QVERIFY(dialog);
+      const auto cleanup = qScopeGuard([&] {
+        QMetaObject::invokeMethod(dialog, "reject");
+        if (quick) quick->close();
+        else if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
+          QMetaObject::invokeMethod(conversion, "close");
+      });
+      for (const auto &entered : {folder, folder + "/尚未创建/结果"}) {
+        QVERIFY(field->setProperty("text", entered));
+        QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QCOMPARE(dialog->property("currentFolder").toUrl(), expected);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QCOMPARE(field->property("text").toString(), entered);
+      }
+    }
+  }
+
   void quickExportWorkflow() {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
