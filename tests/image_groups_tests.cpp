@@ -440,6 +440,12 @@ void directExport(const QString &root) {
               "Endpoint must reject a plan ID for grouped job pause");
       require(requestOverPipe(query("resume", directPlanId))["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject a plan ID for grouped job resume");
+      require(requestOverPipe(query("retry_plan", directPlanId))["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a plan ID for grouped job retry");
+      auto wrongPipeSubmit = query("submit"); wrongPipeSubmit["plan_id"] = id;
+      wrongPipeSubmit["idempotency_key"] = "wrong-type"; wrongPipeSubmit["approval_digest"] = "invalid";
+      require(requestOverPipe(wrongPipeSubmit)["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a job ID for grouped plan submission");
       require(requestOverPipe(query("get_job", directPlanId))["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject a plan ID for grouped job lookup");
       require(requestOverPipe(query("get_plan", id))["error"].toObject()["code"] == "invalid_argument",
@@ -452,6 +458,19 @@ void directExport(const QString &root) {
     }
     completed = wait(groups, "get_job", id);
     require(completed["state"] == "partially_succeeded", "Direct failures do not prevent remaining outputs");
+    auto wrongRetry = query("retry_plan", completed["plan_id"].toString());
+    const auto wrongRetryResult = groups.request(wrongRetry);
+    auto wrongSubmit = query("submit"); wrongSubmit["plan_id"] = id;
+    wrongSubmit["idempotency_key"] = "wrong-type"; wrongSubmit["approval_digest"] = "invalid";
+    const auto wrongSubmitResult = groups.request(wrongSubmit);
+    if (!wrongRetryResult.contains("error"))
+      std::cerr << "plan ID created retry=" << wrongRetryResult["plan_id"].toString().toStdString() << '\n';
+    if (wrongSubmitResult["error"].toObject()["code"] != "invalid_argument")
+      std::cerr << "job ID submit error=" << wrongSubmitResult["error"].toObject()["code"].toString().toStdString() << '\n';
+    require(wrongRetryResult["error"].toObject()["code"] == "invalid_argument",
+            "Retry must reject a grouped plan ID");
+    require(wrongSubmitResult["error"].toObject()["code"] == "invalid_argument",
+            "Submit must reject a grouped job ID");
     const auto result = completed["items"].toArray();
     require(result.size() == 10, "Every direct item is retained");
     for (int i = 0; i < 10; ++i) {

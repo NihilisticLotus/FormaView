@@ -787,6 +787,8 @@ struct ImageTaskGroups::Impl {
     if (op == "retry_plan") {
       auto g = find(q["id"].toString()); QJsonObject job;
       { const std::lock_guard lock(state); job = g->job; }
+      if (job["id"].toString() != q["id"].toString())
+        fail(ErrorCode::InvalidArgument, "Requested job identifier does not match group job");
       if (active(job["state"].toString())) fail(ErrorCode::Conflict, "Cannot retry active conversion group");
       QJsonArray items;
       for (auto v : job["items"].toArray()) {
@@ -803,6 +805,8 @@ struct ImageTaskGroups::Impl {
     if (op == "submit") {
       auto g = find(q["plan_id"].toString());
       { const std::lock_guard lock(state);
+        if (g->plan["id"].toString() != q["plan_id"].toString())
+          fail(ErrorCode::InvalidArgument, "Requested plan identifier does not match group plan");
         if (!g->job.isEmpty()) {
           if (g->job.value("submission_digest") != hash(q)) fail(ErrorCode::Conflict, "Group already submitted with different parameters");
           return {{"job_id", g->job["id"]}, {"reused", true}};
