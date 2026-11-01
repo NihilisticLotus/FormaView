@@ -32,6 +32,22 @@ if ($invalidPaths.Count) {
     $report | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 (Join-Path $EvidenceDir 'verify-runtime.json')
     exit 1
 }
+$reparsePaths = @($manifest | Where-Object {
+    $current = $RunDir
+    foreach ($part in ($_.path -split '/')) {
+        $current = Join-Path $current $part
+        if ((Test-Path -LiteralPath $current) -and
+            ((Get-Item -Force -LiteralPath $current).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            return $true
+        }
+    }
+    return $false
+})
+if ($reparsePaths.Count) {
+    Add-Check 'manifest-paths' $false "reparse=$($reparsePaths.Count)"
+    $report | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 (Join-Path $EvidenceDir 'verify-runtime.json')
+    exit 1
+}
 $bad = @($manifest | Where-Object {
     $p = Join-Path $RunDir $_.path
     -not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -ne $_.bytes -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.sha256 })
