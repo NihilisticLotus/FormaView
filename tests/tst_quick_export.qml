@@ -10,6 +10,7 @@ TestCase {
         id: service
         signal changed()
         signal submissionFinished(string planId, string jobId)
+        signal directExportFinished(string jobId)
         property bool busy: false
         property bool importing: false
         property string error: ""
@@ -101,13 +102,15 @@ TestCase {
         compare(window.ownedJob,"A")
         compare(findChild(window,"quickExportJob").job.id,"A")
     }
-    function test_close_during_submission_cancels_exact_job() {
+    function test_close_during_submission_keeps_submitted_job() {
         begin();ready([]);tryCompare(service,"submissions",1)
         window.close()
         verify(window.visible)
         service.job={id:"A",state:"running",items:[]};service.busy=false;service.submissionFinished("plan-A","A");service.changed()
         tryCompare(window,"visible",false)
-        compare(service.cancelledId,"A")
+        compare(window.ownedJob,"A")
+        compare(service.cancelledId,"")
+        compare(service.job.state,"running")
     }
     function test_old_ready_plan_is_not_submitted() {
         service.plan={id:"old",state:"ready",items:[{status:"ready",preflight:{losses:[]}}]}
