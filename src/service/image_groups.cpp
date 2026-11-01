@@ -757,9 +757,12 @@ struct ImageTaskGroups::Impl {
       return {{"items", items}, {"next_offset", QJsonValue::Null}};
     }
     if (op == "cancel") {
+      const auto kind = q["kind"].toString();
+      if (kind != "job" && kind != "plan")
+        fail(ErrorCode::InvalidArgument, "Invalid cancellation kind");
       auto g = find(q["id"].toString());
       const std::lock_guard lock(state);
-      const auto view = q["kind"] == "job" ? g->job : g->plan;
+      const auto view = kind == "job" ? g->job : g->plan;
       const bool accepted = active(view["state"].toString()) && g->stop.request_stop(); wake.notify_all();
       return {{"accepted", accepted}};
     }

@@ -350,6 +350,16 @@ void directExport(const QString &root) {
   QString cancelledId;
   {
     ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/direct-groups").toStdWString()));
+    auto pending = query("create_plan"); pending["items"] = requests(root, 64, "invalid-kind-");
+    const auto pendingId = checked(groups.request(pending))["plan_id"].toString();
+    auto invalidKind = query("cancel", pendingId); invalidKind["kind"] = "typo";
+    const auto invalidKindResult = groups.request(invalidKind);
+    if (!invalidKindResult.contains("error"))
+      std::cerr << "invalid kind accepted=" << invalidKindResult["accepted"].toBool() << '\n';
+    require(invalidKindResult["error"].toObject()["code"] == "invalid_argument",
+            "Invalid cancellation kind must not cancel a grouped plan");
+    auto stopPending = query("cancel", pendingId); stopPending["kind"] = "plan";
+    checked(groups.request(stopPending));
     auto items = requests(root, 10, "direct-");
     auto missing = items[1].toObject(); missing["input"] = root + "/missing.tga"; items[1] = missing;
     auto protectedItem = items[2].toObject(); protectedItem["output"] = root + "/source.tga"; protectedItem["conflict"] = "overwrite"; items[2] = protectedItem;
@@ -394,6 +404,9 @@ void directExport(const QString &root) {
       auto invalidPipe = query("get_job", id); invalidPipe["version"] = 2;
       require(requestOverPipe(invalidPipe)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject unsupported versions for grouped jobs");
+      auto invalidPipeKind = query("cancel", id); invalidPipeKind["kind"] = "typo";
+      require(requestOverPipe(invalidPipeKind)["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject invalid grouped cancellation kinds");
       require(requestOverPipe(query("get_job", id))["id"].toString() == id,
               "Endpoint must continue accepting valid grouped requests");
     }
