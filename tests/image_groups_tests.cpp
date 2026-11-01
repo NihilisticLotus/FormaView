@@ -81,6 +81,30 @@ QJsonArray requests(const QString &root, int count, const QString &prefix) {
 AccessScope scope(const QString &root) {
   return {{std::filesystem::path(root.toStdWString())}, {std::filesystem::path(root.toStdWString())}, true, "groups-test-v1"};
 }
+void failedRecovery(const QString &root) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/groups"), "Create isolated recovery root");
+  const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const auto folder = root + "/groups/" + uuid;
+  require(QDir().mkpath(folder + "/0/records"), "Create recovery journal");
+  auto save = [](const QString &path, const QJsonObject &data) {
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(data).toJson()) > 0,
+            "Write recovery journal");
+  };
+  const auto jobId = "group-" + uuid + "-job";
+  save(folder + "/index.json", {{"version", 1}, {"id", "group-" + uuid},
+    {"job_id", jobId}, {"plan_state", "interrupted"}, {"job_state", "failed"},
+    {"batches", QJsonArray{QJsonObject{{"count", 1}}}},
+    {"error", QJsonObject{{"code", "invalid_argument"}, {"message", "Missing dependency"}}}});
+  save(folder + "/0/requests.json", {{"items", requests(root, 1, "out-")}});
+  ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
+  const auto job = checked(groups.request(query("get_job", jobId)));
+  require(job["state"] == "failed", "Recovery must retain terminal failed group state");
+  require(job["items"].toArray()[0].toObject()["status"] == "interrupted", "Unstarted item is interrupted");
+  require(job["items"].toArray()[0].toObject()["error"].toObject()["message"] == "Missing dependency",
+          "Interrupted item retains group failure reason");
+  require(job["error"].toObject()["message"] == "Missing dependency", "Group error preserved");
+}
 void crashProducer(const QString &root) {
   fixture(root + "/source.tga"); QDir().mkpath(root + "/groups");
   ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
@@ -382,6 +406,7 @@ int main(int argc, char **argv) {
       for (auto v : job["items"].toArray()) require(v.toObject()["status"] == "succeeded", "No unfinished real items");
       std::cout << "PASS real batch " << job["total"].toInt() << std::endl; return 0;
     }
+    if (argc == 3 && app.arguments()[1] == "--failed-recovery") { failedRecovery(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--direct") { directExport(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--crash-producer") { crashProducer(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--long-journal") {
@@ -394,6 +419,7 @@ int main(int argc, char **argv) {
     QTemporaryDir temp(QString::fromLocal8Bit(argv[1]) + "/groups-XXXXXX");
     require(temp.isValid(), "Create temporary fixtures"); temp.setAutoRemove(false);
     std::cout << "ROOT " << temp.path().toStdString() << std::endl; run(temp.path());
+    failedRecovery(temp.path() + "/failed-recovery");
     killedRecovery(temp.path() + "/crash-recovery"); return 0;
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }

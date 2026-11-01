@@ -126,7 +126,10 @@ struct ImageTaskGroups::Impl {
           auto item = jobs[i].toObject();
           if (item["status"] == "pending" || item["status"] == "running") {
             item["status"] = "interrupted";
-            g->manifest["job_state"] = "interrupted";
+            if (g->manifest["job_state"] == "failed") {
+              if (g->manifest["error"].isObject()) item["error"] = g->manifest["error"];
+            } else
+              g->manifest["job_state"] = "interrupted";
           }
           jobs[i] = item;
         }
