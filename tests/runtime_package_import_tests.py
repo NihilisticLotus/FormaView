@@ -1,5 +1,7 @@
 """Verify packaging rejects missing runtime DLLs and accepts a complete build."""
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -35,7 +37,36 @@ def main():
         else:
             assert run.returncode == 0, 'Complete package failed; see logs'
             assert (args.output / scenario / 'sha256.json').is_file()
-    print('PASS missing DLL and invalid binary rejected; complete runtime package accepted')
+    # A manifest can consistently describe corrupt binaries. The verifier must
+    # reject failed dumpbin inspections before attempting the GUI smoke test.
+    invalid_runtime = args.output / 'invalid-runtime'
+    invalid_runtime.mkdir()
+    for name in ('formaview.exe', 'formaview_image_cli.exe', 'formaview_image_service.exe'):
+        (invalid_runtime / name).write_bytes(b'not-a-pe')
+    for name in ('image_stdio.py', 'requirements.lock', 'requirements.txt'):
+        destination = invalid_runtime / 'mcp' / name
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copyfile(args.source / 'tools/mcp' / name, destination)
+    shutil.copyfile(args.source / 'tools/runtime/README-run.txt', invalid_runtime / 'README-run.txt')
+    manifest = []
+    for path in invalid_runtime.rglob('*'):
+        if path.is_file():
+            data = path.read_bytes()
+            manifest.append(dict(path=path.relative_to(invalid_runtime).as_posix(),
+                                 bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+    (invalid_runtime / 'sha256.json').write_text(json.dumps(manifest), encoding='utf-8')
+    evidence = args.output / 'invalid-runtime-evidence'
+    run = subprocess.run([str(args.pwsh), '-NoProfile', '-File',
+                          str(args.source / 'tools/verify_runtime.ps1'),
+                          '-RunDir', str(invalid_runtime), '-EvidenceDir', str(evidence),
+                          '-SourceRoot', str(args.source)], capture_output=True, timeout=180)
+    (args.output / 'verify-invalid.stdout').write_bytes(run.stdout)
+    (args.output / 'verify-invalid.stderr').write_bytes(run.stderr)
+    assert run.returncode != 0 and b'FAIL imports-inspected' in run.stdout, (
+        'Verifier did not reject failed import inspection; see logs')
+    report = json.loads((evidence / 'verify-runtime.json').read_text(encoding='utf-8-sig'))
+    assert any(c['name'] == 'imports-resolved' and not c['ok'] for c in report['checks'])
+    print('PASS missing DLL, invalid binary and failed verification rejected; complete package accepted')
 
 
 if __name__ == '__main__':

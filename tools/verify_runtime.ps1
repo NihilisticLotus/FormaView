@@ -63,9 +63,15 @@ $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Componen
 $dumpbin = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC') -Recurse -Filter dumpbin.exe | Where-Object FullName -Match 'Hostx64\\x64' | Select-Object -First 1 -ExpandProperty FullName
 $system = Join-Path $env:WINDIR 'System32'
 $missing = [System.Collections.Generic.HashSet[string]]::new()
+$inspectionFailures = [System.Collections.Generic.List[string]]::new()
 Get-ChildItem -LiteralPath $RunDir -Recurse -Include *.exe, *.dll | ForEach-Object {
     $owner = $_.Name
-    & $dumpbin /dependents $_.FullName | ForEach-Object {
+    $imports = & $dumpbin /dependents $_.FullName
+    if ($LASTEXITCODE -ne 0) {
+        $inspectionFailures.Add("$($_.FullName) (exit $LASTEXITCODE)")
+        return
+    }
+    $imports | ForEach-Object {
         if ($_ -match '^\s+(\S+\.dll)\s*$') {
             $d = $Matches[1]
             $appLocal = $d -match '^(msvcp|vcruntime|concrt|vccorlib)\d+'  # must not depend on an installed redistributable
@@ -73,7 +79,12 @@ Get-ChildItem -LiteralPath $RunDir -Recurse -Include *.exe, *.dll | ForEach-Obje
         }
     }
 }
-Add-Check 'imports-resolved' ($missing.Count -eq 0) ("unresolved=" + ($missing -join '; '))
+Add-Check 'imports-inspected' ($inspectionFailures.Count -eq 0) ("failed=" + ($inspectionFailures -join '; '))
+Add-Check 'imports-resolved' (($inspectionFailures.Count -eq 0) -and ($missing.Count -eq 0)) ("unresolved=" + ($missing -join '; '))
+if ($report.checks | Where-Object { -not $_.ok }) {
+    $report | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 (Join-Path $EvidenceDir 'verify-runtime.json')
+    exit 1
+}
 
 # 3. Start with a minimal environment.
 $minimalPath = "$env:WINDIR\System32;$env:WINDIR"
