@@ -153,6 +153,9 @@ void read_obj(Scene &s, const QByteArray &bytes) {
           if (!w)
             invalid("OBJ vertex has zero homogeneous weight");
           value /= w;
+          if (!std::isfinite(value[0]) || !std::isfinite(value[1]) ||
+              !std::isfinite(value[2]))
+            invalid("OBJ homogeneous vertex normalization overflow");
         } else if (f.size() != 4 && f.size() != 7)
           invalid("Unsupported OBJ vertex layout");
         points.push_back(value);

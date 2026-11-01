@@ -260,7 +260,19 @@ def main():
             assert 'error' not in result and result['clips'] >= 1, (name, result)
             assert all(c['channels'] > 0 for c in result['detail']), (name, result)
 
-    for name, test in [('sparse_outside_buffer', sparse_outside_buffer), ('offset_overflow', offset_overflow),
+    def obj_homogeneous_overflow():
+        path = source / 'homogeneous-overflow.obj'
+        path.write_text('v 1e308 0 0 1e-308\nv 1 0 0\nv 0 1 0\nf 1 2 3\n', encoding='utf-8')
+        destination = args.output / 'homogeneous-overflow.fbx'
+        result = call('preflight', input=str(path), output=str(destination), options=dict(target='fbx'))
+        assert 'error' in result, result
+        assert not destination.exists()
+        path.write_text('v 2 0 0 2\nv 1 0 0\nv 0 1 0\nf 1 2 3\n', encoding='utf-8')
+        valid = call('preflight', input=str(path), output=str(destination), options=dict(target='fbx'))
+        assert 'error' not in valid, valid
+
+    for name, test in [('obj_homogeneous_overflow', obj_homogeneous_overflow),
+                       ('sparse_outside_buffer', sparse_outside_buffer), ('offset_overflow', offset_overflow),
                        ('scaled_hierarchy', hierarchy), ('signed_scale_animation', signed_scale),
                        ('embedded_media_collision', media_collision), ('unreadable_dependency', unreadable_dependency),
                        ('animation_time_range', animation_time_range), ('valid_sparse', valid_sparse),
