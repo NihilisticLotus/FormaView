@@ -261,6 +261,22 @@ void shutdown() {
     const auto rejected = scheduler.submit({1, fv::Priority::Foreground, {}, {}, [](auto) { return fv::TaskResult{}; }});
     check(rejected.error->code == fv::ErrorCode::ShuttingDown, "Closed scheduler accepted work");
     scheduler.shutdown();
+    {
+        auto reentrant = fv::Scheduler{limits(1)};
+        auto registered = std::promise<void>{}; auto registered_future = registered.get_future();
+        auto callback_returned = std::atomic<bool>{false};
+        auto task = submit(reentrant, [&](std::stop_token stop) {
+            std::stop_callback callback(stop, [&] { reentrant.shutdown(); callback_returned = true; });
+            registered.set_value();
+            while (!stop.stop_requested()) std::this_thread::yield();
+            while (!callback_returned) std::this_thread::yield();
+            return fv::TaskResult{};
+        });
+        ready(registered_future);
+        reentrant.shutdown();
+        check(callback_returned && done(task).state == fv::TaskState::Cancelled,
+              "Reentrant stop callback prevented shutdown");
+    }
 }
 void stress() {
     auto config = limits(4); config.queue_capacity = 32; config.foreground_queue_reserve = 4;

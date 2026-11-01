@@ -253,7 +253,14 @@ SchedulerStats Scheduler::stats() const {
     return {impl_->state->queue.size(), impl_->state->active.size(), impl_->state->used};
 }
 void Scheduler::shutdown() {
+    // request_stop invokes callbacks synchronously. A callback may re-enter
+    // shutdown on this same control thread; the outer call remains responsible
+    // for cancellation and joining all workers.
+    static thread_local std::vector<const Impl*> shutdown_stack;
+    if (std::find(shutdown_stack.begin(), shutdown_stack.end(), impl_.get()) != shutdown_stack.end()) return;
     const auto guard = std::lock_guard{impl_->shutdown_mutex};
+    shutdown_stack.push_back(impl_.get());
+    struct PopShutdown { std::vector<const Impl*>& stack; ~PopShutdown() { stack.pop_back(); } } pop{shutdown_stack};
     const auto state = impl_->state;
     auto stop_sources = std::vector<std::stop_source>{};
     auto discarded_work = std::vector<std::function<TaskResult(std::stop_token)>>{};
