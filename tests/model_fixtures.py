@@ -89,4 +89,21 @@ invalid=json.loads(json.dumps(doc));invalid['extensionsRequired']=['KHR_draco_me
 obj='mtllib materials.mtl\no Concave\nv 0 0 0\nv 2 0 0\nv 2 2 0\nv 1 1 0\nv 0 2 0\nvt 0 0\nvt 2 0\nvt 2 2\nvt 1 1\nvt 0 2\nvn 0 0 1\nusemtl Colour\nf -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1\n';(root/'concave.obj').write_text(obj,encoding='utf-8');(root/'missing-mtl.obj').write_text(obj.replace('materials.mtl','absent.mtl'),encoding='utf-8')
 (root/'two-materials.mtl').write_text('newmtl Red\nKd 1 0 0\nmap_Kd colour.png\nnewmtl Blue\nKd 0 0 1\nmap_Kd colour.png\n',encoding='utf-8')
 (root/'two-materials.obj').write_text('mtllib two-materials.mtl\no TwoColours\nv -1 0 0\nv 0 0 0\nv -1 1 0\nv 0 0 0\nv 1 0 0\nv 1 1 0\nvt 0 0\nvt 0.5 0\nvt 0 1\nvt 0.5 0\nvt 1 0\nvt 1 1\nusemtl Red\nf 1/1 2/2 3/3\nusemtl Blue\nf 4/4 5/5 6/6\n',encoding='utf-8')
+# Reused accessor keeps the file small while each target requires its own
+# decoded per-vertex array. Loading must reject before allocating over budget.
+count=50001
+bulk=bytearray(count*12)
+struct.pack_into('<3f',bulk,12,1,0,0);struct.pack_into('<3f',bulk,24,0,1,0)
+(root/'morph-budget.bin').write_bytes(bulk)
+over={'asset':{'version':'2.0'},'buffers':[{'uri':'morph-budget.bin','byteLength':len(bulk)}],
+      'bufferViews':[{'buffer':0,'byteLength':len(bulk)}],
+      'accessors':[{'bufferView':0,'componentType':5126,'count':count,'type':'VEC3','min':[0,0,0],'max':[1,1,0]}],
+      'meshes':[{'primitives':[{'attributes':{'POSITION':0},'targets':[{'POSITION':0} for _ in range(1000)]}]}],
+      'nodes':[{'mesh':0}],'scenes':[{'nodes':[0]}],'scene':0}
+(root/'morph-budget.gltf').write_text(json.dumps(over),encoding='utf-8')
+normal_over=json.loads(json.dumps(over))
+normal_over['accessors'][0]['count']=24999
+normal_over['meshes'][0]['primitives'][0]['attributes']['NORMAL']=0
+normal_over['meshes'][0]['primitives'][0]['targets']=[{'POSITION':0,'NORMAL':0} for _ in range(1000)]
+(root/'morph-normal-budget.gltf').write_text(json.dumps(normal_over),encoding='utf-8')
 print(json.dumps({'directory':str(root),'files':len(list(root.iterdir()))},ensure_ascii=False))

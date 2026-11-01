@@ -112,6 +112,15 @@ int main(int argc, char **argv) {
       }
       test(rejected, "invalid/unsupported glTF explicitly rejected");
     }
+    for (const auto *name : {"morph-budget.gltf", "morph-normal-budget.gltf"}) {
+      bool budgetRejected = false;
+      try {
+        readModelDocument(root.filePath(name), {});
+      } catch (const formaview::skeletal::Failure &e) {
+        budgetRejected = e.error.code == formaview::ErrorCode::ResourceLimit;
+      }
+      test(budgetRejected, "morph position and normal arrays are charged before allocation");
+    }
     {
       std::stop_source stop;
       stop.request_stop();

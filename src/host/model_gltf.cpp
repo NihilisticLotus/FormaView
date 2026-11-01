@@ -427,6 +427,22 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
       const float *staticWeights = node.weights ? node.weights : node.mesh->weights;
       const cgltf_size staticWeightsCount =
           node.weights ? node.weights_count : node.mesh->weights_count;
+      // Each target owns a full per-vertex position array, even when it
+      // references the same accessor as another target. Account for those
+      // allocations before constructing any of them.
+      if (primitive.targets_count > std::numeric_limits<std::size_t>::max() /
+                                        sizeof(ModelMorphTarget))
+        throw skeletal::Failure(ErrorCode::ResourceLimit,
+                                "glTF morph target budget exceeded");
+      budget.reserve(primitive.targets_count * sizeof(ModelMorphTarget));
+      for (std::size_t t = 0; t < primitive.targets_count; ++t) {
+        check(stop);
+        budget.reserve(count * sizeof(skeletal::Vec3));
+        if (normalValues && attribute(primitive.targets[t].attributes,
+                                      primitive.targets[t].attributes_count,
+                                      cgltf_attribute_type_normal))
+          budget.reserve(count * sizeof(skeletal::Vec3));
+      }
       std::vector<ModelMorphTarget> morphTargets(primitive.targets_count);
       for (std::size_t t = 0; t < primitive.targets_count; ++t)
         morphTargets[t].positionDeltas.resize(count);
