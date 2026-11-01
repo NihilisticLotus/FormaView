@@ -101,6 +101,11 @@ void valid(int i, size_t size, bool optional = false) {
   if (i < 0 || static_cast<size_t>(i) >= size)
     invalid("PMX record index out of bounds");
 }
+void finite_morph(const FbxVector4 &value) {
+  if (!std::isfinite(value[0]) || !std::isfinite(value[1]) ||
+      !std::isfinite(value[2]))
+    invalid("PMX morph displacement overflow");
+}
 } // namespace
 void read_pmx(Scene &s, const QByteArray &bytes) {
   Reader r{s, bytes};
@@ -410,6 +415,7 @@ void read_pmx(Scene &s, const QByteArray &bytes) {
         const auto id = r.vertex(vertex_count);
         const auto delta = r.vec();
         m.offsets[id] += delta;
+        finite_morph(m.offsets[id]);
         s.reserve(80);
       } else if (m.type == 2) {
         valid(r.index(r.bone_size), bones.size());
@@ -454,6 +460,7 @@ void read_pmx(Scene &s, const QByteArray &bytes) {
         for (const auto &[vertex, delta] :
              morphs[static_cast<size_t>(id)].offsets) {
           m.offsets[vertex] += delta * weight;
+          finite_morph(m.offsets[vertex]);
           s.reserve(80);
         }
         if (morphs[static_cast<size_t>(id)].type != 0 &&
@@ -476,10 +483,10 @@ void read_pmx(Scene &s, const QByteArray &bytes) {
     shape->InitControlPoints(vertex_count);
     for (int v = 0; v < vertex_count; ++v) {
       const auto it = m.offsets.find(v);
-      shape->SetControlPointAt(
-          vertices[static_cast<size_t>(v)].position +
-              (it == m.offsets.end() ? FbxVector4(0, 0, 0) : it->second),
-          v);
+      const auto point = vertices[static_cast<size_t>(v)].position +
+          (it == m.offsets.end() ? FbxVector4(0, 0, 0) : it->second);
+      finite_morph(point);
+      shape->SetControlPointAt(point, v);
     }
     auto *channel =
         FbxBlendShapeChannel::Create(s.scene, m.name.toUtf8().constData());

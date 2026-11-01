@@ -232,6 +232,24 @@ def main():
     bad=source/'truncated.pmx';bad.write_bytes((source/'source.pmx').read_bytes()[:35])
     invalid=dict(input=str(bad),output=str(args.output/'invalid.fbx'),options=dict(target='fbx'))
     call('preflight',expect_error=True,**invalid);assert not Path(invalid['output']).exists()
+    # Individually finite PMX weights can overflow while nested group morphs
+    # are resolved. Reject them before either preflight or export publishes FBX.
+    def pmx_string(value):
+        data = value.encode('utf-8')
+        return struct.pack('<i', len(data)) + data
+    original = (source/'source.pmx').read_bytes()
+    start = original.index(pmx_string('抬起')) - 4
+    end = original.index(pmx_string('刚体')) - 8
+    morphs = bytearray(struct.pack('<i', 13))
+    morphs += pmx_string('v') + pmx_string('v') + struct.pack('<BBiB3f', 1, 1, 1, 0, 3e38, 0, 0)
+    for i in range(12):
+        morphs += pmx_string('g' + str(i)) + pmx_string('g') + struct.pack('<BBibf', 1, 0, 1, i, 3e38)
+    overflow = source/'overflow-morph.pmx'
+    overflow.write_bytes(original[:start] + morphs + original[end:])
+    invalid['input'] = str(overflow)
+    result = call('preflight', expect_error=True, **invalid)
+    assert 'morph displacement overflow' in result['error']['message']
+    assert not Path(invalid['output']).exists()
     invalid['input']=str(source/'source.glb');invalid['options']['clip_id']='nonexistent'
     call('preflight',expect_error=True,**invalid);assert not Path(invalid['output']).exists()
     invalid['options']=dict(target='fbx',include_mesh='false')
