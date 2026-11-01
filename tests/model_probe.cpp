@@ -132,6 +132,15 @@ int main(int argc, char **argv) {
         session.selectMesh(mesh);
         session.setMode(0);
         wait();
+        // Animated non-FBX sessions publish their first pose asynchronously
+        // without setting preparing(). Wait for that payload before checking it.
+        QElapsedTimer poseDeadline;
+        poseDeadline.start();
+        while ((!session.frame() || session.frame()->vertices.empty()) &&
+               poseDeadline.elapsed() < 30000) {
+          QCoreApplication::processEvents();
+          QThread::msleep(2);
+        }
         if (!session.frame() || session.frame()->vertices.empty())
           throw std::runtime_error("No model vertices");
         for (int uv = 0; uv < session.uvSets().size(); ++uv) {
