@@ -773,6 +773,8 @@ struct ImageTaskGroups::Impl {
     if (op == "pause" || op == "resume") {
       auto g = find(q["id"].toString());
       const std::lock_guard lock(state);
+      if (g->job["id"].toString() != q["id"].toString())
+        fail(ErrorCode::InvalidArgument, "Requested job identifier does not match group job");
       if (!active(g->job["state"].toString()) || g->stop.stop_requested())
         fail(ErrorCode::Conflict, "Only active groups can pause or resume");
       g->pause_requested = op == "pause";

@@ -363,9 +363,16 @@ void directExport(const QString &root) {
     auto mismatchJob = query("create_job"); mismatchJob["items"] = requests(root, 64, "mismatch-");
     mismatchJob["name"] = "Named export batch"; mismatchJob["category"] = "Regression";
     const auto mismatchJobId = checked(groups.request(mismatchJob))["job_id"].toString();
-    checked(groups.request(query("pause", mismatchJobId)));
     const auto mismatchPlanId = checked(groups.request(query("get_job", mismatchJobId)))["plan_id"].toString();
     require(!mismatchPlanId.isEmpty(), "Direct job exposes its plan identifier");
+    const auto wrongPause = groups.request(query("pause", mismatchPlanId));
+    if (!wrongPause.contains("error"))
+      std::cerr << "plan ID paused job=" << wrongPause["accepted"].toBool() << '\n';
+    require(wrongPause["error"].toObject()["code"] == "invalid_argument",
+            "A plan ID must not pause its associated grouped job");
+    checked(groups.request(query("pause", mismatchJobId)));
+    require(groups.request(query("resume", mismatchPlanId))["error"].toObject()["code"] == "invalid_argument",
+            "A plan ID must not resume its associated grouped job");
     const auto wrongJobLookup = groups.request(query("get_job", mismatchPlanId));
     if (!wrongJobLookup.contains("error"))
       std::cerr << "plan ID returned job=" << wrongJobLookup["id"].toString().toStdString() << '\n';
@@ -429,6 +436,10 @@ void directExport(const QString &root) {
       require(requestOverPipe(invalidPipeKind)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject invalid grouped cancellation kinds");
       const auto directPlanId = checked(groups.request(query("get_job", id)))["plan_id"].toString();
+      require(requestOverPipe(query("pause", directPlanId))["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a plan ID for grouped job pause");
+      require(requestOverPipe(query("resume", directPlanId))["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a plan ID for grouped job resume");
       require(requestOverPipe(query("get_job", directPlanId))["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject a plan ID for grouped job lookup");
       require(requestOverPipe(query("get_plan", id))["error"].toObject()["code"] == "invalid_argument",
