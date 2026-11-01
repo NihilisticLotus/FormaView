@@ -296,6 +296,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
   Accessors access{budget, {}};
   std::vector<QMatrix4x4> worlds(raw->nodes_count);
   std::vector<std::uint32_t> meshNodes; // node index per mesh (morph drive)
+  std::vector<std::vector<double>> meshDefaultWeights;
   std::vector<int> degrees(raw->nodes_count);
   std::vector<std::size_t> order;
   order.reserve(raw->nodes_count);
@@ -811,6 +812,10 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
         }
       }
       m.morphTargets = std::move(morphTargets);
+      budget.reserve(primitive.targets_count * sizeof(double));
+      auto &defaults = meshDefaultWeights.emplace_back(primitive.targets_count, 0.0);
+      for (std::size_t t = 0; t < primitive.targets_count && t < staticWeightsCount; ++t)
+        defaults[t] = staticWeights[t];
       meshNodes.push_back(static_cast<std::uint32_t>(ni));
       result->meshes.push_back(std::move(m));
     }
@@ -1033,10 +1038,13 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
         for (const auto &mesh : result->meshes)
           targetCounts->push_back(mesh.morphTargets.size());
         result->morphWeightsAt =
-            [anims, meshNodes, targetCounts](std::size_t clip, double seconds) {
+            [anims, meshNodes, targetCounts, meshDefaultWeights](std::size_t clip, double seconds) {
               std::vector<std::vector<double>> weights(targetCounts->size());
               if (clip >= anims->clips.size() || !std::isfinite(seconds))
                 return weights;
+              // Unanimated meshes (or clips without a weight channel) retain
+              // the node/mesh defaults rather than silently reverting to zero.
+              weights = meshDefaultWeights;
               for (const auto &channel : anims->clips[clip].channels) {
                 if (channel.path != formaview::gltf::TrackPath::Weights ||
                     channel.times.empty() || channel.values.empty() ||
@@ -1057,7 +1065,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                     const auto key = seconds >= channel.times.back() ? channel.times.size()-1 : 0;
                     for (std::size_t t = 0; t < count; ++t)
                       out[t] = channel.values[key*perKey+t];
-                    break;
+                    continue;
                   }
                   // hi stays at size-2 so hi+1 is always a real key; the
                   // clamped u holds the last key at/past the clip end.
@@ -1077,7 +1085,6 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                     const double hiV = channel.values[(hi + 1) * perKey + t];
                     out[t] = lo + (hiV - lo) * u;
                   }
-                  break;
                 }
               }
               return weights;

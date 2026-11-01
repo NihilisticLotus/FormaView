@@ -70,6 +70,19 @@ primitive['attributes']['POSITION']=add(morph,extra,[0,0,0,1,0,0,0,1,0],'9f','VE
 primitive['attributes']['NORMAL']=add(morph,extra,[0,0,1]*3,'9f','VEC3',5126)
 primitive['targets']=[{'POSITION':add(morph,extra,[0,0,2]*3,'9f','VEC3',5126),'NORMAL':add(morph,extra,[0,1,-1]*3,'9f','VEC3',5126)}]
 morph['meshes'][0]['weights']=[.5];morph['buffers']=[{'uri':'data:application/octet-stream;base64,'+base64.b64encode(extra).decode(),'byteLength':len(extra)}];write('morph.gltf',morph)
+multi=json.loads(json.dumps(morph));multi_data=bytearray(extra)
+multi['meshes'][0]['primitives'].append(json.loads(json.dumps(multi['meshes'][0]['primitives'][0])))
+static_mesh=json.loads(json.dumps(morph['meshes'][0]));static_mesh['weights']=[.4]
+multi['meshes'].append(static_mesh);multi['nodes'].append({'mesh':1});multi['scenes'][0]['nodes'].append(1)
+times=add(multi,multi_data,[0,1],'2f','SCALAR',5126)
+weights=add(multi,multi_data,[.25,.75],'2f','SCALAR',5126)
+translation=add(multi,multi_data,[0,0,0,1,0,0],'6f','VEC3',5126)
+multi['animations']=[{'samplers':[{'input':times,'output':weights,'interpolation':'LINEAR'}],
+                      'channels':[{'sampler':0,'target':{'node':0,'path':'weights'}}]},
+                     {'samplers':[{'input':times,'output':translation,'interpolation':'LINEAR'}],
+                      'channels':[{'sampler':0,'target':{'node':0,'path':'translation'}}]}]
+multi['buffers']=[{'uri':'data:application/octet-stream;base64,'+base64.b64encode(multi_data).decode(),'byteLength':len(multi_data)}]
+write('morph-multiple-primitives.gltf',multi)
 large_normal=json.loads(json.dumps(morph));large_data=bytearray(extra)
 normal_delta=large_normal['meshes'][0]['primitives'][0]['targets'][0]['NORMAL']
 normal_view=large_normal['bufferViews'][large_normal['accessors'][normal_delta]['bufferView']]
