@@ -360,6 +360,20 @@ void directExport(const QString &root) {
             "Invalid cancellation kind must not cancel a grouped plan");
     auto stopPending = query("cancel", pendingId); stopPending["kind"] = "plan";
     checked(groups.request(stopPending));
+    auto mismatchJob = query("create_job"); mismatchJob["items"] = requests(root, 64, "mismatch-");
+    mismatchJob["name"] = "Named export batch"; mismatchJob["category"] = "Regression";
+    const auto mismatchJobId = checked(groups.request(mismatchJob))["job_id"].toString();
+    checked(groups.request(query("pause", mismatchJobId)));
+    const auto mismatchPlanId = checked(groups.request(query("get_job", mismatchJobId)))["plan_id"].toString();
+    require(!mismatchPlanId.isEmpty(), "Direct job exposes its plan identifier");
+    auto mismatchedCancel = query("cancel", mismatchPlanId); mismatchedCancel["kind"] = "job";
+    const auto mismatchedResult = groups.request(mismatchedCancel);
+    if (!mismatchedResult.contains("error"))
+      std::cerr << "mismatched kind accepted=" << mismatchedResult["accepted"].toBool() << '\n';
+    require(mismatchedResult["error"].toObject()["code"] == "invalid_argument",
+            "A plan ID must not cancel its associated grouped job");
+    auto stopMismatch = query("cancel", mismatchJobId); stopMismatch["kind"] = "job";
+    checked(groups.request(stopMismatch));
     auto items = requests(root, 10, "direct-");
     auto missing = items[1].toObject(); missing["input"] = root + "/missing.tga"; items[1] = missing;
     auto protectedItem = items[2].toObject(); protectedItem["output"] = root + "/source.tga"; protectedItem["conflict"] = "overwrite"; items[2] = protectedItem;
@@ -407,6 +421,10 @@ void directExport(const QString &root) {
       auto invalidPipeKind = query("cancel", id); invalidPipeKind["kind"] = "typo";
       require(requestOverPipe(invalidPipeKind)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject invalid grouped cancellation kinds");
+      const auto directPlanId = checked(groups.request(query("get_job", id)))["plan_id"].toString();
+      auto mismatchedPipe = query("cancel", directPlanId); mismatchedPipe["kind"] = "job";
+      require(requestOverPipe(mismatchedPipe)["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a plan ID used as a grouped job ID");
       require(requestOverPipe(query("get_job", id))["id"].toString() == id,
               "Endpoint must continue accepting valid grouped requests");
     }

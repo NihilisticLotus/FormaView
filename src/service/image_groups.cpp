@@ -763,6 +763,8 @@ struct ImageTaskGroups::Impl {
       auto g = find(q["id"].toString());
       const std::lock_guard lock(state);
       const auto view = kind == "job" ? g->job : g->plan;
+      if (view["id"].toString() != q["id"].toString())
+        fail(ErrorCode::InvalidArgument, "Cancellation kind does not match group identifier");
       const bool accepted = active(view["state"].toString()) && g->stop.request_stop(); wake.notify_all();
       return {{"accepted", accepted}};
     }
