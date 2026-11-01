@@ -116,6 +116,12 @@ int main() {
   check("static_matrix_without_decomposition",validate(a,b,map).verdict==Verdict::Compatible);
   (*b.nodes[0].restMatrix)[12]=1;
   check("static_matrix_conflict",validate(a,b,map).verdict==Verdict::Incompatible);
+  a=fixture();b=fixture();a.format=b.format=Format::Gltf;
+  a.nodes[0].restLocal.reset();a.nodes[0].restMatrix=identity();
+  b.nodes[0].restLocal->translation[0]=10;
+  check("identity_mixed_rest_representation_not_proven",reason(validate(a,b,map),Verdict::Insufficient,Reason::MissingEvidence));
+  b.nodes[1].restLocal->translation[0]=2;
+  check("identity_mixed_rest_keeps_known_conflict",reason(validate(a,b,map),Verdict::Incompatible,Reason::RestConflict));
   a=fixture();b=fixture('b');a.format=b.format=Format::Gltf;a.bindings.reset();b.bindings.reset();
   a.nativeSkinBindings=std::vector<NativeSkinBinding>{{0,1,identity()}};b.nativeSkinBindings=a.nativeSkinBindings;
   check("gltf_native_operator_proof",validate(a,b,map).verdict==Verdict::Compatible);

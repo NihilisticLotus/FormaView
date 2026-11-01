@@ -113,6 +113,7 @@ Report validate(const Evidence &a,const Evidence &b,std::span<const Pair> mappin
   }
   const bool nativeBindings=a.format==Format::Gltf&&a.nativeSkinBindings&&b.nativeSkinBindings;
   bool missing=!a.coordinates||!b.coordinates||(!nativeBindings&&(!a.bindings||!b.bindings));
+  bool mixedRestRepresentation=false;
   const double metres=a.coordinates?a.coordinates->metresPerUnit:1;
   if(a.coordinates&&b.coordinates&&(a.coordinates->axes!=b.coordinates->axes||a.coordinates->metresPerUnit!=b.coordinates->metresPerUnit))
     return result(Verdict::Incompatible,Reason::CoordinateConflict);
@@ -121,7 +122,7 @@ Report validate(const Evidence &a,const Evidence &b,std::span<const Pair> mappin
     out.sourceNode=p.source;out.targetNode=p.target;
     const auto &an=a.nodes[p.source],&bn=b.nodes[p.target];
     if (an.restMatrix || bn.restMatrix) {
-      if (!an.restMatrix || !bn.restMatrix) {missing=true;continue;}
+      if (!an.restMatrix || !bn.restMatrix) {missing=true;mixedRestRepresentation=true;continue;}
       // Static matrix nodes are not animation targets in glTF. Keep their
       // authored basis exactly; never promote a lossy TRS decomposition.
       for(std::size_t i=0;i<16;++i) {
@@ -283,6 +284,7 @@ Report validate(const Evidence &a,const Evidence &b,std::span<const Pair> mappin
   }
   if(stop.stop_requested())return cancelled();
   out.sourceNode.reset();out.targetNode.reset();
+  if(mixedRestRepresentation)return result(Verdict::Insufficient,Reason::MissingEvidence);
   // Complete default transforms and validated full mapping preserve the legacy
   // identity proof without requiring new format metadata from old adapters.
   if(identical)return result(Verdict::Compatible,Reason::Identity);
