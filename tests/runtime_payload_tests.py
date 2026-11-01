@@ -16,7 +16,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     results = []
     for manifest_name in ('sha256.json', 'payload-manifest.json'):
-        for scenario in ('complete', 'omitted-mcp', 'wrong-source'):
+        for scenario in ('complete', 'omitted-mcp', 'wrong-source', 'traversal'):
             root = args.output / (manifest_name + '-' + scenario)
             payload = root / 'payload'
             payload.mkdir(parents=True)
@@ -33,6 +33,11 @@ def main():
             rows = [dict(path=p.relative_to(payload).as_posix(), bytes=p.stat().st_size,
                          sha256=hashlib.sha256(p.read_bytes()).hexdigest())
                     for p in sorted(payload.rglob('*')) if p.is_file()]
+            if scenario == 'traversal':
+                outside = root / 'outside.bin'
+                outside.write_bytes(b'outside-fixture')
+                rows.append(dict(path='../outside.bin', bytes=outside.stat().st_size,
+                                 sha256=hashlib.sha256(outside.read_bytes()).hexdigest()))
             document = rows if manifest_name == 'sha256.json' else dict(files=rows)
             (payload / manifest_name).write_text(json.dumps(document), encoding='utf-8')
             command = [str(args.pwsh), '-NoProfile', '-File', str(args.source / 'tools/verify_runtime.ps1'),
@@ -43,6 +48,10 @@ def main():
             (root / 'stderr.txt').write_bytes(run.stderr)
             report = json.loads((root / 'evidence/verify-runtime.json').read_text(encoding='utf-8-sig'))
             checks = {check['name']: check['ok'] for check in report['checks']}
+            if scenario == 'traversal':
+                assert run.returncode != 0 and checks.get('manifest-paths') is False, report
+                results.append(dict(manifest=manifest_name, scenario=scenario, exitCode=run.returncode, checks=checks))
+                continue
             assert checks['manifest'], report
             assert (run.returncode == 0) == (scenario == 'complete'), report
             assert checks['required-runtime-files'] == (scenario != 'omitted-mcp'), report
