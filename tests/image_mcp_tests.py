@@ -33,7 +33,7 @@ async def main():
             init=await session.initialize()
             tools=await session.list_tools()
             names={t.name for t in tools.tools}
-            assert names=={'get_image_capabilities','inspect_image','preflight_image','convert_image'},names
+            assert names=={'get_image_capabilities','inspect_image','preflight_image','convert_image','inspect_model'},names
             async def call(name,arguments):
                 result=await session.call_tool(name,arguments)
                 assert not result.isError,result
