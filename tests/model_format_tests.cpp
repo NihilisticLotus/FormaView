@@ -87,6 +87,12 @@ int main(int argc, char **argv) {
            "default morph normal before world transform");
     }
     {
+      const auto d = readModelDocument(root.filePath("morph-large-normal.gltf"), {});
+      const auto &base = d->meshes[0].morphBaseNormals[0];
+      test(close(base.x, 0) && close(base.y, 0) && close(base.z, 1),
+           "unmorphed base normal survives a large static morph delta");
+    }
+    {
       // A sparse visible triangle can coexist with many source points. The
       // dense GPU morph texture must be rejected before allocating it.
       auto d = readModelDocument(root.filePath("morph.gltf"), {});

@@ -70,6 +70,13 @@ primitive['attributes']['POSITION']=add(morph,extra,[0,0,0,1,0,0,0,1,0],'9f','VE
 primitive['attributes']['NORMAL']=add(morph,extra,[0,0,1]*3,'9f','VEC3',5126)
 primitive['targets']=[{'POSITION':add(morph,extra,[0,0,2]*3,'9f','VEC3',5126),'NORMAL':add(morph,extra,[0,1,-1]*3,'9f','VEC3',5126)}]
 morph['meshes'][0]['weights']=[.5];morph['buffers']=[{'uri':'data:application/octet-stream;base64,'+base64.b64encode(extra).decode(),'byteLength':len(extra)}];write('morph.gltf',morph)
+large_normal=json.loads(json.dumps(morph));large_data=bytearray(extra)
+normal_delta=large_normal['meshes'][0]['primitives'][0]['targets'][0]['NORMAL']
+normal_view=large_normal['bufferViews'][large_normal['accessors'][normal_delta]['bufferView']]
+for i in range(3):struct.pack_into('<3f',large_data,normal_view.get('byteOffset',0)+i*12,0,0,1e20)
+large_normal['meshes'][0]['weights']=[1]
+large_normal['buffers'][0]['uri']='data:application/octet-stream;base64,'+base64.b64encode(large_data).decode()
+write('morph-large-normal.gltf',large_normal)
 bad=base();extra=bytearray();position=add(bad,extra,[0,0,0,1,0,0,0,1,0],'9f','VEC3',5126)
 good_uv=add(bad,extra,[0,0,1,0,0,1],'6f','VEC2',5126);bad_uv=add(bad,extra,[float('nan'),0,1,0,0,1],'6f','VEC2',5126)
 bad['meshes']=[{'primitives':[{'attributes':{'POSITION':position,'TEXCOORD_0':good_uv}}]},{'primitives':[{'attributes':{'POSITION':position,'TEXCOORD_0':bad_uv}}]}]

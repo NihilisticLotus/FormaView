@@ -493,16 +493,11 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
           }
         }
         if (normalValues) {
-          // Unmorphed base normal: undo the static weighted deltas applied
-          // above (local space, matching pointNormals).
-          QVector3D base = n;
-          for (std::size_t t = 0; t < primitive.targets_count; ++t)
-            if (morphTargets[t].normalDeltas.size() == count)
-              base -= QVector3D(morphTargets[t].normalDeltas[i].x,
-                                morphTargets[t].normalDeltas[i].y,
-                                morphTargets[t].normalDeltas[i].z) *
-                      (t < staticWeightsCount ? staticWeights[t] : 0.f);
-          m.morphBaseNormals.push_back({base.x(), base.y(), base.z()});
+          // Preserve the source directly: subtracting a large morph delta
+          // from the rounded sum can erase the original normal entirely.
+          m.morphBaseNormals.push_back({(*normalValues)[i * 3],
+                                        (*normalValues)[i * 3 + 1],
+                                        (*normalValues)[i * 3 + 2]});
         }
         localPositions.push_back(v);
         localNormals.push_back(n);
