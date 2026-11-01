@@ -823,6 +823,8 @@ ImageTaskGroups::~ImageTaskGroups() = default;
 QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop) {
   try {
     if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group request cancelled");
+    if (q["version"].toDouble() != 1)
+      fail(ErrorCode::InvalidArgument, "Batch request version must be 1");
     return impl_->dispatch(q, stop);
   } catch (const skeletal::Failure &e) { return image_error_json(e); }
   catch (const std::exception &e) { return image_error_json(skeletal::Failure(ErrorCode::Internal, e.what())); }

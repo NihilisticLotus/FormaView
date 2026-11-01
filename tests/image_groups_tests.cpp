@@ -357,6 +357,18 @@ void directExport(const QString &root) {
     options["alpha_action"] = "drop"; lossy["options"] = options; items[4] = lossy;
     auto q = query("create_job"); q["items"] = items; q["name"] = "Named export batch"; q["category"] = "Regression";
     const auto id = checked(groups.request(q))["job_id"].toString(); require(!id.isEmpty(), "Direct export immediately returns a durable job");
+    auto wrongVersion = query("get_job", id); wrongVersion["version"] = 2;
+    require(groups.request(wrongVersion)["error"].toObject()["code"] == "invalid_argument",
+            "Grouped requests must reject unsupported protocol versions");
+    wrongVersion.remove("version");
+    require(groups.request(wrongVersion)["error"].toObject()["code"] == "invalid_argument",
+            "Grouped requests must require a protocol version");
+    wrongVersion["version"] = "1";
+    require(groups.request(wrongVersion)["error"].toObject()["code"] == "invalid_argument",
+            "Grouped requests must reject nonnumeric versions");
+    auto wrongCancel = query("cancel", id); wrongCancel["kind"] = "job"; wrongCancel["version"] = 2;
+    require(groups.request(wrongCancel)["error"].toObject()["code"] == "invalid_argument",
+            "Invalid-version cancellation must not affect a grouped job");
     completed = wait(groups, "get_job", id);
     require(completed["state"] == "partially_succeeded", "Direct failures do not prevent remaining outputs");
     const auto result = completed["items"].toArray();
