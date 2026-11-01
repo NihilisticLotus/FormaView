@@ -25,11 +25,13 @@ TestCase {
         property var importResult: ({})
         property var capabilities: ({write_targets:["png"],model_export:{input_formats:["psk","psa"]}})
         property int submissions: 0
+        property int directSubmissions: 0
         property string cancelledId: ""
         function nameExamples() { return {names:["source-converted.png"]} }
         function invalidatePlan() { plan = {}; changed() }
         function preflight() { busy = true; plan = {}; changed() }
         function submit(ack) { submissions++; busy = true; job = {}; changed() }
+        function startExport() { directSubmissions++; busy = true; job = {}; changed() }
         function cancelPreparation() { cancelledId = "preparation"; changed() }
         function cancel(kind,id) { cancelledId = id; changed() }
         function jobSnapshot(id) { return JSON.parse(JSON.stringify(jobs.find(j => j.id === id) || {})) }
@@ -49,7 +51,7 @@ TestCase {
     Component { id: factory; QuickExportWindow { controller: testController; inputPath: "C:/source.png"; preset: "texture" } }
     property var window: null
     function init() {
-        service.busy=false; service.error=""; service.plan={}; service.job={}; service.jobs=[]; service.submissions=0; service.cancelledId=""
+        service.busy=false; service.error=""; service.plan={}; service.job={}; service.jobs=[]; service.submissions=0; service.directSubmissions=0; service.cancelledId=""
         window=factory.createObject(test)
         verify(window)
         compare(window.modality, Qt.NonModal)
@@ -111,6 +113,24 @@ TestCase {
         compare(window.ownedJob,"A")
         compare(service.cancelledId,"")
         compare(service.job.state,"running")
+    }
+    function test_direct_export_result_is_owned() {
+        window.preset="animation"
+        begin(); compare(service.directSubmissions,1); compare(window.phase,"direct")
+        service.job={id:"direct-A",state:"running",items:[]};service.busy=false
+        service.directExportFinished("direct-A");service.changed();wait(0)
+        compare(window.ownedJob,"direct-A")
+        compare(window.phase,"job")
+    }
+    function test_close_during_direct_export_does_not_cancel() {
+        window.preset="animation"
+        begin(); compare(service.directSubmissions,1)
+        window.close(); tryCompare(window,"visible",false)
+        compare(service.cancelledId,"")
+        service.job={id:"direct-A",state:"running",items:[]};service.busy=false
+        service.directExportFinished("direct-A");service.changed();wait(0)
+        compare(service.job.state,"running")
+        compare(service.cancelledId,"")
     }
     function test_old_ready_plan_is_not_submitted() {
         service.plan={id:"old",state:"ready",items:[{status:"ready",preflight:{losses:[]}}]}
