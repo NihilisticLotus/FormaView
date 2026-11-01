@@ -16,7 +16,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     results = []
     for manifest_name in ('sha256.json', 'payload-manifest.json'):
-        for scenario in ('complete', 'omitted-mcp', 'wrong-source', 'traversal'):
+        for scenario in ('complete', 'omitted-mcp', 'wrong-source', 'traversal', 'junction'):
             root = args.output / (manifest_name + '-' + scenario)
             payload = root / 'payload'
             payload.mkdir(parents=True)
@@ -38,6 +38,18 @@ def main():
                 outside.write_bytes(b'outside-fixture')
                 rows.append(dict(path='../outside.bin', bytes=outside.stat().st_size,
                                  sha256=hashlib.sha256(outside.read_bytes()).hexdigest()))
+            if scenario == 'junction':
+                outside = root / 'outside'
+                outside.mkdir()
+                target = outside / 'asset.bin'
+                target.write_bytes(b'outside-fixture')
+                link = str(payload / 'link').replace("'", "''")
+                dest = str(outside).replace("'", "''")
+                subprocess.run([str(args.pwsh), '-NoProfile', '-Command',
+                                f"New-Item -ItemType Junction -Path '{link}' -Target '{dest}' | Out-Null"],
+                               check=True, capture_output=True, timeout=30)
+                rows.append(dict(path='link/asset.bin', bytes=target.stat().st_size,
+                                 sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
             document = rows if manifest_name == 'sha256.json' else dict(files=rows)
             (payload / manifest_name).write_text(json.dumps(document), encoding='utf-8')
             command = [str(args.pwsh), '-NoProfile', '-File', str(args.source / 'tools/verify_runtime.ps1'),
@@ -48,7 +60,7 @@ def main():
             (root / 'stderr.txt').write_bytes(run.stderr)
             report = json.loads((root / 'evidence/verify-runtime.json').read_text(encoding='utf-8-sig'))
             checks = {check['name']: check['ok'] for check in report['checks']}
-            if scenario == 'traversal':
+            if scenario in ('traversal', 'junction'):
                 assert run.returncode != 0 and checks.get('manifest-paths') is False, report
                 results.append(dict(manifest=manifest_name, scenario=scenario, exitCode=run.returncode, checks=checks))
                 continue
