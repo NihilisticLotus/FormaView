@@ -73,7 +73,7 @@ morph['meshes'][0]['weights']=[.5];morph['buffers']=[{'uri':'data:application/oc
 multi=json.loads(json.dumps(morph));multi_data=bytearray(extra)
 multi['meshes'][0]['primitives'].append(json.loads(json.dumps(multi['meshes'][0]['primitives'][0])))
 static_mesh=json.loads(json.dumps(morph['meshes'][0]));static_mesh['weights']=[.4]
-multi['meshes'].append(static_mesh);multi['nodes'].append({'mesh':1});multi['scenes'][0]['nodes'].append(1)
+multi['meshes'].append(static_mesh);multi['nodes'].extend([{'mesh':1,'weights':[.6]},{'mesh':1}]);multi['scenes'][0]['nodes'].extend([1,2])
 times=add(multi,multi_data,[0,1],'2f','SCALAR',5126)
 weights=add(multi,multi_data,[.25,.75],'2f','SCALAR',5126)
 translation=add(multi,multi_data,[0,0,0,1,0,0],'6f','VEC3',5126)

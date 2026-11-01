@@ -89,19 +89,19 @@ int main(int argc, char **argv) {
     }
     {
       const auto d = readModelDocument(root.filePath("morph-multiple-primitives.gltf"), {});
-      test(d->meshes.size() == 3 && bool(d->morphWeightsAt), "animated and static morph primitives loaded");
+      test(d->meshes.size() == 4 && bool(d->morphWeightsAt), "animated and instanced morph primitives loaded");
       for (const auto [time, expected] : {std::pair{-1.0, .25}, std::pair{.5, .5},
                                           std::pair{1.0, .75}, std::pair{2.0, .75}}) {
         const auto weights = d->morphWeightsAt(0, time);
-        test(weights.size() == 3 && weights[0].size() == 1 && weights[1].size() == 1 &&
-                 weights[2].size() == 1 && close(weights[0][0], expected) &&
-                 close(weights[1][0], expected) && close(weights[2][0], .4),
+        test(weights.size() == 4 && weights[0].size() == 1 && weights[1].size() == 1 &&
+                 weights[2].size() == 1 && weights[3].size() == 1 && close(weights[0][0], expected) &&
+                 close(weights[1][0], expected) && close(weights[2][0], .6) && close(weights[3][0], .4),
              "morph animation drives all target primitives and retains other defaults");
       }
       const auto defaults = d->morphWeightsAt(1, .5);
-      test(defaults.size() == 3 && defaults[0].size() == 1 && defaults[1].size() == 1 &&
-               defaults[2].size() == 1 && close(defaults[0][0], .5) &&
-               close(defaults[1][0], .5) && close(defaults[2][0], .4),
+      test(defaults.size() == 4 && defaults[0].size() == 1 && defaults[1].size() == 1 &&
+               defaults[2].size() == 1 && defaults[3].size() == 1 && close(defaults[0][0], .5) &&
+               close(defaults[1][0], .5) && close(defaults[2][0], .6) && close(defaults[3][0], .4),
            "clip without morph channels retains every static default");
     }
     {
