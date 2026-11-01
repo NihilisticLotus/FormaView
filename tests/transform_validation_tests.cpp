@@ -118,6 +118,10 @@ int main() {
   check("static_matrix_conflict",validate(a,b,map).verdict==Verdict::Incompatible);
   a=fixture();b=fixture();a.format=b.format=Format::Gltf;
   a.nodes[0].restLocal.reset();a.nodes[0].restMatrix=identity();
+  check("identity_mixed_equal_values_still_unproven",reason(validate(a,b,map),Verdict::Insufficient,Reason::MissingEvidence));
+  b.sha256=std::string(64,'b');
+  check("cross_file_mixed_rest_still_unproven",reason(validate(a,b,map),Verdict::Insufficient,Reason::MissingEvidence));
+  b.sha256=a.sha256;
   b.nodes[0].restLocal->translation[0]=10;
   check("identity_mixed_rest_representation_not_proven",reason(validate(a,b,map),Verdict::Insufficient,Reason::MissingEvidence));
   b.nodes[1].restLocal->translation[0]=2;
