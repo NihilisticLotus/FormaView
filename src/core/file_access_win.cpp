@@ -438,7 +438,7 @@ FileDiscovery discover_files(const AccessScope &scope,
       }
       if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
         if (recursive) {
-          if (pending.size() + directories >= 512 && bounded_membership)
+          if (pending.size() + directories >= 512)
             fail(ErrorCode::ResourceLimit, "Discovery exceeds 512 directories");
           pending.push_back(path);
         }

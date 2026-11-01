@@ -104,6 +104,17 @@ void run(const std::filesystem::path &root) {
           "An unrelated ambiguous name stopped valid directory discovery");
   rejects([&] { (void)discover_files(scope, outside, true, extensions); },
           ErrorCode::OutOfScope);
+  const auto wide = root / "wide";
+  std::filesystem::create_directories(wide);
+  AccessScope wideScope;
+  wideScope.input_roots = {wide};
+  for (int i = 0; i < 511; ++i)
+    std::filesystem::create_directory(wide / std::to_string(i));
+  require(discover_files(wideScope, wide, true, extensions, {}, false).files.empty(),
+          "Discovery should permit 512 directories including the root");
+  std::filesystem::create_directory(wide / "overflow");
+  rejects([&] { (void)discover_files(wideScope, wide, true, extensions, {}, false); },
+          ErrorCode::ResourceLimit);
   std::stop_source discovery_stop;
   discovery_stop.request_stop();
   rejects(
