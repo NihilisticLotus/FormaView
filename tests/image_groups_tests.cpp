@@ -1,9 +1,11 @@
 #include "formaview/image_groups.hpp"
+#include "formaview/image_endpoint.hpp"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocalSocket>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QUuid>
@@ -369,6 +371,32 @@ void directExport(const QString &root) {
     auto wrongCancel = query("cancel", id); wrongCancel["kind"] = "job"; wrongCancel["version"] = 2;
     require(groups.request(wrongCancel)["error"].toObject()["code"] == "invalid_argument",
             "Invalid-version cancellation must not affect a grouped job");
+    {
+      require(QDir().mkpath(root + "/endpoint-service"), "Create isolated endpoint journal");
+      auto service = std::make_shared<ImageBatchService>(scope(root), std::filesystem::path((root + "/endpoint-service").toStdWString()));
+      auto sharedGroups = std::shared_ptr<ImageTaskGroups>(&groups, [](ImageTaskGroups *) {});
+      const auto endpointName = "formaview-version-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+      ImageEndpoint endpoint(service, endpointName, nullptr, sharedGroups);
+      const auto requestOverPipe = [&](const QJsonObject &request) {
+        QLocalSocket socket;
+        socket.connectToServer(endpointName);
+        require(socket.waitForConnected(5000), "Connect isolated endpoint");
+        socket.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+        socket.flush();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!socket.canReadLine() && std::chrono::steady_clock::now() < deadline) {
+          QCoreApplication::processEvents();
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(socket.canReadLine(), "Endpoint response timed out");
+        return QJsonDocument::fromJson(socket.readLine()).object();
+      };
+      auto invalidPipe = query("get_job", id); invalidPipe["version"] = 2;
+      require(requestOverPipe(invalidPipe)["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject unsupported versions for grouped jobs");
+      require(requestOverPipe(query("get_job", id))["id"].toString() == id,
+              "Endpoint must continue accepting valid grouped requests");
+    }
     completed = wait(groups, "get_job", id);
     require(completed["state"] == "partially_succeeded", "Direct failures do not prevent remaining outputs");
     const auto result = completed["items"].toArray();
