@@ -117,6 +117,16 @@ void images(const std::filesystem::path &dir) {
   options.exposure = 4;
   options.apply_srgb = true;
   auto display = imaging::display_rgba(s, options);
+  auto overflow = s;
+  overflow.data_window.width = std::uint64_t{1} << 63;
+  overflow.data_window.height = 2;
+  bool overflowRejected = false;
+  try {
+    (void)imaging::display_rgba(overflow, options);
+  } catch (const skeletal::Failure &e) {
+    overflowRejected = e.error.code == ErrorCode::ResourceLimit;
+  }
+  require(overflowRejected, "Display dimensions must reject multiplication overflow");
   require(display[0] == f[0] && display[12] == 1 && display[13] == 0 &&
               display[14] == 1,
           "Data/invalid display policy");

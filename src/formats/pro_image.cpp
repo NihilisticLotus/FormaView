@@ -548,9 +548,11 @@ double interpreted_value(const ImageChannel &c, std::size_t pixel) {
 }
 std::vector<float> display_rgba(const ImageSubresource &source,
                                 const DisplayOptions &options) {
-  const auto pixels = source.data_window.width * source.data_window.height;
-  if (pixels > SIZE_MAX / (4 * sizeof(float)))
+  if (source.data_window.height &&
+      source.data_window.width > SIZE_MAX / (4 * sizeof(float)) /
+                                     source.data_window.height)
     throw skeletal::Failure(ErrorCode::ResourceLimit, "Display size overflow");
+  const auto pixels = source.data_window.width * source.data_window.height;
   std::array<const ImageChannel *, 4> channels{};
   for (std::size_t i = 0; i < 4; ++i)
     for (const auto &c : source.channels)
