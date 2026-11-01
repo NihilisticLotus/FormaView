@@ -217,8 +217,9 @@ SubmitResult Scheduler::submit(TaskRequest request) {
     {
         const auto lock = std::lock_guard{state->mutex};
         if (state->closing) rejection = Error{ErrorCode::ShuttingDown, "Scheduler is closing", {}, false};
-        else if (request.version != api_version || !request.work || request.resources.cpu_slots == 0) {
-            rejection = Error{ErrorCode::InvalidArgument, "Invalid task version, work or CPU reservation", {}, false};
+        else if (request.version != api_version || !request.work || request.resources.cpu_slots == 0
+                 || (request.priority != Priority::Foreground && request.priority != Priority::Background)) {
+            rejection = Error{ErrorCode::InvalidArgument, "Invalid task version, priority, work or CPU reservation", {}, false};
         } else if (!within(request.resources, state->limits.capacity)
             || (request.priority == Priority::Background
                 && !within(request.resources, minus(state->limits.capacity, state->limits.foreground_reserve)))) {

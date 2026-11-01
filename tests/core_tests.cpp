@@ -235,6 +235,12 @@ void errors() {
     check(done(mixed).state == fv::TaskState::PartiallySucceeded, "Partial result reported complete success");
     auto invalid = scheduler.submit({99, fv::Priority::Foreground, {}, {}, [](auto) { return fv::TaskResult{}; }});
     check(invalid.error->code == fv::ErrorCode::InvalidArgument, "Unknown task version accepted");
+    auto invalidPriority = scheduler.submit({1, static_cast<fv::Priority>(99), {}, {}, [](auto) { return fv::TaskResult{}; }});
+    if (invalidPriority.task)
+        check(!invalidPriority.task->wait_for(50ms) && invalidPriority.task->snapshot().state == fv::TaskState::Queued,
+              "Accepted unknown priority did not remain queued");
+    check(!invalidPriority.task && invalidPriority.error && invalidPriority.error->code == fv::ErrorCode::InvalidArgument,
+          "Unknown priority accepted and left queued");
     auto healthy = submit(scheduler, [](auto) { return fv::TaskResult{}; });
     check(done(healthy).state == fv::TaskState::Succeeded, "Worker did not survive thrown exception");
 }
