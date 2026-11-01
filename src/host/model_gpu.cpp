@@ -274,8 +274,10 @@ std::shared_ptr<const ModelGpuGeometry> buildModelGpuGeometry(
       pointBase[mi] = pointBase[mi - 1] + d.meshes[mi - 1].raw.size();
     const std::uint64_t texels = 2ULL * pointBase.back() * morphStride +
         2ULL * d.meshes.back().raw.size() * morphStride;
-    if (texels > 32ULL * 1024 * 1024)
-      throw std::runtime_error("GPU morph texture budget exceeded; CPU preview retained");
+    // Each texel has four floats. Enforce the memory limit before allocating
+    // the dense buffer, so the CPU fallback does not first exhaust memory.
+    if (texels > (128ULL * 1024 * 1024) / (4 * sizeof(float)))
+      throw std::runtime_error("GPU morph memory budget exceeded; CPU preview retained");
     skin->morph.assign(static_cast<std::size_t>(texels) * 4, 0.F);
     skin->morphStride = morphStride;
     skin->morphPaletteBase = static_cast<std::uint32_t>(out->clusters.size()) * 4;
@@ -315,8 +317,6 @@ std::shared_ptr<const ModelGpuGeometry> buildModelGpuGeometry(
           static_cast<std::uint32_t>(targets) |
               (static_cast<std::uint32_t>(mi) << 16)};
     }
-    if (skin->morph.size() * 4 > 128ULL * 1024 * 1024)
-      throw std::runtime_error("GPU morph memory budget exceeded");
   }
   // Precompute exact transparent draw centroids as weighted cluster moments.
   out->centers.resize(base->draws.size());

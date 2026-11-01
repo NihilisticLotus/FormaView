@@ -87,6 +87,43 @@ int main(int argc, char **argv) {
            "default morph normal before world transform");
     }
     {
+      // A sparse visible triangle can coexist with many source points. The
+      // dense GPU morph texture must be rejected before allocating it.
+      auto d = readModelDocument(root.filePath("morph.gltf"), {});
+      auto &mesh = d->meshes[0];
+      constexpr std::size_t points = 140000;
+      mesh.raw.resize(points);
+      mesh.morphTargets.clear();
+      mesh.morphTargets.resize(32);
+      mesh.morphAnimated = true;
+      d->nativeAnimated = true;
+      d->animNodeParents = {-1};
+      d->animNodeLocals = {formaview::Matrix4{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}};
+      d->skinClusters.resize(1);
+      d->skinSlots.resize(1);
+      d->skinSlots[0].resize(points);
+      d->pointNormals.resize(1);
+      d->pointNormals[0].resize(points);
+      d->meshInstanceNodes = {0};
+      d->morphWeightsAt = [](std::size_t, double) { return std::vector<std::vector<double>>{}; };
+      ModelRenderState state;
+      state.bindings = {-1}; state.uvs = {0}; state.visible = {true};
+      bool rejected = false;
+      try {
+        (void)buildModelGpuGeometry(*d, state, 1, {});
+      } catch (const std::runtime_error &e) {
+        rejected = std::string(e.what()).find("GPU morph memory budget exceeded") != std::string::npos;
+      }
+      test(rejected, "GPU morph budget is enforced before allocation");
+      mesh.raw.resize(128);
+      d->skinSlots[0].resize(128);
+      d->pointNormals[0].resize(128);
+      const auto geometry = buildModelGpuGeometry(*d, state, 2, {});
+      test(geometry && geometry->frames.model && geometry->frames.model->skin &&
+               geometry->frames.model->skin->morph.size() == 128 * 32 * 2 * 4,
+           "GPU morph payload within budget is retained");
+    }
+    {
       const auto d = readModelDocument(root.filePath("all-eight.gltf"), {});
       const auto &m = d->meshes[0];
       test(m.skins[0].weights[0].size() == 8, "all eight source influences");
