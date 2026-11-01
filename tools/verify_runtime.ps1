@@ -22,6 +22,16 @@ function Add-Check([string]$name, [bool]$ok, [string]$detail) {
 $manifestName = if (Test-Path -LiteralPath (Join-Path $RunDir 'payload-manifest.json')) { 'payload-manifest.json' } else { 'sha256.json' }
 $document = Get-Content -Raw -LiteralPath (Join-Path $RunDir $manifestName) | ConvertFrom-Json
 $manifest = if ($manifestName -eq 'payload-manifest.json') { @($document.files) } else { @($document) }
+$invalidPaths = @($manifest | Where-Object {
+    $path = $_.path
+    $path -isnot [string] -or -not $path -or $path -match '[\\:\x00-\x1f]' -or
+        @($path -split '/' | Where-Object { -not $_ -or $_ -eq '.' -or $_ -eq '..' }).Count -gt 0
+})
+if ($invalidPaths.Count) {
+    Add-Check 'manifest-paths' $false "invalid=$($invalidPaths.Count)"
+    $report | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 (Join-Path $EvidenceDir 'verify-runtime.json')
+    exit 1
+}
 $bad = @($manifest | Where-Object {
     $p = Join-Path $RunDir $_.path
     -not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -ne $_.bytes -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.sha256 })
