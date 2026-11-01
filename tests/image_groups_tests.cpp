@@ -366,6 +366,13 @@ void directExport(const QString &root) {
     checked(groups.request(query("pause", mismatchJobId)));
     const auto mismatchPlanId = checked(groups.request(query("get_job", mismatchJobId)))["plan_id"].toString();
     require(!mismatchPlanId.isEmpty(), "Direct job exposes its plan identifier");
+    const auto wrongJobLookup = groups.request(query("get_job", mismatchPlanId));
+    if (!wrongJobLookup.contains("error"))
+      std::cerr << "plan ID returned job=" << wrongJobLookup["id"].toString().toStdString() << '\n';
+    require(wrongJobLookup["error"].toObject()["code"] == "invalid_argument",
+            "A plan ID must not retrieve the associated grouped job");
+    require(groups.request(query("get_plan", mismatchJobId))["error"].toObject()["code"] == "invalid_argument",
+            "A job ID must not retrieve the associated grouped plan");
     auto mismatchedCancel = query("cancel", mismatchPlanId); mismatchedCancel["kind"] = "job";
     const auto mismatchedResult = groups.request(mismatchedCancel);
     if (!mismatchedResult.contains("error"))
@@ -422,6 +429,10 @@ void directExport(const QString &root) {
       require(requestOverPipe(invalidPipeKind)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject invalid grouped cancellation kinds");
       const auto directPlanId = checked(groups.request(query("get_job", id)))["plan_id"].toString();
+      require(requestOverPipe(query("get_job", directPlanId))["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a plan ID for grouped job lookup");
+      require(requestOverPipe(query("get_plan", id))["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject a job ID for grouped plan lookup");
       auto mismatchedPipe = query("cancel", directPlanId); mismatchedPipe["kind"] = "job";
       require(requestOverPipe(mismatchedPipe)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject a plan ID used as a grouped job ID");

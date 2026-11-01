@@ -747,6 +747,8 @@ struct ImageTaskGroups::Impl {
     if (op == "get_plan" || op == "get_job") {
       auto g = find(q["id"].toString()); const std::lock_guard lock(state);
       auto result = op == "get_job" ? g->job : g->plan;
+      if (result["id"].toString() != q["id"].toString())
+        fail(ErrorCode::InvalidArgument, "Requested kind does not match group identifier");
       result["cancellation_requested"] = g->stop.stop_requested(); return result;
     }
     if (op == "list_jobs") {
