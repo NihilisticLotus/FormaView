@@ -27,6 +27,18 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           (session.error() + session.frameError()).toStdString());
   };
+  const auto waitForRenderedState = [&] {
+    QElapsedTimer deadline;
+    deadline.start();
+    while ((!session.renderedStateCurrent() || !session.frame() ||
+            session.frame()->vertices.empty()) && deadline.elapsed() < 30000) {
+      QCoreApplication::processEvents();
+      QThread::msleep(2);
+    }
+    if (!session.renderedStateCurrent() || !session.frame() ||
+        session.frame()->vertices.empty())
+      throw std::runtime_error("Requested model frame did not arrive");
+  };
   try {
     for (int i = 2; i < args.size(); ++i) {
       QElapsedTimer elapsed;
@@ -132,21 +144,14 @@ int main(int argc, char **argv) {
         session.selectMesh(mesh);
         session.setMode(0);
         wait();
-        // Animated non-FBX sessions publish their first pose asynchronously
-        // without setting preparing(). Wait for that payload before checking it.
-        QElapsedTimer poseDeadline;
-        poseDeadline.start();
-        while ((!session.frame() || session.frame()->vertices.empty()) &&
-               poseDeadline.elapsed() < 30000) {
-          QCoreApplication::processEvents();
-          QThread::msleep(2);
-        }
-        if (!session.frame() || session.frame()->vertices.empty())
-          throw std::runtime_error("No model vertices");
+        // Non-FBX animation can publish asynchronously without preparing().
+        // A nonempty previous frame is not evidence of the requested state.
+        waitForRenderedState();
         for (int uv = 0; uv < session.uvSets().size(); ++uv) {
           session.selectUV(uv);
           session.setMode(1);
           wait();
+          waitForRenderedState();
           if (session.frame()->vertices.empty())
             throw std::runtime_error("No UV vertices");
         }
@@ -154,11 +159,13 @@ int main(int argc, char **argv) {
           session.selectBinding(skin);
           session.setMode(2);
           wait();
+          waitForRenderedState();
           if (session.frame()->vertices.empty())
             throw std::runtime_error("No weight vertices");
           if (!session.bones().isEmpty())
             session.selectBone(static_cast<int>(session.bones().size() - 1));
           wait();
+          waitForRenderedState();
         }
       }
       QJsonObject skeletonEvidence;
