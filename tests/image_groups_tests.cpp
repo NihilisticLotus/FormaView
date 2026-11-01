@@ -358,6 +358,12 @@ void directExport(const QString &root) {
       std::cerr << "invalid kind accepted=" << invalidKindResult["accepted"].toBool() << '\n';
     require(invalidKindResult["error"].toObject()["code"] == "invalid_argument",
             "Invalid cancellation kind must not cancel a grouped plan");
+    auto extraCancel = query("cancel", pendingId); extraCancel["kind"] = "plan"; extraCancel["unexpected"] = true;
+    const auto extraCancelResult = groups.request(extraCancel);
+    if (!extraCancelResult.contains("error"))
+      std::cerr << "unknown field accepted=" << extraCancelResult["accepted"].toBool() << '\n';
+    require(extraCancelResult["error"].toObject()["code"] == "invalid_argument",
+            "Unknown cancellation fields must not cancel a grouped plan");
     auto stopPending = query("cancel", pendingId); stopPending["kind"] = "plan";
     checked(groups.request(stopPending));
     auto mismatchJob = query("create_job"); mismatchJob["items"] = requests(root, 64, "mismatch-");
@@ -435,6 +441,9 @@ void directExport(const QString &root) {
       auto invalidPipeKind = query("cancel", id); invalidPipeKind["kind"] = "typo";
       require(requestOverPipe(invalidPipeKind)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject invalid grouped cancellation kinds");
+      auto extraPipeCancel = query("cancel", id); extraPipeCancel["kind"] = "job"; extraPipeCancel["unexpected"] = true;
+      require(requestOverPipe(extraPipeCancel)["error"].toObject()["code"] == "invalid_argument",
+              "Endpoint must reject unknown grouped cancellation fields");
       const auto directPlanId = checked(groups.request(query("get_job", id)))["plan_id"].toString();
       require(requestOverPipe(query("pause", directPlanId))["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject a plan ID for grouped job pause");

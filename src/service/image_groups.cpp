@@ -759,6 +759,10 @@ struct ImageTaskGroups::Impl {
       return {{"items", items}, {"next_offset", QJsonValue::Null}};
     }
     if (op == "cancel") {
+      for (auto it = q.begin(); it != q.end(); ++it)
+        if (it.key() != "version" && it.key() != "operation" &&
+            it.key() != "id" && it.key() != "kind")
+          fail(ErrorCode::InvalidArgument, "Unknown cancellation field");
       const auto kind = q["kind"].toString();
       if (kind != "job" && kind != "plan")
         fail(ErrorCode::InvalidArgument, "Invalid cancellation kind");
