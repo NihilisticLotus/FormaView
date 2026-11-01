@@ -125,11 +125,15 @@ struct ImageTaskGroups::Impl {
         for (qsizetype i = 0; i < jobs.size(); ++i) {
           auto item = jobs[i].toObject();
           if (item["status"] == "pending" || item["status"] == "running") {
-            item["status"] = "interrupted";
-            if (g->manifest["job_state"] == "failed") {
+            if (g->manifest["job_state"] == "cancelled") {
+              item["status"] = "cancelled";
+            } else if (g->manifest["job_state"] == "failed") {
+              item["status"] = "interrupted";
               if (g->manifest["error"].isObject()) item["error"] = g->manifest["error"];
-            } else
+            } else {
+              item["status"] = "interrupted";
               g->manifest["job_state"] = "interrupted";
+            }
           }
           jobs[i] = item;
         }

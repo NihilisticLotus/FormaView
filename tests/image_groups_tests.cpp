@@ -105,6 +105,26 @@ void failedRecovery(const QString &root) {
           "Interrupted item retains group failure reason");
   require(job["error"].toObject()["message"] == "Missing dependency", "Group error preserved");
 }
+void cancelledRecovery(const QString &root) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/groups"), "Create isolated recovery root");
+  const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const auto folder = root + "/groups/" + uuid;
+  require(QDir().mkpath(folder + "/0/records"), "Create recovery journal");
+  auto save = [](const QString &path, const QJsonObject &data) {
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(data).toJson()) > 0,
+            "Write recovery journal");
+  };
+  const auto jobId = "group-" + uuid + "-job";
+  save(folder + "/index.json", {{"version", 1}, {"id", "group-" + uuid},
+    {"job_id", jobId}, {"plan_state", "interrupted"}, {"job_state", "cancelled"},
+    {"batches", QJsonArray{QJsonObject{{"count", 1}}}}});
+  save(folder + "/0/requests.json", {{"items", requests(root, 1, "out-")}});
+  ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
+  const auto job = checked(groups.request(query("get_job", jobId)));
+  require(job["state"] == "cancelled", "Recovery must retain terminal cancelled group state");
+  require(job["items"].toArray()[0].toObject()["status"] == "cancelled", "Unstarted item remains cancelled");
+}
 void crashProducer(const QString &root) {
   fixture(root + "/source.tga"); QDir().mkpath(root + "/groups");
   ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
@@ -325,6 +345,7 @@ void directExport(const QString &root) {
   fixture(root + "/source.tga");
   const auto sourceBytes = [&] { QFile f(root + "/source.tga"); require(f.open(QIODevice::ReadOnly), "Read protected source"); return f.readAll(); }();
   QJsonObject completed;
+  QString cancelledId;
   {
     ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/direct-groups").toStdWString()));
     auto items = requests(root, 10, "direct-");
@@ -359,7 +380,7 @@ void directExport(const QString &root) {
     const auto duplicateResult = wait(groups, "get_job", duplicateId)["items"].toArray();
     require(duplicateResult[0].toObject()["status"] == "succeeded" && duplicateResult[1].toObject()["status"] == "failed", "Duplicate direct output cannot overwrite an earlier item");
     q["items"] = requests(root, 32, "cancel-");
-    const auto cancelledId = checked(groups.request(q))["job_id"].toString();
+    cancelledId = checked(groups.request(q))["job_id"].toString();
     checked(groups.request(query("pause", cancelledId)));
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
     require(checked(groups.request(query("get_job", cancelledId)))["pause_requested"].toBool(), "Direct pause is recorded");
@@ -379,6 +400,8 @@ void directExport(const QString &root) {
     ImageTaskGroups recovered(scope(root), std::filesystem::path((root + "/direct-groups").toStdWString()));
     const auto after = checked(recovered.request(query("get_job", completed["id"].toString())));
     require(after["items"] == completed["items"], "Direct success, failure and loss evidence survives restart");
+    const auto cancelled = checked(recovered.request(query("get_job", cancelledId)));
+    require(cancelled["state"] == "cancelled", "Direct cancellation remains cancelled after restart");
   }
   std::cout << "PASS direct per-item checks/exports, partial failures, losses, protection, pause/cancel, recovery and MCP boundary" << std::endl;
 }
@@ -406,6 +429,7 @@ int main(int argc, char **argv) {
       for (auto v : job["items"].toArray()) require(v.toObject()["status"] == "succeeded", "No unfinished real items");
       std::cout << "PASS real batch " << job["total"].toInt() << std::endl; return 0;
     }
+    if (argc == 3 && app.arguments()[1] == "--cancelled-recovery") { cancelledRecovery(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--failed-recovery") { failedRecovery(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--direct") { directExport(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--crash-producer") { crashProducer(app.arguments()[2]); return 0; }
@@ -420,6 +444,7 @@ int main(int argc, char **argv) {
     require(temp.isValid(), "Create temporary fixtures"); temp.setAutoRemove(false);
     std::cout << "ROOT " << temp.path().toStdString() << std::endl; run(temp.path());
     failedRecovery(temp.path() + "/failed-recovery");
+    cancelledRecovery(temp.path() + "/cancelled-recovery");
     killedRecovery(temp.path() + "/crash-recovery"); return 0;
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }
