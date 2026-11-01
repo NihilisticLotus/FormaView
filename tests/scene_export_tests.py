@@ -216,6 +216,23 @@ def main():
             close(actual['meshes'][0]['shapes'][0]['weight'],sample['meshes'][0]['shapes'][0]['weight'])
         assert any(m['sha256']==png_hash for m in result['media'])
     assert hashes=={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in source.iterdir()}
+    # Two finite float32 values can overflow if added before promotion to
+    # FBX's double coordinates. Preserve finite morph deltas on readback.
+    extreme = args.output/'extreme-fixture'
+    fixtures(extreme)
+    gltf = json.loads((extreme/'source.gltf').read_text(encoding='utf-8'))
+    primitive = gltf['meshes'][0]['primitives'][0]
+    binary = bytearray((extreme/'source.bin').read_bytes())
+    for index in (primitive['attributes']['POSITION'], primitive['targets'][0]['POSITION']):
+        accessor = gltf['accessors'][index]
+        view = gltf['bufferViews'][accessor['bufferView']]
+        struct.pack_into('<f', binary, view.get('byteOffset', 0) + accessor.get('byteOffset', 0), 3e38)
+    (extreme/'source.bin').write_bytes(binary)
+    request = dict(input=str(extreme/'source.gltf'), output=str(args.output/'extreme-morph.fbx'), options=dict(target='fbx'))
+    preflight = call('preflight', **request)
+    call('convert', **request, approval_digest=preflight['approval_digest'], acknowledge_losses=True)
+    delta = probe(request['output'])['meshes'][0]['shapes'][0]['offsets'][0][0]
+    assert isinstance(delta, (int, float)) and math.isfinite(delta) and abs(delta / 3e38 - 1) < 1e-5, delta
     # Physical dimensions and source root motion survive output-axis/unit conversion.
     inspected=call('inspect',input=str(source/'source.glb'))
     request=dict(input=str(source/'source.glb'),output=str(args.output/'unreal-cm.fbx'),options=dict(target='fbx',clip_ids=[c['id'] for c in inspected['clips']],output_axes='unreal',output_unit='cm'))

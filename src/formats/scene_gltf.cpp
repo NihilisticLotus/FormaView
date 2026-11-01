@@ -591,9 +591,9 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
           shape->InitControlPoints(static_cast<int>(count));
           for (size_t i = 0; i < count; ++i)
             shape->SetControlPointAt(
-                FbxVector4(v[i * 3] + (dv ? (*dv)[i * 3] : 0),
-                           v[i * 3 + 1] + (dv ? (*dv)[i * 3 + 1] : 0),
-                           v[i * 3 + 2] + (dv ? (*dv)[i * 3 + 2] : 0)),
+                FbxVector4(static_cast<double>(v[i * 3]) + (dv ? (*dv)[i * 3] : 0),
+                           static_cast<double>(v[i * 3 + 1]) + (dv ? (*dv)[i * 3 + 1] : 0),
+                           static_cast<double>(v[i * 3 + 2]) + (dv ? (*dv)[i * 3 + 2] : 0)),
                 static_cast<int>(i));
           if (nd) {
             auto *nl = shape->CreateElementNormal();
@@ -601,9 +601,9 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
             nl->SetReferenceMode(FbxLayerElement::eDirect);
             for (size_t i = 0; i < count; ++i)
               nl->GetDirectArray().Add(
-                  FbxVector4((*nv)[i * 3] + (*nd)[i * 3],
-                             (*nv)[i * 3 + 1] + (*nd)[i * 3 + 1],
-                             (*nv)[i * 3 + 2] + (*nd)[i * 3 + 2]));
+                  FbxVector4(static_cast<double>((*nv)[i * 3]) + (*nd)[i * 3],
+                             static_cast<double>((*nv)[i * 3 + 1]) + (*nd)[i * 3 + 1],
+                             static_cast<double>((*nv)[i * 3 + 2]) + (*nd)[i * 3 + 2]));
           }
           if (attribute(target.attributes, target.attributes_count,
                         cgltf_attribute_type_tangent))
