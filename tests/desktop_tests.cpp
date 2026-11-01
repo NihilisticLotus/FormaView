@@ -6738,6 +6738,7 @@ private slots:
     QCOMPARE(child.data(ModelSkeleton::JointIndex).toInt(),2);
     QVERIFY(child.data().toString().contains("#2"));
     QCOMPARE(skeleton.details("bone/2",2).value("parentIndex").toInt(),0);
+    QVERIFY(!skeleton.details("bone/2",2).value("inPalette").toBool());
     skeleton.setSearchText("child");
     QVERIFY(skeleton.indexForNode("bone/2",2).isValid());
     QPersistentModelIndex old=child;
@@ -10029,7 +10030,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages"};
+    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

@@ -49,7 +49,8 @@ QVariantMap ModelSkeleton::details(const QString &id, int joint) const {
     return result;
   const auto index = joint >= 0 ? joints_.value(joint) : nodes_.value(id);
   result.insert("boneIndex", index.data(JointIndex));
-  result.insert("inPalette", index.data(JointIndex).toInt() >= 0);
+  result.insert("inPalette", index.data(InPalette).toBool() &&
+                                 index.data(JointIndex).toInt() >= 0);
   result.insert("points", index.data(InfluencePoints));
   return result;
 }
