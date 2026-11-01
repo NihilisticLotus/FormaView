@@ -157,6 +157,9 @@ std::vector<WeightValue> WeightIndex::select(std::size_t bone) const {
 }
 std::optional<Hit> pick(const MeshFrame &frame, Vec3 origin, Vec3 direction) {
   check(frame.corners.size() % 3 == 0, "Triangle corner domain required");
+  check(std::isfinite(origin.x) && std::isfinite(origin.y) &&
+            std::isfinite(origin.z),
+        "Finite ray origin required");
   const auto length = std::sqrt(dot(direction, direction));
   check(std::isfinite(length) && length > 0, "Finite nonzero ray required");
   direction = {direction.x / length, direction.y / length,
@@ -168,14 +171,15 @@ std::optional<Hit> pick(const MeshFrame &frame, Vec3 origin, Vec3 direction) {
                e2 = sub(frame.corners[i + 2].position, a);
     const auto p = cross(direction, e2);
     const auto det = dot(e1, p);
-    if (std::abs(det) < 1e-12)
+    if (!std::isfinite(det) || std::abs(det) < 1e-12)
       continue;
     const auto t = sub(origin, a);
     const auto u = dot(t, p) / det;
     const auto q = cross(t, e1);
     const auto v = dot(direction, q) / det;
     const auto distance = dot(e2, q) / det;
-    if (u < 0 || v < 0 || u + v > 1 || distance < 0 ||
+    if (!std::isfinite(u) || !std::isfinite(v) || !std::isfinite(distance) ||
+        u < 0 || v < 0 || u + v > 1 || distance < 0 ||
         (best && distance >= best->distance))
       continue;
     const std::array<double, 3> bary{1 - u - v, u, v};

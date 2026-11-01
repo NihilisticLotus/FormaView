@@ -359,6 +359,14 @@ void preview_test() {
   const auto hit = preview::pick(frame, {3.6, .1, 2}, {0, 0, -1});
   require(hit && hit->source_point == 0 && hit->source_wedge == 0,
           "Pick source mapping");
+  rejects([&] {
+    (void)preview::pick(frame, {std::numeric_limits<double>::quiet_NaN(), .1, 2},
+                        {0, 0, -1});
+  });
+  auto invalidFrame = frame;
+  invalidFrame.corners[0].position.x = std::numeric_limits<double>::quiet_NaN();
+  require(!preview::pick(invalidFrame, {3.6, .1, 2}, {0, 0, -1}),
+          "Nonfinite triangle must not produce a hit");
   preview::WeightIndex index(mesh, 8);
   require(index.select(7)[0].sum == .125, "Weight beyond fourth lost");
   preview::BoundedCache<int, std::vector<int>> cache(16);
