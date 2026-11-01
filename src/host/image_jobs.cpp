@@ -980,7 +980,10 @@ void ImageJobs::poll() {
     liveIds.insert(id);
     if (active(summary.value("state").toString()) || archivedJobs_.contains(id)) continue;
     auto completed = get("get_job", id, false);
-    if (completed.contains("error")) continue;
+    // Failed jobs can legitimately carry a top-level error. Only reject an
+    // error response that is not the requested job snapshot.
+    if (completed.value("id").toString() != id ||
+        completed.value("kind").toString() != "job") continue;
     completed["archived"] = true;
     completed["scope"] = scope_;
     archivedJobs_[id] = completed;

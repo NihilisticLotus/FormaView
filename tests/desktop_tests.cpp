@@ -3613,6 +3613,7 @@ private slots:
 #ifdef FORMAVIEW_MODEL_EXPORT
     const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     QVERIFY2(!fixtures.isEmpty(), "Synthetic ActorX fixtures are required for all quick export modes");
+    QString inventoryFailedJob;
     for (const auto &mode : {QString("model"), QString("combined"), QString("animation")}) {
       const auto input = fixtures + (mode == "animation" ? "/source.psa" : "/source.psk");
       desktop_->openPath(input);
@@ -3637,6 +3638,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "failed", 20000);
         QCOMPARE(quick->property("phase").toString(), QString("job"));
         QVERIFY(!service->job().value("items").toList().first().toMap().value("error").toMap().isEmpty());
+        auto *jobError = quick->findChild<QObject *>("imageJobError");
+        QVERIFY(jobError && !jobError->property("raw").toString().isEmpty());
+        inventoryFailedJob = service->job().value("id").toString();
+        QVERIFY(!inventoryFailedJob.isEmpty());
         click("quickExportEdit");
         edit("modelExportPaired", fixtures + "/source.psk");
       }
@@ -3699,9 +3704,17 @@ private slots:
     click("createImagePlan");
     QCOMPARE(quick->property("phase").toString(), QString("direct"));
     quick->close(); QTRY_VERIFY(!quick->isVisible());
-    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->jobs().size() == countBeforeClose + 1 &&
-        !QStringList({"queued", "running", "planning"}).contains(service->job().value("state").toString()), 30000);
+    QElapsedTimer detachedWait; detachedWait.start();
+    const auto detachedDone = [&] { return !service->busy() && service->jobs().size() == countBeforeClose + 1 &&
+        !QStringList({"queued", "running", "planning"}).contains(service->job().value("state").toString()); };
+    while (!detachedDone() && detachedWait.elapsed() < 30000) QTest::qWait(100);
+    QVERIFY2(detachedDone(), qPrintable(QString("busy=%1 jobs=%2 expected=%3 selected=%4 state=%5")
+        .arg(service->busy()).arg(service->jobs().size()).arg(countBeforeClose + 1)
+        .arg(service->job().value("id").toString()).arg(service->job().value("state").toString())));
     QVERIFY(!service->job().value("cancellation_requested").toBool());
+    const auto failedSnapshot = service->jobSnapshot(inventoryFailedJob);
+    QCOMPARE(failedSnapshot.value("state").toString(), QString("failed"));
+    QVERIFY(!failedSnapshot.value("error").toMap().isEmpty());
     QVERIFY(service->job().value("state") == "succeeded" || service->job().value("state") == "failed");
     QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
     evidence_["quick_closed_submission"] = QJsonObject::fromVariantMap(service->job());

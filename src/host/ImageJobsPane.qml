@@ -50,6 +50,11 @@ ColumnLayout {
     }
     spacing: 10
     ExplainedText { Layout.fillWidth: true; visible: !!root.service.error; kind: "error"; raw: root.service.error }
+    ExplainedText {
+        objectName: "imageJobError"
+        Layout.fillWidth: true; kind: "error"
+        raw: root.job.error ? (root.job.error.code || "error") + ": " + (root.job.error.message || "") : ""
+    }
     Connections { target: root.service; function onChanged() { Qt.callLater(root.syncJobSelection) } }
     Component.onCompleted: syncJobSelection()
     RowLayout {

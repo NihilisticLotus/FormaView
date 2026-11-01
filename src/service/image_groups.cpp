@@ -520,7 +520,11 @@ struct ImageTaskGroups::Impl {
           g->manifest["error"] = image_error_json(*structured)["error"];
       for (qsizetype i = 0; i < items.size(); ++i) {
         auto item = items[i].toObject();
-        if (item["status"] == "pending" || item["status"] == "running") item["status"] = cancelled ? "cancelled" : "interrupted";
+        if (item["status"] == "pending" || item["status"] == "running") {
+          item["status"] = cancelled ? "cancelled" : "interrupted";
+          if (!cancelled)
+            item["error"] = g->manifest["error"];
+        }
         items[i] = item;
       }
       try { publish(g, job, items); }
