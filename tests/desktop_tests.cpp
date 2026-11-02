@@ -6465,9 +6465,9 @@ private slots:
       QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point.toPoint());
       QCOMPARE(clicked.count(),1);
     };
-    const auto ready = [&] { return session->inspectable(); };
+    const auto ready = [&] { return !session->busy() && session->inspectable(); };
     desktop_->openPath(fixtures.filePath("external.gltf"));
-    QTRY_VERIFY_WITH_TIMEOUT(ready(), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == fixtures.filePath("external.gltf") && ready(), 10000);
     QTRY_VERIFY(item("modelPane") && item("modelInspector"));
     const auto originalMesh = session->meshIndex();
     const auto originalBinding = session->bindingIndex();
