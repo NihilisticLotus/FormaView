@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 #include <QTimer>
 #include <algorithm>
+#include <atomic>
 
 namespace formaview::imaging {
 namespace {
@@ -66,6 +67,8 @@ struct ImageEndpoint::Impl {
     return result;
   }
   QJsonObject dispatchFull(const QJsonObject &request, std::stop_token stop) {
+    if (stop.stop_requested())
+      return image_error_json(skeletal::Failure(ErrorCode::Cancelled, "Endpoint request cancelled before dispatch"));
     const auto operation = request["operation"].toString();
     const auto id = request.value("plan_id").toString(request.value("id").toString());
     const bool grouped = groups && groups->contains(id);
@@ -122,12 +125,17 @@ struct ImageEndpoint::Impl {
     return result;
   }
   Scheduler control{limits()};
+  Scheduler heavy{limits()};
   QLocalServer server;
+  int requestTimeoutMs{};
   int clients{};
   std::vector<TaskHandle> requests;
   Impl(ImageEndpoint *owner, std::shared_ptr<ImageBatchService> s,
-       const QString &name, std::shared_ptr<ImageTaskGroups> g)
+       const QString &name, std::shared_ptr<ImageTaskGroups> g, std::chrono::milliseconds requestTimeout)
       : service(std::move(s)), groups(std::move(g)) {
+    if (requestTimeout.count() <= 0 || requestTimeout > std::chrono::seconds(280))
+      throw skeletal::Failure(ErrorCode::InvalidArgument, "Endpoint request timeout must be within 280 seconds");
+    requestTimeoutMs = static_cast<int>(requestTimeout.count());
     if (!QRegularExpression("^[A-Za-z0-9_-]{1,128}$").match(name).hasMatch())
       throw skeletal::Failure(ErrorCode::InvalidArgument,
                               "Invalid local endpoint name");
@@ -201,14 +209,23 @@ struct ImageEndpoint::Impl {
                     return;
                   }
                   QPointer<QLocalSocket> receiver(socket);
+                  auto *deadline = new QTimer(&server);
+                  deadline->setSingleShot(true);
+                  const QPointer<QTimer> deadlineGuard(deadline);
+                  const auto expires = std::chrono::steady_clock::now() + std::chrono::milliseconds(requestTimeoutMs);
+                  const auto entered = std::make_shared<std::atomic<bool>>(false);
                   TaskRequest task;
                   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
                   task.work = [this, owner, receiver,
-                               request](std::stop_token stop) {
-                    const auto result = dispatch(request, stop);
+                               request, expires, entered, deadlineGuard](std::stop_token stop) {
+                    entered->store(true);
+                    const auto result = std::chrono::steady_clock::now() >= expires
+                        ? image_error_json(skeletal::Failure(ErrorCode::Cancelled, "Endpoint request deadline exceeded before dispatch"))
+                        : dispatch(request, stop);
                     QMetaObject::invokeMethod(
                         owner,
-                        [owner, receiver, result, operation = request.value("operation").toString()] {
+                        [owner, receiver, result, deadlineGuard, operation = request.value("operation").toString()] {
+                          if (deadlineGuard) { deadlineGuard->stop(); deadlineGuard->deleteLater(); }
                           if (QStringList{"create_plan", "submit", "retry_plan", "discover"}
                                   .contains(operation) && owner->workChanged)
                             owner->workChanged();
@@ -218,12 +235,26 @@ struct ImageEndpoint::Impl {
                         Qt::QueuedConnection);
                     return TaskResult{};
                   };
-                  const auto accepted = control.submit(std::move(task));
-                  if (!accepted.task)
+                  const bool heavyRequest = operation == "inspect" || operation == "discover" ||
+                      (operation == "retry_plan" && groups && groups->contains(request.value("id").toString()));
+                  auto &lane = heavyRequest ? heavy : control;
+                  const auto accepted = lane.submit(std::move(task));
+                  if (!accepted.task) {
+                    deadline->deleteLater();
                     respond(socket, image_error_json(skeletal::Failure(
                                         accepted.error->code,
                                         accepted.error->message)));
-                  else {
+                  } else {
+                    QObject::connect(deadline, &QTimer::timeout, &server,
+                        [handle = *accepted.task, entered, receiver, deadline] {
+                          handle.cancel();
+                          // A cancelled queued callback never runs to send its reply.
+                          if (!entered->load() && handle.snapshot().result && receiver)
+                            respond(receiver, image_error_json(skeletal::Failure(
+                                ErrorCode::Cancelled, "Endpoint request deadline exceeded while queued")));
+                          deadline->deleteLater();
+                        });
+                    deadline->start(requestTimeoutMs);
                     std::erase_if(requests, [](const auto &r) {
                       return r.snapshot().result.has_value();
                     });
@@ -245,16 +276,19 @@ struct ImageEndpoint::Impl {
   ~Impl() {
     stop();
     control.shutdown();
+    heavy.shutdown();
   }
 };
 ImageEndpoint::ImageEndpoint(std::shared_ptr<ImageBatchService> service,
-                             const QString &name, QObject *parent, std::shared_ptr<ImageTaskGroups> groups)
+                             const QString &name, QObject *parent, std::shared_ptr<ImageTaskGroups> groups,
+                             std::chrono::milliseconds requestTimeout)
     : QObject(parent),
-      impl_(std::make_unique<Impl>(this, std::move(service), name, std::move(groups))) {}
+      impl_(std::make_unique<Impl>(this, std::move(service), name, std::move(groups), requestTimeout)) {}
 ImageEndpoint::~ImageEndpoint() = default;
 void ImageEndpoint::stop() { impl_->stop(); }
 bool ImageEndpoint::idle() const {
   const auto s = impl_->control.stats();
-  return !s.queued && !s.running;
+  const auto h = impl_->heavy.stats();
+  return !s.queued && !s.running && !h.queued && !h.running;
 }
 } // namespace formaview::imaging

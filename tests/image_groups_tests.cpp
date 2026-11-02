@@ -133,6 +133,57 @@ void inspectAdmission(const QString &root) {
           "Limited child must reject input");
   std::cout << "PASS group inspect and child use service limits" << std::endl;
 }
+void endpointLanes(const QString &root, bool deadlineProbe = false) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/service"), "New endpoint lane fixture");
+  fixture(root + "/source.tga");
+  auto service = std::make_shared<ImageBatchService>(scope(root), std::filesystem::path((root + "/service").toStdWString()));
+  const auto name = "formaview-lanes-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+  ImageEndpoint endpoint(service, name, nullptr, {},
+      deadlineProbe ? std::chrono::milliseconds(1000) : std::chrono::milliseconds(280000));
+  auto held = std::make_unique<ImageAdmission>(false);
+  const auto send = [&](QLocalSocket &socket, const QJsonObject &request) {
+    socket.connectToServer(name); require(socket.waitForConnected(5000), "Connect lane fixture");
+    socket.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n'); socket.flush();
+  };
+  QLocalSocket heavy, light;
+  auto inspect = query("inspect"); inspect["input"] = root + "/source.tga";
+  send(heavy, inspect);
+  const auto pump = [](int ms) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end) { QCoreApplication::processEvents(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+  };
+  pump(100);
+  require(!heavy.canReadLine() && !endpoint.idle(), "Heavy inspection must occupy admission");
+  if (deadlineProbe) {
+    send(light, inspect); pump(50);
+    // Delay timer delivery too: expired queued work must check its own deadline.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    pump(500);
+    require(heavy.canReadLine() && light.canReadLine(), "Deadline must reply to running and queued requests");
+    for (auto *socket : {&heavy, &light}) {
+      const auto response = QJsonDocument::fromJson(socket->readLine()).object();
+      require(response["error"].toObject()["code"] == "cancelled", "Deadline request must report cancellation");
+    }
+    require(endpoint.idle(), "Expired requests retained endpoint workers");
+    require(QDir(root + "/service").entryList({"*.json"}, QDir::Files).isEmpty(), "Expired inspection must not create records");
+    std::stop_source cancelled; cancelled.request_stop();
+    auto expiredPlan = query("create_plan"); expiredPlan["items"] = requests(root, 1, "expired-");
+    require(service->request(expiredPlan, cancelled.get_token())["error"].toObject()["code"] == "cancelled",
+        "Cancelled plan request must not publish a fresh plan");
+    require(QDir(root + "/service").entryList({"*.json"}, QDir::Files).isEmpty(), "Cancelled plan published a journal record");
+    held.reset();
+    std::cout << "PASS running and queued deadlines cancel even after delayed timer delivery\n";
+    return;
+  }
+  auto plan = query("create_plan"); plan["items"] = requests(root, 1, "planned-");
+  send(light, plan); pump(500);
+  const bool responsive = light.canReadLine();
+  held.reset();
+  pump(500);
+  require(responsive, "Blocked inspect starves independent plan creation");
+  require(!checked(QJsonDocument::fromJson(light.readLine()).object())["plan_id"].toString().isEmpty(), "Light lane creates an actual plan");
+  std::cout << "PASS plan creation remains responsive while inspect waits for admission\n";
+}
 void endpointPageBudget(const QString &root) {
   require(!QFileInfo::exists(root) && QDir().mkpath(root + "/service"), "New page-budget fixture");
   const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -745,6 +796,8 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     if (argc == 3 && app.arguments()[1] == "--inspect-admission") { inspectAdmission(app.arguments()[2]); return 0; }
+    if (argc == 3 && app.arguments()[1] == "--endpoint-lanes") { endpointLanes(app.arguments()[2]); return 0; }
+    if (argc == 3 && app.arguments()[1] == "--endpoint-deadlines") { endpointLanes(app.arguments()[2], true); return 0; }
     if (argc == 3 && app.arguments()[1] == "--endpoint-pages") { endpointPageBudget(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--endpoint-boundary") { endpointBoundary(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--unrelated-journal") {

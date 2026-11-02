@@ -669,7 +669,8 @@ struct ImageBatchService::Impl {
     }
     return record;
   }
-  QJsonObject plan(const QJsonArray &requests) {
+  QJsonObject plan(const QJsonArray &requests, std::stop_token stop) {
+    if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Plan request cancelled");
     if (requests.isEmpty() ||
         requests.size() > static_cast<qsizetype>(limits.items))
       fail(ErrorCode::InvalidArgument, "Batch needs one to 64 items");
@@ -701,6 +702,7 @@ struct ImageBatchService::Impl {
                                {"status", "pending"}});
     }
     const std::lock_guard write(mutation);
+    if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Plan request cancelled before publication");
     const auto record = enqueue({{"version", 1},
                                  {"kind", "plan"},
                                  {"id", id()},
@@ -781,7 +783,7 @@ struct ImageBatchService::Impl {
       fields(request, {"version", "operation", "items"});
       if (!request["items"].isArray())
         fail(ErrorCode::InvalidArgument, "Items array required");
-      return plan(request["items"].toArray());
+      return plan(request["items"].toArray(), stop);
     }
     if (operation == "get_plan" || operation == "get_job" ||
         operation == "get_discovery") {
@@ -838,7 +840,7 @@ struct ImageBatchService::Impl {
           items.append(item["request"]);
       }
       // A fresh plan requires fresh approval, including any uncertain outcome.
-      return plan(items);
+      return plan(items, stop);
     }
     if (operation == "submit") {
       fields(request, {"version", "operation", "plan_id", "approval_digest",

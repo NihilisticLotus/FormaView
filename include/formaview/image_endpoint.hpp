@@ -2,6 +2,7 @@
 #include "formaview/image_batch.hpp"
 #include <QObject>
 #include <functional>
+#include <chrono>
 
 namespace formaview::imaging {
 class ImageTaskGroups;
@@ -10,7 +11,8 @@ class ImageTaskGroups;
 class ImageEndpoint final : public QObject {
 public:
   ImageEndpoint(std::shared_ptr<ImageBatchService>, const QString &name,
-                QObject *parent = nullptr, std::shared_ptr<ImageTaskGroups> groups = {});
+                QObject *parent = nullptr, std::shared_ptr<ImageTaskGroups> groups = {},
+                std::chrono::milliseconds requestTimeout = std::chrono::seconds(280));
   ~ImageEndpoint() override;
   void stop();
   [[nodiscard]] bool idle() const;
