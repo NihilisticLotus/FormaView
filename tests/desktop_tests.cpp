@@ -6368,6 +6368,28 @@ private slots:
     click(item("modelBindingMatrices"));
     QTRY_VERIFY(!visualItems(window_->contentItem(),"modelMatrixValues").isEmpty());
     save("skeleton-real-cloud-advanced");
+    click(item("modelBoneCollapse"));
+    QTest::qWait(80);
+    save("skeleton-real-cloud-collapsed");
+    // Cloud's implicit FBX root is intentionally omitted. Exercise the
+    // non-palette ancestor contract with a real explicit auxiliary root.
+    const auto ancestorFixture = requireFixture("FORMAVIEW_MODEL_FIXTURES") + "/eight-normalized.gltf";
+    desktop_->openPath(ancestorFixture);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable() &&
+        session->path() == ancestorFixture,30000);
+    QTRY_VERIFY(modelPanelsReady());
+    panelsFrame.clear();
+    window_->update();
+    QTRY_VERIFY(!panelsFrame.isEmpty());
+    click(item("modelInspectorTab1"));
+    QTRY_VERIFY(item("modelBindingMatrices"));
+    session->selectSkeletonIndex(session->skeleton()->indexForNode({}, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    const auto fixtureSelection = session->skeletonSelection();
+    QVERIFY(fixtureSelection.value("inPalette").toBool());
+    if (!item("modelBindingMatrices")->property("checked").toBool())
+      click(item("modelBindingMatrices"));
+    QTRY_VERIFY(!visualItems(window_->contentItem(),"modelMatrixValues").isEmpty());
     auto *bindingDetails=window_->findChild<QQuickItem *>("modelBindingDetailsLoader");
     auto *sourceDetails=window_->findChild<QQuickItem *>("modelSourceDetailsLoader");
     QVERIFY(bindingDetails && sourceDetails && bindingDetails->isVisible());
@@ -6380,12 +6402,9 @@ private slots:
     QTRY_VERIFY(std::abs(sourceDetails->y())<1);
     QVERIFY(!item("modelBoneHeat")->isEnabled());
     save("review-skeleton-ancestor-without-binding-gap");
-    session->selectSkeletonIndex(session->skeleton()->indexForNode(selection.value("id").toString(),selection.value("boneIndex").toInt()));
+    session->selectSkeletonIndex(session->skeleton()->indexForNode(fixtureSelection.value("id").toString(),fixtureSelection.value("boneIndex").toInt()));
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
     QTRY_VERIFY(bindingDetails->isVisible() && sourceDetails->y()>100);
-    click(item("modelBoneCollapse"));
-    QTest::qWait(80);
-    save("skeleton-real-cloud-collapsed");
     desktop_->clearAsset();
     } catch (const MissingFixture &error) {
       QSKIP(error.what());
