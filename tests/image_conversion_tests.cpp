@@ -106,6 +106,7 @@ void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &
   const auto doc = ImageDocument::open(path);
   for (const auto target : {ImageTarget::Png, ImageTarget::Jpeg, ImageTarget::Tiff}) {
     ImageConversionOptions options; options.target = target; options.allow_lossy = true;
+    options.transform.source_alpha = AlphaMode::Absent;
     options.transform.channels = {{"R", "Y"}};
     mismatch([&] { (void)prepare_image_conversion(doc, options); });
     options.metadata = MetadataPolicy::Drop;
@@ -131,6 +132,43 @@ void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &
     std::cout << "PASS external CMYK ICC rejected for RGB TIFF/WebP\n";
   } else std::cout << "SKIP external CMYK ICC: FORMAVIEW_TEST_CMYK_PROFILE is unset\n";
   std::cout << "PASS RGB/gray ICC output models, exact profile bytes and explicit metadata drop\n";
+}
+void source_alpha_contract(const ImageSubresource &rgba, const std::filesystem::path &root) {
+  bool passed = true;
+  for (const bool tiff : {false, true}) {
+    const auto path = root / (tiff ? "declared-premultiplied.tiff" : "declared-premultiplied.dds");
+    if (tiff) {
+      ExtendedEncodeOptions encoded; encoded.target = ExtendedRasterTarget::Tiff;
+      encoded.alpha = AlphaMode::Premultiplied; write(path, encode_extended(rgba, encoded));
+    } else {
+      ProfessionalEncodeOptions encoded; encoded.target = ProfessionalTarget::Dds;
+      encoded.alpha = AlphaMode::Premultiplied; write(path, encode_professional(rgba, encoded));
+    }
+    const auto document = ImageDocument::open(path);
+    require(document.semantics(0).alpha == AlphaMode::Premultiplied, "Premultiplied container fixture");
+    ImageConversionOptions options; options.target = ImageTarget::Dds;
+    for (const auto *name : {"R", "G", "B", "A"}) options.transform.channels.push_back({name, name});
+    options.transform.alpha_channel = "A";
+    for (const auto declared : {AlphaMode::Straight, AlphaMode::Unknown}) {
+      options.transform.source_alpha = declared;
+      bool rejected = false;
+      try { (void)prepare_image_conversion(document, options); }
+      catch (const skeletal::Failure &error) {
+        rejected = error.error.code == ErrorCode::InvalidArgument &&
+                   std::string(error.what()).find("container alpha") != std::string::npos;
+      }
+      std::cout << "Source alpha container=" << (tiff ? "TIFF" : "DDS")
+                << " declaration=" << static_cast<int>(declared) << " rejected=" << rejected << '\n';
+      passed &= rejected;
+    }
+    options.transform.source_alpha = AlphaMode::Premultiplied;
+    const auto product = prepare_image_conversion(document, options);
+    const auto output = root / (tiff ? "alpha-tiff-result.dds" : "alpha-dds-result.dds");
+    write(output, product.encoded);
+    require(ImageDocument::open(output).semantics(0).alpha == AlphaMode::Premultiplied,
+            "Matching declaration must preserve container alpha");
+  }
+  require(passed, "Conflicting source_alpha was accepted");
 }
 void dds_transfer_contract(const ImageSubresource &rgba, const std::filesystem::path &root) {
   bool passed = true;
@@ -334,6 +372,7 @@ void run(const std::filesystem::path &root) {
                                SampleEncoding::UNorm});
   }
   RasterEncodeOptions png;
+  source_alpha_contract(source, root);
   dds_transfer_contract(source, root);
   dds_alpha_contract(source, root);
   png.alpha = AlphaMode::Straight;
@@ -382,10 +421,14 @@ void run(const std::filesystem::path &root) {
     auto unknown = options;
     unknown.target = ImageTarget::Tga;
     unknown.transform.source_alpha = AlphaMode::Unknown;
-    const auto encoded = prepare_image_conversion(doc, unknown);
-    write(root / "unknown-alpha.tga", encoded.encoded);
+    rejects([&] { (void)prepare_image_conversion(doc, unknown); });
+    ProfessionalEncodeOptions untyped;
+    untyped.target = ProfessionalTarget::Tga;
+    untyped.alpha = AlphaMode::Unknown;
+    write(root / "unknown-alpha.tga", encode_professional(doc.decode(0), untyped));
     const auto tga = ImageDocument::open(root / "unknown-alpha.tga");
     require(tga.description().alpha == AlphaMode::Unknown, "Unknown alpha must not become straight");
+    const auto encoded = prepare_image_conversion(tga, unknown);
     auto zero = encoded.encoded;
     for (std::size_t p = 18 + 3; p < 18 + 8 * 8 * 4; p += 4) zero[p] = std::byte{0};
     write(root / "zero-alpha.tga", zero);

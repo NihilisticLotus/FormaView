@@ -137,6 +137,9 @@ prepare_image_conversion(const ImageDocument &document,
   const auto &description = document.description();
   auto source = document.decode(options.subresource, stop);
   auto transform_options = options.transform;
+  const auto declaredAlpha = document.semantics(options.subresource).alpha;
+  if (declaredAlpha != AlphaMode::Unknown && declaredAlpha != transform_options.source_alpha)
+    invalid("Source alpha declaration conflicts with container alpha");
   // Standard A is an actual channel. Layered EXR alpha is explicitly selected
   // by name in the same transform options; never guessed from a suffix.
   if (has_alpha(source) && transform_options.alpha_channel.empty())

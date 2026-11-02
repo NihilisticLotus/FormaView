@@ -44,7 +44,7 @@ QJsonObject item(const std::filesystem::path &root) {
     channels.append(QJsonObject{{"source", c}, {"destination", c}});
   return {{"input", qp(root / "input.png")},
           {"output", qp(root / "output.tiff")},
-          {"options", QJsonObject{{"target", "tiff"}, {"channels", channels}}}};
+          {"options", QJsonObject{{"target", "tiff"}, {"channels", channels}, {"source_alpha", "absent"}}}};
 }
 QJsonObject call(ImageBatchService &service, QJsonObject request) {
   request["version"] = 1;
