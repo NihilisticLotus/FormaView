@@ -188,7 +188,7 @@ RootLockResult apply_root_lock(const Pose &source, const ActorAsset &asset,
 }
 
 std::string actor_target_digest(const ActorAsset &asset, std::stop_token stop) {
-  std::string canonical = "actor-target-v1\n";
+  std::string canonical = "actor-target-v2\n";
   canonical += "bones ";
   canonical += std::to_string(asset.bones.size());
   canonical += '\n';
@@ -196,6 +196,8 @@ std::string actor_target_digest(const ActorAsset &asset, std::stop_token stop) {
     const auto &bone = asset.bones[i];
     canonical += std::to_string(i);
     canonical += ' ';
+    canonical += std::to_string(bone.source.original_name.size());
+    canonical += ':';
     canonical += bone.source.original_name;
     canonical += ' ';
     canonical += bone.parent ? std::to_string(*bone.parent) : "-1";

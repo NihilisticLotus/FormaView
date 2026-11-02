@@ -180,6 +180,21 @@ void runSynthetic() {
   targetB.bones[1].default_local.translation.x += 0.5;
   check("digest.sensitive",
         formaview::skeletal::actor_target_digest(targetB) != digestA);
+  {
+    ActorAsset left, right;
+    left.bones.resize(2); right.bones.resize(2);
+    const std::string boundary = " -1 0,0,0;0,0,0,1;1,1,1 valid\n1 ";
+    left.bones[0].source.original_name = "a" + boundary + "b";
+    left.bones[1].source.original_name = "c";
+    right.bones[0].source.original_name = "a";
+    right.bones[1].source.original_name = "b" + boundary + "c";
+    const auto leftDigest = formaview::skeletal::actor_target_digest(left);
+    const auto rightDigest = formaview::skeletal::actor_target_digest(right);
+    check("digest.embedded_record_boundary", leftDigest != rightDigest);
+    MappingCache isolated(2);
+    isolated.store({leftDigest, leftDigest, 1, 1}, CompareReport{});
+    check("cache.distinct_names_miss", !isolated.find({leftDigest, rightDigest, 1, 1}));
+  }
 
   {
     request.root=0;
