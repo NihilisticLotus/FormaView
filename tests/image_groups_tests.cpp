@@ -133,6 +133,57 @@ void inspectAdmission(const QString &root) {
           "Limited child must reject input");
   std::cout << "PASS group inspect and child use service limits" << std::endl;
 }
+void endpointPageBudget(const QString &root) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/service"), "New page-budget fixture");
+  const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const auto folder = root + "/groups/" + uuid;
+  const auto save = [](const QString &path, const QJsonObject &data) {
+    QFile file(path); const auto bytes = QJsonDocument(data).toJson(QJsonDocument::Compact);
+    require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Write page-budget journal");
+  };
+  QJsonArray batches;
+  for (int i = 0; i < 5; ++i) {
+    const auto child = folder + '/' + QString::number(i);
+    require(QDir().mkpath(child + "/records"), "Create page-budget child");
+    save(child + "/requests.json", {{"items", requests(root, 1, "unused-")}});
+    save(child + "/direct-result.json", {{"items", QJsonArray{QJsonObject{
+        {"status", "succeeded"}, {"evidence", QString(1100 * 1024, QChar('x'))}}}}});
+    batches.append(QJsonObject{{"count", 1}});
+  }
+  const auto jobId = "group-" + uuid + "-job";
+  save(folder + "/index.json", {{"version", 1}, {"id", "group-" + uuid}, {"job_id", jobId},
+      {"plan_state", "interrupted"}, {"job_state", "succeeded"}, {"batches", batches}});
+  auto groups = std::make_shared<ImageTaskGroups>(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
+  auto service = std::make_shared<ImageBatchService>(scope(root), std::filesystem::path((root + "/service").toStdWString()));
+  const auto name = "formaview-pages-" + uuid;
+  ImageEndpoint endpoint(service, name, nullptr, groups);
+  int offset = 0, pages = 0;
+  do {
+    auto request = query("get_job", jobId); request["offset"] = offset; request["limit"] = 100;
+    QLocalSocket socket; socket.connectToServer(name);
+    require(socket.waitForConnected(5000), "Connect page-budget endpoint");
+    socket.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n'); socket.flush();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!socket.canReadLine() && socket.state() == QLocalSocket::ConnectedState && std::chrono::steady_clock::now() < deadline) {
+      QCoreApplication::processEvents(); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(socket.canReadLine(), "Oversized page disconnected without a structured response");
+    const auto bytes = socket.readLine();
+    require(bytes.size() <= 4 * 1024 * 1024 + 1, "Page exceeds transport byte budget");
+    const auto response = checked(QJsonDocument::fromJson(bytes).object());
+    const auto items = response["items"].toArray();
+    require(!items.isEmpty() && response["total"].toInt() == 5, "Page lost total or failed to make progress");
+    for (const auto &value : items) {
+      const auto item = value.toObject();
+      require(item["index"].toInt() == offset++ && item["evidence"].toString().size() == 1100 * 1024, "Pagination truncated or duplicated item evidence");
+    }
+    ++pages;
+    if (response["next_offset"].isNull()) break;
+    require(response["next_offset"].toInt() == offset && pages <= 5, "Invalid byte-budget continuation");
+  } while (true);
+  require(offset == 5 && pages > 1, "Byte pagination must deliver every item");
+  std::cout << "PASS bounded endpoint pages retain all five large evidence rows\n";
+}
 void endpointBoundary(const QString &root) {
   require(!QFileInfo::exists(root) && QDir().mkpath(root), "Create endpoint boundary root");
   fixture(root + "/source.tga");
@@ -694,6 +745,7 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     if (argc == 3 && app.arguments()[1] == "--inspect-admission") { inspectAdmission(app.arguments()[2]); return 0; }
+    if (argc == 3 && app.arguments()[1] == "--endpoint-pages") { endpointPageBudget(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--endpoint-boundary") { endpointBoundary(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--unrelated-journal") {
       unrelatedJournal(app.arguments()[2]);

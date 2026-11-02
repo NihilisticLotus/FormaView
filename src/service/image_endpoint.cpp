@@ -13,6 +13,11 @@
 
 namespace formaview::imaging {
 namespace {
+constexpr qsizetype responseBudget = 4 * 1024 * 1024;
+QJsonObject responseLimit() {
+  return image_error_json(skeletal::Failure(ErrorCode::ResourceLimit,
+                                            "Endpoint response exceeds four MiB"));
+}
 SchedulerLimits limits() {
   SchedulerLimits l;
   l.workers = 1;
@@ -26,11 +31,9 @@ SchedulerLimits limits() {
 void respond(QLocalSocket *socket, const QJsonObject &response) {
   if (socket->state() != QLocalSocket::ConnectedState)
     return;
-  const auto bytes = QJsonDocument(response).toJson(QJsonDocument::Compact);
-  if (bytes.size() > 4 * 1024 * 1024) {
-    socket->abort();
-    return;
-  }
+  auto bytes = QJsonDocument(response).toJson(QJsonDocument::Compact);
+  if (bytes.size() > responseBudget)
+    bytes = QJsonDocument(responseLimit()).toJson(QJsonDocument::Compact);
   socket->write(bytes + '\n');
   socket->disconnectFromServer();
 }
@@ -39,6 +42,30 @@ struct ImageEndpoint::Impl {
   std::shared_ptr<ImageBatchService> service;
   std::shared_ptr<ImageTaskGroups> groups;
   QJsonObject dispatch(const QJsonObject &request, std::stop_token stop = {}) {
+    auto result = dispatchFull(request, stop);
+    if (result.contains("error") || !result.value("items").isArray() ||
+        !result.contains("next_offset")) return result;
+    const auto items = result["items"].toArray();
+    if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() <= responseBudget) return result;
+    const auto offset = request.value("offset").toInteger();
+    result["items"] = QJsonArray{};
+    // Reserve enough digits for any continuation within this result set.
+    result["next_offset"] = result["total"];
+    auto used = QJsonDocument(result).toJson(QJsonDocument::Compact).size();
+    QJsonArray page;
+    for (const auto &item : items) {
+      const auto bytes = QJsonDocument(QJsonArray{item}).toJson(QJsonDocument::Compact).size() - 2;
+      const auto extra = bytes + (page.isEmpty() ? 0 : 1);
+      if (extra > responseBudget - used) break;
+      page.append(item); used += extra;
+    }
+    if (page.isEmpty()) return responseLimit();
+    result["items"] = page;
+    const auto end = offset + page.size();
+    result["next_offset"] = end < result["total"].toInteger() ? QJsonValue(end) : QJsonValue(QJsonValue::Null);
+    return result;
+  }
+  QJsonObject dispatchFull(const QJsonObject &request, std::stop_token stop) {
     const auto operation = request["operation"].toString();
     const auto id = request.value("plan_id").toString(request.value("id").toString());
     const bool grouped = groups && groups->contains(id);
