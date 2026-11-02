@@ -1755,6 +1755,11 @@ private slots:
     // alone does not mean the saved scroll offset has been applied.
     QTRY_VERIFY(!item("filesPane")->property("restorePending").toBool());
     for (int round = 0; round < 3; ++round) {
+      QSignalSpy layoutFrame(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!layoutFrame.isEmpty());
+      QVERIFY(QMetaObject::invokeMethod(list, "forceLayout"));
+      QTRY_VERIFY(list->property("contentHeight").toDouble() > list->height() + 1);
       const auto position = list->property("originY").toDouble()
                           + list->property("contentHeight").toDouble() - list->height();
       list->setProperty("contentY", position);
