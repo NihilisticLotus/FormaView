@@ -15,6 +15,31 @@
       }
     },
     {
+      "name": "windows-msvc-full",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/out/msvc-full",
+      "condition": {
+        "type": "allOf",
+        "conditions": [
+          { "type": "notEquals", "lhs": "$env{FORMAVIEW_QT_ROOT}", "rhs": "" },
+          { "type": "notEquals", "lhs": "$env{FORMAVIEW_UFBX_ROOT}", "rhs": "" },
+          { "type": "notEquals", "lhs": "$env{FORMAVIEW_CGLTF_ROOT}", "rhs": "" },
+          { "type": "notEquals", "lhs": "$env{FORMAVIEW_FBXSDK_ROOT}", "rhs": "" },
+          { "type": "notEquals", "lhs": "$env{FORMAVIEW_DEPENDENCY_PREFIX_PATH}", "rhs": "" }
+        ]
+      },
+      "cacheVariables": {
+        "FORMAVIEW_BUILD_HOST": "ON",
+        "FORMAVIEW_BUILD_PROFESSIONAL": "ON",
+        "FORMAVIEW_BUILD_RASTER": "ON",
+        "FORMAVIEW_BUILD_FBX_WRITER": "ON",
+        "FORMAVIEW_UFBX_ROOT": "$env{FORMAVIEW_UFBX_ROOT}",
+        "FORMAVIEW_CGLTF_ROOT": "$env{FORMAVIEW_CGLTF_ROOT}",
+        "FORMAVIEW_FBXSDK_ROOT": "$env{FORMAVIEW_FBXSDK_ROOT}",
+        "CMAKE_PREFIX_PATH": "$env{FORMAVIEW_QT_ROOT};$env{FORMAVIEW_DEPENDENCY_PREFIX_PATH}"
+      }
+    },
+    {
       "name": "windows-asan",
       "inherits": "windows-msvc",
       "binaryDir": "${sourceDir}/out/asan",
@@ -23,10 +48,12 @@
   ],
   "buildPresets": [
     { "name": "release", "configurePreset": "windows-msvc", "configuration": "Release" },
+    { "name": "release-full", "configurePreset": "windows-msvc-full", "configuration": "Release" },
     { "name": "asan", "configurePreset": "windows-asan", "configuration": "RelWithDebInfo" }
   ],
   "testPresets": [
     { "name": "release", "configurePreset": "windows-msvc", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "release-full", "configurePreset": "windows-msvc-full", "configuration": "Release", "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" } },
     { "name": "asan", "configurePreset": "windows-asan", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
   ]
 }

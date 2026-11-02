@@ -64,7 +64,22 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <stdexcept>
 namespace {
+class MissingFixture final : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
+QString requireFixture(const char *variable, bool optional = false) {
+  const auto value = QDir::fromNativeSeparators(qEnvironmentVariable(variable));
+  if (value.isEmpty() && optional) return {};
+  if (value.isEmpty())
+    throw MissingFixture(std::string("Missing fixture environment: ") + variable);
+  for (const auto &path : value.split(';', Qt::SkipEmptyParts))
+    if (!QFileInfo::exists(path))
+      throw MissingFixture(std::string(variable) + ": missing fixture " + path.toStdString());
+  return value;
+}
 bool workflowHeadless() {
   return qEnvironmentVariableIsSet("FORMAVIEW_TEST_HEADLESS");
 }
@@ -495,10 +510,11 @@ private slots:
     QTRY_VERIFY(idle());
     QVERIFY(desktop_->folderMenu().isEmpty());
     QCOMPARE(desktop_->sessionRevision(), session);
-    const auto drive = desktop_->breadcrumbs("B:/Model/克劳德/Texture/");
+    const auto fixtureDrive = QDir::fromNativeSeparators(QFileInfo(root_).absoluteFilePath()).left(3);
+    const auto drive = desktop_->breadcrumbs(fixtureDrive + "Model/克劳德/Texture/");
     QCOMPARE(drive.size(), 4);
-    QCOMPARE(drive[0].toMap()["path"].toString(), QString("B:/"));
-    QCOMPARE(drive[1].toMap()["path"].toString(), QString("B:/Model"));
+    QCOMPARE(drive[0].toMap()["path"].toString(), fixtureDrive);
+    QCOMPARE(drive[1].toMap()["path"].toString(), fixtureDrive + "Model");
     const auto unc = desktop_->breadcrumbs("\\\\server\\share\\中文\\Texture");
     QCOMPARE(unc.size(), 3);
     QCOMPARE(unc[0].toMap()["path"].toString(), QString("//server/share"));
@@ -2709,8 +2725,9 @@ private slots:
     desktop_->clearAsset();
   }
   void imageApprovedOutputsAndSelectedSemantics() {
+    try {
     const auto fixtures =
-        qEnvironmentVariable("FORMAVIEW_TEST_BOUNDARY_FIXTURES");
+        requireFixture("FORMAVIEW_TEST_BOUNDARY_FIXTURES");
     if (fixtures.isEmpty())
       QSKIP("Set external independently generated boundary fixtures to run "
             "this regression");
@@ -2796,6 +2813,11 @@ private slots:
     QVERIFY(plans.open(QIODevice::WriteOnly));
     plans.write(QJsonDocument(records).toJson());
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void generalSettingsDraftAndNavigation() {
     auto *workspace = item("workspace");
@@ -2911,7 +2933,8 @@ private slots:
 
 #ifdef FORMAVIEW_MODEL_EXPORT
   void sceneMalformedPreviewStorage() {
-    const auto fixtures = qEnvironmentVariable("FORMAVIEW_SCENE_REVIEW_FIXTURES");
+    try {
+    const auto fixtures = requireFixture("FORMAVIEW_SCENE_REVIEW_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_SCENE_REVIEW_FIXTURES to review fixtures");
     for (const auto *name : {"sparse-outside-buffer.gltf", "offset-overflow.gltf", "deep-hierarchy.gltf"}) {
       const auto path = fixtures + "/" + name;
@@ -2924,9 +2947,15 @@ private slots:
       const auto model = readModelDocument(fixtures + "/" + name, {});
       QVERIFY2(model, name);
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void sceneExportGuiLifecycle() {
-    const auto fixtures = qEnvironmentVariable("FORMAVIEW_SCENE_EXPORT_FIXTURES");
+    try {
+    const auto fixtures = requireFixture("FORMAVIEW_SCENE_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_SCENE_EXPORT_FIXTURES to scene_export_tests synthetic fixtures");
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace"); QVERIFY(service && workspace);
@@ -2936,7 +2965,9 @@ private slots:
     QVERIFY(index >= 0); desktop_->select(index); QTRY_VERIFY(idle());
     QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     QTRY_VERIFY(item("modelExportContent"));
-    QCOMPARE(item("modelExportPairing")->property("currentIndex").toInt(), 1);
+    auto *pairing = window_->findChild<QQuickItem *>("modelExportPairing");
+    QVERIFY(pairing);
+    QCOMPARE(pairing->property("currentIndex").toInt(), 1);
     const auto cleanup = qScopeGuard([&] { if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace")) QMetaObject::invokeMethod(conversion, "close"); });
     const auto edit = [&](const char *name, const QString &text) {
       auto *field = item(name); QVERIFY(field); field->forceActiveFocus();
@@ -3013,6 +3044,11 @@ private slots:
       QCOMPARE(doc.data().meshes.size(), 1u); QVERIFY(doc.data().clips.empty());
     }
     jobs.append(QJsonObject::fromVariantMap(service->job())); evidence_["scene_export_gui"] = jobs;
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void preflightCombinedFilters() {
     QVariantList entries;
@@ -3101,7 +3137,8 @@ private slots:
     panel->setParentItem(nullptr);
   }
   void modelScopeValidation() {
-    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    try {
+    const auto fixtures = requireFixture("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to synthetic ActorX fixtures");
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
@@ -3225,9 +3262,15 @@ private slots:
     for (auto it = originalSources.cbegin(); it != originalSources.cend(); ++it) {
       QFile file(it.key()); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), it.value());
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelExportGuiLifecycle() {
-    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    try {
+    const auto fixtures = requireFixture("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     if (fixtures.isEmpty()) QSKIP("Set FORMAVIEW_MODEL_EXPORT_FIXTURES to skeletal_tests fbx synthetic fixtures");
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
@@ -3412,10 +3455,16 @@ private slots:
       jobs.append(QJsonObject::fromVariantMap(service->job()));
     }
     evidence_["model_export_gui"] = jobs;
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 #endif
 
   void exportFolderPicker() {
+    try {
     const auto folder = root_ + "/输出 空格 #100%";
     QVERIFY(QDir().mkpath(folder));
     const auto expected = QUrl::fromLocalFile(folder);
@@ -3436,7 +3485,7 @@ private slots:
       QQuickWindow *quick = nullptr;
       if (mode) {
         if (mode == 2) {
-          const auto animation = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES") + "/source.psa";
+          const auto animation = requireFixture("FORMAVIEW_MODEL_EXPORT_FIXTURES") + "/source.psa";
           desktop_->openPath(animation);
           QTRY_COMPARE(desktop_->asset().value("path").toString(), animation);
         }
@@ -3483,12 +3532,18 @@ private slots:
         QCOMPARE(field->property("text").toString(), entered);
       }
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 
 #ifdef FORMAVIEW_MODEL_EXPORT
   void modelDirectExportBatch() {
+    try {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs()); QVERIFY(service);
-    const auto originalFixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES"); QVERIFY(!originalFixtures.isEmpty());
+    const auto originalFixtures = requireFixture("FORMAVIEW_MODEL_EXPORT_FIXTURES"); QVERIFY(!originalFixtures.isEmpty());
     const auto fixtures = root_ + "/lossless-fixtures"; QVERIFY(QDir().mkpath(fixtures));
     // Existing synthetic fixtures intentionally contain an unsupported FUTURE
     // chunk to test loss confirmation. This benchmark uses lossless inputs.
@@ -3544,10 +3599,16 @@ private slots:
     evidence_["direct_55"] = QJsonObject::fromVariantMap(job);
     evidence_["direct_55_prepared_ms"] = preparedMs;
     evidence_["direct_55_total_ms"] = elapsed.elapsed();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 #endif
 
   void quickExportWorkflow() {
+    try {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
     QVERIFY(service && workspace);
@@ -3611,7 +3672,7 @@ private slots:
     QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
 
 #ifdef FORMAVIEW_MODEL_EXPORT
-    const auto fixtures = qEnvironmentVariable("FORMAVIEW_MODEL_EXPORT_FIXTURES");
+    const auto fixtures = requireFixture("FORMAVIEW_MODEL_EXPORT_FIXTURES");
     QVERIFY2(!fixtures.isEmpty(), "Synthetic ActorX fixtures are required for all quick export modes");
     QString inventoryFailedJob;
     for (const auto &mode : {QString("model"), QString("combined"), QString("animation")}) {
@@ -3719,6 +3780,11 @@ private slots:
     QCOMPARE(workspace->property("currentPage").toString(), QString("assets"));
     evidence_["quick_closed_submission"] = QJsonObject::fromVariantMap(service->job());
 #endif
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void conversionEditorPlanBinding() {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
@@ -4281,6 +4347,7 @@ private slots:
   }
 
   void imageConversionGuiLifecycle() {
+    try {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     QVERIFY(service);
     auto *workspace = item("workspace");
@@ -4428,9 +4495,9 @@ private slots:
     service->cancelPreparation();
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 15000);
     QVERIFY(!QFile::exists(output + "/cancelled.png"));
-    const auto python = qEnvironmentVariable("FORMAVIEW_TEST_MCP_PYTHON");
-    const auto adapter = qEnvironmentVariable("FORMAVIEW_TEST_MCP_ADAPTER");
-    const auto client = qEnvironmentVariable("FORMAVIEW_TEST_MCP_CLIENT");
+    const auto python = requireFixture("FORMAVIEW_TEST_MCP_PYTHON");
+    const auto adapter = requireFixture("FORMAVIEW_TEST_MCP_ADAPTER");
+    const auto client = requireFixture("FORMAVIEW_TEST_MCP_CLIENT");
     QVERIFY2(QFile::exists(python) && QFile::exists(adapter) &&
                  QFile::exists(client),
              "Explicit MCP verification runtime and client paths required");
@@ -4596,6 +4663,11 @@ private slots:
              QColor(Qt::cyan));
     QCOMPARE(QImage(output + "/mapped-2.png").pixelColor(0, 0),
              QColor(32, 64, 128, 191));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 #endif
   void imageGuiWriteMatrix() {
@@ -4711,6 +4783,7 @@ private slots:
 #endif
   }
   void mcpSettingsInteraction() {
+    try {
 #ifdef FORMAVIEW_IMAGE_UI
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     QVERIFY(service && !service->mcpEnabled());
@@ -4719,8 +4792,8 @@ private slots:
              "A successfully configured scope is required before UI settings "
              "checks");
     const auto output = scope.value("output_roots").toList()[0].toString();
-    const auto python = qEnvironmentVariable("FORMAVIEW_TEST_MCP_PYTHON");
-    const auto adapter = qEnvironmentVariable("FORMAVIEW_TEST_MCP_ADAPTER");
+    const auto python = requireFixture("FORMAVIEW_TEST_MCP_PYTHON");
+    const auto adapter = requireFixture("FORMAVIEW_TEST_MCP_ADAPTER");
     desktop_->preference("mcpInputRoot", small_);
     desktop_->preference("mcpOutputRoot", output);
     desktop_->preference("mcpPython", python);
@@ -4765,7 +4838,7 @@ private slots:
         });
 #endif
     process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(python, {qEnvironmentVariable("FORMAVIEW_TEST_MCP_CLIENT"),
+    process.start(python, {requireFixture("FORMAVIEW_TEST_MCP_CLIENT"),
                            "--endpoint", service->endpoint(), "--adapter",
                            adapter, "--source", small_ + "/唯一图片.png",
                            "--output", output + "/settings-client.png",
@@ -4819,6 +4892,11 @@ private slots:
     QTest::keyClick(window_, Qt::Key_Escape);
     QTRY_VERIFY(!dialog->property("visible").toBool());
 #endif
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void textureSettingsAndHelp() {
 #ifdef FORMAVIEW_IMAGE_UI
@@ -5821,6 +5899,7 @@ private slots:
   }
 #ifdef FORMAVIEW_MODEL_UI
   void modelOpenKeepsPreviewPane() {
+    try {
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     desktop_->clearAsset();
@@ -5864,7 +5943,7 @@ private slots:
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 10000);
       QCOMPARE(item("modelPane"), pane.data());
     }
-    const QString sampleRoot = "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/";
+    const QString sampleRoot = (requireFixture("FORMAVIEW_PSK_FIXTURES") + "/");
     for (const auto &name : {QString("Suzanne.psk"), QString("CS_Sarge_S0_Skelmesh.pskx")}) {
       view->panBy(20, 10);
       view->zoomBy(2);
@@ -5884,9 +5963,15 @@ private slots:
     QVERIFY(!session->busy() && !session->available() && session->path().isEmpty());
     QTest::qWait(100);
     QVERIFY(!session->busy() && !session->available() && session->path().isEmpty());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelFocusRestoreRails() {
-    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    try {
+    const QDir fixtures(requireFixture("FORMAVIEW_MODEL_FIXTURES"));
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     auto *workspace = item("workspace");
     QVERIFY(session && workspace && fixtures.exists("external.gltf"));
@@ -5962,9 +6047,15 @@ private slots:
     click("focusInspectorRail");
     QTRY_VERIFY(item("inspectorPane"));
     QCOMPARE(view->cameraState(), camera);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelDisplayControls() {
-    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    try {
+    const QDir fixtures(requireFixture("FORMAVIEW_MODEL_FIXTURES"));
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session && fixtures.exists("external.gltf"));
     desktop_->setLanguage("zh-CN");
@@ -6016,6 +6107,11 @@ private slots:
     QVERIFY(item("editLocation") && item("editLocation")->property("iconName").toString().isEmpty());
     save("model-left-click-source-inspection");
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void genericResourcesRespectCollapse() {
     const auto restore=qScopeGuard([&] { desktop_->clearAsset(); });
@@ -6040,13 +6136,14 @@ private slots:
     QTRY_VERIFY(section->property("checked").toBool() && item("genericResourceList"));
   }
   void modelInspectorCollapseRestoresGeometry() {
+    try {
     QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected).*"));
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     const auto restore=qScopeGuard([&] { desktop_->clearAsset(); });
     desktop_->setLanguage("zh-CN");
     window_->resize(1600,900);
-    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    desktop_->openPath(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
     QTRY_VERIFY(modelPanelsReady());
     QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
@@ -6089,13 +6186,19 @@ private slots:
     QTRY_VERIFY(!window_->findChild<QQuickItem *>("modelLodDetails")->isVisible());
     QTRY_VERIFY(std::abs(column->height()-initialHeight)<1);
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelSkeletonNavigation() {
+    try {
     QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|Unable to assign).*"));
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     window_->resize(1600,900);
-    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    desktop_->openPath(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
     QTRY_VERIFY(modelPanelsReady());
     QSignalSpy panelsFrame(window_,&QQuickWindow::frameSwapped);
@@ -6190,10 +6293,16 @@ private slots:
     QTest::qWait(80);
     save("skeleton-real-cloud-collapsed");
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelProfessionalUi() {
+    try {
     QTest::failOnWarning(QRegularExpression(".*(Binding loop detected|invalid context|Qt.callLater).*"));
-    const QDir fixtures(qEnvironmentVariable("FORMAVIEW_MODEL_FIXTURES"));
+    const QDir fixtures(requireFixture("FORMAVIEW_MODEL_FIXTURES"));
     QVERIFY2(fixtures.exists("external.gltf"), "Set FORMAVIEW_MODEL_FIXTURES to the generated M06 fixtures");
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     auto *workspace = item("workspace");
@@ -6357,14 +6466,20 @@ private slots:
     QVERIFY(!session->frameFor(true) || session->frameFor(true)->vertices.empty());
     save("professional-no-uv-source");
     evidence_["professional_ui"] = screens;
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelLodNativeFlow() {
+    try {
     QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|invalid context).*"));
     desktop_->setLanguage("zh-CN");
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
-    const QString path="E:/CodexProject/asset-preview-planning/development/toolchain/M02/ufbx/data/maya_lod_group_7500_ascii.fbx";
+    const QString path=requireFixture("FORMAVIEW_LOD_SAMPLE");
     desktop_->openPath(path);
     QTRY_COMPARE_WITH_TIMEOUT(session->path(),path,10000);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
@@ -6437,11 +6552,17 @@ private slots:
     QVERIFY(hasDrawnGeometry());
     evidence_["lod_native_flow"]=QJsonObject{{"source",path},{"info",QJsonObject::fromVariantMap(session->info())},{"levels",QJsonArray::fromVariantList(session->lodLevels())},{"boundary","Actual QML buttons/ComboBox driven by Qt window mouse/key events; not OS input latency."}};
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelWeightHeatToggle() {
+    try {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
-    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_HEAT_FIXTURE"));
+    const auto path=QDir::fromNativeSeparators(requireFixture("FORMAVIEW_HEAT_FIXTURE"));
     QVERIFY2(QFileInfo::exists(path), "Set FORMAVIEW_HEAT_FIXTURE to a synthetic skinned FBX");
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
     desktop_->setLanguage("zh-CN");
@@ -6525,11 +6646,17 @@ private slots:
     QVERIFY(!session->error().isEmpty());
     open(path);
     QVERIFY(!payload()->heat);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelMultipleBindingsNativeFlow() {
+    try {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
-    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_MULTIBINDING_FIXTURE"));
+    const auto path=QDir::fromNativeSeparators(requireFixture("FORMAVIEW_MULTIBINDING_FIXTURE"));
     if(path.isEmpty()) QSKIP("Optional two-binding FBX fixture was not configured");
     QVERIFY2(QFileInfo::exists(path),"Set FORMAVIEW_MULTIBINDING_FIXTURE to the independently generated two-skin FBX fixture");
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
@@ -6581,13 +6708,19 @@ private slots:
     QVERIFY(std::abs(heatPayload()->vertices[0].weight-secondHeat->vertices[0].weight)>.5F);
     evidence_["multiple_bindings_native"]=QJsonObject{{"source",path},{"first_id",firstId},{"skin_count",2},{"boundary","Actual Qt QML ComboBox selection and heat frames; fixture is an explicitly hand-modified FBX, not claimed as a DCC export."}};
     desktop_->clearAsset();
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelMixedQueuePerformance() {
+    try {
 #ifdef FORMAVIEW_IMAGE_UI
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     auto *service=qobject_cast<ImageJobs *>(desktop_->imageJobs());
     QVERIFY(session && service);
-    const auto path=QDir::fromNativeSeparators(qEnvironmentVariable("FORMAVIEW_PERFORMANCE_MODEL"));
+    const auto path=QDir::fromNativeSeparators(requireFixture("FORMAVIEW_PERFORMANCE_MODEL"));
     if(path.isEmpty()) QSKIP("Optional typical performance fixture was not configured");
     QVERIFY2(QFileInfo::exists(path),"Set FORMAVIEW_PERFORMANCE_MODEL to the 216k-triangle / 256-joint fixture");
     desktop_->openPath(path);
@@ -6639,6 +6772,11 @@ private slots:
     QVERIFY(concurrent>=30); QVERIFY(p95<=50 && p99<=100); QCOMPARE(measured->over100ms,0);
     desktop_->clearAsset();
 #endif
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void stressTraceCapturesNestedAndLoss() {
     struct Receiver : QObject {
@@ -6795,6 +6933,7 @@ private slots:
     QVERIFY(changed.count()>0);
   }
   void modelPanelIncubationCanBeCancelled() {
+    try {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     desktop_->clearAsset();
@@ -6809,7 +6948,7 @@ private slots:
       desktop_->clearAsset();
       engine_->setIncubationController(original);
     });
-    const QString compactModel="E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk";
+    const QString compactModel=(requireFixture("FORMAVIEW_PSK_FIXTURES") + "/Suzanne.psk");
     desktop_->openPath(compactModel);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
     // Deliberately withhold the incubation budget. Both panels must yield,
@@ -6823,7 +6962,7 @@ private slots:
     QCOMPARE(paneLoader->property("status").toInt(),0); // Loader.Null
     QCOMPARE(inspectorLoader->property("status").toInt(),0);
     // A superseded request must not resurrect either cancelled component.
-    desktop_->openPath("B:/Model/克劳德/SKM_Cloud.fbx");
+    desktop_->openPath(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     desktop_->openPath(compactModel);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->path()==compactModel,30000);
     const auto panelsReady=[&] {
@@ -6838,12 +6977,18 @@ private slots:
     QCOMPARE(item("modelInspector")->property("session").value<QObject *>(),session);
     evidence_["model_panel_incubation"]=QJsonObject{{"cancelledWhileLoading",true},
       {"supersededWithoutStalePanel",true},{"panelsReadyAfterBudget",true}};
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelLoadResourceStress() {
+    try {
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
-    const QString large="B:/Model/克劳德/SKM_Cloud.fbx";
-    const QString compactModel="E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk";
+    const QString large=requireFixture("FORMAVIEW_ANIMATION_TARGET");
+    const QString compactModel=(requireFixture("FORMAVIEW_PSK_FIXTURES") + "/Suzanne.psk");
     auto *measured=static_cast<MeasuredApplication *>(QCoreApplication::instance());
     measured->events=0; measured->maxEventMs=0; measured->over100ms=0; measured->slowEvents={};
     using Phase=stress_trace::Phase;
@@ -6919,15 +7064,21 @@ private slots:
     finish(); // Freeze and export before any assertion can return from the test.
     QCOMPARE(measured->over100ms,0);
     QVERIFY2(traceComplete,"Stress diagnostic records lost, incomplete, unwound, or not saved; cannot count as a pass");
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelPreviewIntegration() {
+    try {
     QTest::failOnWarning(QRegularExpression(".*index is not valid.*"));
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
     const QStringList samples{
-        "B:/Model/克劳德/SKM_Cloud.fbx",
-        "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/Suzanne.psk",
-        "E:/CodexProject/asset-preview-planning/development/toolchain/M02/psk_psa_py/tests/data/psk/CS_Sarge_S0_Skelmesh.pskx"};
+        requireFixture("FORMAVIEW_ANIMATION_TARGET"),
+        (requireFixture("FORMAVIEW_PSK_FIXTURES") + "/Suzanne.psk"),
+        (requireFixture("FORMAVIEW_PSK_FIXTURES") + "/CS_Sarge_S0_Skelmesh.pskx")};
     QJsonArray reports;
     for (const auto &path : samples) {
       QVERIFY2(QFileInfo::exists(path), qPrintable(path));
@@ -7026,6 +7177,11 @@ private slots:
     QVERIFY(!session->available()); QVERIFY(!session->error().isEmpty());
     desktop_->clearAsset();
     evidence_["model_preview"] = reports;
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 #endif
   void modelAnimationProperties_data() {
@@ -7087,11 +7243,12 @@ private slots:
     QVERIFY(session.clipInfo().isEmpty());
   }
   void modelAnimationPlayback() {
+    try {
     // M07 integration: real animation sample through the product session -
     // clips, inline playback, seek/step/clip switching and the timeline bar.
     // Skipped unless FORMAVIEW_ANIMATION_SAMPLE points at a real PSA/FBX.
     const auto sample =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_SAMPLE"));
     if (!sample.exists()) {
       QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE to a real animation sample");
       return;
@@ -7116,12 +7273,12 @@ private slots:
                             20000);
     QVERIFY2(session->inspectable(), qPrintable(session->error() + session->frameError()));
     QVERIFY(session->animated());
-    const auto reference = qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE");
+    const auto reference = requireFixture("FORMAVIEW_ANIMATION_REFERENCE", true);
     if (!reference.isEmpty() && sample.suffix().compare("psa", Qt::CaseInsensitive) == 0) {
       session->setAnimationReference(reference);
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
       QVERIFY2(session->inspectable(), qPrintable(session->error()));
-      const auto companion = qEnvironmentVariable("FORMAVIEW_ANIMATION_COMPANION");
+      const auto companion = requireFixture("FORMAVIEW_ANIMATION_COMPANION", true);
       if (!companion.isEmpty()) {
         session->setAnimationCompanion(companion);
         QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
@@ -7327,8 +7484,14 @@ private slots:
     desktop_->clearAsset();
     QCoreApplication::processEvents();
     QCOMPARE(qmlWarnings.count(), 0);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelPsaSessionReferenceMemory() {
+    try {
     // M07 session reference memory + per-PSA companion auto-match:
     // one explicit PSK choice is retried for every later PSA in this
     // process; each file re-verifies compatibility and rejects with a
@@ -7336,9 +7499,9 @@ private slots:
     // are discovered per file (same dir, same base name) and never
     // inherited from the previous file.
     const auto sampleA =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_SAMPLE"));
     const auto reference =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_REFERENCE"));
     if (!sampleA.exists() || !reference.exists() ||
         sampleA.suffix().compare("psa", Qt::CaseInsensitive) != 0) {
       QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE (PSA) and "
@@ -7346,9 +7509,9 @@ private slots:
       return;
     }
     const auto sampleB =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_PSA_B"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_PSA_B"));
     const auto incompatible =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_PSA_INCOMPATIBLE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_PSA_INCOMPATIBLE"));
     const auto companionA =
         QFileInfo(sampleA.dir().filePath(sampleA.completeBaseName() + ".config"));
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
@@ -7481,7 +7644,7 @@ private slots:
 
     // 6. A non-PSA asset in between does not disturb the session memory.
     const auto fbx = QFileInfo(
-        qEnvironmentVariable("FORMAVIEW_ANIMATION_FBX"));
+        requireFixture("FORMAVIEW_ANIMATION_FBX"));
     if (fbx.exists()) {
       desktop_->openPath(fbx.absoluteFilePath());
       QTRY_VERIFY_WITH_TIMEOUT(session->path().isEmpty() ||
@@ -7500,14 +7663,20 @@ private slots:
     openAndWait(sampleA);
     QVERIFY(paired().isEmpty());
     QVERIFY(!rejected());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelRootLockPlayback() {
+    try {
     // M07 root lock product flow: toggle locks the root (translation/rotation
     // from the base, scale kept), off restores the source pose at the same
     // time, bases switch, reference base only with verified pairing, and the
     // session memory/pairing integration still holds.
     const auto sample =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_SAMPLE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_SAMPLE"));
     if (!sample.exists() ||
         sample.suffix().compare("psa", Qt::CaseInsensitive) != 0) {
       QSKIP("Set FORMAVIEW_ANIMATION_SAMPLE to a real PSA");
@@ -7572,7 +7741,7 @@ private slots:
 
     // Paired: reference base becomes available.
     const auto reference =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_REFERENCE"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_REFERENCE", true));
     if (reference.exists()) {
       session->setAnimationReference(reference.absoluteFilePath());
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy(), 20000);
@@ -7584,6 +7753,11 @@ private slots:
       QCOMPARE(session->rootLockInfo().value("base").toString(),
                QStringLiteral("reference"));
       session->setRootLock(false);
+    }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
     }
   }
   void modelRootLockDegenerateHosts() {
@@ -7672,12 +7846,13 @@ private slots:
     QVERIFY(maxDiff(lockRootLocal(clean, degenerateBase), clean) <= 1e-12);
   }
   void modelGltfAnimationPlayback() {
+    try {
     // M07 native glTF animation: a glTF/GLB whose own clips drive its own
     // skinned meshes previews with the standard animation bar — playback,
     // seek, root lock and the UV inspection page — without any external
     // attach, mapping or mutation of the file's bind data.
     const auto sample = QFileInfo(
-        qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE"));
+        requireFixture("FORMAVIEW_GLTF_ANIMATION_SAMPLE"));
     if (!sample.exists() ||
         sample.suffix().compare("gltf", Qt::CaseInsensitive) != 0 &&
             sample.suffix().compare("glb", Qt::CaseInsensitive) != 0) {
@@ -7791,14 +7966,20 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(session->frame() &&
                                  !session->frame()->vertices.empty(),
                              30000);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelGltfAnimationVariants() {
+    try {
     // M07 glTF variant matrix (handmade minimal samples): animation-only
     // skeleton preview, skins without inverse bind matrices, cubic-spline
     // and step interpolation semantics, and morph-weight channels that must
     // stay explicitly unsupported while sibling TRS channels still drive.
     const QDir variants(
-        qEnvironmentVariable("FORMAVIEW_GLTF_VARIANTS_DIR"));
+        requireFixture("FORMAVIEW_GLTF_VARIANTS_DIR"));
     if (!variants.exists()) {
       QSKIP("Set FORMAVIEW_GLTF_VARIANTS_DIR to the handmade glTF samples");
       return;
@@ -7909,13 +8090,19 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > morphStart->revision,
                              20000);
     QVERIFY(maxVertexDelta(morphStart, session->frame()) > 0.001);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelAnimationEdgeMatrix() {
+    try {
     // M07 edge-case matrix (Blender-made samples, self-authored): multiple
     // skeleton roots, helper (non-bone) parents carrying motion, rigid
     // node-animated meshes without skins, fully disjoint external skeletons
     // refused, and multi-skin glTF driven natively.
-    const QDir samples(qEnvironmentVariable("FORMAVIEW_EDGE_SAMPLES_DIR"));
+    const QDir samples(requireFixture("FORMAVIEW_EDGE_SAMPLES_DIR"));
     if (!samples.exists()) {
       QSKIP("Set FORMAVIEW_EDGE_SAMPLES_DIR to the Blender-made samples");
       return;
@@ -8049,9 +8236,15 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(
         session->frame()->revision > multiRootStart->revision, 30000);
     QVERIFY(maxVertexDelta(multiRootStart, session->frame()) > 0.001);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelFbxNativeAnimation() {
-    const auto paths = qEnvironmentVariable("FORMAVIEW_NATIVE_FBX_SAMPLES").split(';', Qt::SkipEmptyParts);
+    try {
+    const auto paths = requireFixture("FORMAVIEW_NATIVE_FBX_SAMPLES").split(';', Qt::SkipEmptyParts);
     QVERIFY2(!paths.empty(), "Set FORMAVIEW_NATIVE_FBX_SAMPLES to mesh+animation FBX files");
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
@@ -8130,17 +8323,23 @@ private slots:
         QFAIL(qPrintable(path + ": " + QString::fromUtf8(e.what())));
       }
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 
   void modelExternalAnimationDrive() {
+    try {
     // M07 external FBX animation driving a target FBX: the target keeps its
     // own skeleton/skin/bind data verbatim (digest asserted), the mapping is
     // name+chain based, playback publishes skinned frames, detach restores
     // the static model.
     const auto target =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     const auto external =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!target.exists() || !external.exists() ||
         target.suffix().compare("fbx", Qt::CaseInsensitive) != 0 ||
         external.suffix().compare("fbx", Qt::CaseInsensitive) != 0) {
@@ -8287,7 +8486,7 @@ private slots:
     // file queued IMMEDIATELY (multi-select semantics) also lands.
     const auto clipsBefore = session->clips().size();
     const auto external2 = QFileInfo(
-        qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL2"));
+        requireFixture("FORMAVIEW_ANIMATION_EXTERNAL2"));
     if (external2.exists()) {
       const auto secondClipCount = formaview::skeletal::FbxDocument::read(std::filesystem::path(external2.absoluteFilePath().toStdWString())).data().clips.size();
       const auto expectedClips = clipsBefore + (clipsBefore-nativeClips.size()) + qsizetype(secondClipCount);
@@ -8481,13 +8680,19 @@ private slots:
                              30000);
     QCOMPARE(session->clips(), nativeClips);
     QCOMPARE(skinDigest(), before);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelExternalAnimationMultiSelect() {
+    try {
     // One multi-select dialog submits every file at once (ModelPane loops
     // attachExternalAnimation). None may be silently dropped: each file is
     // either applied or reported, and clips follow the selection order.
-    const QFileInfo target(qEnvironmentVariable("FORMAVIEW_PSK_TARGET"));
-    const QFileInfo psa(qEnvironmentVariable("FORMAVIEW_PSK_PSA"));
+    const QFileInfo target(requireFixture("FORMAVIEW_PSK_TARGET"));
+    const QFileInfo psa(requireFixture("FORMAVIEW_PSK_PSA"));
     if (!target.exists() || !psa.exists())
       QSKIP("Set FORMAVIEW_PSK_TARGET/PSA to real ActorX inputs");
     QStringList files;
@@ -8519,8 +8724,8 @@ private slots:
     if (!failed.contains(QFileInfo(files.front()).fileName()))
       QCOMPARE(session->clips().front().toMap().value("name"), first->clips[0].toMap().value("name"));
     // FBX-target drive shares the queue but applies through its own holders.
-    const QFileInfo fbxTarget(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
-    const QFileInfo fbxExternal(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+    const QFileInfo fbxTarget(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
+    const QFileInfo fbxExternal(requireFixture("FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!fbxTarget.exists() || !fbxExternal.exists())
       return;
     QStringList fbxFiles;
@@ -8537,12 +8742,18 @@ private slots:
     QCOMPARE(fbxInfo.value("requested").toInt(), fbxFiles.size());
     QCOMPARE(fbxInfo.value("applied").toInt() + fbxInfo.value("failedFiles").toStringList().size(), fbxFiles.size());
     QVERIFY2(fbxInfo.value("applied").toInt() > 8, qPrintable(fbxInfo.value("notice").toString()));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelPskExternalAnimationDrive() {
-    const QFileInfo target(qEnvironmentVariable("FORMAVIEW_PSK_TARGET"));
-    const QFileInfo psa(qEnvironmentVariable("FORMAVIEW_PSK_PSA"));
-    const QFileInfo psa2(qEnvironmentVariable("FORMAVIEW_PSK_PSA2"));
-    const QFileInfo incompatible(qEnvironmentVariable("FORMAVIEW_PSK_INCOMPATIBLE"));
+    try {
+    const QFileInfo target(requireFixture("FORMAVIEW_PSK_TARGET"));
+    const QFileInfo psa(requireFixture("FORMAVIEW_PSK_PSA"));
+    const QFileInfo psa2(requireFixture("FORMAVIEW_PSK_PSA2"));
+    const QFileInfo incompatible(requireFixture("FORMAVIEW_PSK_INCOMPATIBLE"));
     if (!target.exists() || !psa.exists() || !psa2.exists() || !incompatible.exists())
       QSKIP("Set FORMAVIEW_PSK_TARGET/PSA/PSA2/INCOMPATIBLE to real ActorX inputs");
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
@@ -8666,6 +8877,11 @@ private slots:
       QCOMPARE(session->frame()->vertices[i].y, original->vertices[i].y);
       QCOMPARE(session->frame()->vertices[i].z, original->vertices[i].z);
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void animatedInspectionControls_data() {
     QTest::addColumn<bool>("actor");
@@ -8673,9 +8889,10 @@ private slots:
     QTest::newRow("psk") << true;
   }
   void animatedInspectionControls() {
+    try {
     QFETCH(bool, actor);
-    const QFileInfo target(qEnvironmentVariable(actor ? "FORMAVIEW_PSK_TARGET" : "FORMAVIEW_ANIMATION_TARGET"));
-    const QFileInfo animation(qEnvironmentVariable(actor ? "FORMAVIEW_PSK_PSA" : "FORMAVIEW_ANIMATION_EXTERNAL"));
+    const QFileInfo target(requireFixture(actor ? "FORMAVIEW_PSK_TARGET" : "FORMAVIEW_ANIMATION_TARGET"));
+    const QFileInfo animation(requireFixture(actor ? "FORMAVIEW_PSK_PSA" : "FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!target.exists() || !animation.exists()) QSKIP("Set real PSK/PSA and FBX animation inputs");
     auto *session = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(session);
@@ -8845,6 +9062,11 @@ private slots:
     clickControl("modelWireframe");
     QTRY_VERIFY(!view->wireframeVisible());
     QCOMPARE(pixels(),staticSolid);
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void renderAnimatedTextureResidency() {
     struct Metrics { std::atomic<std::uint64_t> uploaded[6]{}; std::atomic<bool> restored{}; std::atomic<std::uint64_t> restoredUpload{}; };
@@ -8899,8 +9121,9 @@ private slots:
     renderer.reset(); window.hide(); window.releaseResources();
   }
   void modelReviewContracts() {
-    const QDir samples(qEnvironmentVariable("FORMAVIEW_REVIEW_SAMPLES"));
-    QVERIFY2(!qEnvironmentVariable("FORMAVIEW_REVIEW_SAMPLES").isEmpty(), "Set FORMAVIEW_REVIEW_SAMPLES");
+    try {
+    const QDir samples(requireFixture("FORMAVIEW_REVIEW_SAMPLES"));
+    QVERIFY2(!requireFixture("FORMAVIEW_REVIEW_SAMPLES").isEmpty(), "Set FORMAVIEW_REVIEW_SAMPLES");
     for (const auto &name : {QString("negative-scale.gltf"), QString("zero-scale.gltf")}) {
       const auto document = readModelDocument(samples.filePath(name), {});
       QVERIFY(document->animated());
@@ -8978,8 +9201,8 @@ private slots:
       skin.palette = {QVariantMap{{"bind", 2.0}}};
       QVERIFY(modelSourceDigest(data) != original);
     }
-    for (const auto &source : {qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"),
-                               qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL")}) {
+    for (const auto &source : {requireFixture("FORMAVIEW_ANIMATION_TARGET"),
+                               requireFixture("FORMAVIEW_ANIMATION_EXTERNAL")}) {
       QVERIFY(QFileInfo::exists(source));
       session.open(source);
       QTRY_VERIFY_WITH_TIMEOUT(!session.busy() && session.inspectable(), 30000);
@@ -9002,7 +9225,7 @@ private slots:
       session.clear();
       QVERIFY(session.compareResult().isEmpty() && session.compareError().isEmpty());
     }
-    const QDir edge(qEnvironmentVariable("FORMAVIEW_EDGE_SAMPLES_DIR"));
+    const QDir edge(requireFixture("FORMAVIEW_EDGE_SAMPLES_DIR"));
     session.open(edge.filePath("multi-skin.gltf"));
     QTRY_VERIFY_WITH_TIMEOUT(!session.busy() && session.frame(), 30000);
     session.selectMesh(0); session.classifyMesh("review", 0, false);
@@ -9029,15 +9252,21 @@ private slots:
     for (const auto &vertex : frame->vertices) centroid+=QVector3D(vertex.x,vertex.y,vertex.z)/3;
     session.pick(QMatrix4x4{},QPointF(centroid.x(),centroid.y()));
     QVERIFY2(!session.picked().isEmpty(),"Non-UV material edit must not leave the presented-state guard stale");
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelSkeletonCompareFlow() {
+    try {
     // M07 skeleton comparison product flow: background compare of the
     // current document against a chosen FBX with separate structure
     // verdict, merged difference rows and a differences-only filter.
     const auto current =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     const auto other =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!current.exists() || !other.exists()) {
       QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
       return;
@@ -9083,10 +9312,16 @@ private slots:
     QVERIFY(std::any_of(rows.cbegin(), rows.cend(), [](const QVariant &row) {
       return row.toMap().value("status").toString() == "matched";
     }));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13RealGltfEvidence() {
+    try {
     namespace tv=formaview::skeletal::transform;
-    const auto path=qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE");QVERIFY(QFileInfo::exists(path));
+    const auto path=requireFixture("FORMAVIEW_GLTF_ANIMATION_SAMPLE");QVERIFY(QFileInfo::exists(path));
     const auto document=readModelDocument(path,{});QVERIFY(document->transformEvidence);
     const auto e=document->transformEvidence({});
     QVERIFY(e.fullNodeDomain);QVERIFY(e.nativeSkinBindings.has_value());QVERIFY(!e.nativeSkinBindings->empty());
@@ -9109,9 +9344,15 @@ private slots:
     QCOMPARE(report.sourceNode,std::optional<std::size_t>{4});
     QVERIFY(!report.targetNode.has_value());
     qInfo()<<"R13 real glTF conservative rejection"<<outside<<"rotations; worst norm squared error"<<worstNorm;
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13MalformedDecoderEvidence() {
-    auto source=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
+    try {
+    auto source=readModelDocument(requireFixture("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
     QVERIFY(source->decoderSnapshot);
     for(int fault=0;fault<4;++fault){
       auto bad=std::make_shared<ModelDecoderSnapshot>(*source->decoderSnapshot);
@@ -9124,8 +9365,14 @@ private slots:
       bad->animations=data;
       QCOMPARE(compareFixedDecoder(bad,bad).value("verdict").toString(),QString("insufficient"));
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelGpuTickBacklog() {
+    try {
     // The legacy desktop suite deliberately selects CPU for its CPU oracles.
     // Scope this new GPU-specific contract without changing other cases.
     const bool hadSkinning=qEnvironmentVariableIsSet("FORMAVIEW_SKINNING");
@@ -9134,7 +9381,7 @@ private slots:
     qunsetenv("FORMAVIEW_SKINNING");
     // Real Anke, deterministic delivery boundary: render notifications can
     // accumulate during a native modal resize, without a new model pose.
-    const auto target=qEnvironmentVariable("FORMAVIEW_PSK_TARGET"),animation=qEnvironmentVariable("FORMAVIEW_PSK_PSA");
+    const auto target=requireFixture("FORMAVIEW_PSK_TARGET"),animation=requireFixture("FORMAVIEW_PSK_PSA");
     QVERIFY(QFileInfo::exists(target));QVERIFY(QFileInfo::exists(animation));
     ModelSession session;QQuickWindow first,second;
     const auto cleanup=qScopeGuard([&]{session.attachRenderWindow(nullptr);session.clear();first.hide();second.hide();first.releaseResources();second.releaseResources();});
@@ -9158,9 +9405,15 @@ private slots:
     QCOMPARE(changes.count(),0); // Paused playback must remain paused.
     session.togglePlay();changes.clear();burst(second,16);QCoreApplication::sendPostedEvents(&session,QEvent::MetaCall);
     QCOMPARE(changes.count(),1);QVERIFY(session.frameError().isEmpty());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelMorphStepEndpoint() {
-    const auto directory=qEnvironmentVariable("FORMAVIEW_R13_STEP");QVERIFY(!directory.isEmpty());
+    try {
+    const auto directory=requireFixture("FORMAVIEW_R13_STEP");QVERIFY(!directory.isEmpty());
     const auto document=readModelDocument(directory+"/step.gltf",{});
     QFile expected(directory+"/expected.json");QVERIFY(expected.open(QIODevice::ReadOnly));
     const auto last=QJsonDocument::fromJson(expected.readAll()).object().value("last").toArray();
@@ -9178,9 +9431,15 @@ private slots:
         const auto &actual=frame->vertices[corner];QVERIFY((p-QVector3D(actual.x,actual.y,actual.z)).length()<=1e-4f);
       }
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13MorphEvidence() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_MORPH");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_MORPH");QVERIFY(!dir.isEmpty());
     const auto original=readModelDocument(dir+"/morph-anim.gltf",{});
     QVERIFY(original->decoderSnapshot);
     QCOMPARE(compareFixedDecoder(original->decoderSnapshot,original->decoderSnapshot).value("verdict").toString(),QString("equivalent"));
@@ -9206,9 +9465,15 @@ private slots:
     auto rejected=load(unknown,"unknown");QVERIFY(rejected);QVERIFY(!rejected->decoderSnapshot);
     std::stop_source cancelled;cancelled.request_stop();
     QCOMPARE(compareFixedDecoder(original->decoderSnapshot,allowed->decoderSnapshot,cancelled.get_token()).value("verdict").toString(),QString("cancelled"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13ClipCorrespondence() {
-    const auto source=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
+    try {
+    const auto source=readModelDocument(requireFixture("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf",{});
     QVERIFY(source->decoderSnapshot);
     auto base=std::make_shared<ModelDecoderSnapshot>(*source->decoderSnapshot);
     auto data=std::make_shared<formaview::gltf::GltfAnimationData>(*base->animations);
@@ -9232,13 +9497,19 @@ private slots:
     shifted->clips[0].channels[0].values[0]-=.125;
     shifted->clips[0].channels[0].times[1]+=.25;
     QCOMPARE(compareFixedDecoder(base,target).value("curveCorrespondence").toMap().value("verdict").toString(),QString("insufficient"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
 
   void modelR13FixedDecoderCongruence() {
+    try {
     // A derived metadata-only envelope is a decoder control, not a second
     // independent asset or a format compatibility proof. Preserve the strict
     // rejection checked by modelR13RealGltfEvidence.
-    const auto path=qEnvironmentVariable("FORMAVIEW_GLTF_ANIMATION_SAMPLE");
+    const auto path=requireFixture("FORMAVIEW_GLTF_ANIMATION_SAMPLE");
     QFile input(path);QVERIFY(input.open(QIODevice::ReadOnly));
     auto rawEnvelope=input.readAll();auto envelope=QJsonDocument::fromJson(rawEnvelope).object();input.close();
     const auto originalGenerator=envelope.value("asset").toObject().value("generator").toString().toUtf8();
@@ -9276,7 +9547,7 @@ private slots:
     QCOMPARE(strict.reason,formaview::skeletal::transform::Reason::InvalidInput);
     qInfo()<<"P32 fixed decoder 120 clips / 360 poses /"<<matrices<<"exact matrices; format rejection unchanged";
     target.reset();
-    const auto reordered=readModelDocument(qEnvironmentVariable("FORMAVIEW_R13_REAL_REORDER"),{});
+    const auto reordered=readModelDocument(requireFixture("FORMAVIEW_R13_REAL_REORDER"),{});
     const auto reorderedProof=compareFixedDecoder(decoder,reordered->decoderSnapshot);
     QCOMPARE(reorderedProof.value("verdict").toString(),QString("equivalent"));
     QCOMPARE(reorderedProof.value("mapping").toString(),QString("fullNameBijection"));
@@ -9286,10 +9557,16 @@ private slots:
       for(std::size_t i=0;i<actual.size();++i)QVERIFY(actual[actual.size()-1-i]==probe.world[i]);}
     qInfo()<<"P34 real reordered 120 clips / 360 poses / 90000 exact mapped matrices";
 
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13FbxBindingEvidence() {
+    try {
     namespace tv=formaview::skeletal::transform;
-    const auto folder=qEnvironmentVariable("FORMAVIEW_R13_FBX");QVERIFY(!folder.isEmpty());
+    const auto folder=requireFixture("FORMAVIEW_R13_FBX");QVERIFY(!folder.isEmpty());
     for(int mode=0;mode<4;++mode) {
       const auto base=folder+"/inherit-"+QString::number(mode);
       const auto a=formaview::skeletal::FbxDocument::read(std::filesystem::path((base+"-a.fbx").toStdWString()));
@@ -9349,9 +9626,15 @@ private slots:
     QVERIFY(fault.value("witness").toString()=="bindPose"||fault.value("witness").toString()=="clusterLink");
     QFile faultProof(root_+"/r13-fbx-binding-fault.json");QVERIFY(faultProof.open(QIODevice::WriteOnly));
     faultProof.write(QJsonDocument::fromVariant(conflict).toJson());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderReordered() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
     const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/reordered.gltf",{});
     const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
     QCOMPARE(proof.value("verdict").toString(),QString("equivalent"));
@@ -9370,9 +9653,15 @@ private slots:
     session->compareSkeletonWith(dir+"/reordered.gltf");
     QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&!session->compareResult().isEmpty(),30000);
     QCOMPARE(session->compareResult().value("transformValidation").toMap().value("fixedDecoder").toMap().value("verdict").toString(),QString("equivalent"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderCommonCoverage() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
     const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/different.gltf",{});
     const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
     QCOMPARE(proof.value("verdict").toString(),QString("insufficient"));
@@ -9396,9 +9685,15 @@ private slots:
     std::stop_source stopped;stopped.request_stop();
     QCOMPARE(compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot,stopped.get_token()).value("verdict").toString(),QString("cancelled"));
 
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderExplicitMapping() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
     const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/reordered.gltf",{});
     const auto named=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
     QCOMPARE(named.value("verdict").toString(),QString("equivalent"));
@@ -9445,9 +9740,15 @@ private slots:
     QCOMPARE(compareFixedDecoder(amb->decoderSnapshot,amb->decoderSnapshot,{},swapped).value("verdict").toString(),QString("insufficient"));
     std::stop_source stopped;stopped.request_stop();
     QCOMPARE(compareFixedDecoder(a->decoderSnapshot,unnamed,stopped.get_token(),options).value("verdict").toString(),QString("cancelled"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderForcedOverrideDefaults() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
     const auto a=readModelDocument(dir+"/base.gltf",{}),b=readModelDocument(dir+"/bad-default.gltf",{});
     // bad-default differs only in the Joint translation default, and the sole clip overrides that exact group.
     const auto proof=compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot);
@@ -9508,6 +9809,11 @@ private slots:
     QVERIFY(!compareFixedDecoder(a->decoderSnapshot,a->decoderSnapshot).contains("forcedOverrideCoverage"));
     std::stop_source stopped;stopped.request_stop();
     QCOMPARE(compareFixedDecoder(a->decoderSnapshot,b->decoderSnapshot,stopped.get_token()).value("verdict").toString(),QString("cancelled"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderPressure() {
     namespace gl=formaview::gltf;
@@ -9575,7 +9881,8 @@ private slots:
     QCOMPARE(compareFixedDecoder(tiny,duplicate).value("verdict").toString(),QString("insufficient"));
   }
   void modelR13DecoderStalePublication() {
-    const auto dir=qEnvironmentVariable("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
+    try {
+    const auto dir=requireFixture("FORMAVIEW_R13_REORDER");QVERIFY(!dir.isEmpty());
     auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
     for(int round=0;round<9;++round) {
@@ -9601,12 +9908,18 @@ private slots:
     session->compareSkeletonWith(dir+"/reordered.gltf");
     QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&!session->compareResult().isEmpty(),30000);
     QCOMPARE(session->compareResult().value("transformValidation").toMap().value("fixedDecoder").toMap().value("verdict").toString(),QString("equivalent"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelFbxDialectOracle() {
+    try {
     // Autodesk FBX SDK 2020.2 EvaluateGlobalTransform is the oracle (p35-dialect). 48 chains:
     // 3 inheritance types x uniform/non-uniform root scale x plain/pivot+pre/post x +/- scale x 2 rotation orders.
-    const auto dir=qEnvironmentVariable("FORMAVIEW_FBX_DIALECT");QVERIFY(!dir.isEmpty());
-    const auto expanded=qEnvironmentVariable("FORMAVIEW_FBX_DIALECT_EXTRA").split(';',Qt::SkipEmptyParts);
+    const auto dir=requireFixture("FORMAVIEW_FBX_DIALECT");QVERIFY(!dir.isEmpty());
+    const auto expanded=requireFixture("FORMAVIEW_FBX_DIALECT_EXTRA").split(';',Qt::SkipEmptyParts);
     QCOMPARE(expanded.size(),qsizetype(3));
     QStringList dirs{dir};dirs.append(expanded);
     for(int domain=0;domain<dirs.size();++domain) {
@@ -9643,9 +9956,15 @@ private slots:
     QFile proof(root_+"/fbx-dialect-oracle-"+QString::number(domain)+".json");QVERIFY(proof.open(QIODevice::WriteOnly));proof.write(QJsonDocument(rows).toJson());proof.close();
     QCOMPARE(diverged,0);QCOMPARE(matched,worst.size());
     }
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13DecoderPublication() {
-    const auto file=qEnvironmentVariable("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf";
+    try {
+    const auto file=requireFixture("FORMAVIEW_R13_SAMPLES")+"/reach-a.gltf";
     auto *session=qobject_cast<ModelSession*>(desktop_->model());QVERIFY(session);
     const auto cleanup=qScopeGuard([&]{desktop_->clearAsset();});
     desktop_->openPath(file);
@@ -9677,10 +9996,16 @@ private slots:
     }
     QCOMPARE(compareFixedDecoder({},doc->decoderSnapshot).value("reason").toString(),QString("missingEvidence"));
 
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelR13FormatComparison() {
+    try {
     namespace tv=formaview::skeletal::transform;
-    const auto folder=qEnvironmentVariable("FORMAVIEW_R13_SAMPLES");
+    const auto folder=requireFixture("FORMAVIEW_R13_SAMPLES");
     QVERIFY(!folder.isEmpty());
     const auto file=folder+"/reach-a.gltf", other=folder+"/reach-b.gltf";
     QVERIFY(QFileInfo::exists(file));QVERIFY(QFileInfo::exists(other));
@@ -9735,10 +10060,16 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!session->compareBusy()&&(!session->compareResult().isEmpty()||!session->compareError().isEmpty()),30000);
     QVERIFY2(session->compareError().isEmpty(),qPrintable(session->compareError()));
     QCOMPARE(session->compareResult().value("applicabilityVerdict").toString(),QString("notApplicable"));
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelTransformEvidenceAdapters() {
+    try {
     namespace tv = formaview::skeletal::transform;
-    const auto current=qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET");
+    const auto current=requireFixture("FORMAVIEW_ANIMATION_TARGET");
     QVERIFY(QFileInfo::exists(current));
     const auto fbx=formaview::skeletal::FbxDocument::read(std::filesystem::path(current.toStdWString()));
     const auto f=fbx.transform_evidence();
@@ -9798,17 +10129,23 @@ private slots:
         {"gltfMainSha",a->hash},{"gltfEvidenceA",QString::fromStdString(ea.sha256)},
         {"gltfEvidenceB",QString::fromStdString(eb.sha256)},
         {"crossFileRealPositive",false}}).toJson());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelSkeletonCompareIdentityRule() {
+    try {
     // R13 conservative rule (CR04): identical source content is the only
     // sufficient transform-identity proof, so a self-compare must reach
     // directApplicable, and a structuralDirect compare against a different
     // file must remain structureOnly - never directApplicable on structure
     // alone.
     const auto current =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     const auto other =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!current.exists() || !other.exists()) {
       QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
       return;
@@ -9863,14 +10200,20 @@ private slots:
     QFile proof(root_+"/r13-comparison-proof.json"); QVERIFY(proof.open(QIODevice::WriteOnly));
     proof.write(QJsonDocument(QJsonObject{{"self",QJsonObject::fromVariantMap(self)},
                                         {"cross",QJsonObject::fromVariantMap(cross)}}).toJson());
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void modelSkeletonCompareTiming() {
+    try {
     // M07 budget: skeleton compare is P95 <= 200 ms once data is ready; parse
     // (worker), engine+rows (GUI thread) and end-to-end are recorded apart.
     const auto current =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_TARGET"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_TARGET"));
     const auto other =
-        QFileInfo(qEnvironmentVariable("FORMAVIEW_ANIMATION_EXTERNAL"));
+        QFileInfo(requireFixture("FORMAVIEW_ANIMATION_EXTERNAL"));
     if (!current.exists() || !other.exists()) {
       QSKIP("Set FORMAVIEW_ANIMATION_TARGET and FORMAVIEW_ANIMATION_EXTERNAL");
       return;
@@ -9920,6 +10263,11 @@ private slots:
         {"endToEnd", pack("endToEnd", totalMs)},
         {"boundary", "GUI-thread engine+rows excludes parsing; end-to-end includes it. Not input latency."}};
     QVERIFY2(p95(guiMs) <= 200.0, "Engine+rows P95 exceeds the 200 ms budget");
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
   }
   void screenCompatibility() {
     if (workflowHeadless()) QSKIP("Requires real Windows screens");
