@@ -118,8 +118,11 @@ int main() {
   check("static_matrix_conflict",validate(a,b,map).verdict==Verdict::Incompatible);
   b.sha256=a.sha256;(*b.nodes[0].restMatrix)[12]=1e-8;
   check("identity_matrix_translation_mismatch",reason(validate(a,b,map),Verdict::Incompatible,Reason::RestConflict));
+  check("identity_matrix_translation_diagnostic",validate(a,b,map).maxTranslationMetres>0);
   b.sha256=std::string(64,'b');
   check("cross_file_matrix_translation_tolerance",validate(a,b,map).verdict==Verdict::Compatible);
+  b.sha256=a.sha256;(*b.nodes[0].restMatrix)[12]=0;
+  check("identity_matching_matrix",reason(validate(a,b,map),Verdict::Compatible,Reason::Identity));
   a=fixture();b=fixture();a.format=b.format=Format::Gltf;
   a.nodes[0].restLocal.reset();a.nodes[0].restMatrix=identity();
   check("identity_mixed_equal_values_still_unproven",reason(validate(a,b,map),Verdict::Insufficient,Reason::MissingEvidence));

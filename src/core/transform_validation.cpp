@@ -128,8 +128,10 @@ Report validate(const Evidence &a,const Evidence &b,std::span<const Pair> mappin
       for(std::size_t i=0;i<16;++i) {
         const double delta=std::abs((*an.restMatrix)[i]-(*bn.restMatrix)[i]);
         if(!std::isfinite(delta))return invalid();
-        if(identical&&delta!=0)return result(Verdict::Incompatible,Reason::RestConflict);
-        if(i>=12&&i<15)out.maxTranslationMetres=std::max(out.maxTranslationMetres,delta*metres);
+        if(i>=12&&i<15) {
+          out.maxTranslationMetres=std::max(out.maxTranslationMetres,delta*metres);
+          if(identical&&delta!=0)return result(Verdict::Incompatible,Reason::RestConflict);
+        }
         else if(delta!=0)return result(Verdict::Incompatible,Reason::RestConflict);
       }
       if(out.maxTranslationMetres>policy.translationMetres)return result(Verdict::Incompatible,Reason::RestConflict);
