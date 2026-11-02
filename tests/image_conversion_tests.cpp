@@ -132,6 +132,48 @@ void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &
   } else std::cout << "SKIP external CMYK ICC: FORMAVIEW_TEST_CMYK_PROFILE is unset\n";
   std::cout << "PASS RGB/gray ICC output models, exact profile bytes and explicit metadata drop\n";
 }
+void dds_transfer_contract(const ImageSubresource &rgba, const std::filesystem::path &root) {
+  bool passed = true;
+  for (const auto format : {29U, 99U}) { // RGBA8_SRGB and BC7_SRGB.
+    ProfessionalEncodeOptions encoded;
+    encoded.target = ProfessionalTarget::Dds; encoded.dds_format = format;
+    encoded.alpha = AlphaMode::Straight; encoded.allow_lossy = true;
+    const auto sourcePath = root / ("srgb-" + std::to_string(format) + ".dds");
+    write(sourcePath, encode_professional(rgba, encoded));
+    const auto source = ImageDocument::open(sourcePath);
+    require(source.semantics(0).colour_space == "sRGB", "sRGB fixture tag missing");
+    ImageConversionOptions options;
+    options.target = ImageTarget::Dds;
+    for (const auto *name : {"R", "G", "B", "A"}) options.transform.channels.push_back({name, name});
+    options.transform.alpha_channel = "A"; options.transform.source_alpha = AlphaMode::Straight;
+    auto product = prepare_image_conversion(source, options);
+    const auto outputPath = root / ("srgb-auto-" + std::to_string(format) + ".dds");
+    write(outputPath, product.encoded);
+    const auto output = ImageDocument::open(outputPath);
+    const bool representable = source.decode(0).channels[0].samples.scalar == ScalarType::UInt8;
+    const bool valid = representable ? output.semantics(0).colour_space == "sRGB" && !loss(product, "transfer_tag")
+                                     : loss(product, "transfer_tag");
+    std::cout << "DDS sRGB source=" << format << " default preserves or reports=" << valid << '\n';
+    passed &= valid;
+    options.transform.output_scalar = ScalarType::UInt8;
+    options.transform.quantization = Quantization::ClampRound;
+    options.dds_format = 28; // Explicit non-sRGB RGBA8.
+    passed &= loss(prepare_image_conversion(source, options), "transfer_tag");
+    options.dds_format = 29;
+    passed &= !loss(prepare_image_conversion(source, options), "transfer_tag");
+    options.dds_format = 0;
+    for (const auto target : {ImageTarget::Tga, ImageTarget::Exr, ImageTarget::Hdr}) {
+      options.target = target;
+      options.transform.output_scalar = target == ImageTarget::Tga ? ScalarType::UInt8 : ScalarType::Float32;
+      if (target == ImageTarget::Hdr) {
+        options.transform.channels.pop_back(); options.transform.alpha_action = AlphaAction::Drop;
+        options.allow_lossy = true;
+      }
+      passed &= loss(prepare_image_conversion(source, options), "transfer_tag");
+    }
+  }
+  require(passed, "sRGB transfer tag silently lost");
+}
 void dds_alpha_contract(const ImageSubresource &rgba, const std::filesystem::path &root) {
   // Alpha presence follows the format and declaration, never its pixel values.
   for (const auto mode : {AlphaMode::Absent, AlphaMode::Straight,
@@ -292,6 +334,7 @@ void run(const std::filesystem::path &root) {
                                SampleEncoding::UNorm});
   }
   RasterEncodeOptions png;
+  dds_transfer_contract(source, root);
   dds_alpha_contract(source, root);
   png.alpha = AlphaMode::Straight;
   write(root / "source.png", encode_raster(source, png));

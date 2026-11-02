@@ -120,7 +120,19 @@ DXGI_FORMAT native_format(ScalarType type, SampleEncoding encoding,
     return DXGI_FORMAT_R8_UINT;
   invalid("Unsupported native DDS channel layout; transform explicitly");
 }
+DXGI_FORMAT dds_target(DXGI_FORMAT native, const ProfessionalEncodeOptions &options) {
+  if (options.dds_format) return static_cast<DXGI_FORMAT>(options.dds_format);
+  return options.srgb ? DirectX::MakeSRGB(native) : native;
+}
 } // namespace
+bool professional_preserves_srgb(const ImageSubresource &image,
+                                  const ProfessionalEncodeOptions &options) {
+  if (options.target != ProfessionalTarget::Dds || image.channels.empty()) return false;
+  const auto &first = image.channels.front();
+  const auto count = image.channels.size() == 3 && first.samples.scalar != ScalarType::Float32
+                         ? 4 : image.channels.size();
+  return DirectX::IsSRGB(dds_target(native_format(first.samples.scalar, first.encoding, count), options));
+}
 std::vector<std::byte> encode_professional(const ImageSubresource &s,
                                            const ProfessionalEncodeOptions &o,
                                            Limits limits,
@@ -277,8 +289,7 @@ std::vector<std::byte> encode_professional(const ImageSubresource &s,
     hr(DirectX::SaveToTGAMemory(*dest, DirectX::TGA_FLAGS_NONE, blob,
                                 &metadata));
   else {
-    const auto target =
-        o.dds_format ? static_cast<DXGI_FORMAT>(o.dds_format) : format;
+    const auto target = dds_target(format, o);
     DirectX::ScratchImage compressed;
     if (DirectX::IsCompressed(target)) {
       if (!o.allow_lossy)

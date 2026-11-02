@@ -264,7 +264,12 @@ prepare_image_conversion(const ImageDocument &document,
     o.allow_lossy = options.allow_lossy;
     o.alpha = alpha;
     o.dds_format = options.dds_format;
+    o.srgb = transform_options.transfer == Transfer::LinearToSrgb ||
+             (transform_options.transfer == Transfer::Preserve &&
+              document.semantics(options.subresource).colour_space == "sRGB");
     o.exr_tiled = options.exr_tiled;
+    if (o.srgb && !professional_preserves_srgb(image, o))
+      loss("transfer_tag", "The output cannot retain the sRGB transfer tag; encoded sample values are retained");
     if (o.target == ProfessionalTarget::Hdr)
       loss("lossy_codec", "RGBE shared-exponent quantization");
     if (o.target == ProfessionalTarget::Dds &&

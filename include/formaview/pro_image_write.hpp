@@ -10,7 +10,11 @@ struct ProfessionalEncodeOptions {
   // 0 preserves a supported native layout; otherwise an explicit DXGI encoding.
   std::uint32_t dds_format{};
   AlphaMode alpha{AlphaMode::Unknown};
+  // Transfer tag only; no implicit pixel transform or quantization.
+  bool srgb{};
 };
+[[nodiscard]] bool professional_preserves_srgb(const ImageSubresource &,
+                                               const ProfessionalEncodeOptions &);
 // Single explicitly selected 2D subresource. Cubemap/array assembly is not
 // implicit. OpenEXR retains named channels and data/display windows.
 [[nodiscard]] std::vector<std::byte>
