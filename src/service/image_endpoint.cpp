@@ -45,22 +45,43 @@ struct ImageEndpoint::Impl {
     if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
     auto result = grouped ? groups->request(request, stop) : QJsonObject{};
     if (operation != "list_jobs" && operation != "get_job" && operation != "get_plan") return result;
-    QJsonArray all;
-    if (operation == "list_jobs") {
-      auto page = request; page["offset"] = 0; page["limit"] = 100;
-      do {
-        result = service->request(page, stop);
-        if (result.contains("error")) return result;
-        for (const auto &row : result["items"].toArray()) all.append(row);
-        page["offset"] = result["next_offset"];
-      } while (!result["next_offset"].isNull());
-      for (const auto &row : groups->request(request, stop)["items"].toArray()) all.append(row);
-    } else all = result["items"].toArray();
+    if (result.contains("error")) return result;
     const auto offset = request.value("offset").toDouble(0), limit = request.value("limit").toDouble(100);
     if ((request.contains("offset") && !request["offset"].isDouble()) ||
         (request.contains("limit") && !request["limit"].isDouble()) ||
-        !std::isfinite(offset) || !std::isfinite(limit) || offset < 0 || offset > all.size() ||
+        !std::isfinite(offset) || !std::isfinite(limit) || offset < 0 ||
         limit < 1 || limit > 100 || std::floor(offset) != offset || std::floor(limit) != limit)
+      return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument, "Invalid result page"));
+    QJsonArray all;
+    if (operation == "list_jobs") {
+      auto page = request; page["offset"] = 0; page["limit"] = 1;
+      result = service->request(page, stop);
+      if (result.contains("error")) return result;
+      const auto groupedResult = groups->request(request, stop);
+      if (groupedResult.contains("error")) return groupedResult;
+      const auto groupItems = groupedResult["items"].toArray();
+      auto ordinaryCount = result["total"].toInteger();
+      auto total = ordinaryCount + groupItems.size();
+      if (offset > total)
+        return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument, "Invalid result page"));
+      const auto start = static_cast<qint64>(offset);
+      if (start < ordinaryCount) {
+        page["offset"] = start; page["limit"] = static_cast<int>(limit);
+        const auto ordinary = service->request(page, stop);
+        if (ordinary.contains("error")) return ordinary;
+        ordinaryCount = ordinary["total"].toInteger();
+        total = ordinaryCount + groupItems.size();
+        for (const auto &row : ordinary["items"].toArray()) all.append(row);
+      }
+      for (auto i = std::max<qint64>(0, start - ordinaryCount);
+           i < groupItems.size() && all.size() < limit; ++i)
+        all.append(groupItems[i]);
+      const auto end = start + all.size();
+      result["items"] = all; result["total"] = total;
+      result["next_offset"] = end < total ? QJsonValue(end) : QJsonValue(QJsonValue::Null);
+      return result;
+    } else all = result["items"].toArray();
+    if (offset > all.size())
       return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument, "Invalid result page"));
     QJsonArray page;
     const auto end = std::min(all.size(), static_cast<qsizetype>(offset + limit));

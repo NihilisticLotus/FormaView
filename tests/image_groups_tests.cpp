@@ -417,6 +417,14 @@ void directExport(const QString &root) {
             "Invalid-version cancellation must not affect a grouped job");
     {
       require(QDir().mkpath(root + "/endpoint-service"), "Create isolated endpoint journal");
+      for (int i = 0; i < 3; ++i) {
+        const auto recordId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QFile record(root + "/endpoint-service/" + recordId + ".json");
+        require(record.open(QIODevice::WriteOnly), "Create synthetic history record");
+        const QJsonObject history{{"version", 1}, {"id", recordId}, {"kind", "job"},
+                                  {"state", "succeeded"}, {"plan_id", "synthetic"}, {"items", QJsonArray{}}};
+        require(record.write(QJsonDocument(history).toJson(QJsonDocument::Compact)) > 0, "Write synthetic history record");
+      }
       auto service = std::make_shared<ImageBatchService>(scope(root), std::filesystem::path((root + "/endpoint-service").toStdWString()));
       auto sharedGroups = std::shared_ptr<ImageTaskGroups>(&groups, [](ImageTaskGroups *) {});
       const auto endpointName = "formaview-version-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -435,6 +443,21 @@ void directExport(const QString &root) {
         require(socket.canReadLine(), "Endpoint response timed out");
         return QJsonDocument::fromJson(socket.readLine()).object();
       };
+      QJsonArray expected;
+      for (const auto &row : checked(service->request(query("list_jobs")))["items"].toArray()) expected.append(row);
+      for (const auto &row : checked(groups.request(query("list_jobs")))["items"].toArray()) expected.append(row);
+      for (const auto offset : {0, 2, 3, static_cast<int>(expected.size()) - 1, static_cast<int>(expected.size())}) {
+        auto listing = query("list_jobs"); listing["offset"] = offset; listing["limit"] = 2;
+        const auto actual = checked(requestOverPipe(listing));
+        const auto pageItems = actual["items"].toArray();
+        const auto count = std::min<int>(2, static_cast<int>(expected.size()) - offset);
+        require(actual["total"].toInt() == expected.size() && pageItems.size() == count, "Merged history page size");
+        for (int i = 0; i < count; ++i)
+          require(pageItems[i].toObject()["id"] == expected[offset+i].toObject()["id"], "Merged history page order");
+        const auto next = offset + count;
+        require(next < expected.size() ? actual["next_offset"].toInt(-1) == next : actual["next_offset"].isNull(),
+                "Merged history next offset");
+      }
       auto invalidPipe = query("get_job", id); invalidPipe["version"] = 2;
       require(requestOverPipe(invalidPipe)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject unsupported versions for grouped jobs");
