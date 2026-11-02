@@ -7101,13 +7101,22 @@ private slots:
     auto *paneLoader=window_->findChild<QQuickItem *>("modelPaneLoader");
     auto *inspectorLoader=window_->findChild<QQuickItem *>("modelInspectorLoader");
     QVERIFY(paneLoader && inspectorLoader);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    const auto filesVisible = workspace->property("filesVisible").toBool();
     QQmlIncubationController controlled;
     auto *original=engine_->incubationController();
-    engine_->setIncubationController(&controlled);
+    QVERIFY(original);
     const auto restore=qScopeGuard([&]{
       desktop_->clearAsset();
       engine_->setIncubationController(original);
+      workspace->setProperty("filesVisible", filesVisible);
     });
+    workspace->setProperty("filesVisible", false);
+    // This controller gates model panels only. Let unrelated file delegates
+    // from the preceding directory navigation finish before taking it over.
+    QTRY_COMPARE(original->incubatingObjectCount(), 0);
+    engine_->setIncubationController(&controlled);
     const QString compactModel=(requireFixture("FORMAVIEW_PSK_FIXTURES") + "/Suzanne.psk");
     desktop_->openPath(compactModel);
     QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),30000);
