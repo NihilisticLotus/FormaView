@@ -1921,7 +1921,9 @@ bool ModelSession::refreshGpuFrame() {
     if (document_->pairPreviewDomain()) frames_.uv=frames_.model;
     frame_=frames_.mode==1?frames_.uv:frames_.model;
     renderedState_=state; renderedState_.clip=clipIndex_; renderedState_.time=time_;
-    preparing_=false; frameError_.clear(); emit frameChanged();
+    preparing_=false;
+    if (!std::exchange(frameError_, {}).isEmpty()) emit changed();
+    emit frameChanged();
   } catch (const std::exception &e) {
     frameError_=QString::fromUtf8(e.what()); playing_=false; animTimer_.stop(); emit changed(); emit animChanged();
   }
@@ -1966,10 +1968,10 @@ void ModelSession::finishAsyncFrame() {
         renderedState_.material=material_;
         renderedState_.materialOnly=materialOnly_;
       }
-      frameError_.clear();
+      const bool clearedError = !std::exchange(frameError_, {}).isEmpty();
       const bool wasPreparing = std::exchange(preparing_, false);
       emit frameChanged();
-      if (wasPreparing) emit changed();
+      if (wasPreparing || clearedError) emit changed();
     }
   } catch (const std::exception &e) {
     if (asyncFrame_->generation == generation_ &&
@@ -2097,12 +2099,13 @@ void ModelSession::refreshAnimationFrame() {
     frame_ = frame;
     renderedState_.clip = clipIndex_;
     renderedState_.time = time_;
-    frameError_.clear();
+    if (!std::exchange(frameError_, {}).isEmpty()) emit changed();
     emit frameChanged();
   } catch (const std::exception &e) {
     frameError_ = QString::fromUtf8(e.what());
     playing_ = false;
     animTimer_.stop();
+    emit animChanged();
     emit changed();
   }
 }

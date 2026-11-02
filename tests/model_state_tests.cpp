@@ -16,6 +16,36 @@
 
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  if (app.arguments().size() == 4 && app.arguments()[1] == "--frame-notify") {
+    try {
+      ModelSession session;
+      const auto waitFor = [&](auto done) {
+        QElapsedTimer deadline; deadline.start();
+        while (!done() && deadline.elapsed() < 30000) {
+          QCoreApplication::processEvents(); QThread::msleep(1);
+        }
+        if (!done()) throw std::runtime_error("Frame notification fixture timeout");
+      };
+      if (app.arguments()[3] == "gpu") session.enableGpuSkinning(true);
+      session.open(app.arguments()[2]);
+      waitFor([&] { return session.inspectable() && session.frame() && session.animated(); });
+      session.seek(.1);
+      waitFor([&] { return session.renderedStateCurrent(); });
+      session.renderingFailed("notification recovery probe", session.frame());
+      if (session.frameError().isEmpty()) throw std::runtime_error("Error probe did not reach the published frame");
+      int clearedNotifications = 0;
+      QObject::connect(&session, &ModelSession::changed, &session, [&] {
+        if (session.frameError().isEmpty()) ++clearedNotifications;
+      });
+      session.seek(.2);
+      waitFor([&] { return session.frameError().isEmpty(); });
+      if (!clearedNotifications) throw std::runtime_error("frameError cleared without its changed notification");
+      std::cout << "PASS frameError recovery notification " << app.arguments()[3].toStdString() << '\n';
+      return 0;
+    } catch (const std::exception &error) {
+      std::cerr << error.what() << '\n'; return 1;
+    }
+  }
   if (app.arguments().size() == 2 && app.arguments()[1] == "--uv-budget") {
     try {
       ModelDocument document;
