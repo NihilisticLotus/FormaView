@@ -659,6 +659,9 @@ FileCommit OutputTransaction::commit(
     if (before_rename)
       before_rename({p.temp, target, identity(info(p.file, false))});
     cancel(stop);
+    // The durable-intent callback can take time; reject an input alias that
+    // appeared while it ran before attempting to replace the destination.
+    check_target(target, p.input, p.protected_inputs);
     // Automatic cleanup starts at CreateFile, before any journal exists.
     // Clear it only after the durable intent callback succeeds. Unsupported
     // filesystems fail closed; the handle still reclaims the temporary.

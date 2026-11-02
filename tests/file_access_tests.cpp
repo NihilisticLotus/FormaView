@@ -259,6 +259,20 @@ void run(const std::filesystem::path &root) {
     }
     scope.allow_overwrite = true;
     {
+      const auto raced = output / "late-source-alias.bin";
+      OutputTransaction t(scope, raced, snapshot, ConflictPolicy::Overwrite);
+      t.write(bytes("replacement"));
+      bool rejected = false;
+      try {
+        (void)t.commit({}, [&](const OutputIntent &) {
+          require(CreateHardLinkW(raced.c_str(), (input / L"原图.bin").c_str(), nullptr) != FALSE,
+                  "Create late source hardlink");
+        });
+      } catch (const skeletal::Failure &) { rejected = true; }
+      require(rejected && read(raced) == "source" && read(input / L"原图.bin") == "source",
+              "Late hardlink must not be replaced");
+    }
+    {
       OutputTransaction t(scope, output / "existing.bin", snapshot,
                           ConflictPolicy::Overwrite);
       t.write(bytes("replacement"));
