@@ -6024,6 +6024,14 @@ private slots:
          "excludes idle wait; nested events may overlap"}};
     evidence_["slow_event_diagnostics"] = measured->slowEvents;
     evidence_["gpu_before_release"] = gpuMemory();
+    // Preserve latency evidence even if a later GUI case crashes.
+    QFile nativeReport(root_ + "/native-input-measurement.json");
+    QVERIFY(nativeReport.open(QIODevice::WriteOnly));
+    nativeReport.write(QJsonDocument(QJsonObject{
+        {"native_input", evidence_["native_input"]},
+        {"main_thread_events", evidence_["main_thread_events"]},
+        {"slow_events", measured->slowEvents}}).toJson());
+    nativeReport.close();
     // Preserve measured failures; ordinary hardware is not represented by this
     // host.
     QVERIFY2(percentile(.95) <= 50, "Native input P95 exceeds 50ms");

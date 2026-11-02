@@ -186,7 +186,26 @@ Rectangle {
             ColumnLayout {
                 anchors.centerIn: parent; width: Math.min(stage.width-40,480)
                 visible: root.session.busy || root.session.preparing || !!root.session.error || !!root.session.frameError
-                BusyIndicator { Layout.alignment: Qt.AlignHCenter; running: root.session.busy || root.session.preparing; visible: running }
+                BusyIndicator {
+                    id: modelBusyIndicator
+                    Layout.alignment: Qt.AlignHCenter
+                    readonly property bool loading: root.session.busy || root.session.preparing
+                    property bool delayElapsed: false
+                    onLoadingChanged: if (!loading) delayElapsed = false
+                    // Keep status text and cancellation immediate; short reads
+                    // need no spinner or render-thread animation between keys.
+                    running: loading && delayElapsed
+                    visible: modelBusyIndicator.running
+                    Timer {
+                        interval: 150
+                        running: modelBusyIndicator.loading
+                        onTriggered: modelBusyIndicator.delayElapsed = true
+                    }
+                    // Stop the Basic style's animation when loading ends,
+                    // including its otherwise hidden opacity fade.
+                    contentItem.visible: modelBusyIndicator.running
+                    contentItem.opacity: 1
+                }
                 ExplainedText { objectName: "modelErrorExplained"; Layout.fillWidth: true; kind: "error"; raw: root.session.error || root.session.frameError }
                 Label { visible: !root.session.error && !root.session.frameError; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; color: Theme.text; text: (root.session.preparing ? Theme.t("正在准备视图 · 旧画面仅供参考，精确检查暂缓", "Preparing view · previous frame is reference only; exact inspection paused", "正在準備視圖 · 舊畫面僅供參考，精確檢查暫緩") : Theme.t("正在读取模型…", "Reading model…", "正在讀取模型…")) }
                 RowLayout {
