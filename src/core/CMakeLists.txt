@@ -9,7 +9,7 @@ if(WIN32)
     target_link_libraries(formaview_core PRIVATE ole32 advapi32 bcrypt)
 endif()
 
-# R13 evidence kernel is not linked into the host until adapters are accepted.
+# Model-enabled host builds link this evidence kernel through formaview_models.
 add_library(formaview_transform_validation STATIC transform_validation.cpp)
 target_include_directories(formaview_transform_validation PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(formaview_transform_validation PUBLIC cxx_std_20)
