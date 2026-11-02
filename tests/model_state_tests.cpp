@@ -16,6 +16,36 @@
 
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  if (app.arguments().size() == 3 && app.arguments()[1] == "--morph-range") {
+    try {
+      auto document = readModelDocument(app.arguments()[2], {});
+      if (!document->gpuSkinDomain() || !document->morphWeightsAt || document->meshes.empty())
+        throw std::runtime_error("Morph regression needs an animated mesh fixture");
+      auto &targets = document->meshes.front().morphTargets;
+      targets.resize(65535);
+      ModelRenderState state;
+      state.bindings.assign(document->meshes.size(), -1);
+      state.uvs.assign(document->meshes.size(), 0);
+      const auto boundary = buildModelGpuGeometry(*document, state, 1, {});
+      const auto &ranges = boundary->frames.model->skin->morphRanges;
+      if (ranges.empty() || (ranges.front()[1] & 65535u) != 65535u)
+        throw std::runtime_error("Representable morph count was not retained");
+      targets.resize(65536);
+      bool rejected = false;
+      try { (void)buildModelGpuGeometry(*document, state, 2, {}); }
+      catch (const std::runtime_error &error) {
+        if (std::string(error.what()).find("GPU morph packed range") == std::string::npos) throw;
+        rejected = true;
+      }
+      if (!rejected) throw std::runtime_error("65536 morph targets silently wrapped the packed range");
+      if (!buildModelFrames(*document, state, 3, {}).model)
+        throw std::runtime_error("CPU frame unavailable after GPU range rejection");
+      std::cout << "PASS morph 65535 boundary, 65536 rejection and CPU frame\n";
+      return 0;
+    } catch (const std::exception &error) {
+      std::cerr << error.what() << '\n'; return 1;
+    }
+  }
   if (app.arguments().size() == 4 && app.arguments()[1] == "--frame-notify") {
     try {
       ModelSession session;

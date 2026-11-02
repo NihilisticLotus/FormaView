@@ -94,6 +94,13 @@ std::shared_ptr<const ModelGpuGeometry> buildModelGpuGeometry(
   if (d.pairPreviewDomain()) return buildPairPreview(d,revision,stop);
   if (!d.gpuSkinDomain())
     throw std::runtime_error("GPU skinning requires a mesh-cluster animation domain");
+  if (d.morphWeightsAt) {
+    for (std::size_t mi = 0; mi < d.meshes.size(); ++mi) {
+      const auto targets = d.meshes[mi].morphTargets.size();
+      if (targets && (mi >= 65536 || targets >= 65536))
+        throw std::runtime_error("GPU morph packed range exceeded; CPU preview retained");
+    }
+  }
   auto out=std::make_shared<ModelGpuGeometry>();
   // Plain mode-0 view: keep every mesh resident (visibility/isolation/LOD select
   // draws) unless that would not fit the vertex budget; then build as asked.
