@@ -8,7 +8,6 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLockFile>
@@ -25,16 +24,13 @@ namespace formaview::imaging {
 namespace {
 [[noreturn]] void fail(ErrorCode c, const char *m) { throw skeletal::Failure(c, m); }
 [[noreturn]] void failInventory(const QJsonObject &error) {
-  // Inventory has already classified the rejection. Retain that classification
-  // when the persisted dependency guard rejects the whole group.
-  static const QHash<QString, ErrorCode> codes{
-      {"unsupported", ErrorCode::Unsupported}, {"invalid_argument", ErrorCode::InvalidArgument},
-      {"queue_full", ErrorCode::QueueFull}, {"resource_limit", ErrorCode::ResourceLimit},
-      {"shutting_down", ErrorCode::ShuttingDown}, {"cancelled", ErrorCode::Cancelled},
-      {"stale_result", ErrorCode::StaleResult}, {"input_changed", ErrorCode::InputChanged},
-      {"out_of_scope", ErrorCode::OutOfScope}, {"conflict", ErrorCode::Conflict},
-      {"io", ErrorCode::Io}, {"internal", ErrorCode::Internal}};
-  skeletal::Failure failure(codes.value(error["code"].toString(), ErrorCode::Internal),
+  // Authorization and budget failures retain their classification. Other
+  // incomplete inventories (including an explicitly missing companion) keep
+  // the existing invalid-argument contract and still require fresh preflight.
+  const auto name = error["code"].toString();
+  const auto code = name == "out_of_scope" ? ErrorCode::OutOfScope
+      : name == "resource_limit" ? ErrorCode::ResourceLimit : ErrorCode::InvalidArgument;
+  skeletal::Failure failure(code,
       ("Source dependency inventory incomplete; retry preflight: " + error["message"].toString()).toStdString());
   failure.error.retryable = error["retryable"].toBool();
   const auto details = error["details"].toObject();
