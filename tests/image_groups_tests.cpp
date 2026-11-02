@@ -13,6 +13,7 @@
 #include <iostream>
 #include <set>
 #include <thread>
+#include <windows.h>
 using namespace formaview;
 using namespace formaview::imaging;
 namespace {
@@ -82,6 +83,34 @@ QJsonArray requests(const QString &root, int count, const QString &prefix) {
 }
 AccessScope scope(const QString &root) {
   return {{std::filesystem::path(root.toStdWString())}, {std::filesystem::path(root.toStdWString())}, true, "groups-test-v1"};
+}
+void unrelatedJournal(const QString &root) {
+  require(QDir().mkpath(root), "Create unrelated journal fixture");
+  QFile sentinel(root + "/unrelated.txt");
+  if (!sentinel.exists()) {
+    require(sentinel.open(QIODevice::WriteOnly | QIODevice::NewOnly) && sentinel.write("preserve") == 8,
+            "Create unrelated journal sentinel");
+    sentinel.close();
+  }
+  const auto security = [&] {
+    DWORD size = 0;
+    const auto path = root.toStdWString();
+    (void)GetFileSecurityW(path.c_str(), DACL_SECURITY_INFORMATION, nullptr, 0, &size);
+    require(size != 0, "Get journal ACL size");
+    std::vector<std::byte> data(size);
+    require(GetFileSecurityW(path.c_str(), DACL_SECURITY_INFORMATION,
+                             data.data(), size, &size) != FALSE,
+            "Read journal ACL");
+    return data;
+  };
+  const auto originalSecurity = security();
+  bool rejected = false;
+  try { ImageTaskGroups groups(scope(root), std::filesystem::path(root.toStdWString())); }
+  catch (const skeletal::Failure &e) { rejected = e.error.code == ErrorCode::InvalidArgument; }
+  require(rejected, "Group journal with unrelated file was not rejected");
+  require(security() == originalSecurity, "Unrelated journal ACL changed");
+  require(sentinel.open(QIODevice::ReadOnly) && sentinel.readAll().startsWith("preserve"),
+          "Unrelated journal sentinel changed");
 }
 void failedRecovery(const QString &root) {
   require(!QFileInfo::exists(root) && QDir().mkpath(root + "/groups"), "Create isolated recovery root");
@@ -561,6 +590,10 @@ void directExport(const QString &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 3 && app.arguments()[1] == "--unrelated-journal") {
+      unrelatedJournal(app.arguments()[2]);
+      return 0;
+    }
     if (argc == 3 && app.arguments()[1] == "--request-file") {
       QFile file(app.arguments()[2]); require(file.open(QIODevice::ReadOnly), "Open real regression requests");
       const auto config = QJsonDocument::fromJson(file.readAll()).object();
@@ -594,6 +627,7 @@ int main(int argc, char **argv) {
     QDir().mkpath(QString::fromLocal8Bit(argv[1]));
     QTemporaryDir temp(QString::fromLocal8Bit(argv[1]) + "/groups-XXXXXX");
     require(temp.isValid(), "Create temporary fixtures"); temp.setAutoRemove(false);
+    unrelatedJournal(temp.path() + "/unrelated-journal");
     std::cout << "ROOT " << temp.path().toStdString() << std::endl; run(temp.path());
     failedRecovery(temp.path() + "/failed-recovery");
     cancelledRecovery(temp.path() + "/cancelled-recovery");

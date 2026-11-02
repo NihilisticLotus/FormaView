@@ -71,7 +71,7 @@ struct ImageTaskGroups::Impl {
   };
   AccessScope scope;
   QString directory;
-  PrivateDirectory protection;
+  std::optional<PrivateDirectory> protection;
   QLockFile owner;
   mutable std::mutex state;
   std::mutex mutation;
@@ -81,8 +81,21 @@ struct ImageTaskGroups::Impl {
 
   Impl(AccessScope s, std::filesystem::path dir)
       : scope(std::move(s)), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
-        protection(PrivateDirectory::open(dir)),
         owner(QStringLiteral("\\\\?\\") + QDir::toNativeSeparators(QDir::cleanPath(directory + "/groups.lock"))) {
+    // Do not change ACLs on a directory containing unrelated user data.
+    // Group state consists only of the lock and UUID-named directories.
+    (void)validated_local_path(dir);
+    if (!QDir(directory).exists()) fail(ErrorCode::Io, "Conversion group journal directory must exist");
+    const auto entries = QDir(directory).entryInfoList(
+        QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+    for (const auto &entry : entries) {
+      const auto name = entry.fileName();
+      if (entry.isSymLink() ||
+          !((name == "groups.lock" && entry.isFile()) ||
+            (entry.isDir() && !QUuid(name).isNull())))
+        fail(ErrorCode::InvalidArgument, "Conversion group journal contains unrelated entries");
+    }
+    protection.emplace(PrivateDirectory::open(dir));
     owner.setStaleLockTime(0);
     if (!owner.tryLock()) fail(ErrorCode::Conflict, "Conversion groups already have an owner");
     const auto dirs = QDir(directory).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
