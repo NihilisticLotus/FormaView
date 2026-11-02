@@ -519,6 +519,30 @@ void run(const std::filesystem::path &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (app.arguments().size() == 3 && app.arguments()[1] == "--shutdown-items") {
+      const std::filesystem::path root(app.arguments()[2].toStdWString());
+      require(!std::filesystem::exists(root), "Shutdown fixture must be new");
+      std::filesystem::create_directories(root / "journal");
+      ImageAdmission held(false);
+      QString queuedId;
+      {
+        ImageBatchService service(scope(root), root / "journal");
+        const auto first = call(service, {{"operation", "create_plan"}, {"items", QJsonArray{item(root)}}});
+        require(first.contains("plan_id"), "Create blocking plan");
+        const auto queued = call(service, {{"operation", "create_plan"}, {"items", QJsonArray{item(root)}}});
+        queuedId = queued["plan_id"].toString();
+        require(!queuedId.isEmpty(), "Create queued plan");
+      }
+      QFile file(qp(root / "journal" / (queuedId + ".json").toStdWString()));
+      require(file.open(QIODevice::ReadOnly), "Read shutdown journal before reopening service");
+      const auto saved = QJsonDocument::fromJson(file.readAll()).object();
+      require(saved["state"] == "interrupted", "Queued plan must be interrupted at shutdown");
+      require(saved["items"].toArray()[0].toObject()["status"] == "interrupted", "Shutdown retained pending item in terminal plan");
+      require(!saved["recovery_note"].toString().isEmpty(), "Shutdown must explain interrupted work");
+      require(!std::filesystem::exists(root / "output.tiff"), "Shutdown must not produce outputs");
+      std::cout << "PASS shutdown persists interrupted items and recovery note before restart\n";
+      return 0;
+    }
     if (app.arguments().size() == 3 && app.arguments()[1] == "--non-local-journals") {
       nonlocal_journals(std::filesystem::path(app.arguments()[2].toStdWString()));
       return 0;

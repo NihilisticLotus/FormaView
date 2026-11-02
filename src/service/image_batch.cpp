@@ -296,6 +296,20 @@ struct ImageBatchService::Impl {
         auto data = copy(record);
         if (active(data["state"].toString())) {
           data["state"] = "interrupted";
+          data["recovery_note"] = "Service stopped before terminal journal "
+                                  "record. Committed item records are retained; "
+                                  "unfinished items are not automatically rerun.";
+          auto items = data["items"].toArray();
+          for (qsizetype i = 0; i < items.size(); ++i) {
+            auto item = items[i].toObject();
+            if (item["status"] == "pending" || item["status"] == "running") {
+              item["status"] = "interrupted";
+              item["outcome_uncertain"] = true;
+              reconcile(item);
+              items[i] = item;
+            }
+          }
+          data["items"] = items;
           publish(record, data);
         }
       }
