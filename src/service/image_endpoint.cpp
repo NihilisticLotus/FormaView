@@ -43,6 +43,10 @@ struct ImageEndpoint::Impl {
     const auto id = request.value("plan_id").toString(request.value("id").toString());
     const bool grouped = groups && groups->contains(id);
     if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
+    if (grouped && !QStringList{"get_plan", "get_job", "list_jobs", "cancel",
+                                "submit", "retry_plan", "pause", "resume"}.contains(operation))
+      return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument,
+                                                "Operation is not available through the grouped endpoint"));
     auto result = grouped ? groups->request(request, stop) : QJsonObject{};
     if (operation != "list_jobs" && operation != "get_job" && operation != "get_plan") return result;
     if (result.contains("error")) return result;

@@ -84,6 +84,60 @@ QJsonArray requests(const QString &root, int count, const QString &prefix) {
 AccessScope scope(const QString &root) {
   return {{std::filesystem::path(root.toStdWString())}, {std::filesystem::path(root.toStdWString())}, true, "groups-test-v1"};
 }
+void endpointBoundary(const QString &root) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root), "Create endpoint boundary root");
+  fixture(root + "/source.tga");
+  require(QDir().mkpath(root + "/groups") && QDir().mkpath(root + "/service"), "Create boundary journals");
+  auto groups = std::make_shared<ImageTaskGroups>(scope(root), std::filesystem::path((root + "/groups").toStdWString()));
+  auto service = std::make_shared<ImageBatchService>(scope(root), std::filesystem::path((root + "/service").toStdWString()));
+  const auto name = "formaview-boundary-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+  ImageEndpoint endpoint(service, name, nullptr, groups);
+  const auto send = [&](const QJsonObject &request) {
+    QLocalSocket socket;
+    socket.connectToServer(name);
+    require(socket.waitForConnected(5000), "Connect boundary endpoint");
+    socket.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n'); socket.flush();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!socket.canReadLine() && std::chrono::steady_clock::now() < deadline) {
+      QCoreApplication::processEvents();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(socket.canReadLine(), "Boundary endpoint timed out");
+    return QJsonDocument::fromJson(socket.readLine()).object();
+  };
+  const auto plan = start(*groups, requests(root, 1, "approved-"));
+  const auto planId = plan["id"].toString();
+  const auto jobId = checked(send(submission(plan)))["job_id"].toString();
+  require(wait(*groups, "get_job", jobId)["state"] == "succeeded", "Approved endpoint submit succeeds");
+  bool rejected = true;
+  int attempt = 0;
+  for (const auto *operation : {"create_job", "create_plan"}) {
+    for (const auto &id : {planId, jobId}) {
+      for (const auto *key : {"id", "plan_id"}) {
+        auto request = query(operation); request[key] = id;
+        request["items"] = requests(root, 1, "forbidden-" + QString::number(++attempt) + '-');
+        const auto response = send(request);
+        const bool denied = response["error"].toObject()["code"] == "invalid_argument";
+        std::cout << operation << ' ' << key << ' ' << id.toStdString() << " rejected=" << denied << std::endl;
+        rejected = rejected && denied;
+      }
+    }
+  }
+  require(rejected, "Endpoint accepted desktop-only grouped operations");
+  require(QDir(root).entryList({"forbidden-*"}, QDir::Files).isEmpty(), "Rejected requests must not write files");
+  require(checked(send(query("get_plan", planId)))["id"] == planId, "Endpoint get_plan remains available");
+  require(checked(send(query("get_job", jobId)))["id"] == jobId, "Endpoint get_job remains available");
+  require(checked(send(query("list_jobs")))["total"].toInt() == 1, "Rejected requests create no grouped jobs");
+  for (const auto *operation : {"pause", "resume"}) {
+    const auto request = query(operation, jobId);
+    require(send(request) == groups->request(request), "Endpoint preserves terminal pause/resume errors");
+  }
+  auto cancel = query("cancel", jobId); cancel["kind"] = "job";
+  require(send(cancel) == groups->request(cancel), "Endpoint cancellation remains available");
+  const auto retry = query("retry_plan", jobId);
+  require(send(retry) == groups->request(retry), "Endpoint preserves retry with no remaining items");
+  std::cout << "PASS grouped endpoint allowlist and approved submission" << std::endl;
+}
 void unrelatedJournal(const QString &root) {
   require(QDir().mkpath(root), "Create unrelated journal fixture");
   QFile sentinel(root + "/unrelated.txt");
@@ -590,6 +644,7 @@ void directExport(const QString &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 3 && app.arguments()[1] == "--endpoint-boundary") { endpointBoundary(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--unrelated-journal") {
       unrelatedJournal(app.arguments()[2]);
       return 0;
@@ -627,6 +682,7 @@ int main(int argc, char **argv) {
     QDir().mkpath(QString::fromLocal8Bit(argv[1]));
     QTemporaryDir temp(QString::fromLocal8Bit(argv[1]) + "/groups-XXXXXX");
     require(temp.isValid(), "Create temporary fixtures"); temp.setAutoRemove(false);
+    endpointBoundary(temp.path() + "/endpoint-boundary");
     unrelatedJournal(temp.path() + "/unrelated-journal");
     std::cout << "ROOT " << temp.path().toStdString() << std::endl; run(temp.path());
     failedRecovery(temp.path() + "/failed-recovery");
