@@ -1,6 +1,7 @@
 #include "scene_sdk.hpp"
 #include <QRegularExpression>
 #include <QStringDecoder>
+#include <QSet>
 #include <cmath>
 #include <vector>
 
@@ -43,10 +44,19 @@ struct Face {
   QString material;
   int smoothing{};
 };
-void materials(Scene &s, const QString &uri,
-               QMap<QString, FbxSurfacePhong *> &out) {
+bool materials(Scene &s, const QString &uri,
+               QMap<QString, FbxSurfacePhong *> &out, QSet<QString> &loaded,
+               bool reportMissing = true) {
   const auto path = s.relative(uri);
-  const auto bytes = s.load(path);
+  const auto key = QString::fromStdWString(path.wstring()).toCaseFolded();
+  if (loaded.contains(key)) return true;
+  QByteArray bytes;
+  try { bytes = s.load(path); }
+  catch (const skeletal::Failure &error) {
+    if (error.error.code != ErrorCode::Io && error.error.code != ErrorCode::OutOfScope) throw;
+    if (reportMissing) s.loss("obj_missing_mtl", uri + ": " + QString::fromUtf8(error.what()));
+    return false;
+  }
   s.reserve(static_cast<std::uint64_t>(bytes.size()) * 4);
   FbxSurfacePhong *material{};
   for (const auto &line : decoded(bytes).split('\n')) {
@@ -122,6 +132,8 @@ void materials(Scene &s, const QString &uri,
     } else if (command != "illum")
       s.loss("obj_material_property", command);
   }
+  loaded.insert(key);
+  return true;
 }
 } // namespace
 void read_obj(Scene &s, const QByteArray &bytes) {
@@ -131,6 +143,7 @@ void read_obj(Scene &s, const QByteArray &bytes) {
   std::vector<Face> faces;
   std::vector<FbxColor> colours;
   QMap<QString, FbxSurfacePhong *> material_map;
+  QSet<QString> loaded_materials;
   QString material;
   int smoothing{};
   std::uint64_t elements{};
@@ -202,8 +215,12 @@ void read_obj(Scene &s, const QByteArray &bytes) {
     } else if (command == "usemtl")
       material = f.mid(1).join(' ');
     else if (command == "mtllib") {
-      for (qsizetype i = 1; i < f.size(); ++i)
-        materials(s, f[i], material_map);
+      const auto whole = line.section('#', 0, 0).trimmed().mid(command.size()).trimmed();
+      if (f.size() <= 2)
+        materials(s, whole, material_map, loaded_materials);
+      else if (!materials(s, whole, material_map, loaded_materials, false))
+        for (qsizetype i = 1; i < f.size(); ++i)
+          materials(s, f[i], material_map, loaded_materials);
     } else if (command == "s") {
       if (f.size() != 2)
         invalid("Invalid OBJ smoothing group");

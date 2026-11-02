@@ -177,7 +177,11 @@ void queuedSourceReplacement(const QString &root, QJsonObject first, int variant
   QFile victim(root + "/new.fbx"); require(victim.open(QIODevice::ReadOnly), "Read protected replacement dependency");
   require(victim.readAll() == geometry, "Queued replacement must not overwrite newly referenced source");
   require(result["state"] == (variant == 4 ? "cancelled" : "failed"), "Changed/cancelled inventory stops before any output");
-  require(result["error"].toObject()["code"] == (variant == 4 ? "cancelled" : variant == 3 ? "invalid_argument" : "input_changed"), "Inventory change retains structured diagnosis");
+  // Missing MTL is an inventoried loss; its later appearance changes that
+  // inventory, just as a newly readable texture does. It is not a parse error.
+  require(result["error"].toObject()["code"] == (variant == 4 ? "cancelled" : "input_changed"), "Inventory change retains structured diagnosis");
+  if (variant == 3)
+    require(result["error"].toObject()["message"].toString().contains("became readable"), "Appearing MTL must be rejected by the dependency guard");
   if (variant == 1) { QFile alias(root + "/alias.fbx"); require(alias.open(QIODevice::ReadOnly) && alias.readAll() == geometry, "Queued hardlink output not replaced"); }
   std::cout << "PASS scan/queue dependency barrier variant=" << variant << '\n';
 }
