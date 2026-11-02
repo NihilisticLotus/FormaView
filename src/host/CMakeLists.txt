@@ -169,6 +169,7 @@ if(BUILD_TESTING)
                     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
                     LABELS "model")
             endforeach()
+            set_property(TEST model_performance APPEND PROPERTY LABELS "performance")
             foreach(test IN ITEMS model_state model_format model_gpu model_performance)
                 set(required_roots "${FORMAVIEW_MODEL_FIXTURES}")
                 if(test STREQUAL "model_state")
@@ -239,6 +240,9 @@ if(BUILD_TESTING)
         set_tests_properties(desktop_integration PROPERTIES DISABLED TRUE)
         message(WARNING "desktop_integration is DISABLED: set FORMAVIEW_UI_TEST_ROOT and provide its fixtures")
     endif()
+    # The full source-order GUI suite contains contractual latency gates.
+    # Keep them in default acceptance; labels allow explicit separate runs.
+    set_tests_properties(desktop_integration PROPERTIES LABELS "gui;performance")
     add_test(NAME host_smoke COMMAND formaview --smoke)
     set_tests_properties(host_smoke PROPERTIES TIMEOUT 20)
     add_test(NAME host_capabilities COMMAND formaview --capabilities)
