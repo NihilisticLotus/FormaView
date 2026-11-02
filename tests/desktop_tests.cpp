@@ -3184,10 +3184,12 @@ private slots:
     QVERIFY(conversion);
     const auto cleanup = qScopeGuard([&] { QMetaObject::invokeMethod(conversion, "close"); });
     QVERIFY(conversion->setProperty("modelInputs", sources));
-    QVERIFY(conversion->setProperty("modelMode", true));
+    QVERIFY(conversion->setProperty("modelMode", false));
     QTRY_VERIFY(item("conversionOutputRoot"));
     QTRY_VERIFY(item("conversionPngCompression"));
     QCOMPARE(item("conversionPngCompression")->property("value").toInt(), 0);
+    QVERIFY(conversion->setProperty("modelMode", true));
+    QTRY_VERIFY(!item("conversionPngCompression"));
     QVERIFY(!item("conversionInputRoot"));
     item("conversionOutputRoot")->setProperty("text", "");
     item("modelExportPaired")->setProperty("text", input + "/reference.psk");
@@ -3199,7 +3201,20 @@ private slots:
         {"paired_file", input + "/reference.psk"}, {"file_organization", "per-clip"}};
     item("conversionOutputRoot")->setProperty("text", output);
     QTRY_VERIFY(preflight->isEnabled());
+    const auto previousJob = service->job().value("id").toString();
     QVERIFY(QMetaObject::invokeMethod(preflight, "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+        service->job().value("id").toString() != previousJob &&
+        service->job().value("state") == "failed", 60000);
+    QCOMPARE(service->job().value("items").toList().size(), 130);
+    for (const auto &value : service->job().value("items").toList()) {
+      const auto entry = value.toMap();
+      QCOMPARE(entry.value("error").toMap().value("code").toString(), QString("invalid_argument"));
+      QVERIFY(entry.value("error").toMap().value("message").toString().contains("loss acknowledgement"));
+      QVERIFY(!QFile::exists(entry.value("request").toMap().value("output").toString()));
+    }
+    QTRY_VERIFY(item("retryImageJob"));
+    QVERIFY(QMetaObject::invokeMethod(item("retryImageJob"), "clicked"));
     QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready",
                              qPrintable(service->error()), 30000);
     QCOMPARE(service->plan().value("items").toList().size(), 130);
@@ -3228,15 +3243,24 @@ private slots:
     QTRY_VERIFY(item(qPrintable(batchCardName)));
     QTRY_VERIFY(item(qPrintable(batchCardName))->property("checked").toBool());
     QVERIFY(item("jobCategoryFilter"));
-    item("jobCategoryFilter")->setProperty("currentIndex", 1);
-    QVERIFY(QMetaObject::invokeMethod(item("jobCategoryFilter"), "activated", Q_ARG(int, 1)));
+    auto *categoryFilter = item("jobCategoryFilter");
+    int categoryIndex = -1;
+    for (int i = 1; i < categoryFilter->property("count").toInt(); ++i) {
+      QString label;
+      QVERIFY(QMetaObject::invokeMethod(categoryFilter, "textAt", Q_RETURN_ARG(QString, label), Q_ARG(int, i)));
+      if (label == QString::fromUtf8("回归验证")) categoryIndex = i;
+    }
+    QVERIFY(categoryIndex > 0);
+    categoryFilter->setProperty("currentIndex", categoryIndex);
+    QVERIFY(QMetaObject::invokeMethod(categoryFilter, "activated", Q_ARG(int, categoryIndex)));
     QTRY_VERIFY(item("imageJobChoice")->property("displayText").toString().contains("回归验证"));
     save("named-model-batch");
-    QTRY_VERIFY(QFileInfo::exists(root_ + "/image-journal/desktop-history.json"));
+    QTRY_VERIFY(QFileInfo::exists(qEnvironmentVariable("FORMAVIEW_IMAGE_STATE_ROOT") + "/desktop-history.json"));
     {
       ImageJobs reopened;
       QVERIFY(!reopened.jobs().isEmpty());
-      const auto restored = reopened.jobs().last().toMap();
+      const auto restored = reopened.jobSnapshot(service->job().value("id").toString());
+      QCOMPARE(restored.value("id"), service->job().value("id"));
       QCOMPARE(restored.value("name").toString(), QString("角色动作批次"));
       QCOMPARE(restored.value("items").toList().size(), 130);
     }
