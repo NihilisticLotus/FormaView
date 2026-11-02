@@ -2,6 +2,8 @@
 #include "model_document.hpp"
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QCryptographicHash>
 #include <cmath>
 #include <iostream>
 #include <utility>
@@ -15,6 +17,40 @@ bool close(double a, double b) { return std::abs(a - b) < 1e-6; }
 } // namespace
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  if (app.arguments().size() == 3 && app.arguments()[1] == "--mtl-scope") {
+    try {
+      const auto root = app.arguments()[2];
+      require(!QFileInfo::exists(root) && QDir().mkpath(root + "/input") &&
+                  QDir().mkpath(root + "/outside"), "Create isolated MTL fixture");
+      const QByteArray material("newmtl Test\nKd 0.2 0.7 0.4\n");
+      const auto hash = QString::fromLatin1(QCryptographicHash::hash(material, QCryptographicHash::Sha256).toHex());
+      const auto save = [](const QString &path, const QByteArray &bytes) {
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && file.write(bytes) == bytes.size(), "Write MTL fixture");
+      };
+      save(root + "/input/local.mtl", material);
+      save(root + "/outside/secret.mtl", material);
+      bool passed = true;
+      int index = 0;
+      for (const auto &reference : QStringList{"local.mtl", "../outside/secret.mtl", root + "/outside/secret.mtl", root + "/input/local.mtl"}) {
+        const auto obj = root + "/input/source" + QString::number(index) + ".obj";
+        save(obj, "mtllib " + reference.toUtf8() + "\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Test\nf 1 2 3\n");
+        const auto document = readModelDocument(obj, {});
+        bool loaded = false, hashed = false;
+        for (const auto &value : document->resources) {
+          const auto resource = value.toMap();
+          loaded |= resource.value("loaded").toBool();
+          hashed |= resource.value("detail").toString() == hash;
+        }
+        const bool legal = index++ == 0;
+        const bool valid = !document->resources.isEmpty() && (legal ? loaded && hashed : !loaded && !hashed);
+        std::cout << reference.toStdString() << " loaded=" << loaded << " hashed=" << hashed << " valid=" << valid << '\n';
+        passed &= valid;
+      }
+      require(passed, "OBJ material references escaped the input directory or absolute-path policy");
+      return 0;
+    } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
+  }
   if (app.arguments().size() != 2)
     return 64;
   const QDir root(app.arguments()[1]);

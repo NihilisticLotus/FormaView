@@ -167,6 +167,7 @@ template <class T> void append(Buffer &b, const T &v) {
   std::memcpy(b.bytes.data() + old, &v, sizeof(T));
 }
 struct MaterialFiles {
+  AccessScope scope;
   std::stop_token stop;
   std::vector<InputLease> leases;
   std::vector<FbxData::Resource> resources;
@@ -186,10 +187,12 @@ bool open_material(void *user, ufbx_stream *stream, const char *name,
     cancelled(context.stop);
     const auto path = std::filesystem::path(
         std::u8string(reinterpret_cast<const char8_t *>(name), length));
-    AccessScope scope;
-    scope.input_roots = {path.parent_path()};
+    const auto original = std::filesystem::path(std::u8string(
+        reinterpret_cast<const char8_t *>(resource.reference.data()), resource.reference.size()));
+    if (original.has_root_path())
+      throw Failure(ErrorCode::OutOfScope, "Absolute material library references are not permitted");
     auto lease =
-        InputLease::open(scope, path, 64ULL * 1024 * 1024, context.stop);
+        InputLease::open(context.scope, path, 64ULL * 1024 * 1024, context.stop);
     std::ifstream input(path, std::ios::binary);
     std::vector<std::byte> bytes(
         static_cast<std::size_t>(lease.snapshot().size_bytes));
@@ -372,6 +375,8 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
   ufbx_load_opts opts{};
   opts.file_format = obj ? UFBX_FILE_FORMAT_OBJ : UFBX_FILE_FORMAT_FBX;
   MaterialFiles materials;
+  // The caller's OBJ path establishes authority, never the requested MTL path.
+  materials.scope.input_roots = {path.parent_path()};
   materials.stop = stop;
   const auto filename = path.u8string();
   opts.filename = {reinterpret_cast<const char *>(filename.data()),
