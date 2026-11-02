@@ -7,7 +7,7 @@ namespace formaview::imaging {
 // read cached snapshots and are safe on the GUI thread.
 class ImageTaskGroups final {
 public:
-  ImageTaskGroups(AccessScope, std::filesystem::path journal);
+  ImageTaskGroups(AccessScope, std::filesystem::path journal, ImageBatchLimits = {});
   ~ImageTaskGroups();
   ImageTaskGroups(const ImageTaskGroups &) = delete;
   ImageTaskGroups &operator=(const ImageTaskGroups &) = delete;

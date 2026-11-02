@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 #include <QUuid>
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <set>
 #include <thread>
@@ -83,6 +84,54 @@ QJsonArray requests(const QString &root, int count, const QString &prefix) {
 }
 AccessScope scope(const QString &root) {
   return {{std::filesystem::path(root.toStdWString())}, {std::filesystem::path(root.toStdWString())}, true, "groups-test-v1"};
+}
+void inspectAdmission(const QString &root) {
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/journal"), "Create admission root");
+  QFile obj(root + "/source.obj");
+  require(obj.open(QIODevice::WriteOnly), "Open admission model");
+  obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"); obj.close();
+  ImageTaskGroups groups(scope(root), std::filesystem::path((root + "/journal").toStdWString()));
+  auto request = query("create_plan");
+  request["items"] = QJsonArray{QJsonObject{{"input", root + "/source.obj"},
+    {"output", root + "/result.fbx"}, {"options", QJsonObject{{"target", "fbx"}}}}};
+  auto held = std::make_unique<ImageAdmission>(false);
+  std::stop_source stop;
+  std::promise<void> started;
+  auto ready = started.get_future();
+  auto pending = std::async(std::launch::async, [&] {
+    started.set_value(); return groups.request(request, stop.get_token());
+  });
+  ready.wait();
+  const bool blocked = pending.wait_for(std::chrono::seconds(1)) == std::future_status::timeout;
+  stop.request_stop();
+  const bool cancelledWhileHeld = pending.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  held.reset();
+  const auto response = pending.get();
+  std::cout << "Group inspect blocked=" << blocked << " cancellable=" << cancelledWhileHeld
+            << " response=" << QJsonDocument(response).toJson(QJsonDocument::Compact).toStdString() << std::endl;
+  require(blocked, "Group model inspect bypassed process-wide admission");
+  require(cancelledWhileHeld && response["error"].toObject()["code"] == "cancelled",
+          "Group inspect admission did not honour cancellation");
+  require(QDir().mkpath(root + "/limited"), "Create limited group journal");
+  ImageBatchLimits limits; limits.image.input_bytes = 1;
+  ImageTaskGroups limited(scope(root), std::filesystem::path((root + "/limited").toStdWString()), limits);
+  request["name"] = "Named export batch"; request["category"] = "Regression";
+  const auto created = checked(limited.request(request));
+  const auto id = created["plan_id"].toString();
+  QFile guard(root + "/limited/" + id.mid(6) + "/source-guard-0.json");
+  require(guard.open(QIODevice::ReadOnly), "Read limited inspect evidence");
+  const auto sources = QJsonDocument::fromJson(guard.readAll()).object()["sources"].toArray();
+  require(sources.size() == 1 && sources[0].toObject()["scan_failed"].toBool() &&
+          sources[0].toObject()["error"].toObject()["code"] == "resource_limit",
+          "Group model inspect ignored service image limits");
+  const auto plan = wait(limited, "get_plan", id);
+  require(plan["state"] == "failed", "Limited inspect must reject plan");
+  fixture(root + "/source.tga");
+  const auto imagePlan = start(limited, requests(root, 1, "limited-"));
+  require(imagePlan["items"].toArray()[0].toObject()["status"] == "failed" &&
+          imagePlan["items"].toArray()[0].toObject()["error"].toObject()["code"] == "resource_limit",
+          "Limited child must reject input");
+  std::cout << "PASS group inspect and child use service limits" << std::endl;
 }
 void endpointBoundary(const QString &root) {
   require(!QFileInfo::exists(root) && QDir().mkpath(root), "Create endpoint boundary root");
@@ -644,6 +693,7 @@ void directExport(const QString &root) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 3 && app.arguments()[1] == "--inspect-admission") { inspectAdmission(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--endpoint-boundary") { endpointBoundary(app.arguments()[2]); return 0; }
     if (argc == 3 && app.arguments()[1] == "--unrelated-journal") {
       unrelatedJournal(app.arguments()[2]);
@@ -683,6 +733,7 @@ int main(int argc, char **argv) {
     QTemporaryDir temp(QString::fromLocal8Bit(argv[1]) + "/groups-XXXXXX");
     require(temp.isValid(), "Create temporary fixtures"); temp.setAutoRemove(false);
     endpointBoundary(temp.path() + "/endpoint-boundary");
+    inspectAdmission(temp.path() + "/inspect-admission");
     unrelatedJournal(temp.path() + "/unrelated-journal");
     std::cout << "ROOT " << temp.path().toStdString() << std::endl; run(temp.path());
     failedRecovery(temp.path() + "/failed-recovery");

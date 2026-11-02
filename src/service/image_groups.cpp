@@ -70,6 +70,7 @@ struct ImageTaskGroups::Impl {
     QElapsedTimer queued;
   };
   AccessScope scope;
+  ImageBatchLimits limits;
   QString directory;
   std::optional<PrivateDirectory> protection;
   QLockFile owner;
@@ -79,8 +80,8 @@ struct ImageTaskGroups::Impl {
   std::map<QString, std::shared_ptr<Group>> groups;
   Scheduler scheduler{groupLimits()};
 
-  Impl(AccessScope s, std::filesystem::path dir)
-      : scope(std::move(s)), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
+  Impl(AccessScope s, std::filesystem::path dir, ImageBatchLimits l)
+      : scope(std::move(s)), limits(l), directory(QDir::cleanPath(QString::fromStdWString(dir.wstring()))),
         owner(QStringLiteral("\\\\?\\") + QDir::toNativeSeparators(QDir::cleanPath(directory + "/groups.lock"))) {
     // Do not change ACLs on a directory containing unrelated user data.
     // Group state consists only of the lock and UUID-named directories.
@@ -115,7 +116,7 @@ struct ImageTaskGroups::Impl {
         const auto requests = load(path + '/' + QString::number(i) + "/requests.json")["items"].toArray();
         if (requests.isEmpty() || requests.size() > 64) fail(ErrorCode::Io, "Invalid conversion group batch");
         const auto records = path + '/' + QString::number(i) + "/records";
-        ImageBatchService child(scope, std::filesystem::path(records.toStdWString()));
+        ImageBatchService child(scope, std::filesystem::path(records.toStdWString()), limits);
         // Recover a submission committed just before its group index update.
         for (const auto &file : QDir(records).entryList({"*.json"}, QDir::Files, QDir::Name)) {
           const auto data = load(records + '/' + file);
@@ -393,7 +394,7 @@ struct ImageTaskGroups::Impl {
               if (!out.isEmpty()) context.reserved_outputs.emplace_back(out.toStdWString());
             }
         const auto recordPath = path(g) + '/' + QString::number(i) + "/records";
-        ImageBatchService child(executionScope, std::filesystem::path(recordPath.toStdWString()), {}, std::move(context));
+        ImageBatchService child(executionScope, std::filesystem::path(recordPath.toStdWString()), limits, std::move(context));
         if (direct) {
           // Desktop-only one-item check/commit pipeline. Public MCP submit still
           // requires the complete approved plan and its original digest.
@@ -696,7 +697,10 @@ struct ImageTaskGroups::Impl {
           ++protectionInspections;
           auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
           QJsonObject source;
-          try { source = execute_image_request(inspect, scope, {}, stop); }
+          try {
+            const ImageAdmission allocation(false, stop);
+            source = execute_image_request(inspect, scope, limits.image, stop);
+          }
           catch (const skeletal::Failure &e) {
             if (e.error.code == ErrorCode::Cancelled) throw;
             guards.append(QJsonObject{{"path", request["input"]}, {"unavailable", true}, {"scan_failed", true}, {"error", image_error_json(e)["error"]}});
@@ -847,8 +851,8 @@ struct ImageTaskGroups::Impl {
     fail(ErrorCode::InvalidArgument, "Unknown conversion group operation");
   }
 };
-ImageTaskGroups::ImageTaskGroups(AccessScope scope, std::filesystem::path journal)
-  : impl_(std::make_unique<Impl>(std::move(scope), std::move(journal))) {}
+ImageTaskGroups::ImageTaskGroups(AccessScope scope, std::filesystem::path journal, ImageBatchLimits limits)
+  : impl_(std::make_unique<Impl>(std::move(scope), std::move(journal), limits)) {}
 ImageTaskGroups::~ImageTaskGroups() = default;
 QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop) {
   try {
