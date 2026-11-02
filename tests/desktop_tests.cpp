@@ -5108,6 +5108,9 @@ private slots:
     const auto ambiguousPath = L"\\\\?\\" + QDir::toNativeSeparators(directory + "/trailing.png.").toStdWString();
     const auto ambiguous = CreateFileW(ambiguousPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     QVERIFY(ambiguous != INVALID_HANDLE_VALUE); CloseHandle(ambiguous);
+    // Qt's normal Win32 path cleanup strips the trailing dot. Remove exactly
+    // the extended-path fixture we created, including on assertion failure.
+    const auto removeAmbiguous = qScopeGuard([&] { QVERIFY(DeleteFileW(ambiguousPath.c_str())); });
 #endif
     QVERIFY(QMetaObject::invokeMethod(item("workspace"), "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
     const auto closeConversion = qScopeGuard([&] {
