@@ -496,6 +496,9 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
     } else keep = selected.contains(id(s,i));
     if (!keep) remove.push_back(stack);
   }
+  if (static_cast<std::size_t>(stackCount) - remove.size() !=
+      static_cast<std::size_t>(exported.size()))
+    invalid("Selected animation stack count does not match the imported scene");
   for (auto *stack : remove)
     stack->Destroy();
   if (s.scene->GetSrcObjectCount<FbxAnimStack>()) {
