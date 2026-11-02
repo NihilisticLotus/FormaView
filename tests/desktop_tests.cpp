@@ -2999,7 +2999,21 @@ private slots:
       if (mode) click("editConversionSettings");
       choose("modelExportOrganization", mode == 0 ? 1 : 0);
       QCOMPARE(item("conversionNamingTemplate")->property("text").toString(), mode == 0 ? QString("{name}-animations.{ext}") : QString("{name}-{clip}.{ext}"));
+      const auto previousJob = service->job().value("id").toString();
       save("scene-settings-" + QString::number(mode)); click("createImagePlan");
+      // Model export starts a direct job. These fixtures have declared losses:
+      // follow the UI's retry/review path before acknowledging and submitting.
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+          !service->job().value("id").toString().isEmpty() &&
+          service->job().value("id").toString() != previousJob &&
+          service->job().value("state") == "failed", 20000);
+      for (const auto &v : service->job().value("items").toList()) {
+        const auto entry = v.toMap();
+        QCOMPARE(entry.value("error").toMap().value("code").toString(), QString("invalid_argument"));
+        QVERIFY(entry.value("error").toMap().value("message").toString().contains("loss acknowledgement"));
+        QVERIFY(!QFile::exists(entry.value("request").toMap().value("output").toString()));
+      }
+      click("retryImageJob");
       QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 20000);
       QCOMPARE(service->plan().value("items").toList().size(), mode == 0 ? 1 : 2);
       save("scene-preflight-" + QString::number(mode));
