@@ -287,7 +287,20 @@ int main(int argc, char **argv) {
         std::cout << "FBX source up enum: " << static_cast<int>(up) << '\n';
         const auto worlds = document->worldAt(
             0, document->animationClips.front().start);
-        test(worlds == source.evaluate(0, source.data().clips.front().start).world,
+        const auto sourcePose = source.evaluate(0, source.data().clips.front().start);
+        std::vector<formaview::Matrix4> visibleWorlds;
+        QStringList visibleNames;
+        // The preview omits the decoder's implicit scene root. Compare the
+        // same source nodes exactly; the display basis must not touch them.
+        for (std::size_t i = 0; i < source.data().nodes.size(); ++i) {
+          const auto &node = source.data().nodes[i];
+          if (node.implicit_scene_root) continue;
+          visibleWorlds.push_back(sourcePose.world.at(i));
+          visibleNames.push_back(QString::fromStdString(node.source.original_name));
+        }
+        test(document->boneNames == visibleNames,
+             "animation preview retains source node order after scene root removal");
+        test(worlds == visibleWorlds,
              "display basis does not mutate FBX source world transforms");
         test(worlds.size() == document->boneParents.size() &&
                  !worlds.empty(),
