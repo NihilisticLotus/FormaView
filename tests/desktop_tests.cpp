@@ -6128,7 +6128,14 @@ private slots:
     QVERIFY(session && fixtures.exists("external.gltf"));
     desktop_->setLanguage("zh-CN");
     desktop_->openPath(fixtures.filePath("external.gltf"));
-    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(),10000);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable() &&
+        session->path() == fixtures.filePath("external.gltf"),10000);
+    QTRY_VERIFY(modelPanelsReady());
+    window_->requestActivate();
+    QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+    QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!presented.isEmpty());
     auto *view=qobject_cast<ModelView *>(item("modelViewport"));
     QVERIFY(view);
     const auto click=[&](QQuickItem *control) {
