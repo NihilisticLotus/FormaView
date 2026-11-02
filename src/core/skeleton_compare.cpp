@@ -134,6 +134,7 @@ CompareReport compare_skeletons(const CompareInput &a, const CompareInput &b) {
   // Match shared names. Unique<->unique is a direct candidate; duplicate
   // groups are matched by full parent-name chain when that is unambiguous.
   std::map<std::uint32_t, std::uint32_t> aToB;
+  std::set<std::string> ambiguousNames;
   bool ambiguous = false;
   for (const auto &[name, groupA] : byNameA) {
     const auto found = byNameB.find(name);
@@ -171,8 +172,10 @@ CompareReport compare_skeletons(const CompareInput &a, const CompareInput &b) {
         duplicate.resolved_by_chain = groupResolved;
         duplicate.ambiguous = !groupResolved;
       }
-    if (!groupResolved)
+    if (!groupResolved) {
       ambiguous = true;
+      ambiguousNames.insert(name);
+    }
   }
 
   // Parent verification through the name mapping; roots must correspond.
@@ -181,14 +184,19 @@ CompareReport compare_skeletons(const CompareInput &a, const CompareInput &b) {
     const auto &boneA = a.bones[ia];
     const auto &boneB = b.bones[ib];
     bool verified = false;
+    bool parentAmbiguous = false;
     if (!boneA.parent && !boneB.parent) {
       verified = true; // Both roots.
     } else if (boneA.parent && boneB.parent) {
       const auto mapped = aToB.find(*boneA.parent);
       verified = mapped != aToB.end() && mapped->second == *boneB.parent;
+      parentAmbiguous = !verified &&
+          pathsA[*boneA.parent] == pathsB[*boneB.parent] &&
+          ambiguousNames.contains(a.bones[*boneA.parent].name);
     }
-    report.matched.push_back({ia, ib, verified, {}});
-    if (!verified) {
+    report.matched.push_back({ia, ib, verified,
+        parentAmbiguous ? "Parent belongs to an unresolved duplicate-name group" : ""});
+    if (!verified && !parentAmbiguous) {
       conflicts = true;
       report.conflicts.push_back(
           boneA.name + " (#" + std::to_string(ia) + "): parent chain " +

@@ -1,6 +1,7 @@
 #include "formaview/capabilities.hpp"
 #include "formaview/scheduler.hpp"
 #include "formaview/telemetry.hpp"
+#include "formaview/skeleton_compare.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <future>
@@ -66,6 +67,23 @@ void identity() {
           "Source influence contract lost complete, raw weights");
     check(geometry.render_mapping[0].source_point == geometry.render_mapping[1].source_point,
           "Split vertices cannot map back to one source point");
+    using namespace fv::skeletal;
+    const CompareInput skeleton{"duplicate parent", {
+        {0, "Root", {}, true}, {1, "Joint", 0, true}, {2, "Joint", 0, true},
+        {3, "Hand", 1, true}, {4, "Finger", 3, true}}};
+    auto reordered = skeleton;
+    reordered.bones[3].parent = 2;
+    const auto ambiguous = compare_skeletons(skeleton, reordered);
+    check(ambiguous.applicability == Applicability::Ambiguous && ambiguous.conflicts.empty(),
+          "Unresolved same-parent duplicates must make descendants ambiguous, not incompatible");
+    check(!ambiguous.hierarchy_matches, "Ambiguous hierarchy must not claim direct applicability");
+    reordered.bones[4].parent = 0;
+    check(compare_skeletons(skeleton, reordered).applicability == Applicability::Incompatible,
+          "Real parent conflicts retain priority over duplicate ambiguity");
+    reordered = skeleton;
+    reordered.bones[2].name = "Other";
+    check(compare_skeletons(reordered, reordered).applicability == Applicability::StructuralDirect,
+          "Unique parent mappings remain direct");
 }
 void capabilities() {
     auto registry = fv::CapabilityRegistry{};
