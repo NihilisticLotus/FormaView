@@ -418,6 +418,7 @@ FileDiscovery discover_files(const AccessScope &scope,
     pending.pop_back();
     if (++directories > 512)
       fail(ErrorCode::ResourceLimit, "Discovery exceeds 512 directories");
+    try {
     const auto held = parents(current);
     WIN32_FIND_DATAW data{};
     struct Search {
@@ -489,6 +490,20 @@ FileDiscovery discover_files(const AccessScope &scope,
     } while (FindNextFileW(search.value, &data));
     if (GetLastError() != ERROR_NO_MORE_FILES)
       fail(ErrorCode::Io, "Directory enumeration interrupted", GetLastError());
+    } catch (const skeletal::Failure &error) {
+      const auto code = error.error.details.find("win32");
+      if (current == full || error.error.code != ErrorCode::Io ||
+          code == error.error.details.end() ||
+          (code->second != std::to_string(ERROR_ACCESS_DENIED) &&
+           code->second != std::to_string(ERROR_FILE_NOT_FOUND) &&
+           code->second != std::to_string(ERROR_PATH_NOT_FOUND))) throw;
+      if (result.rejected_paths.size() >= 100)
+        fail(ErrorCode::ResourceLimit, "Discovery exceeds 100 rejected path entries");
+      path_bytes += current.wstring().size() * sizeof(wchar_t);
+      if (path_bytes > (bounded_membership ? 1024ULL * 1024 : 128ULL * 1024 * 1024))
+        fail(ErrorCode::ResourceLimit, "Discovery membership exceeds bounded storage");
+      result.rejected_paths.push_back({current, error.error});
+    }
   }
   std::sort(
       result.files.begin(), result.files.end(),

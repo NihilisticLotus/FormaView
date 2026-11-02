@@ -5,6 +5,8 @@
 #include <iostream>
 #include <windows.h>
 #include <winioctl.h>
+#include <aclapi.h>
+#include <sddl.h>
 
 using namespace formaview;
 namespace {
@@ -356,6 +358,55 @@ void run(const std::filesystem::path &root) {
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   try {
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--denied-discovery") {
+      const auto root = std::filesystem::absolute(argv[2]);
+      require(!std::filesystem::exists(root), "Discovery probe root must be new");
+      std::filesystem::create_directories(root / "good");
+      write(root / "good" / "visible.bin", "visible");
+      struct Denied {
+        std::vector<std::filesystem::path> paths;
+        PSECURITY_DESCRIPTOR original{}, denied{};
+        PACL originalAcl{}, deniedAcl{};
+        ~Denied() {
+          for (const auto &path : paths) {
+            auto name = path.wstring();
+            SetNamedSecurityInfoW(name.data(), SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, originalAcl, nullptr);
+          }
+          if (original) LocalFree(original);
+          if (denied) LocalFree(denied);
+        }
+      } acl;
+      const auto first = root / "denied0";
+      std::filesystem::create_directory(first);
+      require(GetNamedSecurityInfoW(first.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+          nullptr, nullptr, &acl.originalAcl, nullptr, &acl.original) == ERROR_SUCCESS, "Read fixture ACL");
+      require(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(D;;0x1;;;WD)(A;;FA;;;WD)",
+          SDDL_REVISION_1, &acl.denied, nullptr) != FALSE, "Create denied fixture ACL");
+      BOOL present{}, defaulted{};
+      require(GetSecurityDescriptorDacl(acl.denied, &present, &acl.deniedAcl, &defaulted) != FALSE && present, "Extract denied ACL");
+      const auto deny = [&](const std::filesystem::path &path) {
+        acl.paths.push_back(path);
+        auto name = path.wstring();
+        require(SetNamedSecurityInfoW(name.data(), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, acl.deniedAcl, nullptr) == ERROR_SUCCESS, "Deny fixture enumeration");
+      };
+      deny(first);
+      const AccessScope scope{{root}, {}, false, "denied-discovery"};
+      const std::wstring_view extension = L".bin";
+      const auto result = discover_files(scope, root, true, {&extension, 1});
+      require(result.files.size() == 1 && result.files[0].filename() == "visible.bin", "Denied child must not discard accessible siblings");
+      require(result.rejected_paths.size() == 1 && result.rejected_paths[0].path == first &&
+          result.rejected_paths[0].error.details.at("win32") == "5", "Denied child must be reported");
+      rejects([&] { (void)discover_files(scope, first, true, {&extension, 1}); }, ErrorCode::Io);
+      for (int i = 1; i <= 100; ++i) {
+        const auto path = root / ("denied" + std::to_string(i));
+        std::filesystem::create_directory(path); deny(path);
+      }
+      rejects([&] { (void)discover_files(scope, root, true, {&extension, 1}); }, ErrorCode::ResourceLimit);
+      std::cout << "PASS denied child, readable sibling, root refusal and bounded rejected paths\n";
+      return 0;
+    }
     if (argc == 3 && std::wstring_view(argv[1]) == L"--short-path") {
       const auto root = std::filesystem::absolute(argv[2]);
       require(std::filesystem::create_directories(root), "Create fresh short-path fixture");
