@@ -3090,7 +3090,6 @@ private slots:
     auto *panel = qobject_cast<QQuickItem *>(object.get()); QVERIFY(panel);
     QQuickWindow probe;
     probe.setColor(QColor("#1c1c1e")); probe.resize(1060, 760);
-    probe.setFlag(Qt::WindowDoesNotAcceptFocus, true);
     panel->setParentItem(probe.contentItem()); panel->setPosition({20, 20}); panel->setSize({1020, 720});
     probe.show(); QVERIFY(QTest::qWaitForWindowExposed(&probe));
     const auto find = [&](const char *name) { return panel->findChild<QQuickItem *>(name); };
@@ -3115,6 +3114,8 @@ private slots:
     QVERIFY(reset()); QTRY_COMPARE(list->property("count").toInt(), 474);
     kind->setProperty("currentIndex", 2); QTRY_COMPARE(list->property("count").toInt(), 100);
     // Open the real popup and select the last entry through keyboard input.
+    probe.requestActivate();
+    QTRY_COMPARE(QGuiApplication::focusWindow(), &probe);
     QTest::mouseClick(&probe, Qt::LeftButton, Qt::NoModifier,
                       format->mapToScene(QPointF(format->width()/2, format->height()/2)).toPoint());
     auto *popup = format->property("popup").value<QObject *>(); QVERIFY(popup);
