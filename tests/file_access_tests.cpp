@@ -69,7 +69,51 @@ void junction(const std::filesystem::path &link,
   SetLastError(error);
   require(ok != FALSE, "Create junction");
 }
+DWORD child(const std::wstring &mode, const std::filesystem::path &root) {
+  std::wstring executable(32768, L'\0');
+  const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+  require(length != 0 && length < executable.size(), "Get test executable");
+  executable.resize(length);
+  auto command = L"\"" + executable + L"\" " + mode + L" \"" + root.wstring() + L"\"";
+  STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  require(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
+                         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE, "Start directory probe child");
+  const auto waited = WaitForSingleObject(process.hProcess, 10000);
+  DWORD code = 0;
+  const auto queried = GetExitCodeProcess(process.hProcess, &code);
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  require(waited == WAIT_OBJECT_0 && queried, "Directory probe child timed out");
+  return code;
+}
+void junctionProbe(const std::filesystem::path &root) {
+  require(!std::filesystem::exists(root), "Probe root must be new");
+  std::filesystem::create_directories(root / "input" / "sub");
+  std::filesystem::create_directories(root / "outside");
+  write(root / "input" / "sub" / "leaf.bin", "inside");
+  write(root / "outside" / "leaf.bin", "outside");
+  const auto held = CreateFileW((root / "input" / "sub").c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  require(held != INVALID_HANDLE_VALUE, "Hold original ancestor flags");
+  const auto code = child(L"--replace-parent", root);
+  const auto observed = read(root / "input" / "sub" / "leaf.bin");
+  CloseHandle(held);
+  std::cout << "Original ancestor flags: child=" << code << " leaf=" << observed << '\n';
+  require(code == 0 && observed == "outside", "Junction replacement was not reproduced");
+}
+void parentLock(const std::filesystem::path &root) {
+  require(!std::filesystem::exists(root), "Parent lock root must be new");
+  std::filesystem::create_directories(root / "sub");
+  write(root / "sub" / "leaf.bin", "inside");
+  AccessScope scope; scope.input_roots = {root};
+  const auto lease = InputLease::open(scope, root / "sub" / "leaf.bin", 1024);
+  const auto code = child(L"--open-parent-delete", root / "sub");
+  std::cout << "Held InputLease ancestor DELETE open child=" << code << '\n';
+  require(code == ERROR_SHARING_VIOLATION, "Held ancestor permits a DELETE handle");
+  lease.require_unchanged(lease.snapshot());
+}
 void run(const std::filesystem::path &root) {
+  parentLock(root / "parent-lock");
   const auto input = root / "input", output = root / "output",
              outside = root / "input-neighbour";
   std::filesystem::create_directories(input);
@@ -312,6 +356,38 @@ void run(const std::filesystem::path &root) {
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   try {
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--short-path") {
+      const auto root = std::filesystem::absolute(argv[2]);
+      require(std::filesystem::create_directories(root), "Create fresh short-path fixture");
+      write(root / "source.bin", "short-path-source");
+      std::wstring shortName(32768, L'\0'), longName(32768, L'\0');
+      const auto shortSize = GetShortPathNameW(root.c_str(), shortName.data(), static_cast<DWORD>(shortName.size()));
+      const auto longSize = GetLongPathNameW(root.c_str(), longName.data(), static_cast<DWORD>(longName.size()));
+      require(shortSize && shortSize < shortName.size() && longSize && longSize < longName.size(), "Resolve path aliases");
+      shortName.resize(shortSize); longName.resize(longSize);
+      if (shortName == longName) { std::cout << "SKIP volume has no short alias\n"; return 77; }
+      const std::filesystem::path alias(shortName);
+      AccessScope policy{{alias}, {alias}, false, "short-path"};
+      const auto input = InputLease::open(policy, alias / "source.bin", 1024);
+      OutputTransaction output(policy, alias / "result.bin", input.snapshot(), ConflictPolicy::Skip);
+      output.write(bytes("alias-output"));
+      require(!output.commit().skipped && read(root / "result.bin") == "alias-output", "Short alias output");
+      std::cout << "PASS authorized 8.3 alias input and output\n"; return 0;
+    }
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--replace-parent") {
+      const std::filesystem::path root(argv[2]);
+      if (!MoveFileExW((root / "input" / "sub").c_str(), (root / "input" / "renamed").c_str(), 0))
+        return static_cast<int>(GetLastError());
+      junction(root / "input" / "sub", root / "outside"); return 0;
+    }
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--open-parent-delete") {
+      const auto handle = CreateFileW(argv[2], DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+          nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+      if (handle == INVALID_HANDLE_VALUE) return static_cast<int>(GetLastError());
+      CloseHandle(handle); return 0;
+    }
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--junction-probe") { junctionProbe(std::filesystem::absolute(argv[2])); return 0; }
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--parent-lock") { parentLock(std::filesystem::absolute(argv[2])); return 0; }
     if (argc != 2)
       throw std::runtime_error("EXTERNAL_DIRECTORY required");
     run(std::filesystem::absolute(argv[1]));

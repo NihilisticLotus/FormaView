@@ -123,17 +123,43 @@ std::string identity(const BY_HANDLE_FILE_INFORMATION &i) {
       << i.nFileIndexLow;
   return out.str();
 }
+void require_final_path(const Handle &handle, const std::filesystem::path &expected) {
+  std::wstring actual(32768, L'\0');
+  const auto length = GetFinalPathNameByHandleW(handle.h, actual.data(),
+      static_cast<DWORD>(actual.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (!length)
+    fail(ErrorCode::Io, "Cannot resolve held file path", GetLastError());
+  if (length >= actual.size())
+    fail(ErrorCode::OutOfScope, "Held file path exceeds authorized path bounds");
+  actual.resize(length);
+  const auto requested = extended(expected);
+  if (equal(actual, requested)) return;
+  // The held path is normalized to long names; TEMP and callers can legally
+  // use 8.3 aliases. Expand names without changing the authorized lexical route.
+  std::wstring expanded(32768, L'\0');
+  const auto expandedLength = GetLongPathNameW(requested.c_str(), expanded.data(),
+      static_cast<DWORD>(expanded.size()));
+  if (!expandedLength)
+    fail(ErrorCode::Io, "Cannot normalize authorized path", GetLastError());
+  if (expandedLength >= expanded.size())
+    fail(ErrorCode::OutOfScope, "Authorized path exceeds path bounds");
+  expanded.resize(expandedLength);
+  if (!equal(actual, expanded))
+    fail(ErrorCode::OutOfScope, "Held file path differs from authorized path");
+}
 std::vector<Handle> parents(const std::filesystem::path &parent) {
   std::vector<Handle> handles;
   auto current = parent.root_path();
   const auto hold = [&] {
     Handle h(CreateFileW(
-        extended(current).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+        extended(current).c_str(), FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!h)
       fail(ErrorCode::Io, "Cannot hold parent directory", GetLastError());
     (void)info(h, true);
+    require_final_path(h, current);
     handles.push_back(std::move(h));
   };
   hold();
@@ -214,6 +240,7 @@ void check_target(const std::filesystem::path &path,
     }
     fail(ErrorCode::Io, "Cannot inspect output destination", e);
   }
+  require_final_path(h, path);
   const OutputInspection output{path, true, identity(info(h, false))};
   require_output_not_input(output, std::span(&input, 1));
   require_output_not_input(output, others);
@@ -257,6 +284,7 @@ PrivateDirectory PrivateDirectory::open(const std::filesystem::path &path) {
     fail(ErrorCode::Io, "Cannot hold private journal directory",
          GetLastError());
   (void)info(result->directory, true);
+  require_final_path(result->directory, full);
   Handle token;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.h))
     fail(ErrorCode::Io, "Cannot inspect process identity", GetLastError());
@@ -341,6 +369,7 @@ InputIdentityLease InputIdentityLease::open(const AccessScope &scope,
   if (!p->file)
     fail(ErrorCode::Io, "Cannot hold input file", GetLastError());
   const auto i = info(p->file, false);
+  require_final_path(p->file, full);
   auto &s = p->snapshot;
   s.requested_path = path;
   s.resolved_path = full;
@@ -489,6 +518,7 @@ OutputInspection inspect_output(const AccessScope &scope,
       return {full, false, {}};
     fail(ErrorCode::Io, "Cannot inspect destination", GetLastError());
   }
+  require_final_path(h, full);
   return {full, true, identity(info(h, false))};
 }
 OutputInspection allocate_output(
@@ -568,8 +598,10 @@ OutputTransaction::OutputTransaction(
         extended(p.temp).c_str(), GENERIC_WRITE | DELETE, 0, nullptr,
         CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
         nullptr));
-    if (p.file)
+    if (p.file) {
+      require_final_path(p.file, p.temp);
       return;
+    }
     if (GetLastError() != ERROR_FILE_EXISTS)
       fail(ErrorCode::Io, "Cannot create temporary output", GetLastError());
   }
@@ -624,6 +656,7 @@ void remove_owned_temporary(const AccessScope &scope,
       return;
     fail(ErrorCode::Io, "Cannot hold recovery temporary", GetLastError());
   }
+  require_final_path(file, full);
   if (identity(info(file, false)) != intent.file_identity)
     fail(ErrorCode::Conflict, "Recovery temporary was replaced");
   FILE_DISPOSITION_INFO remove{TRUE};
