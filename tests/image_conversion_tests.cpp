@@ -260,6 +260,13 @@ void png_uncompressed_default(const std::filesystem::path &root) {
       auto defaults = ImageConversionOptions{};
       defaults.transform = options.transform;
       stored(prepare_image_conversion(doc, defaults).encoded);
+      // A JPEG quality selection remains in the editor when switching to PNG.
+      // It must not change the selected PNG compression level.
+      for (const int quality : {1, 100}) {
+        auto switched = options;
+        switched.quality = quality;
+        stored(prepare_image_conversion(doc, switched).encoded);
+      }
       direct.compression = 9;
       const auto compressed = encode_raster(source, direct);
       require(compressed.size() < bytes.size(), "Explicit PNG compression stopped working");
