@@ -414,6 +414,39 @@ void run(const std::filesystem::path &root) {
     require(state["items"].toArray()[0].toObject()["status"] == "interrupted",
             "Hash-only recovery accepted foreign output");
   }
+  // Persist a real intent, then create an input alias during the commit
+  // callback. Recovery must not attribute that alias to the aborted output.
+  {
+    const auto id = new_id();
+    auto raced = item(root);
+    const auto destination = root / "late-source-alias.tiff";
+    raced["output"] = qp(destination);
+    raced["conflict"] = "overwrite";
+    raced["version"] = 1;
+    raced["operation"] = "preflight";
+    const auto racePreview = execute_image_request(raced, scope(root));
+    raced["operation"] = "convert";
+    raced["approval_digest"] = racePreview["approval_digest"];
+    raced["acknowledge_losses"] = true;
+    bool injected = false, rejected = false;
+    try {
+      (void)execute_image_request(raced, scope(root), {}, {}, {},
+          [&](const QJsonObject &observed) {
+            if (observed["destination"].toString().isEmpty()) return;
+            write_json(root / "commit-journal" / (id.toStdString() + ".json"),
+                       crash_record(id, raced, observed));
+            require(CreateHardLinkW(destination.c_str(), (root / "input.png").c_str(), nullptr),
+                    "Create late source alias");
+            injected = true;
+          });
+    } catch (const skeletal::Failure &e) { rejected = e.error.code == ErrorCode::Conflict; }
+    require(injected && rejected, "Late source alias did not reject commit");
+    ImageBatchService recovered(scope(root), root / "commit-journal");
+    const auto state = call(recovered, {{"operation", "get_job"}, {"id", id}});
+    const auto entry = state["items"].toArray()[0].toObject();
+    require(entry["status"] == "interrupted" && !entry["recovered_commit"].toBool(),
+            "Aborted source alias incorrectly recovered as committed output");
+  }
   QProcess process;
   process.start(QCoreApplication::applicationFilePath(),
                 {"--unlogged-temp", qp(root)});
