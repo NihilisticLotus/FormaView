@@ -3570,8 +3570,19 @@ private slots:
       auto *button = container->findChild<QObject *>("chooseConversionOutput"); QVERIFY(button);
       auto *dialog = container->findChild<QObject *>("conversionOutputDialog"); QVERIFY(dialog);
       const auto cleanup = qScopeGuard([&] {
-        QMetaObject::invokeMethod(dialog, "reject");
-        if (quick) quick->close();
+        if (dialog->property("visible").toBool()) {
+#ifdef Q_OS_WIN
+          QTRY_VERIFY_WITH_TIMEOUT(nativeDialog() != nullptr, 10000);
+          QVERIFY(PostMessageW(nativeDialog(), WM_COMMAND, IDCANCEL, 0));
+#else
+          QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+#endif
+          QTRY_VERIFY(!dialog->property("visible").toBool());
+        }
+        if (quick) {
+          quick->close();
+          QTRY_VERIFY(!quick->isVisible());
+        }
         else if (auto *conversion = window_->findChild<QObject *>("conversionWorkspace"))
           QMetaObject::invokeMethod(conversion, "close");
       });
@@ -3581,7 +3592,9 @@ private slots:
         QTRY_VERIFY(dialog->property("visible").toBool());
 #ifdef Q_OS_WIN
         // QML visible precedes Qt's deferred native-dialog thread startup.
-        // Reject only after the shell window exists, as a real user would.
+        // Cancel through the shell itself so its worker unwinds before QML
+        // observes rejection; directly rejecting QML can clear its helper
+        // while Qt's native thread still uses it.
         QTRY_VERIFY_WITH_TIMEOUT(nativeDialog() != nullptr, 10000);
         const auto nativeHandle = nativeDialog();
         QVERIFY(nativeHandle);
@@ -3593,7 +3606,11 @@ private slots:
           QElapsedTimer wait; wait.start();
           while (!QFileInfo::exists(marker + ".continue") && wait.elapsed() < 60000) QTest::qWait(100);
           QVERIFY2(QFileInfo::exists(marker + ".continue"), "Native dialog observation must complete before resuming");
+#ifdef Q_OS_WIN
+          QVERIFY(PostMessageW(nativeHandle, WM_COMMAND, IDCANCEL, 0));
+#else
           QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+#endif
           QTRY_VERIFY(!dialog->property("visible").toBool());
           QCOMPARE(field->property("text").toString(), entered);
 #ifdef Q_OS_WIN
@@ -3601,7 +3618,11 @@ private slots:
 #endif
           break;
         }
+#ifdef Q_OS_WIN
+        QVERIFY(PostMessageW(nativeHandle, WM_COMMAND, IDCANCEL, 0));
+#else
         QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+#endif
         QTRY_VERIFY(!dialog->property("visible").toBool());
 #ifdef Q_OS_WIN
         QTRY_VERIFY_WITH_TIMEOUT(!IsWindow(nativeHandle), 10000);
