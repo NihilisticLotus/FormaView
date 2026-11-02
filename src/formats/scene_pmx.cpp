@@ -379,17 +379,20 @@ void read_pmx(Scene &s, const QByteArray &bytes) {
   for (int i = 0; i < vertex_count; ++i) {
     const auto &v = vertices[static_cast<size_t>(i)];
     double sum{};
+    std::map<int, double> merged;
     for (const auto &[bone, weight] : v.weights) {
       if (weight < 0)
         invalid("Negative PMX influence");
       if (weight == 0)
         continue;
       valid(bone, clusters.size());
-      clusters[static_cast<size_t>(bone)]->AddControlPointIndex(i, weight);
+      merged[bone] += weight;
       sum += weight;
     }
     if (sum <= 0)
       invalid("PMX vertex has no valid influence");
+    for (const auto &[bone, weight] : merged)
+      clusters[static_cast<size_t>(bone)]->AddControlPointIndex(i, weight);
     if (std::abs(sum - 1) > 1e-5)
       s.loss("pmx_weight_normalization",
              "Raw influence values are preserved; FBX skin evaluation "

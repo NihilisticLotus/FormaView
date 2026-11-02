@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <set>
 
 namespace formaview::scene_export {
@@ -526,6 +527,7 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
             cluster->SetTransformLinkMatrix(identity);
         }
         std::vector<double> sums(count);
+        std::map<std::pair<size_t, size_t>, double> merged;
         bool found{};
         for (size_t ai = 0; ai < p.attributes_count; ++ai)
           if (p.attributes[ai].type == cgltf_attribute_type_weights) {
@@ -545,15 +547,22 @@ void read_gltf(Scene &s, const QByteArray &bytes) {
                     std::floor(joint) != joint)
                   invalid("Invalid glTF skin influence");
                 if (weight > 0) {
-                  clusters[static_cast<size_t>(joint)]->AddControlPointIndex(
-                      static_cast<int>(i), weight);
+                  const auto key = std::make_pair(i, static_cast<size_t>(joint));
+                  auto entry = merged.find(key);
+                  if (entry == merged.end()) {
+                    // Bound the merge node plus the eventual FBX cluster entry.
+                    s.reserve(104);
+                    entry = merged.emplace(key, 0.0).first;
+                  }
+                  entry->second += weight;
                   sums[i] += weight;
-                  s.reserve(24);
                 }
               }
           }
         if (!found)
           invalid("Skinned glTF primitive has no weights");
+        for (const auto &[key, weight] : merged)
+          clusters[key.second]->AddControlPointIndex(static_cast<int>(key.first), weight);
         for (const auto sum : sums) {
           if (sum <= 0)
             invalid("Skinned glTF vertex has no valid influence");
