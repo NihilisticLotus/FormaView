@@ -111,13 +111,14 @@ void actor_losses(const sk::ActorAsset &a, QJsonArray &out, QJsonArray &notices,
       "FACE3200",    "MATT0000",  "REFSKELT", "RAWWEIGHTS", "VTXNORMS",
       "VERTEXCOLOR", "BONENAMES", "ANIMINFO", "ANIMKEYS",   "SCALEKEYS"};
   for (const auto &c : a.chunks) {
-    if (c.name == "MRPHINFO" || c.name == "MRPHDATA")
-      fail(ErrorCode::Unsupported,
-           "ActorX morph chunks cannot yet be represented by this writer");
     if (!supported.contains(c.name) && !c.name.starts_with("EXTRAUVS"))
       loss(out, "actorx_chunk_omitted", QString::fromStdString(c.name));
   }
   if (a.mesh && include_mesh) {
+    for (const auto &c : a.chunks)
+      if (c.name == "MRPHINFO" || c.name == "MRPHDATA")
+        fail(ErrorCode::Unsupported,
+             "ActorX morph chunks cannot yet be represented by this writer");
     loss(notices, "actorx_material_slots",
          "ActorX material names and slots are retained; source files contain "
          "no resolved shading or texture graph");
