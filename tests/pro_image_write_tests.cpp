@@ -189,6 +189,30 @@ void run(const std::filesystem::path &dir) {
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   try {
+    if (argc == 3 && std::wstring_view(argv[1]) == L"--palette-tga") {
+      const std::filesystem::path root(argv[2]);
+      require(!std::filesystem::exists(root), "Palette fixture root must be new");
+      std::filesystem::create_directories(root);
+      std::vector<std::byte> data(18);
+      data[1] = std::byte{1}; data[2] = std::byte{1}; data[5] = std::byte{3};
+      data[7] = std::byte{24}; data[12] = std::byte{3}; data[14] = std::byte{1};
+      data[16] = std::byte{8}; data[17] = std::byte{32};
+      for (auto value : {0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 1, 2})
+        data.push_back(static_cast<std::byte>(value));
+      const auto path = root / "palette.tga"; write(path, data);
+      DirectX::TexMetadata metadata{};
+      require(SUCCEEDED(DirectX::GetMetadataFromTGAMemory(data.data(), data.size(), DirectX::TGA_FLAGS_NONE, metadata)), "DirectXTex palette metadata");
+      require(metadata.format == DXGI_FORMAT_R8G8B8A8_UNORM, "Palette fixture must expand to RGBA surface");
+      const auto file = ImageFile::open(path);
+      const auto image = file.decode(0);
+      require(image.channels.size() == 3, "8-bit palette indices must expand to RGB channels, not Y");
+      require(file.description().alpha == AlphaMode::Absent, "24-bit palette must not invent alpha");
+      for (std::size_t c = 0; c < 3; ++c)
+        for (std::size_t pixel = 0; pixel < 3; ++pixel)
+          require(value(image.channels[c], pixel) == (c == pixel ? 255 : 0), "Palette RGB pixel differs from independent palette oracle");
+      std::cout << "PASS real 8-bit indexed TGA expands to three exact RGB channels\n";
+      return 0;
+    }
     if (argc != 2)
       throw std::runtime_error("pro_image_write_tests EXTERNAL_DIRECTORY");
     std::filesystem::path root(argv[1]);

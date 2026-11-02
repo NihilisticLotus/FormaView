@@ -248,7 +248,13 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
       // Expose source channels, not the padding used by the codec.
       const auto bits = std::to_integer<unsigned>(p->bytes.at(16));
       const auto attributes = std::to_integer<unsigned>(p->bytes.at(17)) & 15U;
-      p->tga_channels = bits == 8                         ? 1U
+      const auto type = std::to_integer<unsigned>(p->bytes.at(2));
+      if (type == 1 || type == 9) {
+        if (std::to_integer<unsigned>(p->bytes.at(7)) != 24 ||
+            meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+          fail("Unsupported expanded TGA palette format");
+        p->tga_channels = 3;
+      } else p->tga_channels = bits == 8                  ? 1U
                         : (bits == 24 || attributes == 0) ? 3U
                                                           : 4U;
       p->desc.source.properties["tga_pixel_bits"] = std::to_string(bits);
