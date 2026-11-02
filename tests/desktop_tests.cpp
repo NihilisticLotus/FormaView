@@ -5742,8 +5742,13 @@ private slots:
     QTRY_VERIFY(item("fileList")->isVisible());
     desktop_->select(0); QCOMPARE(desktop_->selectedCount(),1);
     desktop_->preference("thumbnails",true);
-    desktop_->navigate(small_);
-    QTRY_COMPARE(desktop_->directory(),small_); QTRY_COMPARE(desktop_->count(),1);
+    // Earlier source-order cases add inputs to small_; this navigation oracle
+    // needs its own directory containing exactly the one expected thumbnail.
+    const auto singleFolder = root_ + "/thumbnail-single";
+    QVERIFY(QDir().mkpath(singleFolder));
+    QVERIFY(QFile::copy(small_ + "/唯一图片.png", singleFolder + "/唯一图片.png"));
+    desktop_->navigate(singleFolder);
+    QTRY_COMPARE(desktop_->directory(),singleFolder); QTRY_COMPARE(desktop_->count(),1);
     QTRY_VERIFY(delegate("唯一图片.png"));
     auto current = visualItems(delegate("唯一图片.png"),"fileThumbnail"); QVERIFY(!current.empty());
     QTRY_COMPARE_WITH_TIMEOUT(current.front()->property("status").toInt(),1,10000);
