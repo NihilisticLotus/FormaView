@@ -10,7 +10,8 @@ param(
     [switch]$ManifestOnly
 )
 $ErrorActionPreference = 'Stop'
-$RunDir = [IO.Path]::GetFullPath($RunDir)
+$RunDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunDir)
+$EvidenceDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceDir)
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $report = [ordered]@{ run_dir = $RunDir; checks = @() }
 function Add-Check([string]$name, [bool]$ok, [string]$detail) {

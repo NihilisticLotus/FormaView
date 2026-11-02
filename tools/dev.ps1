@@ -18,13 +18,14 @@ $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 if (-not $QtRoot -or -not (Test-Path -LiteralPath (Join-Path $QtRoot 'lib\cmake\Qt6\Qt6Config.cmake'))) {
     throw 'Set FORMAVIEW_QT_ROOT or pass -QtRoot for Qt 6.12.0 msvc2022_64.'
 }
+$QtRoot = (Resolve-Path -LiteralPath $QtRoot).ProviderPath
 $previousPath = $env:PATH
 $previousQt = $env:FORMAVIEW_QT_ROOT
 $previousPluginPath = $env:QT_PLUGIN_PATH
 $previousQmlPath = $env:QML_IMPORT_PATH
 Push-Location -LiteralPath $repo
 try {
-    $env:FORMAVIEW_QT_ROOT = (Resolve-Path -LiteralPath $QtRoot).Path
+    $env:FORMAVIEW_QT_ROOT = $QtRoot
     $env:PATH = (Join-Path $QtRoot 'bin') + ';' + $env:PATH
     $env:QT_PLUGIN_PATH = Join-Path $QtRoot 'plugins'
     $env:QML_IMPORT_PATH = Join-Path $QtRoot 'qml'
