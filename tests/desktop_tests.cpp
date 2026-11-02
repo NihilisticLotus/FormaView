@@ -5772,6 +5772,7 @@ private slots:
     QVERIFY(!invalid->errorString().isEmpty());
   }
   void imageThumbnailsWorkflow() {
+    const auto restoreList = qScopeGuard([&] { desktop_->preference("thumbnails", false); });
     const auto folder = root_ + "/thumbnail-ui";
     QVERIFY(QDir().mkpath(folder));
     QImage image(4096,4096,QImage::Format_RGBA8888);
@@ -5795,6 +5796,7 @@ private slots:
     auto thumbs = visualItems(first,"fileThumbnail"); QVERIFY(!thumbs.empty());
     QTRY_COMPARE_WITH_TIMEOUT(thumbs.front()->property("status").toInt(),1,10000);
     QTRY_VERIFY(delegate("02 broken.png"));
+    QTRY_VERIFY(!visualItems(delegate("02 broken.png"),"thumbnailFailure").isEmpty());
     auto failed = visualItems(delegate("02 broken.png"),"thumbnailFailure"); QVERIFY(!failed.empty());
     QTRY_VERIFY(failed.front()->isVisible());
     auto models = visualItems(delegate("03 model.obj"),"fileThumbnail"); QVERIFY(!models.empty());
