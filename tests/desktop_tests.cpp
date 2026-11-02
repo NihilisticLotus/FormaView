@@ -7461,10 +7461,38 @@ private slots:
     QTRY_VERIFY(item("modelAnimationBarHost") &&
                 item("modelAnimationBarHost")->isVisible());
     if (session->info().value("psa").toBool()) {
+      window_->requestActivate();
+      QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      auto *rootOptions = item("animRootOptions");
+      QVERIFY(rootOptions && rootOptions->isEnabled());
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+          rootOptions->mapToScene({rootOptions->width()/2, rootOptions->height()/2}).toPoint());
+      QTRY_VERIFY(item("animDetailsToggle"));
+      auto *rootMenu = window_->findChild<QObject *>("animRootMenu");
+      QVERIFY(rootMenu);
+      QTRY_VERIFY(rootMenu->property("opened").toBool());
+      auto *details = item("animDetailsToggle");
+      if (!details->property("checked").toBool()) {
+        // The menu can be vertically constrained by the bottom timeline.
+        // Activate its real checkable item through the keyboard.
+        details->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(details->hasActiveFocus());
+        QSignalSpy triggered(details, SIGNAL(triggered()));
+        QTest::keyClick(window_, Qt::Key_Space);
+        QCOMPARE(triggered.count(), 1);
+      } else {
+        QTest::keyClick(window_, Qt::Key_Escape);
+      }
+      QTRY_VERIFY(item("animPairingMenuButton"));
       auto *menuButton = item("animPairingMenuButton");
       QVERIFY(menuButton && menuButton->isVisible());
+      QSignalSpy pairingFrame(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!pairingFrame.isEmpty());
+      QSignalSpy pairingClicked(menuButton, SIGNAL(clicked()));
       QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
           menuButton->mapToScene({menuButton->width() / 2, menuButton->height() / 2}).toPoint());
+      QCOMPARE(pairingClicked.count(), 1);
       QTRY_VERIFY(item("animReference") && item("animReference")->isVisible());
       QVERIFY(item("animReference")->isEnabled());
       QCOMPARE(item("animCompanion")->isEnabled(), !session->info().value("referencePath").toString().isEmpty());
@@ -7573,12 +7601,14 @@ private slots:
         }
         auto *bar = item("modelAnimationBarHost");
         QVERIFY(bar);
-        auto *timeline = item("modelAnimationBar");
+        auto *timeline = item("modelAnimationBarHost");
         QVERIFY(timeline);
         timeline->setProperty("detailsVisible", false);
         QTest::qWait(60);
         const auto compactHeight = timeline->height();
-        QVERIFY(!item("animStart")->isVisible());
+        auto *startLabel = timeline->findChild<QQuickItem *>("animStart");
+        QVERIFY(startLabel);
+        QVERIFY(!startLabel->isVisible());
         for (const auto *name : {"animPlay", "animSpeed", "animClip", "animRootOptions", "animRootLock"})
           QVERIFY2(item(name) && item(name)->isVisible(), name);
         auto *lock = item("animRootLock"), *arrow = item("animRootOptions");
