@@ -1887,7 +1887,11 @@ void ModelSession::renderingFailed(const QString &reason, std::shared_ptr<const 
   emit changed();
 }
 void ModelSession::gpuSkinningFailed(const QString &reason, std::shared_ptr<const formaview::render::Frame> failed) {
-  if (!frame_ || !failed || frame_->geometry!=failed->geometry || !failed->geometry) return;
+  if (!failed || !failed->geometry) return;
+  const auto matches = [&](const auto &published) {
+    return published && published->geometry == failed->geometry;
+  };
+  if (!matches(frames_.model) && !matches(frames_.uv)) return;
   qWarning().noquote()<<"Model GPU fallback:"<<reason;
   gpuDisabled_=true; gpuGeometry_.reset(); gpuKey_.clear(); gpuViewOwner_.reset(); gpuHighlightOwner_.reset();
   rebuild();

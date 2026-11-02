@@ -377,14 +377,26 @@ int main(int argc,char **argv) {
     const auto mode=args.size()>4?args[4]:QString("gpu");report["mode"]=mode;report["sample"]=path;
     const auto externals=qEnvironmentVariable("FORMAVIEW_GPU_EXTERNALS").split(';',Qt::SkipEmptyParts);report["externals"]=QJsonArray::fromStringList(externals);
     if(mode=="cpu")qputenv("FORMAVIEW_SKINNING","cpu");else qunsetenv("FORMAVIEW_SKINNING");
-    if(mode=="fallback") {
+    if(mode=="fallback" || mode=="fallback-uv") {
       ModelSession session;QQuickWindow window;window.resize(800,600);
       auto item=std::make_unique<ModelView>(window.contentItem());item->setSize({800,600});item->setSession(&session);
       auto failures=std::make_shared<std::atomic<int>>(0);const auto original=item->skinFailure;
       item->skinFailure=[failures,original](QString reason,std::shared_ptr<const Frame> frame){++*failures;original(reason,std::move(frame));};
       window.show();openSample(session,path,externals);settle([&]{return session.inspectable() && session.frame() && session.frame()->geometry;},90000);
+      if(mode=="fallback-uv") {
+        item->setRepresentation(0);
+        session.setMode(1);
+        settle([&]{return session.inspectable() && session.frameFor(false) && session.frameFor(false)->geometry && session.frameFor(true) && session.frame()==session.frameFor(true);},30000);
+        require(session.frame()->geometry!=session.frameFor(false)->geometry,"UV fixture must have a distinct published geometry");
+        auto stale=std::make_shared<Frame>();stale->geometry=std::make_shared<Frame>();
+        session.gpuSkinningFailed("stale frame",stale);
+        require(bool(session.frameFor(false)->geometry),"Stale GPU failure must not disable current geometry");
+      }
       session.togglePlay();QElapsedTimer warm;warm.start();settle([&]{return warm.elapsed()>200;},2000);
-      qputenv("FORMAVIEW_GPU_FORCE_FALLBACK","1");item->update();settle([&]{return failures->load()>0 && session.inspectable() && session.frame() && !session.frame()->geometry;},90000);
+      qputenv("FORMAVIEW_GPU_FORCE_FALLBACK","1");item->update();
+      settle([&]{return failures->load()>0;},15000);
+      report["fallbackCallbacks"]=failures->load();report["uvMode"]=session.mode()==1;
+      settle([&]{return session.inspectable() && session.frameFor(false) && !session.frameFor(false)->geometry;},mode=="fallback-uv"?15000:90000);
       const auto revision=session.frame()->revision;settle([&]{return session.frame()->revision>revision;},30000);
       require(session.playing(),"GPU capability fallback stopped playback");report["fallbackCallbacks"]=failures->load();report["cpuPlaybackAdvanced"]=true;
       session.togglePlay();item.reset();session.clear();window.hide();window.releaseResources();QCoreApplication::processEvents();qunsetenv("FORMAVIEW_GPU_FORCE_FALLBACK");
