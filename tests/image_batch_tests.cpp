@@ -196,8 +196,11 @@ void continuous_history(const std::filesystem::path &root) {
     }
   }
   ImageBatchService recovered(scope(root), journal);
-  require(call(recovered, {{"operation", "list_jobs"}})["total"].toInt() == 66,
+  const auto pagedHistory = call(recovered, {{"operation", "list_jobs"}});
+  require(pagedHistory["total"].toInt() == 66,
           "Restart lost retained history");
+  require(recovered.job_summaries() == pagedHistory["items"].toArray(),
+          "In-process history snapshot differs from the paged service response");
   require(call(recovered, {{"operation", "get_job"}, {"id", first_job}})["state"] == "succeeded",
           "Restart lost earliest job");
   const auto repeated = call(recovered, first_submission);

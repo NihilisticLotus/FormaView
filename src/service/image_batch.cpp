@@ -161,6 +161,15 @@ struct ImageBatchService::Impl {
   // Disk serialisation never holds the state mutex used by queries/cancel.
   std::mutex mutation, state;
   std::map<QString, std::shared_ptr<Record>> records;
+  QJsonArray jobSummaries() {
+    QJsonArray items;
+    const std::lock_guard lock(state);
+    for (const auto &[key, record] : records)
+      if (record->data["kind"] == "job")
+        items.append(QJsonObject{{"id", key}, {"state", record->data["state"]},
+                                 {"plan_id", record->data["plan_id"]}});
+    return items;
+  }
   std::unique_ptr<QLockFile> owner;
   std::optional<PrivateDirectory> private_directory;
   QJsonArray preserved_journal_temporaries;
@@ -788,15 +797,7 @@ struct ImageBatchService::Impl {
     }
     if (operation == "list_jobs") {
       fields(request, {"version", "operation", "offset", "limit"});
-      QJsonArray items;
-      {
-        const std::lock_guard lock(state);
-        for (const auto &[key, record] : records)
-          if (record->data["kind"] == "job")
-            items.append(QJsonObject{{"id", key},
-                                     {"state", record->data["state"]},
-                                     {"plan_id", record->data["plan_id"]}});
-      }
+      const auto items = jobSummaries();
       return page({{"version", 1}, {"items", items},
                    {"preserved_journal_temporaries", preserved_journal_temporaries}}, request);
     }
@@ -910,6 +911,9 @@ ImageBatchService::~ImageBatchService() = default;
 bool ImageBatchService::has_active_work() const {
   const auto stats = impl_->scheduler.stats();
   return stats.running != 0 || stats.queued != 0;
+}
+QJsonArray ImageBatchService::job_summaries() const {
+  return impl_->jobSummaries();
 }
 QJsonObject ImageBatchService::request(const QJsonObject &request,
                                        std::stop_token stop) {

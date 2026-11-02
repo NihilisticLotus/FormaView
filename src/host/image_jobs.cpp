@@ -325,16 +325,12 @@ bool ImageJobs::activeJobs() const {
     return false;
   if (service_->has_active_work())
     return true;
-  auto q = request("list_jobs");
-  q["limit"] = 100;
-  for (;;) {
-    const auto r = service_->request(q);
-    // A query failure must not be mistaken for permission to discard work.
-    if (r.contains("error")) return true;
-    for (const auto &v : r["items"].toArray())
+  try {
+    for (const auto &v : service_->job_summaries())
       if (active(v.toObject()["state"].toString())) return true;
-    if (r["next_offset"].isNull()) break;
-    q["offset"] = r["next_offset"];
+  } catch (...) {
+    // A query failure must not be mistaken for permission to discard work.
+    return true;
   }
   return false;
 }
@@ -929,19 +925,12 @@ void ImageJobs::poll() {
     if (!busy_ && retiredEndpoints_.empty() && !historyTask_ && !historyDirty_) timer_.stop();
     return;
   }
-  auto list = request("list_jobs");
-  list["limit"] = 100;
   QVariantList rows;
-  for (;;) {
-    const auto listing = service_->request(list);
-    if (listing.contains("error")) {
-      error_ = listing["error"].toObject()["message"].toString();
-      emit changed();
-      return;
-    }
-    rows.append(listing["items"].toArray().toVariantList());
-    if (listing["next_offset"].isNull()) break;
-    list["offset"] = listing["next_offset"];
+  try { rows = service_->job_summaries().toVariantList(); }
+  catch (const std::exception &error) {
+    error_ = QString::fromUtf8(error.what());
+    emit changed();
+    return;
   }
   if (groups_) rows.append(groups_->request(request("list_jobs"))["items"].toArray().toVariantList());
   rows.removeIf([&](const auto &v) { return archivedJobs_.value(v.toMap().value("id").toString()).toMap().value("deleted").toBool(); });

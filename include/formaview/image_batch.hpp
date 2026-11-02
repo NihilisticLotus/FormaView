@@ -1,5 +1,6 @@
 #pragma once
 #include "formaview/image_requests.hpp"
+#include <QJsonArray>
 #include <memory>
 
 namespace formaview::imaging {
@@ -44,6 +45,8 @@ public:
   ImageBatchService(const ImageBatchService &) = delete;
   ImageBatchService &operator=(const ImageBatchService &) = delete;
   [[nodiscard]] QJsonObject request(const QJsonObject &, std::stop_token = {});
+  // Internal in-process snapshot; transport clients use paged list_jobs.
+  [[nodiscard]] QJsonArray job_summaries() const;
   [[nodiscard]] bool has_active_work() const;
 
 private:
