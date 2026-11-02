@@ -3487,6 +3487,23 @@ private slots:
     const auto folder = root_ + "/输出 空格 #100%";
     QVERIFY(QDir().mkpath(folder));
     const auto expected = QUrl::fromLocalFile(folder);
+#ifdef Q_OS_WIN
+    const auto nativeDialog = []() -> HWND {
+      HWND result = nullptr;
+      EnumWindows([](HWND handle, LPARAM context) -> BOOL {
+        DWORD process = 0;
+        GetWindowThreadProcessId(handle, &process);
+        wchar_t name[32]{};
+        if (process == GetCurrentProcessId() && IsWindowVisible(handle) &&
+            GetClassNameW(handle, name, 32) && QString::fromWCharArray(name) == "#32770") {
+          *reinterpret_cast<HWND *>(context) = handle;
+          return FALSE;
+        }
+        return TRUE;
+      }, reinterpret_cast<LPARAM>(&result));
+      return result;
+    };
+#endif
     QCOMPARE(desktop_->existingFolderUrl(folder), expected);
     QCOMPARE(desktop_->existingFolderUrl(folder + "/未创建/子目录"), expected);
     QCOMPARE(desktop_->existingFolderUrl(QDir::toNativeSeparators(folder)), expected);
@@ -3533,6 +3550,13 @@ private slots:
         QVERIFY(field->setProperty("text", entered));
         QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
         QTRY_VERIFY(dialog->property("visible").toBool());
+#ifdef Q_OS_WIN
+        // QML visible precedes Qt's deferred native-dialog thread startup.
+        // Reject only after the shell window exists, as a real user would.
+        QTRY_VERIFY_WITH_TIMEOUT(nativeDialog() != nullptr, 10000);
+        const auto nativeHandle = nativeDialog();
+        QVERIFY(nativeHandle);
+#endif
         QCOMPARE(dialog->property("currentFolder").toUrl(), expected);
         if (entered == folder && qEnvironmentVariableIsSet("FORMAVIEW_FOLDER_NATIVE_CAPTURE")) {
           const auto marker = root_ + "/native-" + QString::number(mode);
@@ -3543,11 +3567,16 @@ private slots:
           QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
           QTRY_VERIFY(!dialog->property("visible").toBool());
           QCOMPARE(field->property("text").toString(), entered);
-          QTest::qWait(200); // Allow the native shell dialog thread to unwind before owner teardown.
+#ifdef Q_OS_WIN
+          QTRY_VERIFY_WITH_TIMEOUT(!IsWindow(nativeHandle), 10000);
+#endif
           break;
         }
         QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
         QTRY_VERIFY(!dialog->property("visible").toBool());
+#ifdef Q_OS_WIN
+        QTRY_VERIFY_WITH_TIMEOUT(!IsWindow(nativeHandle), 10000);
+#endif
         QCOMPARE(field->property("text").toString(), entered);
       }
     }
