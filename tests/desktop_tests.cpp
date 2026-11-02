@@ -5349,7 +5349,11 @@ private slots:
     const auto verifyJobChoice = [&] {
       auto *choice = item("imageJobChoice");
       QVERIFY(choice);
-      const auto jobs = service->jobs();
+      auto jobs = service->jobs();
+      // The batch selector presents newest first, independently of journal order.
+      std::stable_sort(jobs.begin(), jobs.end(), [](const QVariant &a, const QVariant &b) {
+        return a.toMap().value("created_at").toString() > b.toMap().value("created_at").toString();
+      });
       const auto id = service->job().value("id");
       int selected = -1;
       for (qsizetype i = 0; i < jobs.size(); ++i)
