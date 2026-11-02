@@ -3741,6 +3741,26 @@ private slots:
         QMetaObject::invokeMethod(conversion, "close");
     });
     QTRY_VERIFY(item("conversionOutputRoot"));
+    auto *conversionSettings = window_->findChild<QObject *>("conversionSettings");
+    auto *colour = window_->findChild<QObject *>("conversionColour");
+    auto *transfer = window_->findChild<QObject *>("conversionTransfer");
+    auto *exposure = window_->findChild<QObject *>("conversionExposure");
+    QVERIFY(conversionSettings && colour && transfer && exposure);
+    colour->setProperty("checked", true);
+    transfer->setProperty("currentIndex", 1);
+    exposure->setProperty("value", 100);
+    colour->setProperty("checked", false);
+    QVariant selectedOptions;
+    QVERIFY(QMetaObject::invokeMethod(conversionSettings, "options", Q_RETURN_ARG(QVariant, selectedOptions)));
+    QCOMPARE(selectedOptions.toMap().value("transfer").toString(), QString("preserve"));
+    QCOMPARE(selectedOptions.toMap().value("exposure").toDouble(), 0.0);
+    colour->setProperty("checked", true);
+    QVERIFY(QMetaObject::invokeMethod(conversionSettings, "options", Q_RETURN_ARG(QVariant, selectedOptions)));
+    QCOMPARE(selectedOptions.toMap().value("transfer").toString(), QString("linear_to_srgb"));
+    QCOMPARE(selectedOptions.toMap().value("exposure").toDouble(), 1.0);
+    colour->setProperty("checked", false);
+    transfer->setProperty("currentIndex", 0);
+    exposure->setProperty("value", 0);
     // Source validation/import runs on the control worker. The settings page
     // may be visible before its input list and naming example are published.
     QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 15000);
