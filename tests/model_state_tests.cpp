@@ -16,6 +16,47 @@
 
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  if (app.arguments().size() == 2 && app.arguments()[1] == "--uv-budget") {
+    try {
+      ModelDocument document;
+      ModelMesh mesh;
+      mesh.points = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      mesh.corners = {0, 1, 2};
+      mesh.normals.assign(3, QVector3D(0, 0, 1));
+      mesh.colours.assign(3, QVector3D(1, 1, 1));
+      mesh.cornerMaterial.assign(3, 0);
+      mesh.materials = {"material"};
+      mesh.textures.resize(1);
+      mesh.uvs = {{{0, 0}, {1, 0}, {0, 1}}};
+      mesh.invalidUVs = {false};
+      mesh.triangles.resize(2300001);
+      for (std::size_t i = 0; i < mesh.triangles.size(); ++i)
+        mesh.triangles[i] = static_cast<std::uint32_t>(i % 3);
+      document.meshes.push_back(std::move(mesh));
+      ModelRenderState state;
+      state.bindings = {-1}; state.uvs = {0};
+      {
+        const auto frames = buildModelFrames(document, state, 1, {});
+        if (!frames.model || frames.model->vertices.size() != 2300001)
+          throw std::runtime_error("Large ordinary frame must remain supported");
+      }
+      state.mode = 1;
+      bool rejected = false;
+      try { (void)buildModelFrames(document, state, 2, {}); }
+      catch (const formaview::skeletal::Failure &failure) {
+        if (failure.error.code != formaview::ErrorCode::ResourceLimit) throw;
+        rejected = true;
+      }
+      if (!rejected) throw std::runtime_error("Oversized UV frame did not report ResourceLimit");
+      document.meshes[0].triangles.resize(3);
+      if (!buildModelFrames(document, state, 3, {}).uv)
+        throw std::runtime_error("Frame builder did not recover after budget rejection");
+      std::cout << "PASS UV ResourceLimit, ordinary frame and subsequent small frame\n";
+      return 0;
+    } catch (const std::exception &error) {
+      std::cerr << error.what() << '\n'; return 1;
+    }
+  }
   if (app.arguments().size() != 4)
     return 64;
   const QDir fixtures(app.arguments()[1]), ufbx(app.arguments()[2]),

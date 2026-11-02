@@ -75,6 +75,9 @@ public:
     payload = source->frame;
     data = payload && payload->geometry ? payload->geometry : payload;
     skinFailure = source->skinFailure;
+    frameFailure = source->frameFailure;
+    if (failedFrame.lock() != data || (data && failedRevision != data->revision))
+      frameFailed = false;
     frameSubmitted = source->frameSubmitted;
     viewMatrix = source->useViewMatrix
                      ? source->viewMatrix
@@ -121,11 +124,17 @@ public:
       uniform.reset(
           rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, uniformBytes));
       if (!uniform->create()) {
-        qFatal("Uniform allocation failed");
-        }
+        uniform.reset();
+        rejectFrame(nullptr, nullptr, "Uniform allocation failed");
+      }
     }
   }
   void render(QRhiCommandBuffer *cb) override {
+    if (!frameFailed && owner != rhi()) initialize(nullptr);
+    if (frameFailed) {
+      cb->beginPass(renderTarget(), QColor(24, 24, 24), {1, 0}); cb->endPass();
+      return;
+    }
     // The previous frame has been submitted: buffers replaced during it can go now.
     retiredBuffers.clear();
     if (!data || data->vertices.empty()) {
@@ -206,20 +215,21 @@ public:
     if (uploadedFrame.lock() != data || data->revision != revision) {
       const auto bytes = data->vertices.size() * sizeof(Vertex);
       uploadedBytes += bytes + data->rgba.size() * sizeof(float);
-      if (bytes > 256ULL * 1024 * 1024 || data->width <= 0 ||
+      if (bytes > vertex_upload_budget || data->width <= 0 ||
           data->height <= 0 ||
           data->rgba.size() !=
               static_cast<std::size_t>(data->width) *
                   static_cast<std::size_t>(data->height) * 4 ||
-          data->rgba.size() > 128ULL * 1024 * 1024)
-        qFatal("Render upload budget/shape rejected");
+          data->rgba.size() > 128ULL * 1024 * 1024) {
+        rejectFrame(cb, updates, "Render upload budget/shape rejected"); return;
+      }
       if (!vertices || vertices->size() != bytes) {
         vertices.reset(rhi()->newBuffer(skinSource?QRhiBuffer::Immutable:QRhiBuffer::Dynamic,
                                         QRhiBuffer::VertexBuffer,
                                         static_cast<quint32>(bytes)));
         if (!vertices->create()) {
           if(skinSource){rejectSkin("Vertex allocation failed");updates->release();return;}
-          qFatal("Vertex allocation failed");
+          rejectFrame(cb, updates, "Vertex allocation failed"); return;
           }
       }
       if(skinSource)updates->uploadStaticBuffer(vertices.get(),data->vertices.data());
@@ -235,8 +245,9 @@ public:
                     static_cast<std::uint64_t>(data->selectionVertices) >
                 data->guides.size() ||
             data->selectionVertices % 2 || data->gridVertices % 2 ||
-            data->guides.size() % 2)
-          qFatal("Invalid model guide geometry");
+            data->guides.size() % 2) {
+          rejectFrame(cb, updates, "Invalid model guide geometry"); return;
+        }
         if (!guideVertices || guideVertices->size() != guideBytes) {
           if (guideVertices) retiredBuffers.push_back(std::move(guideVertices));
           guideVertices.reset(
@@ -244,7 +255,7 @@ public:
                                static_cast<quint32>(guideBytes)));
           if (!guideVertices->create()) {
             if(skinSource){rejectSkin("Guide allocation failed");updates->release();return;}
-            qFatal("Guide allocation failed");
+            rejectFrame(cb, updates, "Guide allocation failed"); return;
             }
         }
         updates->updateDynamicBuffer(guideVertices.get(), 0,
@@ -264,7 +275,7 @@ public:
         texture.reset(rhi()->newTexture(QRhiTexture::RGBA32F, size));
         if (!texture->create()) {
           if(skinSource){rejectSkin("Float texture unavailable");updates->release();return;}
-          qFatal("Float texture unavailable");
+          rejectFrame(cb, updates, "Float texture unavailable"); return;
           }
         if (!sampler) {
           sampler.reset(rhi()->newSampler(
@@ -272,14 +283,14 @@ public:
               QRhiSampler::Repeat, QRhiSampler::Repeat));
           if (!sampler->create()) {
             if(skinSource){rejectSkin("Sampler failed");updates->release();return;}
-            qFatal("Sampler failed");
+            rejectFrame(cb, updates, "Sampler failed"); return;
             }
         }
         bindings.reset(rhi()->newShaderResourceBindings());
         configureBindings(bindings.get(), texture.get(), sampler.get());
         if (!bindings->create()) {
           if(skinSource){rejectSkin("Bindings failed");updates->release();return;}
-          qFatal("Bindings failed");
+          rejectFrame(cb, updates, "Bindings failed"); return;
           }
       }
       QRhiTextureSubresourceUploadDescription upload(
@@ -296,8 +307,9 @@ public:
         for (const auto &src : data->textures) {
           if (!src || src->width <= 0 || src->height <= 0 ||
               src->rgba.size() != static_cast<std::size_t>(src->width) *
-                                      static_cast<std::size_t>(src->height) * 4)
-            qFatal("Model texture shape rejected");
+                                      static_cast<std::size_t>(src->height) * 4) {
+            rejectFrame(cb, updates, "Model texture shape rejected"); return;
+          }
           uploadedBytes += src->rgba.size() * sizeof(float);
           auto extra = std::make_unique<ExtraTexture>();
           extra->source = src;
@@ -308,7 +320,7 @@ public:
                   : QRhiTexture::Flags{}));
           if (!extra->texture->create()) {
             if(skinSource){rejectSkin("Model texture allocation failed");updates->release();return;}
-            qFatal("Model texture allocation failed");
+            rejectFrame(cb, updates, "Model texture allocation failed"); return;
             }
           const auto wrap = [](int mode) {
             return mode == 1   ? QRhiSampler::ClampToEdge
@@ -324,13 +336,13 @@ public:
               wrap(src->wrapU), wrap(src->wrapV)));
           if (!extra->sampler->create()) {
             if(skinSource){rejectSkin("Model sampler allocation failed");updates->release();return;}
-            qFatal("Model sampler allocation failed");
+            rejectFrame(cb, updates, "Model sampler allocation failed"); return;
             }
           extra->bindings.reset(rhi()->newShaderResourceBindings());
           configureBindings(extra->bindings.get(), extra->texture.get(), extra->sampler.get());
           if (!extra->bindings->create()) {
             if(skinSource){rejectSkin("Model texture bindings failed");updates->release();return;}
-            qFatal("Model texture bindings failed");
+            rejectFrame(cb, updates, "Model texture bindings failed"); return;
             }
           QRhiTextureSubresourceUploadDescription pixels(
               src->rgba.data(),
@@ -373,7 +385,7 @@ public:
       guideBindings.reset(rhi()->newShaderResourceBindings());
       using B=QRhiShaderResourceBinding;
       guideBindings->setBindings({B::uniformBuffer(0,B::VertexStage|B::FragmentStage,uniform.get()),B::sampledTexture(1,B::FragmentStage,texture.get(),sampler.get())});
-      if(!guideBindings->create()){if(skinSource){rejectSkin("Guide bindings failed");updates->release();return;}qFatal("Guide bindings failed");}
+      if(!guideBindings->create()){if(skinSource){rejectSkin("Guide bindings failed");updates->release();return;}rejectFrame(cb, updates, "Guide bindings failed");return;}
     }
     trimResidents();
     if (!pipeline) {
@@ -411,7 +423,7 @@ public:
       pipeline->setPolygonMode(wireMode ? QRhiGraphicsPipeline::Line : QRhiGraphicsPipeline::Fill);
       if (!pipeline->create()) {
         if(skinSource){rejectSkin("Pipeline failed");updates->release();return;}
-        qFatal("Pipeline failed");
+        rejectFrame(cb, updates, "Pipeline failed"); return;
         }
     }
     if (data->backgroundVertices && !uvBackgroundPipeline) {
@@ -429,7 +441,7 @@ public:
       uvBackgroundPipeline->setTopology(QRhiGraphicsPipeline::Triangles);
       if (!uvBackgroundPipeline->create()) {
         if(skinSource){rejectSkin("UV background pipeline failed");updates->release();return;}
-        qFatal("UV background pipeline failed");
+        rejectFrame(cb, updates, "UV background pipeline failed"); return;
         }
     }
     if (guideVertices && !guidePipeline) {
@@ -447,7 +459,7 @@ public:
       guidePipeline->setTopology(QRhiGraphicsPipeline::Lines);
       if (!guidePipeline->create()) {
         if(skinSource){rejectSkin("Guide pipeline failed");updates->release();return;}
-        qFatal("Guide pipeline failed");
+        rejectFrame(cb, updates, "Guide pipeline failed"); return;
         }
     }
     if (guideVertices && payload->selectionVertices && !selectionPipeline) {
@@ -465,7 +477,7 @@ public:
       selectionPipeline->setTopology(QRhiGraphicsPipeline::Lines);
       if (!selectionPipeline->create()) {
         if(skinSource){rejectSkin("Skeleton selection pipeline failed");updates->release();return;}
-        qFatal("Skeleton selection pipeline failed");
+        rejectFrame(cb, updates, "Skeleton selection pipeline failed"); return;
         }
     }
     if (!blendedPipeline &&
@@ -490,7 +502,7 @@ public:
       blendedPipeline->setTargetBlends({blend});
       if (!blendedPipeline->create()) {
         if(skinSource){rejectSkin("Transparent pipeline failed");updates->release();return;}
-        qFatal("Transparent pipeline failed");
+        rejectFrame(cb, updates, "Transparent pipeline failed"); return;
         }
     }
     std::array<float, uniformBytes / 4> u{};
@@ -512,6 +524,12 @@ public:
     updates->updateDynamicBuffer(uniform.get(), 0, skinSource?uniformBytes:80, u.data());
     const auto prepare = elapsed(start);
     const auto record = Clock::now();
+    if (data->backgroundVertices &&
+        (!data->uv || !data->lines || data->backgroundVertices != 6 ||
+         data->vertices.size() < 6 || data->backgroundTexture < 0 ||
+         static_cast<std::size_t>(data->backgroundTexture) >= extraTextures.size())) {
+      rejectFrame(cb, updates, "Invalid UV background range"); return;
+    }
     cb->beginPass(renderTarget(), QColor(24, 24, 24, skinProbe?0:255), {1, 0}, updates);
     cb->setGraphicsPipeline(pipeline.get());
     cb->setViewport({0, 0,
@@ -522,11 +540,6 @@ public:
     const QRhiCommandBuffer::VertexInput meshInputs[]={{vertices.get(),0},{skinRanges.get(),0},{morphRanges.get(),0}};
     cb->setVertexInput(0, skinSource?3:1, meshInputs);
     if (data->backgroundVertices) {
-      if (!data->uv || !data->lines || data->backgroundVertices != 6 ||
-          data->vertices.size() < 6 || data->backgroundTexture < 0 ||
-          static_cast<std::size_t>(data->backgroundTexture) >=
-              extraTextures.size())
-        qFatal("Invalid UV background range");
       cb->setGraphicsPipeline(uvBackgroundPipeline.get());
       cb->setShaderResources(
           extraTextures
@@ -724,6 +737,10 @@ private:
   bool skinFailed{};
   int skinProbe{},pipelineProbe{};
   std::function<void(QString, std::shared_ptr<const Frame>)> skinFailure;
+  std::function<void(QString, std::shared_ptr<const Frame>)> frameFailure;
+  std::weak_ptr<const Frame> failedFrame;
+  std::uint64_t failedRevision{};
+  bool frameFailed{};
   std::function<void(std::shared_ptr<const Frame>)> frameSubmitted;
   const std::vector<DrawRange> &draws() const { return payload->geometry?payload->draws:data->draws; }
   void configureBindings(QRhiShaderResourceBindings *srb, QRhiTexture *tex, QRhiSampler *sample) {
@@ -734,6 +751,22 @@ private:
       B::sampledTexture(4,B::VertexStage,paletteTexture.get(),skinSampler.get()),
       B::sampledTexture(5,B::VertexStage,morphTexture.get(),skinSampler.get())});
     else srb->setBindings({B::uniformBuffer(0,B::VertexStage|B::FragmentStage,uniform.get()), B::sampledTexture(1,B::FragmentStage,tex,sample)});
+  }
+  void rejectFrame(QRhiCommandBuffer *cb, QRhiResourceUpdateBatch *updates,
+                   const QString &reason) {
+    if (updates) updates->release();
+    if (!frameFailed) {
+      qWarning().noquote() << "Render frame rejected:" << reason;
+      if (frameFailure) frameFailure(reason, payload);
+    }
+    frameFailed = true;
+    failedFrame = data;
+    failedRevision = data ? data->revision : 0;
+    // A partially created resource must never be reused by the next frame.
+    // initialize() retires all resources before a new payload is rendered.
+    owner = nullptr;
+    if (readback && !readbackCompleted) { readbackCompleted = true; readback({}, {}); }
+    if (cb) { cb->beginPass(renderTarget(), QColor(24, 24, 24), {1, 0}); cb->endPass(); }
   }
   bool rejectSkin(QString reason) {
     if (!skinFailed) { qWarning().noquote()<<"GPU skinning CPU fallback:"<<reason; if(skinFailure)skinFailure(reason,payload); }

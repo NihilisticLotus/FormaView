@@ -204,6 +204,7 @@ public:
   void enableGpuSkinning(bool enabled);
   void attachRenderWindow(QQuickWindow *);
   void gpuSkinningFailed(const QString &, std::shared_ptr<const formaview::render::Frame>);
+  void renderingFailed(const QString &, std::shared_ptr<const formaview::render::Frame>);
   void pick(const QMatrix4x4 &, QPointF normalized, bool uvView = false,
       std::shared_ptr<const formaview::render::Frame> presented = {});
   std::shared_ptr<const formaview::render::Frame> frame() const {

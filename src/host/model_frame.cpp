@@ -165,14 +165,21 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
         connect(document.nodeById.value(selected.value("parent").toString()));
     }
   }
-  std::size_t capacity = 0;
+  // UV adds a 44-vertex grid and at most six background vertices.
+  constexpr std::size_t maxVertices = render::vertex_upload_budget / sizeof(render::Vertex);
+  std::size_t capacity = mode == 1 ? 50 : 0;
   for (std::size_t mi = 0; mi < document.meshes.size(); ++mi) {
     if (!state.visible.empty() && !state.visible[mi])
       continue;
     if ((state.isolated || mode != 0) &&
         mi != static_cast<std::size_t>(state.mesh))
       continue;
-    capacity += document.meshes[mi].triangles.size() * (mode == 1 ? 2 : 1);
+    const auto corners = document.meshes[mi].triangles.size();
+    const auto multiplier = mode == 1 ? 2U : 1U;
+    if (corners > (maxVertices - capacity) / multiplier)
+      throw skeletal::Failure(ErrorCode::ResourceLimit,
+                              "Model frame exceeds the 256 MiB vertex upload budget");
+    capacity += corners * multiplier;
   }
   f->vertices.reserve(capacity);
   std::size_t poseOffset = 0;

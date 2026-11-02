@@ -28,6 +28,43 @@ struct Result {
   std::uint64_t owned{};
   int gridPixels{}, axisPixels{};
 };
+void rejectedFrame(const std::shared_ptr<Frame> &frame) {
+  QQuickWindow window;
+  window.setFlags(window.flags() | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
+  window.resize(128, 128);
+  auto item = std::make_unique<Item>(window.contentItem());
+  item->setSize({128, 128});
+  struct State {
+    std::atomic<int> failures{};
+    std::atomic<bool> readbackFailed{}, recovered{};
+  };
+  const auto state = std::make_shared<State>();
+  item->frameFailure = [state](QString reason, std::shared_ptr<const Frame>) {
+    QMetaObject::invokeMethod(QCoreApplication::instance(), [state, reason] {
+      if (!reason.isEmpty()) ++state->failures;
+    }, Qt::QueuedConnection);
+  };
+  item->readback = [state](QByteArray bytes, QSize size) {
+    state->readbackFailed = bytes.isEmpty() && size.isEmpty();
+  };
+  const auto wait = [&](const auto &ready) {
+    QElapsedTimer timer; timer.start();
+    while (!ready() && timer.elapsed() < 10000) {
+      QCoreApplication::processEvents(); QThread::msleep(1);
+    }
+    if (!ready()) throw std::runtime_error("Frame rejection/recovery timed out");
+  };
+  item->setFrame(frame); window.show();
+  wait([&] { return state->failures == 1 && state->readbackFailed; });
+  auto valid = std::make_shared<Frame>();
+  valid->rgba = {1, 1, 1, 1}; valid->revision = frame->revision + 1;
+  quad(*valid, 0, {1, 0, 0}, 1, 0);
+  item->frameSubmitted = [state, valid](auto submitted) { state->recovered = submitted == valid; };
+  item->setFrame(valid);
+  wait([&] { return state->recovered.load(); });
+  if (state->failures != 1) throw std::runtime_error("Repeated frame failure notification");
+  item.reset(); window.hide(); window.releaseResources();
+}
 Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
               bool axes = false) {
   auto window = std::make_unique<QQuickWindow>();
@@ -272,6 +309,18 @@ int main(int argc, char **argv) {
   };
   constexpr float background = 24.F / 255;
   try {
+    for (int kind = 0; kind < 4; ++kind) {
+      auto invalid = std::make_shared<Frame>();
+      invalid->rgba = {1, 1, 1, 1};
+      quad(*invalid, 0, {1, 0, 0}, 1, 0);
+      if (kind == 0) invalid->rgba.pop_back();
+      if (kind == 1) invalid->guides.resize(1);
+      if (kind == 2) invalid->textures.push_back(std::make_shared<Texture>());
+      if (kind == 3) invalid->backgroundVertices = 6;
+      rejectedFrame(invalid);
+      ++assertions;
+    }
+    records.append(QJsonObject{{"case", "invalid upload/guide/texture/background rejection and recovery"}, {"cases", 4}});
     auto f = base();
     quad(*f, 0, {1, 0, 0}, .25F, 0);
     check("OPAQUE ignores coverage", f, {1, 0, 0, 1});

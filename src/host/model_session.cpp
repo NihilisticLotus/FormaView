@@ -1876,6 +1876,16 @@ void ModelSession::enableGpuSkinning(bool enabled) {
   if(!enabled && playing_)animTimer_.start();
   if (gpuSkinActive()) rebuild();
 }
+void ModelSession::renderingFailed(const QString &reason, std::shared_ptr<const formaview::render::Frame> failed) {
+  if (!failed) return;
+  const auto geometry = failed->geometry ? failed->geometry : failed;
+  const auto matches = [&](const auto &published) {
+    return published && (published->geometry ? published->geometry : published) == geometry;
+  };
+  if (!matches(frames_.model) && !matches(frames_.uv) && !matches(frame_)) return;
+  frameError_ = "resource_limit: " + reason;
+  emit changed();
+}
 void ModelSession::gpuSkinningFailed(const QString &reason, std::shared_ptr<const formaview::render::Frame> failed) {
   if (!frame_ || !failed || frame_->geometry!=failed->geometry || !failed->geometry) return;
   qWarning().noquote()<<"Model GPU fallback:"<<reason;

@@ -31,6 +31,11 @@ void ModelView::setSession(ModelSession *value) {
   skinFailure=[weak](QString reason,std::shared_ptr<const formaview::render::Frame> failed) {
     QMetaObject::invokeMethod(QCoreApplication::instance(),[weak,reason,failed] { if (weak) weak->gpuSkinningFailed(reason,failed); },Qt::QueuedConnection);
   };
+  frameFailure=[weak](QString reason,std::shared_ptr<const formaview::render::Frame> failed) {
+    QMetaObject::invokeMethod(QCoreApplication::instance(),[weak,reason,failed] {
+      if (weak) weak->renderingFailed(reason,failed);
+    },Qt::QueuedConnection);
+  };
   if (session_) {
     connect(session_, &ModelSession::frameChanged, this, &ModelView::refresh);
     connect(session_, &ModelSession::documentChanged, this, [this] {

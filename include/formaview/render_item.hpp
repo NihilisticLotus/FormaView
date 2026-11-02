@@ -12,6 +12,7 @@ namespace formaview::render {
 // Observation::owned_gpu_bytes includes this allocation even for preview frames
 // that upload only the 80-byte non-skin prefix.
 inline constexpr std::uint64_t renderer_uniform_bytes = 176;
+inline constexpr std::uint64_t vertex_upload_budget = 256ULL * 1024 * 1024;
 struct Texture {
   std::vector<float> rgba;
   int width{}, height{};
@@ -111,6 +112,7 @@ public:
   // Callbacks run on the render thread. Do not touch GUI objects directly.
   std::function<void(Observation)> observe;
   std::function<void(QString, std::shared_ptr<const Frame>)> skinFailure;
+  std::function<void(QString, std::shared_ptr<const Frame>)> frameFailure;
   std::function<void(std::shared_ptr<const Frame>)> frameSubmitted;
   // One-shot diagnostics; use a new Item for another request. Empty bytes and
   // size report unavailable geometry or a readback exceeding 120 render passes.
