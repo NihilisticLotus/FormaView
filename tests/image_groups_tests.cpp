@@ -458,6 +458,14 @@ void directExport(const QString &root) {
         require(next < expected.size() ? actual["next_offset"].toInt(-1) == next : actual["next_offset"].isNull(),
                 "Merged history next offset");
       }
+      for (const auto offset : {-1.0, 0.5, static_cast<double>(expected.size()) + 1.0}) {
+        auto listing = query("list_jobs"); listing["offset"] = offset;
+        require(requestOverPipe(listing)["error"].toObject()["code"] == "invalid_argument",
+                "Merged history must reject invalid offsets");
+      }
+      auto invalidListVersion = query("list_jobs"); invalidListVersion["version"] = 2;
+      require(requestOverPipe(invalidListVersion)["error"].toObject()["code"] == "invalid_argument",
+              "Merged history must reject invalid protocol versions");
       auto invalidPipe = query("get_job", id); invalidPipe["version"] = 2;
       require(requestOverPipe(invalidPipe)["error"].toObject()["code"] == "invalid_argument",
               "Endpoint must reject unsupported versions for grouped jobs");
