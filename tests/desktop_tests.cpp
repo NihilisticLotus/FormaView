@@ -4869,6 +4869,21 @@ private slots:
         apply->mapToScene({apply->width() / 2, apply->height() / 2}).toPoint());
     QTRY_VERIFY(!service->busy());
     QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    // Applying MCP permissions switches the backend's authorization scope.
+    // Seed an approved GUI job in that scope, not an archived job from the
+    // broader local-export scope used by the preceding matrix test.
+    const auto configuredScope = service->scope();
+    auto scopedInputs = configuredScope;
+    scopedInputs.remove("policy_revision");
+    const auto previousScopedJob = service->job().value("id").toString();
+    service->preflight({small_ + "/唯一图片.png"}, scopedInputs,
+                       {{"target", "png"}}, "settings-existing.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() &&
+        service->job().value("id").toString() != previousScopedJob &&
+        service->job().value("state") == "succeeded", 15000);
+    QCOMPARE(service->scope(), configuredScope);
     auto *enable = item("mcpEnableButton");
     QVERIFY(enable && enable->isEnabled());
     QTest::mouseClick(
