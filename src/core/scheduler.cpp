@@ -1,4 +1,5 @@
 #include "formaview/scheduler.hpp"
+#include "formaview/skeletal.hpp"
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
@@ -100,6 +101,8 @@ void run_worker(const std::shared_ptr<detail::SchedulerState>& state) {
             result = task->request.generation.current()
                 ? work(task->stop.get_token()) : error_result(ErrorCode::StaleResult, "Request was replaced before execution");
             if (result.version != api_version) result = error_result(ErrorCode::InvalidArgument, "Unsupported result version");
+        } catch (const skeletal::Failure& failure) {
+            result = {api_version, {}, failure.error};
         } catch (const std::exception& error) {
             result = error_result(ErrorCode::Internal, error.what());
         } catch (...) {

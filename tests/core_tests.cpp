@@ -2,6 +2,7 @@
 #include "formaview/scheduler.hpp"
 #include "formaview/telemetry.hpp"
 #include "formaview/skeleton_compare.hpp"
+#include "formaview/skeletal.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <future>
@@ -243,6 +244,18 @@ void errors() {
         return fv::TaskResult{1, {}, fv::Error{fv::ErrorCode::InputChanged, "snapshot mismatch", {{"item", "42"}}, true}};
     });
     check(done(structured).result->error->code == fv::ErrorCode::InputChanged, "Structured error code lost");
+    for (const auto code : {fv::ErrorCode::ResourceLimit, fv::ErrorCode::OutOfScope, fv::ErrorCode::Cancelled}) {
+        auto domainFailure = submit(scheduler, [code](auto) -> fv::TaskResult {
+            auto failure = fv::skeletal::Failure(code, "domain failure");
+            failure.error.details = {{"source", "synthetic"}};
+            failure.error.retryable = true;
+            throw failure;
+        });
+        const auto error = done(domainFailure).result->error;
+        check(error && error->code == code && error->message == "domain failure" &&
+              error->details.at("source") == "synthetic" && error->retryable,
+              "Thrown skeletal failure lost its structured error");
+    }
     auto mixed = submit(scheduler, [](auto) {
         auto result = fv::TaskResult{};
         auto good = fv::ItemResult{}; good.id = fv::ItemId{"good"};
