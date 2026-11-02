@@ -3759,8 +3759,6 @@ private slots:
     QCOMPARE(selectedOptions.toMap().value("transfer").toString(), QString("linear_to_srgb"));
     QCOMPARE(selectedOptions.toMap().value("exposure").toDouble(), 1.0);
     colour->setProperty("checked", false);
-    transfer->setProperty("currentIndex", 0);
-    exposure->setProperty("value", 0);
     // Source validation/import runs on the control worker. The settings page
     // may be visible before its input list and naming example are published.
     QTRY_VERIFY_WITH_TIMEOUT(!service->importing(), 15000);
@@ -3800,6 +3798,10 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
     const auto firstPlan = service->plan();
     const auto firstRequest = firstPlan.value("items").toList().front().toMap().value("request").toMap();
+    const auto firstOptions = firstRequest.value("options").toMap();
+    QCOMPARE(firstOptions.value("meaning").toString(), QString("data"));
+    QCOMPARE(firstOptions.value("transfer").toString(), QString("preserve"));
+    QCOMPARE(firstOptions.value("exposure").toDouble(), 0.0);
     QCOMPARE(firstRequest.value("input").toString(), source);
     QCOMPARE(firstRequest.value("output").toString(), firstOutput + "/唯一图片-converted.png");
     QCOMPARE(QFileInfo(firstRequest.value("output").toString()).fileName(), examples.value("names").toStringList().front());
