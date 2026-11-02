@@ -231,7 +231,9 @@ if(BUILD_TESTING)
             -o "${FORMAVIEW_UI_TEST_ROOT}/desktop-tests.txt,txt")
         set_tests_properties(desktop_integration PROPERTIES TIMEOUT 3600
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
-            ENVIRONMENT "FORMAVIEW_UI_TEST_ROOT=${FORMAVIEW_UI_TEST_ROOT};QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;QML_IMPORT_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../qml")
+            # GUI deformation assertions exercise CPU skinning; do not force
+            # that backend on the separate GPU performance acceptance tests.
+            ENVIRONMENT "FORMAVIEW_UI_TEST_ROOT=${FORMAVIEW_UI_TEST_ROOT};FORMAVIEW_SKINNING=cpu;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;QML_IMPORT_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../qml")
         if(TARGET formaview_image_conversion)
             set_tests_properties(desktop_integration PROPERTIES DEPENDS "professional_image;image_conversion")
         endif()
