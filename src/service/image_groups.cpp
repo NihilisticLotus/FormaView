@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLockFile>
@@ -23,6 +24,24 @@
 namespace formaview::imaging {
 namespace {
 [[noreturn]] void fail(ErrorCode c, const char *m) { throw skeletal::Failure(c, m); }
+[[noreturn]] void failInventory(const QJsonObject &error) {
+  // Inventory has already classified the rejection. Retain that classification
+  // when the persisted dependency guard rejects the whole group.
+  static const QHash<QString, ErrorCode> codes{
+      {"unsupported", ErrorCode::Unsupported}, {"invalid_argument", ErrorCode::InvalidArgument},
+      {"queue_full", ErrorCode::QueueFull}, {"resource_limit", ErrorCode::ResourceLimit},
+      {"shutting_down", ErrorCode::ShuttingDown}, {"cancelled", ErrorCode::Cancelled},
+      {"stale_result", ErrorCode::StaleResult}, {"input_changed", ErrorCode::InputChanged},
+      {"out_of_scope", ErrorCode::OutOfScope}, {"conflict", ErrorCode::Conflict},
+      {"io", ErrorCode::Io}, {"internal", ErrorCode::Internal}};
+  skeletal::Failure failure(codes.value(error["code"].toString(), ErrorCode::Internal),
+      ("Source dependency inventory incomplete; retry preflight: " + error["message"].toString()).toStdString());
+  failure.error.retryable = error["retryable"].toBool();
+  const auto details = error["details"].toObject();
+  for (auto it = details.begin(); it != details.end(); ++it)
+    failure.error.details.emplace(it.key().toStdString(), it.value().toString().toStdString());
+  throw failure;
+}
 bool active(const QString &s) { return s == "planning" || s == "queued" || s == "running" || s == "paused" || s == "pausing"; }
 QJsonObject query(const char *op, const QString &id = {}) {
   QJsonObject q{{"version", 1}, {"operation", op}};
@@ -281,8 +300,7 @@ struct ImageTaskGroups::Impl {
         const auto guard = v.toObject();
         const auto p = validated_local_path(std::filesystem::path(guard["path"].toString().toStdWString()));
         if (guard["scan_failed"].toBool())
-          fail(ErrorCode::InvalidArgument, ("Source dependency inventory incomplete; retry preflight: " +
-               guard["error"].toObject()["message"].toString()).toUtf8().constData());
+          failInventory(guard["error"].toObject());
         if (guard["unavailable"].toBool()) {
           if (guard["absent"].toBool()) {
             std::error_code error;

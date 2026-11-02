@@ -126,6 +126,22 @@ void inspectAdmission(const QString &root) {
           "Group model inspect ignored service image limits");
   const auto plan = wait(limited, "get_plan", id);
   require(plan["state"] == "failed", "Limited inspect must reject plan");
+  require(plan["error"].toObject()["code"] == "resource_limit",
+          "Source inventory must preserve the inspect resource-limit error");
+  require(QDir().mkpath(root + "/allowed") && QDir().mkpath(root + "/denied-journal"),
+          "Create scoped inventory fixture");
+  ImageTaskGroups denied(scope(root + "/allowed"),
+      std::filesystem::path((root + "/denied-journal").toStdWString()));
+  auto deniedItem = request["items"].toArray()[0].toObject();
+  deniedItem["output"] = root + "/allowed/result.fbx";
+  const auto deniedPlan = start(denied, QJsonArray{deniedItem});
+  require(deniedPlan["state"] == "failed" &&
+          deniedPlan["error"].toObject()["code"] == "out_of_scope",
+          "Source inventory must preserve the inspect scope error");
+  for (const auto &value : deniedPlan["items"].toArray())
+    require(value.toObject()["error"].toObject()["code"] == "out_of_scope",
+            "Every rejected item retains the inventory scope error");
+  require(!QFileInfo::exists(root + "/allowed/result.fbx"), "Rejected inventory must not write output");
   fixture(root + "/source.tga");
   const auto imagePlan = start(limited, requests(root, 1, "limited-"));
   require(imagePlan["items"].toArray()[0].toObject()["status"] == "failed" &&
