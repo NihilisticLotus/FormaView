@@ -198,6 +198,7 @@ QJsonArray gpuMemory() {
 class DesktopTests final : public QObject {
   Q_OBJECT
   QString root_, fixture_, small_;
+  std::unique_ptr<QTemporaryDir> stateDirectory_, fixtureDirectory_;
   std::unique_ptr<Desktop> desktop_;
   std::unique_ptr<QQmlApplicationEngine> engine_;
   QQuickWindow *window_{};
@@ -341,15 +342,18 @@ private slots:
         qEnvironmentVariable("FORMAVIEW_UI_TEST_ROOT"));
     QVERIFY(!root_.isEmpty());
     QVERIFY(QDir().mkpath(root_));
-    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root_ + "/image-journal").toUtf8());
+    stateDirectory_ = std::make_unique<QTemporaryDir>(root_ + "/state-XXXXXX");
+    QVERIFY(stateDirectory_->isValid());
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (stateDirectory_->path() + "/image-journal").toUtf8());
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
-                       root_ + "/settings");
-    auto temp = QTemporaryDir(root_ + "/fixtures-XXXXXX");
-    QVERIFY(temp.isValid());
-    temp.setAutoRemove(false);
-    fixture_ = temp.path() + "/中文目录";
-    small_ = temp.path() + "/其他目录";
+                       stateDirectory_->path() + "/settings");
+    QVERIFY2(QSettings{}.allKeys().isEmpty(), "GUI run inherited settings from a previous run");
+    fixtureDirectory_ = std::make_unique<QTemporaryDir>(root_ + "/fixtures-XXXXXX");
+    QVERIFY(fixtureDirectory_->isValid());
+    fixture_ = fixtureDirectory_->path() + "/中文目录";
+    small_ = fixtureDirectory_->path() + "/其他目录";
+    evidence_["state_directory"] = stateDirectory_->path();
     QVERIFY(QDir().mkpath(fixture_));
     QVERIFY(QDir().mkpath(small_));
     for (auto i = 0; i < 10000; ++i) {
@@ -10374,6 +10378,16 @@ private slots:
     desktop_.reset();
     QCoreApplication::processEvents();
     QTest::qWait(100);
+    if (fixtureDirectory_) {
+      const auto path = fixtureDirectory_->path();
+      fixtureDirectory_.reset();
+      QVERIFY2(!QFileInfo::exists(path), "Generated GUI fixtures were not removed");
+    }
+    if (stateDirectory_) {
+      const auto path = stateDirectory_->path();
+      stateDirectory_.reset();
+      QVERIFY2(!QFileInfo::exists(path), "GUI run state was not removed");
+    }
     if (!workflowHeadless()) evidence_["gpu_after_release"] = gpuMemory();
     if (const auto mem = formaview::process_memory())
       evidence_["after_release_working_set_bytes"] =
