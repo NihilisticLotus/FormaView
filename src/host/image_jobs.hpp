@@ -88,6 +88,7 @@ public:
                                       const QString &target,
                                       const QVariantList &itemOverrides) const;
   Q_INVOKABLE void cancelPreparation();
+  Q_INVOKABLE bool activeJobs() const;
 signals:
   void directExportFinished(const QString &jobId);
   void submissionFinished(const QString &planId, const QString &jobId);
@@ -101,7 +102,6 @@ private:
   friend class ExportFlowTests; // QCoreApplication-only orchestration regressions.
   void dispatch(QJsonObject);
   void poll();
-  bool activeJobs() const;
   formaview::Scheduler control_;
   std::shared_ptr<formaview::imaging::ImageBatchService> service_;
   std::shared_ptr<formaview::imaging::ImageTaskGroups> groups_;

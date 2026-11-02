@@ -25,10 +25,19 @@ Item {
     property bool settingsVisible: false
     property bool filesVisible: controller.preferences.filesVisible !== false
     readonly property bool inspectorVisible: !focusMode && (controller.preferences.inspectorMode || "auto") !== "hidden" && (controller.preferences.inspectorMode === "always" || !!controller.asset.path)
+    property bool exitConfirmed: false
     function requestWindowClose(): bool {
-        if (!settingsVisible || !settingsDialog.dirty) return true
-        settingsDialog.leave(() => root.Window.window.close())
-        return false
+        if (settingsVisible && settingsDialog.dirty) {
+            settingsDialog.leave(() => root.Window.window.close())
+            return false
+        }
+        if (root.exitConfirmed) { root.exitConfirmed = false; return true }
+        if ((controller.imageJobs && (controller.imageJobs.busy || controller.imageJobs.activeJobs()))
+                || (quickExportLoader.item && quickExportLoader.item.settling)) {
+            exitDialog.open()
+            return false
+        }
+        return true
     }
     function openConversion(page, preset) {
         if (!controller.imageJobs) return
@@ -249,6 +258,23 @@ Item {
     FolderDialog { id: folderDialog; title: Theme.t("打开目录", "Open folder", "開啟資料夾"); onAccepted: root.controller.navigate(selectedFolder.toString()) }
     FileDialog { id: locateDialog; title: Theme.t("定位替代文件 · 读取检查后应用", "Locate replacement · Check before applying", "定位替代檔案 · 讀取檢查後套用"); onAccepted: root.controller.openPath(selectedFile.toString()) }
     Loader { id: quickExportLoader }
+    Dialog {
+        id: exitDialog; objectName: "activeWorkExitDialog"
+        anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
+        title: Theme.t("任务仍在运行", "Tasks are still running", "工作仍在執行")
+        background: Rectangle { color: Theme.raised; radius: Theme.dialogRadius; border.color: Theme.line }
+        Label {
+            width: parent.width; wrapMode: Text.WordWrap; color: Theme.text
+            text: Theme.t("退出将取消尚未完成的转换任务。", "Exiting will cancel unfinished conversions.", "結束將取消尚未完成的轉換工作。")
+        }
+        footer: DialogButtonBox {
+            Tool { form: true; text: Theme.t("继续运行", "Keep running", "繼續執行"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Tool { form: true; text: Theme.t("取消并退出", "Cancel and exit", "取消並結束"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onRejected: exitDialog.reject()
+            onAccepted: exitDialog.accept()
+        }
+        onAccepted: { root.exitConfirmed = true; root.Window.window.close() }
+    }
     Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => navigation.focusDestination("conversion")) } }
     Dialog {
         id: about; anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
