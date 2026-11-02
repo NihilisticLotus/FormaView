@@ -5390,8 +5390,15 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("id") != previousJob, 15000);
     auto *cancelControl = item("cancelImageJob");
     QVERIFY(cancelControl && cancelControl->isVisible() && cancelControl->isEnabled());
+    window_->requestActivate();
+    QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+    QSignalSpy cancelFrame(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!cancelFrame.isEmpty());
+    QSignalSpy cancelledClick(cancelControl, SIGNAL(clicked()));
     QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
       cancelControl->mapToScene({cancelControl->width()/2, cancelControl->height()/2}).toPoint());
+    QCOMPARE(cancelledClick.count(), 1);
     QTRY_VERIFY(service->job().value("cancellation_requested").toBool());
     QTRY_VERIFY_WITH_TIMEOUT(service->job().value("state") == "cancelled" || service->job().value("state") == "partially_succeeded", 15000);
     const auto cancelledJob = QJsonObject::fromVariantMap(service->job());
