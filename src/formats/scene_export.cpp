@@ -353,6 +353,7 @@ Document Document::read(const std::filesystem::path &path,
     read_gltf(s, bytes);
 #endif
   else if (ext == "fbx") {
+    validate_fbx_structure(bytes, limits.decoded_bytes, stop);
     Stream stream(bytes, limits.input_bytes, stop, false);
     std::unique_ptr<Stream> selectedStream;
     const std::unique_ptr<FbxImporter, Destroy> importer(

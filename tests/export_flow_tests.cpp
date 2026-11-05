@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QThread>
 #include <QUuid>
+#include <QtEndian>
 #include <cmath>
 #include <cstring>
 #include <future>
@@ -98,6 +99,23 @@ void binarySelection(const QString &root) {
     require(QString::fromUtf8(scene->GetSrcObject<FbxAnimStack>()->GetName())=="Clip_1","Selected clip identity retained");
     const auto *curve=scene->GetSrcObject<FbxAnimCurve>();
     require(curve->KeyGetCount()==2 && curve->KeyGetValue(0)==1 && curve->KeyGetValue(1)==2 && curve->KeyGetTime(1).GetSecondDouble()==1,"Original curve keys retained exactly");
+    {
+      // A forged property count backed by no property bytes must be rejected
+      // before the SDK allocates from it (a 7 KB file reached 6.6 GB commit).
+      auto forged=bytes; const bool wide=QByteArray(version)!=FBX_2014_00_COMPATIBLE;
+      // First Properties70 "P" record; its declared count becomes ~1.7e9.
+      const auto name=forged.indexOf(QByteArray("\x01PS",3));require(name>0,"Fixture has a P property record");
+      const auto begin=name-(wide?24:12);
+      if(wide) qToLittleEndian<quint64>(0x67000005ULL,forged.data()+begin+8); else qToLittleEndian<quint32>(0x67000005U,forged.data()+begin+4);
+      const auto forgedPath=root+'/'+version+"-forged-count.fbx";
+      QFile out(forgedPath);require(out.open(QIODevice::WriteOnly) && out.write(forged)==forged.size(),"Write forged FBX");out.close();
+      ErrorCode code{};std::string message;
+      try { (void)imaging::execute_image_request({{"version",1},{"operation","inspect"},{"input",forgedPath}},scope); }
+      catch(const skeletal::Failure &e) { code=e.error.code; message=e.what(); }
+      catch(const std::exception &e) { code=ErrorCode::Internal; message=e.what(); }
+      if(code!=ErrorCode::InvalidArgument || message.find("Malformed FBX binary")==std::string::npos)
+        throw std::runtime_error("Forged FBX property count not rejected before SDK import: "+message);
+    }
     auto malformed=bytes;for(int i=27;i<35;++i) malformed[i]=char(-1);
     require(!scene_export::select_fbx_takes(malformed,clips,{clips[1].toObject()["id"]},{}),"Malformed offsets safely use original decoder");
     require(!scene_export::select_fbx_takes(QByteArray("ASCII FBX"),clips,{clips[1].toObject()["id"]},{}),"Nonbinary files use original decoder");

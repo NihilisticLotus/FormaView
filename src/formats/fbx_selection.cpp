@@ -241,4 +241,98 @@ std::optional<QByteArray> select_fbx_takes(const QByteArray &source,
     return std::nullopt;
   }
 }
+void validate_fbx_structure(const QByteArray &source,
+                            std::uint64_t decoded_budget,
+                            std::stop_token stop) {
+  if (!source.startsWith(QByteArray("Kaydara FBX Binary  \0\x1a\0", 23)))
+    return; // ASCII FBX: the SDK parser owns text validation.
+  const auto malformed = [] {
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            "Malformed FBX binary record: count, length or "
+                            "array size outside the file or decoded budget");
+  };
+  if (source.size() < 27)
+    malformed();
+  const auto version = qFromLittleEndian<quint32>(source.constData() + 23);
+  const Binary b(source, version >= 7500, stop);
+  std::uint64_t declared = 0;
+  // Every count the SDK may allocate from must be backed by real bytes:
+  // property counts by the property list, plain arrays by their payload,
+  // deflate arrays by the 1032:1 deflate ratio, and all arrays together by
+  // the scene decoded budget.
+  const auto properties = [&](qsizetype offset, const Node &n) {
+    const auto count = b.header == 25 ? b.read<quint64>(offset + 8)
+                                      : b.read<quint32>(offset + 4);
+    if (count > static_cast<quint64>(n.propertyEnd - n.properties))
+      malformed();
+    auto at = n.properties;
+    for (quint64 i = 0; i < count; ++i) {
+      if (at >= n.propertyEnd)
+        malformed();
+      const auto type = source[at++];
+      const auto fixed = [&](qsizetype bytes) {
+        if (bytes > n.propertyEnd - at)
+          malformed();
+        at += bytes;
+      };
+      switch (type) {
+      case 'C': fixed(1); break;
+      case 'Y': fixed(2); break;
+      case 'I': case 'F': fixed(4); break;
+      case 'D': case 'L': fixed(8); break;
+      case 'S': case 'R': {
+        fixed(4);
+        fixed(static_cast<qsizetype>(b.read<quint32>(at - 4)));
+        break;
+      }
+      case 'f': case 'i': case 'd': case 'l': case 'b': {
+        fixed(12);
+        const std::uint64_t length = b.read<quint32>(at - 12),
+                            encoding = b.read<quint32>(at - 8),
+                            stored = b.read<quint32>(at - 4);
+        const std::uint64_t element =
+            type == 'b' ? 1 : type == 'd' || type == 'l' ? 8 : 4;
+        const auto bytes = length * element;
+        if ((encoding == 0 && stored != bytes) ||
+            (encoding == 1 && bytes > stored * 1032 + 64) || encoding > 1)
+          malformed();
+        if (bytes > decoded_budget - declared)
+          throw skeletal::Failure(ErrorCode::ResourceLimit,
+                                  "FBX declared array data exceeds the decoded budget");
+        declared += bytes;
+        fixed(static_cast<qsizetype>(stored));
+        break;
+      }
+      default:
+        malformed();
+      }
+    }
+    if (at != n.propertyEnd)
+      malformed();
+  };
+  // Child ranges still to walk: [first child, parent end). Records nest
+  // strictly inside their parent, so every node is visited once.
+  std::vector<std::pair<qsizetype, qsizetype>> pending;
+  const auto walk = [&](qsizetype offset, qsizetype bound) {
+    for (auto at = offset; at < bound;) {
+      const auto n = b.node(at, bound);
+      if (!n.end)
+        return;
+      properties(at, n);
+      if (n.children < n.end)
+        pending.push_back({n.children, n.end});
+      at = n.end;
+    }
+  };
+  try {
+    walk(27, source.size());
+    while (!pending.empty()) {
+      const auto [children, end] = pending.back();
+      pending.pop_back();
+      walk(children, end);
+    }
+  } catch (const Invalid &) {
+    malformed();
+  }
+}
 } // namespace formaview::scene_export
