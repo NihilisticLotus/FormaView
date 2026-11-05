@@ -2,6 +2,7 @@
 #include "formaview/skeletal.hpp"
 #include <memory>
 #include <span>
+#include <string_view>
 namespace formaview::cache {
 struct Limits {
   std::uint64_t input_bytes{4ULL * 1024 * 1024 * 1024},
@@ -19,6 +20,14 @@ struct MeshInfo {
 };
 // Objects that were recognised but are not previewed (curves, points,
 // subdivision surfaces, NURBS, cameras, lights, unknown schemas).
+// Alembic stores no units. The writing application's documented working
+// unit is the only evidence: Maya and Cinema 4D write centimetres, Houdini
+// and Blender write metres. Anything else is unknown (metres by convention).
+struct UnitConvention {
+  double metres_per_unit{1};
+  bool known{};
+};
+[[nodiscard]] UnitConvention unit_convention(std::string_view application);
 struct SkippedObject {
   std::string path, schema;
 };
@@ -69,6 +78,8 @@ public:
   // Sorted distinct sample times of every animated mesh and ancestor
   // transform; a fully static archive has exactly one time.
   [[nodiscard]] const std::vector<double> &times() const;
+  // Archive "_ai_Application" metadata (empty when the writer did not set it).
+  [[nodiscard]] const std::string &application() const;
   [[nodiscard]] Sample read(std::size_t mesh, double seconds,
                             std::stop_token = {}) const;
   // Cheap queries that decode no geometry: content digests, the world

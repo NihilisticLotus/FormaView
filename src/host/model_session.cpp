@@ -3816,5 +3816,8 @@ QVariantMap ModelSession::cacheInfo() const {
           {"topologyReuses", QVariant::fromValue<qulonglong>(abcSource_->topologyReuses())},
           {"prefetched", QVariant::fromValue<qulonglong>(abcPrefetched_)},
           {"discarded", QVariant::fromValue<qulonglong>(abcDiscarded_)},
-          {"error", abcError_}};
+          {"error", abcError_},
+          {"application", QString::fromStdString(abcSource_->application())},
+          {"metresPerUnit", formaview::cache::unit_convention(abcSource_->application()).metres_per_unit},
+          {"unitKnown", formaview::cache::unit_convention(abcSource_->application()).known}};
 }

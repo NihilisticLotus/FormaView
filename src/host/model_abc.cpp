@@ -64,6 +64,9 @@ ModelAbcSource::~ModelAbcSource() = default;
 const std::vector<double> &ModelAbcSource::times() const {
   return impl_->archive.times();
 }
+const std::string &ModelAbcSource::application() const {
+  return impl_->archive.application();
+}
 const std::vector<cache::MeshInfo> &ModelAbcSource::meshes() const {
   return impl_->archive.meshes();
 }
@@ -291,6 +294,10 @@ ModelAbcSource::ModelAbcSource() = default;
 ModelAbcSource::~ModelAbcSource() = default;
 const std::vector<double> &ModelAbcSource::times() const {
   static const std::vector<double> none;
+  return none;
+}
+const std::string &ModelAbcSource::application() const {
+  static const std::string none;
   return none;
 }
 const std::vector<cache::MeshInfo> &ModelAbcSource::meshes() const {

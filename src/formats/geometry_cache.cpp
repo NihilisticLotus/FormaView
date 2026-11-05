@@ -2,6 +2,7 @@
 #include <Alembic/AbcCoreFactory/All.h>
 #include <Alembic/AbcGeom/All.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -138,6 +139,7 @@ struct Archive::Impl {
   std::vector<MeshInfo> info;
   std::vector<SkippedObject> skipped;
   std::vector<double> times;
+  std::string application;
   // Last decoded topology per mesh, identified by Alembic content digests.
   struct Memo {
     std::string indices, counts;
@@ -157,6 +159,20 @@ const std::vector<SkippedObject> &Archive::skipped() const {
   return impl_->skipped;
 }
 const std::vector<double> &Archive::times() const { return impl_->times; }
+const std::string &Archive::application() const { return impl_->application; }
+UnitConvention unit_convention(std::string_view application) {
+  std::string lower(application);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  const auto has = [&](const char *name) {
+    return lower.find(name) != std::string::npos;
+  };
+  if (has("maya") || has("cinema 4d") || has("cinema4d"))
+    return {.01, true};
+  if (has("houdini") || has("blender"))
+    return {1, true};
+  return {1, false};
+}
 Archive Archive::open(const std::filesystem::path &path, Limits limits,
                       std::stop_token stop) {
   cancel(stop);
@@ -279,6 +295,12 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
     times.insert(0);
   p->times.assign(times.begin(), times.end());
   p->memo.resize(p->objects.size());
+  {
+    std::string version, written, description;
+    Alembic::Util::uint32_t number{};
+    A::GetArchiveInfo(p->archive, p->application, version, number, written,
+                      description);
+  }
   return Archive(std::move(p));
 }
 Sample Archive::read(std::size_t mesh, double seconds,

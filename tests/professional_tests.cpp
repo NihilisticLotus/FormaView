@@ -342,6 +342,12 @@ void caches(const std::filesystem::path &dir) {
                                  G::kFacevaryingScope)));
   }
   rejects([&] { (void)cache::Archive::open(malformed).read(0, 0); });
+  require(cache::unit_convention("Maya 2024 AbcExport v1.0").metres_per_unit == .01 &&
+              cache::unit_convention("Houdini 20.0.506").metres_per_unit == 1 &&
+              cache::unit_convention("Blender v3.6.0").known &&
+              cache::unit_convention("Cinema 4D").metres_per_unit == .01 &&
+              !cache::unit_convention("").known && !cache::unit_convention("Unity").known,
+          "Writer unit conventions");
   require(archive.times() == std::vector<double>{.25, .75, 2},
           "Timeline is the union of mesh sample times");
   // An archive over exact in-memory bytes reads the same samples.

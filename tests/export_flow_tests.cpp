@@ -379,7 +379,8 @@ void abcFrameExport(const QString &root) {
   require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "New ABC export root required");
   const auto input = root + "/sheet.abc";
   {
-    A::OArchive out(Alembic::AbcCoreOgawa::WriteArchive(), input.toStdString());
+    auto out = A::CreateArchiveWithInfo(Alembic::AbcCoreOgawa::WriteArchive(), input.toStdString(),
+                                        "Maya 2024 AbcExport v1.0", "frame export fixture");
     const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 24, 0));
     G::OXform xform(out.getTop(), "root", ts);
     G::OPolyMesh mesh(xform, "sheet", ts);
@@ -424,7 +425,7 @@ void abcFrameExport(const QString &root) {
   require(!preflight.contains("error"), "ABC frame preflight");
   QStringList codes;
   for (const auto &v : preflight["losses"].toArray()) codes << v.toObject()["code"].toString();
-  for (const auto *code : {"abc_single_sample", "abc_transforms_baked", "abc_objects_omitted", "abc_coordinate_assumption"})
+  for (const auto *code : {"abc_single_sample", "abc_transforms_baked", "abc_objects_omitted", "abc_unit_from_application"})
     require(codes.contains(code), "ABC frame loss declared");
   require(preflight["source_metadata"].toObject()["abc"].toObject()["sample"].toInt() == 2, "Preflight names the sample");
   request["operation"] = "convert";
@@ -444,6 +445,17 @@ void abcFrameExport(const QString &root) {
           "One mesh, no animation");
   auto *mesh = scene->GetSrcObject<FbxMesh>(0);
   require(mesh->GetControlPointsCount() == 5 && mesh->GetPolygonCount() == 2, "Point/face counts");
+  // Maya writes centimetres; groups survive as identity-transform nodes.
+  require(scene->GetGlobalSettings().GetSystemUnit() == FbxSystemUnit::cm, "Writer unit declared");
+  auto *meshNode = mesh->GetNode();
+  require(meshNode && QString::fromUtf8(meshNode->GetName()) == "sheet" && meshNode->GetParent() &&
+              QString::fromUtf8(meshNode->GetParent()->GetName()) == "root" &&
+              meshNode->GetParent()->GetParent() == scene->GetRootNode(),
+          "Alembic group hierarchy kept");
+  for (auto *node : {meshNode, meshNode->GetParent()}) {
+    auto local = node->EvaluateLocalTransform();
+    require(local.IsIdentity(), "Group nodes carry no transform");
+  }
   for (int p = 0; p < 5; ++p) {
     const auto &v = sample.positions[static_cast<std::size_t>(p)];
     const auto &w = sample.world;
@@ -503,6 +515,27 @@ void abcFrameExport(const QString &root) {
     for (const auto &v : result["losses"].toArray())
       regenerated |= v.toObject()["code"] == "abc_normals_regenerated";
     require(regenerated, "Singular transform reports regenerated normals");
+  }
+  {
+    // Without writer metadata the unit stays an explicit metre convention.
+    const auto unknown = root + "/unknown-writer.abc";
+    {
+      A::OArchive out(Alembic::AbcCoreOgawa::WriteArchive(), unknown.toStdString());
+      G::OPolyMesh plain(out.getTop(), "tri");
+      std::vector<A::V3f> p{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      std::vector<std::int32_t> idx{0, 1, 2}, counts{3};
+      plain.getSchema().set(G::OPolyMeshSchema::Sample(
+          A::P3fArraySample(p), A::Int32ArraySample(idx), A::Int32ArraySample(counts)));
+    }
+    const auto result = run({{"version", 1}, {"operation", "preflight"}, {"input", unknown},
+                             {"output", root + "/out/unknown.fbx"},
+                             {"options", QJsonObject{{"target", "fbx"}, {"coordinates", "source"}, {"abc_sample", 0}}},
+                             {"conflict", "skip"}});
+    bool assumed = false;
+    for (const auto &v : result["losses"].toArray())
+      assumed |= v.toObject()["code"] == "abc_coordinate_assumption";
+    require(assumed && result["source_metadata"].toObject()["abc"].toObject()["metres_per_unit"].toDouble() == 1,
+            "Unknown writer uses the metre convention");
   }
   QFile obj(root + "/plain.obj");
   require(obj.open(QIODevice::WriteOnly) && obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n") > 0, "OBJ fixture");
@@ -700,3 +733,4 @@ int main(int argc, char **argv) {
     ExportFlowTests::run(app.arguments()[1]); return 0;
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }
+

@@ -5,6 +5,7 @@
 #include "formaview/geometry_cache.hpp"
 #include <QJsonObject>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <set>
 
@@ -54,7 +55,11 @@ void read_abc(Scene &s, const QByteArray &bytes, const QJsonObject &options,
       owner, limits, s.stop);
   const auto &times = archive.times();
   const auto &infos = archive.meshes();
+  const auto unit = cache::unit_convention(archive.application());
   QJsonObject abc{{"samples", static_cast<qint64>(times.size())},
+                  {"application", QString::fromStdString(archive.application())},
+                  {"metres_per_unit", unit.metres_per_unit},
+                  {"unit_known", unit.known},
                   {"start", times.front()},
                   {"end", times.back()},
                   {"meshes", static_cast<qint64>(infos.size())},
@@ -90,6 +95,30 @@ void read_abc(Scene &s, const QByteArray &bytes, const QJsonObject &options,
   auto *material = FbxSurfaceLambert::Create(s.scene, "Default");
   material->Diffuse.Set(FbxDouble3(.7, .7, .7));
   std::set<QString> names;
+  const auto unique = [&](const QString &base) {
+    auto name = base;
+    for (int suffix = 2; !names.insert(name).second; ++suffix)
+      name = base + "_" + QString::number(suffix);
+    return name;
+  };
+  // Alembic groups become identity-transform nodes: the outliner keeps the
+  // source organisation while every vertex stays exactly where it is shown.
+  std::map<std::string, FbxNode *> groups;
+  const auto parentFor = [&](const std::string &meshPath) {
+    FbxNode *parent = s.scene->GetRootNode();
+    for (auto slash = meshPath.find('/', 1); slash != std::string::npos;
+         slash = meshPath.find('/', slash + 1)) {
+      const auto prefix = meshPath.substr(0, slash);
+      auto &group = groups[prefix];
+      if (!group) {
+        group = FbxNode::Create(s.scene, unique(leaf(prefix)).toUtf8().constData());
+        string_property(group, "AbcPath", QString::fromStdString(prefix));
+        parent->AddChild(group);
+      }
+      parent = group;
+    }
+    return parent;
+  };
   std::size_t written = 0, degenerate = 0;
   for (std::size_t mi = 0; mi < infos.size(); ++mi) {
     s.check();
@@ -103,11 +132,9 @@ void read_abc(Scene &s, const QByteArray &bytes, const QJsonObject &options,
       s.loss("abc_empty_mesh_omitted", QString::fromStdString(infos[mi].path));
       continue;
     }
-    auto name = leaf(infos[mi].path);
-    for (int suffix = 2; !names.insert(name).second; ++suffix)
-      name = leaf(infos[mi].path) + "_" + QString::number(suffix);
+    const auto name = unique(leaf(infos[mi].path));
     auto *node = FbxNode::Create(s.scene, name.toUtf8().constData());
-    s.scene->GetRootNode()->AddChild(node);
+    parentFor(infos[mi].path)->AddChild(node);
     string_property(node, "AbcPath", QString::fromStdString(infos[mi].path));
     auto *mesh = FbxMesh::Create(s.scene, (name + " geometry").toUtf8().constData());
     node->SetNodeAttribute(mesh);
@@ -197,11 +224,19 @@ void read_abc(Scene &s, const QByteArray &bytes, const QJsonObject &options,
   if (!written)
     invalid("ABC sample has no polygon geometry");
   s.loss("abc_transforms_baked",
-         "Transforms of this sample are baked into vertices; one node per mesh");
+         "Transforms of this sample are baked into vertices; groups are kept "
+         "as identity-transform nodes");
   s.scene->GetGlobalSettings().SetAxisSystem(FbxAxisSystem::MayaYUp);
-  s.scene->GetGlobalSettings().SetSystemUnit(FbxSystemUnit::m);
-  s.loss("abc_coordinate_assumption",
-         "Alembic declares no units. Numeric coordinates are preserved and "
-         "tagged as right-handed Y-up metres before optional output conversion.");
+  s.scene->GetGlobalSettings().SetSystemUnit(
+      unit.metres_per_unit == .01 ? FbxSystemUnit::cm : FbxSystemUnit::m);
+  if (unit.known)
+    s.loss("abc_unit_from_application",
+           QString::fromStdString(archive.application()) +
+               (unit.metres_per_unit == .01 ? " -> cm" : " -> m"));
+  else
+    s.loss("abc_coordinate_assumption",
+           "Alembic declares no units and the writing application is unknown. "
+           "Numeric coordinates are preserved and tagged as right-handed Y-up "
+           "metres before optional output conversion.");
 }
 } // namespace formaview::scene_export

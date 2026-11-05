@@ -21,6 +21,7 @@ public:
   [[nodiscard]] const QString &path() const { return path_; }
   [[nodiscard]] const QString &hash() const { return hash_; }
   [[nodiscard]] const std::vector<double> &times() const;
+  [[nodiscard]] const std::string &application() const;
   [[nodiscard]] const std::vector<formaview::cache::MeshInfo> &meshes() const;
   [[nodiscard]] const std::vector<formaview::cache::SkippedObject> &skipped() const;
   // Timeline sample nearest to `seconds` (ties resolve to the earlier one).
