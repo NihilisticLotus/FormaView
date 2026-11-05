@@ -422,6 +422,11 @@ QJsonObject execute_image_request(
                             "Decoded source differs from held snapshot");
   if (operation == "inspect") {
     const auto selected = integer(request, "subresource", 0);
+    // Validate the requested page before decoding pixels for it.
+    const auto offset = integer(request, "offset", 0),
+               limit = integer(request, "limit", 100, 100);
+    if (!limit || offset > description.subresources.size())
+      invalid("Invalid subresource page");
     auto image = document.decode(selected, stop);
     const auto semantics = document.semantics(selected);
     QJsonArray channels;
@@ -432,10 +437,6 @@ QJsonObject execute_image_request(
           {"encoding", c.encoding == SampleEncoding::UNorm   ? "unorm"
                        : c.encoding == SampleEncoding::SNorm ? "snorm"
                                                              : "numeric"}});
-    const auto offset = integer(request, "offset", 0),
-               limit = integer(request, "limit", 100, 100);
-    if (!limit || offset > description.subresources.size())
-      invalid("Invalid subresource page");
     QJsonArray resources;
     const auto end =
         std::min<std::size_t>(description.subresources.size(),

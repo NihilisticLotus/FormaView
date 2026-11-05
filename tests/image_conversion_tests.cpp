@@ -377,6 +377,19 @@ void run(const std::filesystem::path &root) {
   dds_alpha_contract(source, root);
   png.alpha = AlphaMode::Straight;
   write(root / "source.png", encode_raster(source, png));
+  {
+    // Request validation precedes decoding: an invalid page must be rejected
+    // as such, before the selected (here nonexistent) subresource is decoded.
+    const AccessScope scope{{root}, {root}, false, "inspect-page"};
+    const auto path = QString::fromStdWString((root / "source.png").wstring());
+    std::string message = "accepted";
+    try {
+      (void)execute_image_request({{"version", 1}, {"operation", "inspect"}, {"input", path},
+                                   {"subresource", 99}, {"limit", 0}}, scope);
+    } catch (const skeletal::Failure &error) { message = error.what(); }
+    require(message == "Invalid subresource page",
+            ("Inspect page validated after decode: " + message).c_str());
+  }
   profile_layouts(source, root);
   const auto iccPath = qEnvironmentVariable("FORMAVIEW_TEST_ICC_PROFILE");
   if (!iccPath.isEmpty()) {
