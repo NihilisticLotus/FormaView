@@ -28,18 +28,27 @@ public:
   // Worker-safe (reads are serialised by the archive). Builds the document
   // for timeline sample `index`; `display` fixes centre/radius so every
   // sample shares one display space (the first sample's when absent).
+  // `reference` (another sample document of this archive, typically the
+  // presented one) lets unchanged meshes and topology be reused.
   [[nodiscard]] std::shared_ptr<ModelDocument>
   read(std::size_t index, std::stop_token,
-       std::optional<std::pair<QVector3D, float>> display = {}) const;
-  // Completed sample reads (verification instrument).
+       std::optional<std::pair<QVector3D, float>> display = {},
+       std::shared_ptr<const ModelDocument> reference = {}) const;
+  // Verification instruments: completed document reads, decoded meshes,
+  // meshes copied unchanged from the reference and decoded meshes whose
+  // triangulation was reused.
   [[nodiscard]] std::uint64_t reads() const { return reads_.load(); }
+  [[nodiscard]] std::uint64_t meshDecodes() const { return meshDecodes_.load(); }
+  [[nodiscard]] std::uint64_t meshReuses() const { return meshReuses_.load(); }
+  [[nodiscard]] std::uint64_t topologyReuses() const { return topologyReuses_.load(); }
 
 private:
   ModelAbcSource();
   struct Impl;
   std::unique_ptr<Impl> impl_;
   QString path_, hash_;
-  mutable std::atomic<std::uint64_t> reads_{};
+  mutable std::atomic<std::uint64_t> reads_{}, meshDecodes_{}, meshReuses_{},
+      topologyReuses_{};
 };
 
 // Approximate resident bytes of one sample document (cache accounting).
@@ -54,6 +63,8 @@ public:
                          std::size_t maxSamples = 64)
       : maxBytes_(maxBytes), maxSamples_(maxSamples) {}
   std::shared_ptr<ModelDocument> find(std::size_t index);
+  // Cached document closest in timeline order (no LRU promotion).
+  [[nodiscard]] std::shared_ptr<const ModelDocument> nearest(std::size_t index) const;
   [[nodiscard]] bool contains(std::size_t index) const;
   void insert(std::shared_ptr<ModelDocument>);
   void clear();

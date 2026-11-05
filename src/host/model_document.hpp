@@ -7,6 +7,7 @@
 #include <QVector3D>
 #include <functional>
 #include "formaview/gltf_anim.hpp"
+#include "formaview/geometry_cache.hpp"
 #include <map>
 #include <stop_token>
 
@@ -116,6 +117,9 @@ struct ModelDocument {
   std::shared_ptr<const ModelAbcSource> geometryCache;
   std::size_t cacheSample{};                  // Index into the merged timeline.
   std::vector<std::size_t> cacheMeshSamples;  // Per-mesh source sample index.
+  std::vector<formaview::cache::SampleKeys> cacheMeshKeys; // Content digests.
+  std::vector<formaview::Matrix4> cacheMeshWorlds;           // World per mesh.
+  std::vector<std::size_t> cacheMeshFaces;                   // Faces per mesh.
   std::uint64_t cacheFaces{}, cacheCorners{}; // Source polygon statistics.
   // Immutable source evidence; never derived from a displayed or animated frame.
   std::function<formaview::skeletal::transform::Evidence(std::stop_token)> transformEvidence;

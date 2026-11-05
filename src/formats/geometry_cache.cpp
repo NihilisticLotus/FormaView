@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <set>
+#include <type_traits>
 
 namespace formaview::cache {
 namespace {
@@ -26,6 +27,56 @@ std::uint64_t count(const A::IArrayProperty &p,
   Alembic::Util::Dimensions dimensions;
   p.getDimensions(dimensions, selector);
   return dimensions.numPoints();
+}
+std::string key_of(A::IArrayProperty p, const A::ISampleSelector &s) {
+  if (!p.valid())
+    return {};
+  Alembic::AbcCoreAbstract::ArraySampleKey key;
+  if (!p.getKey(key, s))
+    return {};
+  return key.digest.str() + ":" + std::to_string(key.numBytes) + ":" +
+         std::to_string(static_cast<int>(key.origPOD));
+}
+template <class Param>
+void param_keys(Param param, const A::ISampleSelector &s,
+                std::string &values, std::string &indices) {
+  if (!param.valid())
+    return;
+  values = key_of(param.getValueProperty(), s);
+  if (param.isIndexed())
+    indices = key_of(param.getIndexProperty(), s);
+}
+SampleKeys keys_for(G::IPolyMeshSchema &schema,
+                    const A::ISampleSelector &s) {
+  SampleKeys keys;
+  keys.positions = key_of(schema.getPositionsProperty(), s);
+  keys.face_indices = key_of(schema.getFaceIndicesProperty(), s);
+  keys.face_counts = key_of(schema.getFaceCountsProperty(), s);
+  param_keys(schema.getUVsParam(), s, keys.uv, keys.uv_indices);
+  param_keys(schema.getNormalsParam(), s, keys.normals, keys.normal_indices);
+  return keys;
+}
+// World matrix of a mesh object from its transform ancestors.
+Matrix4 world_of(G::IPolyMesh mesh, const A::ISampleSelector &selector) {
+  auto world = skeletal::matrix({});
+  // Alembic matrices act on row vectors; transpose at the contract boundary.
+  for (auto parent = mesh.getParent(); parent.valid();
+       parent = parent.getParent()) {
+    if (G::IXform::matches(parent.getHeader())) {
+      G::IXform x(parent, A::kWrapExisting);
+      auto sample = x.getSchema().getValue(selector);
+      const auto m = sample.getMatrix();
+      Matrix4 converted;
+      for (std::size_t row = 0; row < 4; ++row)
+        for (std::size_t col = 0; col < 4; ++col)
+          converted[row * 4 + col] =
+              m[static_cast<int>(col)][static_cast<int>(row)];
+      world = skeletal::multiply(converted, world);
+      if (!sample.getInheritsXforms())
+        break;
+    }
+  }
+  return world;
 }
 std::string schema_name(const A::IObject &object) {
   const auto &meta = object.getMetaData();
@@ -49,6 +100,14 @@ struct Archive::Impl {
   std::vector<MeshInfo> info;
   std::vector<SkippedObject> skipped;
   std::vector<double> times;
+  // Last decoded topology per mesh, identified by Alembic content digests.
+  struct Memo {
+    std::string indices, counts;
+    std::shared_ptr<const std::vector<std::int32_t>> faces, corners;
+    std::size_t max_point{};
+  };
+  std::vector<Memo> memo;
+  std::uint64_t topology_reuses{};
   mutable std::mutex reading;
 };
 Archive::Archive(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
@@ -156,6 +215,7 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
   if (times.empty())
     times.insert(0);
   p->times.assign(times.begin(), times.end());
+  p->memo.resize(p->objects.size());
   return Archive(std::move(p));
 }
 Sample Archive::read(std::size_t mesh, double seconds,
@@ -192,23 +252,25 @@ Sample Archive::read(std::size_t mesh, double seconds,
   check_param(uv, 16);
   check_param(normals, 24);
   check(estimated <= cap, "ABC aggregate sample budget exceeded");
-  // Validate indexed parameters before Alembic expands them by indexing values.
-  const auto validate_param = [&](auto param) {
+  // Each parameter is decoded once: indices are validated against the
+  // decoded values and the domain, then expanded here (no second Alembic
+  // read and no intermediate expanded copy).
+  const auto load_param = [&](auto param, auto &out, int &scope_out) {
     if (!param.valid())
       return;
     auto indexed = param.getIndexedValue(selector);
-    check(static_cast<bool>(indexed.getVals()), "Missing ABC attribute values",
+    const auto vals = indexed.getVals();
+    check(static_cast<bool>(vals), "Missing ABC attribute values",
           ErrorCode::InvalidArgument);
     const auto indices = indexed.getIndices();
     if (param.isIndexed()) {
       check(static_cast<bool>(indices), "Missing ABC attribute indices",
             ErrorCode::InvalidArgument);
       for (std::size_t i = 0; i < indices->size(); ++i)
-        check((*indices)[i] < indexed.getVals()->size(),
-              "ABC attribute index invalid", ErrorCode::InvalidArgument);
+        check((*indices)[i] < vals->size(), "ABC attribute index invalid",
+              ErrorCode::InvalidArgument);
     }
-    const auto size =
-        param.isIndexed() ? indices->size() : indexed.getVals()->size();
+    const auto size = param.isIndexed() ? indices->size() : vals->size();
     std::uint64_t expected = 0;
     switch (indexed.getScope()) {
     case G::kConstantScope:
@@ -229,71 +291,106 @@ Sample Archive::read(std::size_t mesh, double seconds,
     }
     check(size == expected, "ABC attribute domain mismatch",
           ErrorCode::InvalidArgument);
+    scope_out = static_cast<int>(indexed.getScope());
+    out.reserve(size);
+    for (std::size_t i = 0; i < size; ++i) {
+      const auto &v = (*vals)[param.isIndexed() ? (*indices)[i] : i];
+      if constexpr (std::is_same_v<std::decay_t<decltype(out)>,
+                                   std::vector<skeletal::Vec2>>)
+        out.push_back({v.x, v.y});
+      else
+        out.push_back({v.x, v.y, v.z});
+    }
     cancel(stop);
   };
-  validate_param(uv);
-  validate_param(normals);
-  G::IPolyMeshSchema::Sample raw;
-  schema.get(raw, selector);
-  cancel(stop);
   Sample result;
   result.index = static_cast<std::size_t>(selected.first);
   result.seconds = selected.second;
-  if (raw.getPositions())
-    for (const auto &v :
-         std::span(raw.getPositions()->get(), raw.getPositions()->size()))
-      result.positions.push_back({v.x, v.y, v.z});
-  if (raw.getFaceCounts())
-    result.face_sizes.assign(raw.getFaceCounts()->get(),
-                             raw.getFaceCounts()->get() +
-                                 raw.getFaceCounts()->size());
-  if (raw.getFaceIndices())
-    result.corner_points.assign(raw.getFaceIndices()->get(),
-                                raw.getFaceIndices()->get() +
-                                    raw.getFaceIndices()->size());
-  std::size_t sum = 0;
-  for (auto n : result.face_sizes) {
-    check(n >= 0, "Negative polygon size", ErrorCode::InvalidArgument);
-    sum += static_cast<std::size_t>(n);
-  }
-  check(sum == result.corner_points.size(), "ABC corner domain mismatch",
-        ErrorCode::InvalidArgument);
-  for (auto i : result.corner_points)
-    check(i >= 0 && static_cast<std::size_t>(i) < result.positions.size(),
-          "ABC point index invalid", ErrorCode::InvalidArgument);
-  if (uv.valid()) {
-    auto expanded = uv.getExpandedValue(selector);
-    result.uv_scope = static_cast<int>(expanded.getScope());
-    for (const auto &v :
-         std::span(expanded.getVals()->get(), expanded.getVals()->size()))
-      result.uv.push_back({v.x, v.y});
-  }
-  if (normals.valid()) {
-    auto expanded = normals.getExpandedValue(selector);
-    result.normal_scope = static_cast<int>(expanded.getScope());
-    for (const auto &v :
-         std::span(expanded.getVals()->get(), expanded.getVals()->size()))
-      result.normals.push_back({v.x, v.y, v.z});
-  }
-  result.world = skeletal::matrix({});
-  // Alembic matrices act on row vectors; transpose at the contract boundary.
-  for (auto parent = impl_->objects[mesh].getParent(); parent.valid();
-       parent = parent.getParent()) {
-    if (G::IXform::matches(parent.getHeader())) {
-      G::IXform x(parent, A::kWrapExisting);
-      auto sample = x.getSchema().getValue(selector);
-      const auto m = sample.getMatrix();
-      Matrix4 converted;
-      for (std::size_t row = 0; row < 4; ++row)
-        for (std::size_t col = 0; col < 4; ++col)
-          converted[row * 4 + col] =
-              m[static_cast<int>(col)][static_cast<int>(row)];
-      result.world = skeletal::multiply(converted, result.world);
-      if (!sample.getInheritsXforms())
-        break;
-    }
+  result.keys = keys_for(schema, selector);
+  {
+    A::P3fArraySamplePtr positions;
+    schema.getPositionsProperty().get(positions, selector);
+    if (positions)
+      for (const auto &v : std::span(positions->get(), positions->size()))
+        result.positions.push_back({v.x, v.y, v.z});
   }
   cancel(stop);
+  // Topology whose stored content digests equal the previous read is the
+  // same data: reuse the validated arrays instead of decoding them again.
+  auto &memo = impl_->memo[mesh];
+  if (!result.keys.face_indices.empty() &&
+      memo.indices == result.keys.face_indices &&
+      memo.counts == result.keys.face_counts && memo.faces && memo.corners &&
+      memo.faces->size() == faces && memo.corners->size() == corners) {
+    result.face_sizes = *memo.faces;
+    result.corner_points = *memo.corners;
+    check(memo.corners->empty() || memo.max_point < result.positions.size(),
+          "ABC point index invalid", ErrorCode::InvalidArgument);
+    result.topology_reused = true;
+    ++impl_->topology_reuses;
+  } else {
+    A::Int32ArraySamplePtr counts, indices;
+    schema.getFaceCountsProperty().get(counts, selector);
+    schema.getFaceIndicesProperty().get(indices, selector);
+    if (counts)
+      result.face_sizes.assign(counts->get(), counts->get() + counts->size());
+    if (indices)
+      result.corner_points.assign(indices->get(),
+                                  indices->get() + indices->size());
+    std::size_t sum = 0;
+    for (auto n : result.face_sizes) {
+      check(n >= 0, "Negative polygon size", ErrorCode::InvalidArgument);
+      sum += static_cast<std::size_t>(n);
+    }
+    check(sum == result.corner_points.size(), "ABC corner domain mismatch",
+          ErrorCode::InvalidArgument);
+    std::size_t max_point = 0;
+    for (auto i : result.corner_points) {
+      check(i >= 0 && static_cast<std::size_t>(i) < result.positions.size(),
+            "ABC point index invalid", ErrorCode::InvalidArgument);
+      max_point = std::max(max_point, static_cast<std::size_t>(i));
+    }
+    memo = {result.keys.face_indices, result.keys.face_counts,
+            std::make_shared<const std::vector<std::int32_t>>(result.face_sizes),
+            std::make_shared<const std::vector<std::int32_t>>(result.corner_points),
+            max_point};
+  }
+  check(result.face_sizes.size() == faces &&
+            result.corner_points.size() == corners,
+        "ABC corner domain mismatch", ErrorCode::InvalidArgument);
+  cancel(stop);
+  load_param(uv, result.uv, result.uv_scope);
+  load_param(normals, result.normals, result.normal_scope);
+  result.world = world_of(impl_->objects[mesh], selector);
+  cancel(stop);
   return result;
+}
+SampleKeys Archive::keys(std::size_t mesh, double seconds) const {
+  std::scoped_lock lock(impl_->reading);
+  check(mesh < impl_->objects.size() && std::isfinite(seconds),
+        "Invalid ABC sample request", ErrorCode::InvalidArgument);
+  return keys_for(impl_->objects[mesh].getSchema(),
+                  A::ISampleSelector(seconds, A::ISampleSelector::kNearIndex));
+}
+Matrix4 Archive::world(std::size_t mesh, double seconds) const {
+  std::scoped_lock lock(impl_->reading);
+  check(mesh < impl_->objects.size() && std::isfinite(seconds),
+        "Invalid ABC sample request", ErrorCode::InvalidArgument);
+  return world_of(impl_->objects[mesh],
+                  A::ISampleSelector(seconds, A::ISampleSelector::kNearIndex));
+}
+std::size_t Archive::sample_index(std::size_t mesh, double seconds) const {
+  std::scoped_lock lock(impl_->reading);
+  check(mesh < impl_->objects.size() && std::isfinite(seconds),
+        "Invalid ABC sample request", ErrorCode::InvalidArgument);
+  auto &schema = impl_->objects[mesh].getSchema();
+  if (!schema.getNumSamples())
+    return 0;
+  return static_cast<std::size_t>(
+      schema.getTimeSampling()->getNearIndex(seconds, schema.getNumSamples()).first);
+}
+std::uint64_t Archive::topology_reuses() const {
+  std::scoped_lock lock(impl_->reading);
+  return impl_->topology_reuses;
 }
 } // namespace formaview::cache

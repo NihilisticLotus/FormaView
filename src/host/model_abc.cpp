@@ -103,7 +103,8 @@ std::shared_ptr<const ModelAbcSource> ModelAbcSource::open(const QString &path,
 }
 std::shared_ptr<ModelDocument>
 ModelAbcSource::read(std::size_t index, std::stop_token stop,
-                     std::optional<std::pair<QVector3D, float>> display) const {
+                     std::optional<std::pair<QVector3D, float>> display,
+                     std::shared_ptr<const ModelDocument> reference) const {
   check(stop);
   const auto &timeline = times();
   if (index >= timeline.size())
@@ -118,22 +119,61 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
       "Alembic Ogawa 路 Y up convention 路 units unspecified 路 clockwise "
       "polygon winding");
   const auto &infos = meshes();
+  // A neighbouring document of the same archive lets unchanged data be
+  // reused: identical stored arrays (Alembic content digests) and the same
+  // world matrix mean an identical mesh; identical topology digests mean the
+  // triangulation and every corner-domain array except UVs/normals carry over.
+  const bool related = reference && reference->geometryCache.get() == this &&
+                       reference->meshes.size() == infos.size() &&
+                       reference->cacheMeshKeys.size() == infos.size() &&
+                       reference->cacheMeshWorlds.size() == infos.size() &&
+                       reference->cacheMeshFaces.size() == infos.size();
   for (std::size_t mi = 0; mi < infos.size(); ++mi) {
     check(stop);
-    const auto sample = impl_->archive.read(mi, seconds, stop);
-    d->cacheMeshSamples.push_back(sample.index);
     const auto &info = infos[mi];
     const auto nodeId = QString("node/%1").arg(mi);
-    const auto world = modelMatrixValues(sample.world);
-    d->nodes.append(QVariantMap{{"id", nodeId},
-                                {"stableId", QString::fromStdString(info.path)},
-                                {"name", QString::fromStdString(info.path)},
-                                {"parent", QString{}},
-                                {"bone", false},
-                                {"local", world},
-                                {"world", world},
-                                {"geometryWorld", world},
-                                {"active", true}});
+    const auto appendNode = [&](const Matrix4 &matrix) {
+      const auto world = modelMatrixValues(matrix);
+      d->nodes.append(QVariantMap{{"id", nodeId},
+                                  {"stableId", QString::fromStdString(info.path)},
+                                  {"name", QString::fromStdString(info.path)},
+                                  {"parent", QString{}},
+                                  {"bone", false},
+                                  {"local", world},
+                                  {"world", world},
+                                  {"geometryWorld", world},
+                                  {"active", true}});
+    };
+    const ModelMesh *previous = related ? &reference->meshes[mi] : nullptr;
+    if (previous) {
+      const auto keys = impl_->archive.keys(mi, seconds);
+      const auto matrix = impl_->archive.world(mi, seconds);
+      if (keys.same_content(reference->cacheMeshKeys[mi]) &&
+          matrix == reference->cacheMeshWorlds[mi]) {
+        auto m = *previous;
+        // Derived per-document annotations are recomputed by finalize.
+        m.uvBounds.clear();
+        m.invalidUVs.clear();
+        m.classificationCandidate.clear();
+        d->cacheMeshSamples.push_back(impl_->archive.sample_index(mi, seconds));
+        d->cacheMeshKeys.push_back(keys);
+        d->cacheMeshWorlds.push_back(matrix);
+        d->cacheMeshFaces.push_back(reference->cacheMeshFaces[mi]);
+        d->cacheFaces += reference->cacheMeshFaces[mi];
+        d->cacheCorners += m.corners.size();
+        appendNode(matrix);
+        d->meshes.push_back(std::move(m));
+        ++meshReuses_;
+        continue;
+      }
+    }
+    const auto sample = impl_->archive.read(mi, seconds, stop);
+    ++meshDecodes_;
+    d->cacheMeshSamples.push_back(sample.index);
+    d->cacheMeshKeys.push_back(sample.keys);
+    d->cacheMeshWorlds.push_back(sample.world);
+    d->cacheMeshFaces.push_back(sample.face_sizes.size());
+    appendNode(sample.world);
     ModelMesh m;
     m.name = leaf(info.path);
     m.id = QString::fromStdString(info.path);
@@ -161,8 +201,27 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
       m.uvs.emplace_back().reserve(sample.corner_points.size());
     }
     const auto corners = sample.corner_points.size();
-    m.corners.reserve(corners);
-    m.faces.reserve(corners);
+    const bool sameTopology =
+        previous && sample.keys.same_topology(reference->cacheMeshKeys[mi]) &&
+        previous->corners.size() == corners &&
+        reference->cacheMeshFaces[mi] == sample.face_sizes.size();
+    if (sameTopology) {
+      m.corners = previous->corners;
+      m.faces = previous->faces;
+      m.triangles = previous->triangles;
+      m.triangleFaces = previous->triangleFaces;
+      m.triangleCorners = previous->triangleCorners;
+      m.colours = previous->colours;
+      m.alphas = previous->alphas;
+      m.cornerMaterial = previous->cornerMaterial;
+      ++topologyReuses_;
+    } else {
+      m.corners.reserve(corners);
+      m.faces.reserve(corners);
+      m.colours.assign(corners, QVector3D(.7F, .7F, .7F));
+      m.alphas.assign(corners, 1.F);
+      m.cornerMaterial.assign(corners, 0);
+    }
     m.normals.reserve(corners);
     std::size_t corner = 0;
     for (std::size_t face = 0; face < sample.face_sizes.size(); ++face) {
@@ -172,8 +231,10 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
       const auto first = corner;
       for (std::size_t k = 0; k < count; ++k, ++corner) {
         const auto point = static_cast<std::size_t>(sample.corner_points[corner]);
-        m.corners.push_back(static_cast<std::uint32_t>(point));
-        m.faces.push_back(face);
+        if (!sameTopology) {
+          m.corners.push_back(static_cast<std::uint32_t>(point));
+          m.faces.push_back(face);
+        }
         if (hasUv) {
           const auto *uv = scoped(sample.uv, sample.uv_scope, corner, face, point);
           m.uvs.front().emplace_back(uv ? uv->x : 0., uv ? uv->y : 0.);
@@ -187,10 +248,9 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
                      normalMatrix(r, 1) * static_cast<float>(v->y) +
                      normalMatrix(r, 2) * static_cast<float>(v->z);
         m.normals.push_back(n.normalized());
-        m.colours.emplace_back(.7F, .7F, .7F);
-        m.alphas.push_back(1.F);
-        m.cornerMaterial.push_back(0);
       }
+      if (sameTopology)
+        continue;
       // Alembic polygons wind clockwise; the fan reverses the display order
       // while corners, UVs and normals keep the source order.
       for (std::size_t k = 1; k + 1 < count; ++k) {
@@ -249,7 +309,8 @@ std::shared_ptr<const ModelAbcSource> ModelAbcSource::open(const QString &,
 }
 std::shared_ptr<ModelDocument>
 ModelAbcSource::read(std::size_t, std::stop_token,
-                     std::optional<std::pair<QVector3D, float>>) const {
+                     std::optional<std::pair<QVector3D, float>>,
+                     std::shared_ptr<const ModelDocument>) const {
   throw skeletal::Failure(ErrorCode::Unsupported,
                           "ABC preview is not available in this build");
 }
@@ -280,6 +341,19 @@ std::shared_ptr<ModelDocument> ModelAbcCache::find(std::size_t index) {
   entries_.splice(entries_.begin(), entries_, it);
   ++hits_;
   return entries_.front().document;
+}
+std::shared_ptr<const ModelDocument>
+ModelAbcCache::nearest(std::size_t index) const {
+  const Entry *best = nullptr;
+  std::size_t distance = 0;
+  for (const auto &e : entries_) {
+    const auto d = e.index > index ? e.index - index : index - e.index;
+    if (!best || d < distance) {
+      best = &e;
+      distance = d;
+    }
+  }
+  return best ? best->document : nullptr;
 }
 bool ModelAbcCache::contains(std::size_t index) const {
   return std::any_of(entries_.begin(), entries_.end(),

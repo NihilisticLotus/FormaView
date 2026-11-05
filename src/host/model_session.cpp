@@ -3620,14 +3620,18 @@ void ModelSession::cancelSample() {
 void ModelSession::startAbcJob(std::size_t index, bool prefetch) {
   const auto source = abcSource_;
   const auto display = abcDisplay_;
+  // The nearest cached sample shares the most unchanged meshes/topology.
+  std::shared_ptr<const ModelDocument> reference = abcCache_.nearest(index);
+  if (!reference)
+    reference = document_;
   std::stop_source stop;
   const auto token = stop.get_token();
   abcJob_ = AbcJob{
       generation_, index, prefetch, std::move(stop),
-      std::async(std::launch::async, [source, index, display, token] {
+      std::async(std::launch::async, [source, index, display, reference, token] {
         AbcResult r;
         try {
-          r.document = source->read(index, token, display);
+          r.document = source->read(index, token, display, reference);
         } catch (const skeletal::Failure &e) {
           r.cancelled = e.error.code == ErrorCode::Cancelled;
           r.error = QString::fromUtf8(e.what());
@@ -3703,10 +3707,9 @@ void ModelSession::landAbcSample(std::shared_ptr<ModelDocument> document) {
   if (!document || document == document_)
     return;
   document_ = std::move(document);
-  // Same archive, same mesh list: selections and view state carry over;
-  // frames built for the previous sample are not reusable.
-  frameCache_.clear();
-  cachedBytes_ = 0;
+  // Same archive, same mesh list: selections and view state carry over.
+  // Frames stay cached: their keys include the sample, so revisiting a
+  // recent sample with the same view state reuses its built frame.
   globalFrameFailure_ = false;
   clearSelection();
   rebuild();
@@ -3801,6 +3804,9 @@ QVariantMap ModelSession::cacheInfo() const {
           {"cacheHits", QVariant::fromValue<qulonglong>(abcCache_.hits())},
           {"cacheEvictions", QVariant::fromValue<qulonglong>(abcCache_.evictions())},
           {"reads", QVariant::fromValue<qulonglong>(abcSource_->reads())},
+          {"meshDecodes", QVariant::fromValue<qulonglong>(abcSource_->meshDecodes())},
+          {"meshReuses", QVariant::fromValue<qulonglong>(abcSource_->meshReuses())},
+          {"topologyReuses", QVariant::fromValue<qulonglong>(abcSource_->topologyReuses())},
           {"prefetched", QVariant::fromValue<qulonglong>(abcPrefetched_)},
           {"discarded", QVariant::fromValue<qulonglong>(abcDiscarded_)},
           {"error", abcError_}};

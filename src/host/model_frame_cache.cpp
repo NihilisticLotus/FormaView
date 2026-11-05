@@ -27,6 +27,9 @@ QByteArray ModelSession::stateKey(const ModelRenderState &state) const {
   QDataStream stream(&bytes, QIODevice::WriteOnly);
   stream << state.mode << state.mesh << state.bone << state.material
          << state.materialOnly << state.isolated << state.collisionMode << state.highlightedNode;
+  // Geometry-cache documents differ per timeline sample.
+  if (document_ && document_->geometryCache)
+    stream << static_cast<quint64>(document_->cacheSample);
   for (std::size_t i = 0; i < state.bindings.size(); ++i) {
     stream << state.bindings[i] << state.uvs[i];
     const auto &item = state.classes[i];

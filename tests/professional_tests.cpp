@@ -342,6 +342,31 @@ void caches(const std::filesystem::path &dir) {
   rejects([&] { (void)cache::Archive::open(malformed).read(0, 0); });
   require(archive.times() == std::vector<double>{.25, .75, 2},
           "Timeline is the union of mesh sample times");
+  // Content digests: identical samples share keys; reading the same sample
+  // again reuses the validated topology instead of decoding it.
+  {
+    auto fresh = cache::Archive::open(path);
+    const auto first = fresh.read(0, .25);
+    require(!first.topology_reused && fresh.topology_reuses() == 0,
+            "First read must decode topology");
+    const auto again = fresh.read(0, .25);
+    require(again.topology_reused && fresh.topology_reuses() == 1 &&
+                again.keys.same_content(first.keys) &&
+                again.corner_points == first.corner_points &&
+                again.face_sizes == first.face_sizes,
+            "Identical sample must reuse topology");
+    const auto other = fresh.read(0, .75);
+    require(!other.topology_reused && !other.keys.same_topology(first.keys) &&
+                other.positions.size() == 4,
+            "Changed topology must be decoded");
+    require(fresh.keys(0, .25) == first.keys && fresh.sample_index(0, 1.9) == 2,
+            "Digest/sample-index queries");
+    const auto third = fresh.read(0, 2);
+    // Samples 0 and 2 store identical topology arrays (one triangle).
+    require(third.keys.same_topology(first.keys) &&
+                !third.keys.same_content(first.keys),
+            "Topology keys identify equal arrays across samples");
+  }
   // Reads from several workers are serialised and stay identical to a
   // single-threaded direct read.
   {
@@ -412,6 +437,7 @@ void caches(const std::filesystem::path &dir) {
             "Animated transform times missing from timeline");
     for (int i = 0; i < 3; ++i) {
       const auto sample = opened.read(0, i);
+      require(opened.world(0, i) == sample.world, "world() differs from read()");
       require(sample.index == 0 &&
                   std::abs(sample.world[3] - i * 10.0) < 1e-9,
               "Animated parent transform not applied per sample");

@@ -122,6 +122,27 @@ void writeVarying(const std::filesystem::path &path, bool emptyFirst = false) {
                                  G::kVertexScope)));
   }
 }
+// One static mesh beside a fixed-topology animated mesh.
+void writeTwoMeshes(const std::filesystem::path &path) {
+  A::OArchive out(O::WriteArchive(), path.string());
+  const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 24, 0));
+  G::OPolyMesh still(out.getTop(), "still");
+  {
+    std::vector<A::V3f> p{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> idx{0, 1, 2}, counts{3};
+    still.getSchema().set(G::OPolyMeshSchema::Sample(
+        A::P3fArraySample(p), A::Int32ArraySample(idx), A::Int32ArraySample(counts)));
+  }
+  G::OPolyMesh wave(out.getTop(), "wave", ts);
+  for (int i = 0; i < 6; ++i) {
+    std::vector<A::V3f> p{{0, 0, 0}, {1, 0, static_cast<float>(i)}, {1, 1, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> idx{0, 3, 2, 1}, counts{4};
+    std::vector<A::V2f> uv{{0, 0}, {0, 1}, {1, 1}, {static_cast<float>(i), 0}};
+    wave.getSchema().set(G::OPolyMeshSchema::Sample(
+        A::P3fArraySample(p), A::Int32ArraySample(idx), A::Int32ArraySample(counts),
+        G::OV2fGeomParam::Sample(A::V2fArraySample(uv), G::kFacevaryingScope)));
+  }
+}
 void writeCurvesOnly(const std::filesystem::path &path, bool withMesh) {
   A::OArchive out(O::WriteArchive(), path.string());
   G::OCurves curves(out.getTop(), "hair");
@@ -215,6 +236,8 @@ int main(int argc, char **argv) {
                staticOne = dir / "static.abc";
     writeFixed(fixed);
     writeVarying(varying);
+    const auto twoMeshes = dir / "two-meshes.abc";
+    writeTwoMeshes(twoMeshes);
     const auto emptyFirst = dir / "empty-first.abc";
     writeVarying(emptyFirst, true);
     writeFixed(badSample, 6, 3);
@@ -453,6 +476,36 @@ int main(int argc, char **argv) {
       s.togglePlay();
       require(!s.playing() && s.cacheInfo().value("samples").toInt() == 1,
               "a single sample cannot play");
+    }
+
+    // 9a. Unchanged data is reused: a static mesh is copied from the
+    // neighbouring sample and a fixed topology keeps its triangulation,
+    // while every presented sample still equals a direct read.
+    {
+      ModelSession s;
+      s.open(qpath(twoMeshes));
+      waitFor([&] { return settled(s, 0); }, "two meshes open");
+      for (int target = 1; target < 6; ++target) {
+        s.seekSample(target);
+        waitFor([&] { return settled(s, target); }, "two meshes seek");
+        compareDirect(*s.documentSnapshot(), twoMeshes,
+                      static_cast<std::size_t>(target), "reuse");
+        requireFrameMatches(s, "reuse");
+      }
+      const auto i = s.cacheInfo();
+      require(i.value("meshReuses").toULongLong() == 5 &&
+                  i.value("topologyReuses").toULongLong() == 5 &&
+                  i.value("meshDecodes").toULongLong() == 7,
+              "reuse counters: reuses=" + i.value("meshReuses").toString().toStdString() +
+                  " topology=" + i.value("topologyReuses").toString().toStdString() +
+                  " decodes=" + i.value("meshDecodes").toString().toStdString());
+      // Revisiting a recent sample reuses its cached frame.
+      require(s.info().value("cachedFrameCount").toInt() > 1,
+              "frames of recent samples must stay cached");
+      evidence["reuse"] = QJsonObject{{"meshReuses", static_cast<double>(i.value("meshReuses").toULongLong())},
+                                      {"topologyReuses", static_cast<double>(i.value("topologyReuses").toULongLong())},
+                                      {"meshDecodes", static_cast<double>(i.value("meshDecodes").toULongLong())},
+                                      {"cachedFrames", s.info().value("cachedFrameCount").toInt()}};
     }
 
     // 9b. A varying cache may start (or pass through) an empty sample.
