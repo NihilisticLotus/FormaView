@@ -4,6 +4,7 @@
 #include "formaview/preview.hpp"
 #include "model_document.hpp"
 #include "formaview/skeleton_compare.hpp"
+#include "model_abc.hpp"
 #include "model_metadata.hpp"
 #include "model_texture.hpp"
 #include <QDir>
@@ -268,10 +269,127 @@ void initializeAnimationBounds(ModelDocument &document) {
                             "Animation bounds exceed display precision");
 }
 } // namespace
+void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
+                           bool allowEmpty) {
+  auto *const d = &document;
+  QVector3D low(std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max()),
+      high = -low;
+  std::size_t renderCorners = 0;
+  for (const auto &value : d->nodes) {
+    const auto node = value.toMap();
+    d->nodeById.insert(node.value("id").toString(), node);
+  }
+  for (auto &m : d->meshes) {
+    check(stop);
+    const auto lodName =
+        QRegularExpression("(?:^|[_ .-])LOD[_ .-]?(\\d+)(?:$|[_ .-])",
+                           QRegularExpression::CaseInsensitiveOption)
+            .match(m.name);
+    const auto collisionName =
+        QRegularExpression("^(?:UCX|UBX|USP|UCP)_",
+                           QRegularExpression::CaseInsensitiveOption)
+            .match(m.name);
+    if (m.classification.group.isEmpty() && lodName.hasMatch())
+      m.classificationCandidate = "LOD name candidate " + lodName.captured(1) +
+                                  "; not classified automatically";
+    if (collisionName.hasMatch())
+      m.classificationCandidate +=
+          (m.classificationCandidate.isEmpty() ? "" : "; ") +
+          QString("collision prefix candidate; source association unverified");
+    for (std::size_t i = 0; i < m.uvs.size(); ++i) {
+      std::array<double, 4> bounds{std::numeric_limits<double>::max(),
+                                   std::numeric_limits<double>::max(),
+                                   -std::numeric_limits<double>::max(),
+                                   -std::numeric_limits<double>::max()};
+      bool invalid = false;
+      for (const auto &v : m.uvs[i]) {
+        if (!qIsFinite(v.x()) || !qIsFinite(v.y()) || std::abs(v.x()) > 1e7 ||
+            std::abs(v.y()) > 1e7) {
+          invalid = true;
+          continue;
+        }
+        bounds[0] = std::min(bounds[0], v.x());
+        bounds[1] = std::min(bounds[1], v.y());
+        bounds[2] = std::max(bounds[2], v.x());
+        bounds[3] = std::max(bounds[3], v.y());
+      }
+      m.uvBounds.push_back(bounds);
+      m.invalidUVs.push_back(invalid);
+      if (invalid)
+        d->warnings.append(m.name + ": " +
+                           m.uvNames.at(static_cast<qsizetype>(i)) +
+                           " has non-finite or unrepresentable preview "
+                           "coordinates; raw values retained");
+    }
+    if (m.triangleFaces.empty())
+      for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
+        m.triangleFaces.push_back(t / 3);
+        m.triangleCorners.push_back({0, 1, 2});
+      }
+    for (auto &p : m.points)
+      p = d->displayBasis.map(p);
+    for (auto &n : m.normals)
+      n = d->displayBasis.mapVector(n);
+    d->points += m.points.size();
+    d->triangles += m.triangles.size() / 3;
+    renderCorners += m.triangles.size();
+    if (renderCorners > 2500000)
+      throw skeletal::Failure(ErrorCode::ResourceLimit,
+                              "Model preview vertex budget exceeded");
+    for (const auto &p : m.points) {
+      if (!qIsFinite(p.x()) || !qIsFinite(p.y()) || !qIsFinite(p.z()))
+        throw skeletal::Failure(ErrorCode::InvalidArgument,
+                                "Non-finite model position");
+      for (int a = 0; a < 3; ++a) {
+        low[a] = std::min(low[a], p[a]);
+        high[a] = std::max(high[a], p[a]);
+      }
+    }
+    if (!m.points.empty()) {
+      m.boundsLow = m.boundsHigh = m.points.front();
+      for (const auto &p : m.points)
+        for (int a = 0; a < 3; ++a) {
+          m.boundsLow[a] = std::min(m.boundsLow[a], p[a]);
+          m.boundsHigh[a] = std::max(m.boundsHigh[a], p[a]);
+        }
+    }
+    for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
+      const auto a = m.triangles[t], b = m.triangles[t + 1],
+                 c = m.triangles[t + 2];
+      const auto n =
+          QVector3D::crossProduct(
+              m.points.at(m.corners.at(b)) - m.points.at(m.corners.at(a)),
+              m.points.at(m.corners.at(c)) - m.points.at(m.corners.at(a)))
+              .normalized();
+      for (auto i : {a, b, c})
+        if (m.normals.at(i).isNull())
+          m.normals[i] = n;
+    }
+  }
+  if (!d->triangles && !d->skeletonOnly && !allowEmpty)
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            "No visible triangles in model");
+  if (d->skeletonOnly || low.x() > high.x()) {
+    // Animation-only documents (standalone PSA, animation-only glTF) size
+    // their display space from the animated skeleton, not from meshes; an
+    // explicitly allowed empty sample has no bounds either.
+    d->center = QVector3D();
+    d->radius = 1;
+    return;
+  }
+  d->center = (low + high) * .5F;
+  d->radius = std::max((high - low).length() * .5F, 1e-6F);
+}
 std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
                                                  std::stop_token stop,
                                                  const QString &reference,
                                                  const QString &companion) {
+  if (QFileInfo(path).suffix().compare("abc", Qt::CaseInsensitive) == 0)
+    // Geometry caches lease and index the whole archive, then present the
+    // first timeline sample; later samples are read on demand.
+    return ModelAbcSource::open(path, stop)->read(0, stop);
   auto d = std::make_shared<ModelDocument>();
   const std::filesystem::path source(path.toStdWString());
   AccessScope scope;
@@ -1159,120 +1277,8 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
   } else
     throw skeletal::Failure(ErrorCode::Unsupported,
                             "This model format is not connected yet");
-  QVector3D low(std::numeric_limits<float>::max(),
-                std::numeric_limits<float>::max(),
-                std::numeric_limits<float>::max()),
-      high = -low;
-  std::size_t renderCorners = 0;
   d->name = QFileInfo(path).fileName();
-  for (const auto &value : d->nodes) {
-    const auto node = value.toMap();
-    d->nodeById.insert(node.value("id").toString(), node);
-  }
-  for (auto &m : d->meshes) {
-    check(stop);
-    const auto lodName =
-        QRegularExpression("(?:^|[_ .-])LOD[_ .-]?(\\d+)(?:$|[_ .-])",
-                           QRegularExpression::CaseInsensitiveOption)
-            .match(m.name);
-    const auto collisionName =
-        QRegularExpression("^(?:UCX|UBX|USP|UCP)_",
-                           QRegularExpression::CaseInsensitiveOption)
-            .match(m.name);
-    if (m.classification.group.isEmpty() && lodName.hasMatch())
-      m.classificationCandidate = "LOD name candidate " + lodName.captured(1) +
-                                  "; not classified automatically";
-    if (collisionName.hasMatch())
-      m.classificationCandidate +=
-          (m.classificationCandidate.isEmpty() ? "" : "; ") +
-          QString("collision prefix candidate; source association unverified");
-    for (std::size_t i = 0; i < m.uvs.size(); ++i) {
-      std::array<double, 4> bounds{std::numeric_limits<double>::max(),
-                                   std::numeric_limits<double>::max(),
-                                   -std::numeric_limits<double>::max(),
-                                   -std::numeric_limits<double>::max()};
-      bool invalid = false;
-      for (const auto &v : m.uvs[i]) {
-        if (!qIsFinite(v.x()) || !qIsFinite(v.y()) || std::abs(v.x()) > 1e7 ||
-            std::abs(v.y()) > 1e7) {
-          invalid = true;
-          continue;
-        }
-        bounds[0] = std::min(bounds[0], v.x());
-        bounds[1] = std::min(bounds[1], v.y());
-        bounds[2] = std::max(bounds[2], v.x());
-        bounds[3] = std::max(bounds[3], v.y());
-      }
-      m.uvBounds.push_back(bounds);
-      m.invalidUVs.push_back(invalid);
-      if (invalid)
-        d->warnings.append(m.name + ": " +
-                           m.uvNames.at(static_cast<qsizetype>(i)) +
-                           " has non-finite or unrepresentable preview "
-                           "coordinates; raw values retained");
-    }
-    if (m.triangleFaces.empty())
-      for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
-        m.triangleFaces.push_back(t / 3);
-        m.triangleCorners.push_back({0, 1, 2});
-      }
-    for (auto &p : m.points)
-      p = d->displayBasis.map(p);
-    for (auto &n : m.normals)
-      n = d->displayBasis.mapVector(n);
-    d->points += m.points.size();
-    d->triangles += m.triangles.size() / 3;
-    renderCorners += m.triangles.size();
-    if (renderCorners > 2500000)
-      throw skeletal::Failure(ErrorCode::ResourceLimit,
-                              "Model preview vertex budget exceeded");
-    for (const auto &p : m.points) {
-      if (!qIsFinite(p.x()) || !qIsFinite(p.y()) || !qIsFinite(p.z()))
-        throw skeletal::Failure(ErrorCode::InvalidArgument,
-                                "Non-finite model position");
-      for (int a = 0; a < 3; ++a) {
-        low[a] = std::min(low[a], p[a]);
-        high[a] = std::max(high[a], p[a]);
-      }
-    }
-    if (!m.points.empty()) {
-      m.boundsLow = m.boundsHigh = m.points.front();
-      for (const auto &p : m.points)
-        for (int a = 0; a < 3; ++a) {
-          m.boundsLow[a] = std::min(m.boundsLow[a], p[a]);
-          m.boundsHigh[a] = std::max(m.boundsHigh[a], p[a]);
-        }
-    }
-    for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
-      const auto a = m.triangles[t], b = m.triangles[t + 1],
-                 c = m.triangles[t + 2];
-      const auto n =
-          QVector3D::crossProduct(
-              m.points.at(m.corners.at(b)) - m.points.at(m.corners.at(a)),
-              m.points.at(m.corners.at(c)) - m.points.at(m.corners.at(a)))
-              .normalized();
-      for (auto i : {a, b, c})
-        if (m.normals.at(i).isNull())
-          m.normals[i] = n;
-    }
-  }
-  if (!d->triangles && !d->skeletonOnly)
-    throw skeletal::Failure(ErrorCode::InvalidArgument,
-                            "No visible triangles in model");
-  if (d->skeletonOnly) {
-    // Animation-only documents (standalone PSA, animation-only glTF) size
-    // their display space from the animated skeleton, not from meshes.
-    d->center = QVector3D();
-    d->radius = 1;
-    check(stop);
-    lease.require_unchanged(lease.snapshot());
-    if (d->hash != text(lease.snapshot().content_sha256))
-      throw skeletal::Failure(ErrorCode::InputChanged,
-                              "Model input changed during decoding");
-    return d;
-  }
-  d->center = (low + high) * .5F;
-  d->radius = std::max((high - low).length() * .5F, 1e-6F);
+  finalizeModelGeometry(*d, stop);
   check(stop);
   lease.require_unchanged(lease.snapshot());
   if (d->hash != text(lease.snapshot().content_sha256))
@@ -1294,6 +1300,7 @@ ModelSession::ModelSession(QObject *parent)
   connect(&animTimer_, &QTimer::timeout, this, &ModelSession::tickAnimation);
 }
 ModelSession::~ModelSession() {
+  if (abcJob_) abcJob_->stop.request_stop();
   if (pickJob_) pickJob_->stop.request_stop();
   if (gpuJob_) gpuJob_->stop.request_stop();
   if (asyncFrame_) asyncFrame_->stop.request_stop();
@@ -1320,6 +1327,15 @@ void ModelSession::reset(bool opening) {
   ++frameRequest_;
   ++poseRequest_;
   pendingAnimationFrame_ = false;
+  // The old archive's sample worker keeps running until poll() collects it;
+  // its generation is stale, so it is neither cached nor presented.
+  if (abcJob_) abcJob_->stop.request_stop();
+  abcSource_.reset();
+  abcCache_.clear();
+  abcFrameDocument_.reset();
+  abcRequested_ = 0;
+  abcDirection_ = 1;
+  abcError_.clear();
   // A std::async future blocks in its destructor. Keep the single cancelled
   // worker until poll() collects it; its old generation can never publish.
   if (pickJob_) pickJob_->stop.request_stop();
@@ -1383,6 +1399,16 @@ void ModelSession::reset(bool opening) {
   emit documentChanged();
 }
 void ModelSession::cancel() {
+  if (abcActive() &&
+      ((abcJob_ && !abcJob_->prefetch) ||
+       abcRequested_ != document_->cacheSample ||
+       (abcFrameDocument_ && abcFrameDocument_ != document_))) {
+    // Cancelling a sample read keeps the open archive and its presented
+    // sample; only an idle cancel closes the document as before.
+    cancelSample();
+    if (!preparing_)
+      return;
+  }
   if ((!preparing_ && frameError_.isEmpty()) || !frames_.model) {
     clear();
     return;
@@ -1517,6 +1543,7 @@ void ModelSession::startPending() {
   jobs_.push_back({generation_, std::move(stop), std::move(future)});
 }
 void ModelSession::poll() {
+  finishAbcJob();
   finishGpuPick();
   finishGpuGeometry();
   finishAsyncFrame();
@@ -1539,6 +1566,8 @@ void ModelSession::poll() {
         renderedState_ = std::move(r.state);
         frame_ = frames_.mode == 1 ? frames_.uv : frames_.model;
         cacheFrame();
+        if (abcActive())
+          abcFrameDocument_ = document_;
       }
       emit frameChanged();
       emit changed();
@@ -1622,6 +1651,19 @@ void ModelSession::poll() {
           animTimer_.start();
         }
         refreshAnimationFrame();
+      } else if (document_ && document_->geometryCache) {
+        abcSource_ = document_->geometryCache;
+        abcCache_.clear();
+        abcCache_.insert(document_);
+        abcRequested_ = document_->cacheSample;
+        abcDisplay_ = {document_->center, document_->radius};
+        abcPrefetched_ = abcDiscarded_ = 0;
+        time_ = abcSource_->times().at(abcRequested_);
+        if (resumePlaybackOnLanding_ && abcSource_->times().size() > 1) {
+          playing_ = true;
+          animClock_.restart();
+          animTimer_.start();
+        }
       } else {
         time_ = 0;
       }
@@ -1838,6 +1880,9 @@ void ModelSession::poll() {
     compareJobsFinished=true;
   }
   if (compareJobsFinished) emit changed();
+  // A sample cached while the previous frame was prepared during playback is
+  // presented once that frame is ready (never while iterating frame jobs).
+  scheduleAbc();
   startPending();
   startFrame();
 }
@@ -1992,6 +2037,10 @@ void ModelSession::finishAsyncFrame() {
 }
 
 void ModelSession::tickAnimation() {
+  if (abcActive()) {
+    tickAbc();
+    return;
+  }
   if (!playing_ || !document_ || !document_->animated()) {
     animTimer_.stop();
     playing_ = false;
@@ -2111,6 +2160,26 @@ void ModelSession::refreshAnimationFrame() {
 }
 
 void ModelSession::togglePlay() {
+  if (abcActive()) {
+    const auto &times = abcSource_->times();
+    if (times.size() < 2)
+      return;
+    playing_ = !playing_;
+    if (playing_) {
+      abcDirection_ = 1;
+      if (time_ >= times.back()) {
+        time_ = times.front();
+        requestAbcSample(0);
+      }
+      animClock_.restart();
+      animTimer_.start();
+    } else {
+      animTimer_.stop();
+    }
+    scheduleAbc();
+    emit animChanged();
+    return;
+  }
   if (!document_ || !document_->animated())
     return;
   playing_ = !playing_;
@@ -2128,6 +2197,12 @@ void ModelSession::togglePlay() {
 }
 
 void ModelSession::seek(double seconds) {
+  if (abcActive() && std::isfinite(seconds)) {
+    const auto &times = abcSource_->times();
+    time_ = std::clamp(seconds, times.front(), times.back());
+    requestAbcSample(abcSource_->nearest(time_));
+    return;
+  }
   if (!document_ || !document_->animated() || !std::isfinite(seconds))
     return;
   const auto &clip =
@@ -2139,6 +2214,13 @@ void ModelSession::seek(double seconds) {
 }
 
 void ModelSession::stepFrame(int frames) {
+  if (abcActive() && frames) {
+    abcDirection_ = frames > 0 ? 1 : -1;
+    const auto last = static_cast<long long>(abcSource_->times().size()) - 1;
+    seekSample(static_cast<int>(std::clamp(
+        static_cast<long long>(abcRequested_) + frames, 0LL, last)));
+    return;
+  }
   if (!document_ || !document_->animated() || !frames)
     return;
   const auto &clip =
@@ -3090,6 +3172,8 @@ void ModelSession::startFrame() {
     renderedState_ = std::move(state);
     frameCache_.splice(frameCache_.begin(), frameCache_, cached);
     preparing_ = false;
+    if (abcActive())
+      abcFrameDocument_ = document_;
     frame_ = frames_.mode == 1 ? frames_.uv : frames_.model;
     emit frameChanged();
     emit changed();
@@ -3333,6 +3417,8 @@ ModelPickHit pickModelDocument(const ModelDocument &document, const ModelRenderS
 void ModelSession::pick(const QMatrix4x4 &view,QPointF normalized,bool uvView,
                         std::shared_ptr<const formaview::render::Frame> presented) {
   if (!inspectable() || (mode_==2 && bindingIndex()<0)) return;
+  // A geometry-cache frame may still show the previous sample.
+  if (abcActive() && abcFrameDocument_!=document_) return;
   if ((document_->externallyDriven || document_->nativeAnimated) && stateKey(renderState())!=stateKey(renderedState_)) return;
   if (!uvView && frames_.model && frames_.model->geometry) {
     const auto snapshot=presented?std::move(presented):frames_.model;
@@ -3415,6 +3501,10 @@ void ModelSession::applyPick(const ModelPickHit &hit,bool uvView) {
 std::pair<QVector3D, float> ModelSession::focusBounds(bool selected) const {
   if (!document_)
     return {{}, 1};
+  // Geometry-cache samples share the first sample's display space; framing
+  // all keeps that space so motion stays visible instead of being re-centred.
+  if (abcActive() && !selected)
+    return {{}, 1};
   // Skeleton documents have no selectable mesh: like the CPU path they focus
   // the presented frame bounds below.
   if(selected && gpuGeometry_ && frames_.model && frames_.model->geometry==gpuGeometry_->frames.model &&
@@ -3492,4 +3582,226 @@ std::pair<QVector3D, float> ModelSession::uvBounds(bool reference) const {
       high[axis] = std::max(high[axis], 1.F);
     }
   return {(low + high) * .5F, std::max((high - low).length() * .5F, .0001F)};
+}
+
+void ModelSession::requestAbcSample(std::size_t index) {
+  if (!abcActive())
+    return;
+  abcRequested_ = std::min(index, abcSource_->times().size() - 1);
+  abcError_.clear();
+  scheduleAbc();
+  emit animChanged();
+}
+void ModelSession::seekSample(int index) {
+  if (!abcActive())
+    return;
+  const auto &times = abcSource_->times();
+  const auto clamped = static_cast<std::size_t>(
+      std::clamp(index, 0, static_cast<int>(times.size()) - 1));
+  time_ = times[clamped];
+  requestAbcSample(clamped);
+}
+void ModelSession::cancelSample() {
+  if (!abcActive())
+    return;
+  if (abcJob_)
+    abcJob_->stop.request_stop();
+  playing_ = false;
+  animTimer_.stop();
+  // Keep the sample whose frame is on screen; a newer document that has no
+  // frame yet is dropped back to it.
+  if (abcFrameDocument_ && abcFrameDocument_ != document_)
+    document_ = abcFrameDocument_;
+  abcRequested_ = document_->cacheSample;
+  time_ = abcSource_->times().at(abcRequested_);
+  emit animChanged();
+  emit changed();
+}
+void ModelSession::startAbcJob(std::size_t index, bool prefetch) {
+  const auto source = abcSource_;
+  const auto display = abcDisplay_;
+  std::stop_source stop;
+  const auto token = stop.get_token();
+  abcJob_ = AbcJob{
+      generation_, index, prefetch, std::move(stop),
+      std::async(std::launch::async, [source, index, display, token] {
+        AbcResult r;
+        try {
+          r.document = source->read(index, token, display);
+        } catch (const skeletal::Failure &e) {
+          r.cancelled = e.error.code == ErrorCode::Cancelled;
+          r.error = QString::fromUtf8(e.what());
+        } catch (const std::exception &e) {
+          r.error = QString::fromUtf8(e.what());
+        }
+        return r;
+      })};
+}
+void ModelSession::finishAbcJob() {
+  if (!abcJob_ || abcJob_->future.wait_for(std::chrono::seconds(0)) !=
+                      std::future_status::ready)
+    return;
+  auto job = std::move(*abcJob_);
+  abcJob_.reset();
+  auto r = job.future.get();
+  // Results of a previous archive (or after a close) are dropped entirely.
+  if (job.generation != generation_ || !abcActive() ||
+      (r.document && r.document->geometryCache != abcSource_)) {
+    ++abcDiscarded_;
+    scheduleAbc(); // The current archive may be waiting for this worker.
+    return;
+  }
+  if (r.document) {
+    abcCache_.insert(r.document);
+    if (job.prefetch)
+      ++abcPrefetched_;
+    else if (job.index != abcRequested_)
+      ++abcDiscarded_; // Superseded: cached for reuse, never presented.
+  } else if (!r.cancelled && !job.prefetch && job.index == abcRequested_) {
+    abcError_ = r.error;
+    playing_ = false;
+    animTimer_.stop();
+    abcRequested_ = document_->cacheSample;
+  }
+  scheduleAbc();
+  emit animChanged();
+}
+void ModelSession::scheduleAbc() {
+  if (!abcActive() || busy_)
+    return;
+  if (abcRequested_ != document_->cacheSample) {
+    if (abcCache_.contains(abcRequested_)) {
+      // During playback keep the presented sample until its frame is ready,
+      // so frame building is never starved by back-to-back landings.
+      if (!(playing_ && preparing_))
+        landAbcSample(abcCache_.find(abcRequested_));
+      return;
+    }
+    if (!abcJob_)
+      startAbcJob(abcRequested_, false);
+    else if (abcJob_->prefetch && abcJob_->index != abcRequested_)
+      abcJob_->stop.request_stop();
+    return;
+  }
+  // Limited prefetch while playing: the next two samples in play order.
+  if (!playing_ || abcJob_ || !abcError_.isEmpty())
+    return;
+  const auto count = static_cast<long long>(abcSource_->times().size());
+  for (long long step = 1; step <= 2; ++step) {
+    auto next = static_cast<long long>(abcRequested_) + step * abcDirection_;
+    if (loop_)
+      next = ((next % count) + count) % count;
+    if (next < 0 || next >= count)
+      break;
+    if (!abcCache_.contains(static_cast<std::size_t>(next))) {
+      startAbcJob(static_cast<std::size_t>(next), true);
+      break;
+    }
+  }
+}
+void ModelSession::landAbcSample(std::shared_ptr<ModelDocument> document) {
+  if (!document || document == document_)
+    return;
+  document_ = std::move(document);
+  // Same archive, same mesh list: selections and view state carry over;
+  // frames built for the previous sample are not reusable.
+  frameCache_.clear();
+  cachedBytes_ = 0;
+  globalFrameFailure_ = false;
+  clearSelection();
+  rebuild();
+  emit changed();
+  emit animChanged();
+}
+void ModelSession::tickAbc() {
+  const auto &times = abcSource_->times();
+  if (!playing_ || times.size() < 2) {
+    animTimer_.stop();
+    playing_ = false;
+    emit animChanged();
+    return;
+  }
+  const double dt = static_cast<double>(animClock_.restart()) / 1000.0;
+  const double start = times.front(), end = times.back();
+  time_ += dt * speed_;
+  if (!std::isfinite(time_))
+    time_ = start;
+  if (time_ > end) {
+    if (loop_) {
+      time_ = start + std::fmod(time_ - start, std::max(1e-9, end - start));
+    } else {
+      time_ = end;
+      playing_ = false;
+      animTimer_.stop();
+    }
+  }
+  abcDirection_ = 1;
+  const auto index = abcSource_->nearest(time_);
+  if (index != abcRequested_)
+    requestAbcSample(index);
+  else
+    scheduleAbc();
+  emit animChanged();
+}
+QVariantMap ModelSession::cacheInfo() const {
+  if (!abcActive() || !abcSource_)
+    return {};
+  const auto &times = abcSource_->times();
+  const auto &infos = abcSource_->meshes();
+  const auto shown = document_->cacheSample;
+  QVariantList meshes;
+  bool uv = false, normals = false;
+  for (std::size_t i = 0; i < infos.size(); ++i) {
+    const auto &info = infos[i];
+    uv = uv || info.uv;
+    normals = normals || info.normals;
+    QVariantMap entry{
+        {"path", QString::fromStdString(info.path)},
+        {"topology", info.constant ? QStringLiteral("static")
+                     : info.topology == formaview::Topology::Varying
+                         ? QStringLiteral("varying")
+                         : QStringLiteral("fixed")},
+        {"samples", static_cast<int>(info.times.size())},
+        {"uv", info.uv},
+        {"normals", info.normals}};
+    if (i < document_->cacheMeshSamples.size())
+      entry["sample"] = static_cast<int>(document_->cacheMeshSamples[i]);
+    if (i < document_->meshes.size()) {
+      const auto &m = document_->meshes[i];
+      entry["points"] = QVariant::fromValue<qulonglong>(m.points.size());
+      entry["corners"] = QVariant::fromValue<qulonglong>(m.corners.size());
+      entry["triangles"] = QVariant::fromValue<qulonglong>(m.triangles.size() / 3);
+    }
+    meshes.append(entry);
+  }
+  const bool loading =
+      abcRequested_ != shown || (abcJob_ && !abcJob_->prefetch);
+  return {{"active", true},
+          {"samples", static_cast<int>(times.size())},
+          {"sample", static_cast<int>(shown)},
+          {"requested", static_cast<int>(abcRequested_)},
+          {"time", times.at(shown)},
+          {"clock", time_},
+          {"start", times.front()},
+          {"end", times.back()},
+          {"loading", loading},
+          {"framed", abcFrameDocument_ == document_},
+          {"points", QVariant::fromValue<qulonglong>(document_->points)},
+          {"faces", QVariant::fromValue<qulonglong>(document_->cacheFaces)},
+          {"corners", QVariant::fromValue<qulonglong>(document_->cacheCorners)},
+          {"triangles", QVariant::fromValue<qulonglong>(document_->triangles)},
+          {"uv", uv},
+          {"normals", normals},
+          {"meshes", meshes},
+          {"skipped", static_cast<int>(abcSource_->skipped().size())},
+          {"cachedSamples", static_cast<int>(abcCache_.size())},
+          {"cachedBytes", QVariant::fromValue<qulonglong>(abcCache_.bytes())},
+          {"cacheLimitBytes", QVariant::fromValue<qulonglong>(abcCache_.maxBytes())},
+          {"cacheLimitSamples", static_cast<int>(abcCache_.maxSamples())},
+          {"cacheHits", QVariant::fromValue<qulonglong>(abcCache_.hits())},
+          {"cacheEvictions", QVariant::fromValue<qulonglong>(abcCache_.evictions())},
+          {"reads", QVariant::fromValue<qulonglong>(abcSource_->reads())},
+          {"prefetched", QVariant::fromValue<qulonglong>(abcPrefetched_)},
+          {"discarded", QVariant::fromValue<qulonglong>(abcDiscarded_)},
+          {"error", abcError_}};
 }

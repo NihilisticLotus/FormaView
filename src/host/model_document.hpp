@@ -107,8 +107,16 @@ struct FixedDecoderOptions {
 QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot> &a,
     const std::shared_ptr<const ModelDecoderSnapshot> &b, std::stop_token stop = {},
     const FixedDecoderOptions &options = {});
+class ModelAbcSource;
 struct ModelDocument {
   std::shared_ptr<const ModelDecoderSnapshot> decoderSnapshot;
+  // Alembic geometry cache: every document is one immutable timeline sample
+  // of the shared archive (never animated through worldAt/clips). The source
+  // never references documents, so sample caches cannot form cycles.
+  std::shared_ptr<const ModelAbcSource> geometryCache;
+  std::size_t cacheSample{};                  // Index into the merged timeline.
+  std::vector<std::size_t> cacheMeshSamples;  // Per-mesh source sample index.
+  std::uint64_t cacheFaces{}, cacheCorners{}; // Source polygon statistics.
   // Immutable source evidence; never derived from a displayed or animated frame.
   std::function<formaview::skeletal::transform::Evidence(std::stop_token)> transformEvidence;
   std::vector<ModelMesh> meshes;
@@ -227,6 +235,11 @@ struct ModelDocument {
 };
 
 std::shared_ptr<ModelDocument> readGltfModel(const QString &, std::stop_token);
+// Shared tail of every reader: classification candidates, UV bounds, display
+// basis, statistics, budgets and bounds. allowEmpty admits documents without
+// triangles (an empty geometry-cache sample) and gives them unit bounds.
+void finalizeModelGeometry(ModelDocument &, std::stop_token,
+                           bool allowEmpty = false);
 // On-demand audit fingerprint of immutable source geometry and skin data.
 QByteArray modelSourceDigest(const ModelDocument &);
 std::shared_ptr<ModelDocument> readModelDocument(const QString &,

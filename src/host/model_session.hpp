@@ -6,6 +6,7 @@
 #include "formaview/fbx.hpp"
 #include "model_scene.hpp"
 #include "model_skeleton.hpp"
+#include "model_abc.hpp"
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
@@ -85,6 +86,9 @@ class ModelSession : public QObject {
   Q_PROPERTY(bool compareBusy READ compareBusy NOTIFY changed)
   Q_PROPERTY(QVariantMap compareResult READ compareResult NOTIFY changed)
   Q_PROPERTY(QString compareError READ compareError NOTIFY changed)
+  // Alembic geometry cache: timeline, sample statistics and cache state.
+  Q_PROPERTY(bool geometryCache READ geometryCache NOTIFY changed)
+  Q_PROPERTY(QVariantMap cacheInfo READ cacheInfo NOTIFY animChanged)
 public:
   explicit ModelSession(QObject *parent = nullptr);
   ~ModelSession() override;
@@ -164,6 +168,16 @@ public:
   Q_INVOKABLE void setClipIndex(int index);
   Q_INVOKABLE void setLoop(bool value);
   Q_INVOKABLE void setSpeed(double value);
+  bool geometryCache() const { return abcActive(); }
+  QVariantMap cacheInfo() const;
+  // Jump to a merged-timeline sample (random access; clamps the index).
+  Q_INVOKABLE void seekSample(int index);
+  // Stop an in-flight sample read and keep the presented sample.
+  Q_INVOKABLE void cancelSample();
+  // Verification/tuning: tighten the sample cache bounds.
+  void setCacheLimits(std::uint64_t bytes, std::size_t samples) {
+    abcCache_.setLimits(bytes, samples);
+  }
   bool pairMeshVisible() const { return pairMeshVisible_; }
   Q_INVOKABLE void setPairMeshVisible(bool value);
   bool rootLockOn() const { return rootLockOn_; }
@@ -410,6 +424,37 @@ private:
     std::future<ModelFrames> future;
   };
   std::optional<AsyncFrame> asyncFrame_;
+  // Geometry cache state. Sample documents are immutable; the GUI thread
+  // owns the bounded cache and lands only the latest requested sample of the
+  // current generation. Stale reads are cached, never presented.
+  bool abcActive() const { return document_ && document_->geometryCache; }
+  struct AbcResult {
+    std::shared_ptr<ModelDocument> document;
+    QString error;
+    bool cancelled{};
+  };
+  struct AbcJob {
+    quint64 generation;
+    std::size_t index;
+    bool prefetch;
+    std::stop_source stop;
+    std::future<AbcResult> future;
+  };
+  std::shared_ptr<const ModelAbcSource> abcSource_;
+  ModelAbcCache abcCache_;
+  std::shared_ptr<ModelDocument> abcFrameDocument_; // Sample of the presented frame.
+  std::optional<AbcJob> abcJob_;
+  std::size_t abcRequested_{};
+  std::pair<QVector3D, float> abcDisplay_{{}, 1.F};
+  int abcDirection_{1};
+  std::uint64_t abcPrefetched_{}, abcDiscarded_{};
+  QString abcError_;
+  void requestAbcSample(std::size_t index);
+  void scheduleAbc();
+  void startAbcJob(std::size_t index, bool prefetch);
+  void finishAbcJob();
+  void landAbcSample(std::shared_ptr<ModelDocument>);
+  void tickAbc();
   quint64 poseRequest_{};
   bool pendingAnimationFrame_{};
   void finishAsyncFrame();
