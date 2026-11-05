@@ -10,8 +10,16 @@ struct Limits {
 struct MeshInfo {
   std::string path;
   Topology topology{};
+  // True when the schema declares constant topology and positions (one
+  // static sample); Fixed/Varying still describe the declared variance.
+  bool constant{};
   std::vector<double> times;
   bool uv{}, normals{};
+};
+// Objects that were recognised but are not previewed (curves, points,
+// subdivision surfaces, NURBS, cameras, lights, unknown schemas).
+struct SkippedObject {
+  std::string path, schema;
 };
 struct Sample {
   std::size_t index{};
@@ -22,16 +30,23 @@ struct Sample {
   int uv_scope{}, normal_scope{};
   Matrix4 world{};
 };
+// Alembic GeomParam scopes as stored in Sample::uv_scope/normal_scope.
+enum class Scope { Constant = 0, Uniform = 1, Varying = 2, Vertex = 3,
+                   FaceVarying = 4 };
 class Archive {
 public:
-  // Worker-only, one request at a time. No all-frame cache or implicit
-  // prefetch.
+  // Reads are serialised internally (one request at a time); there is no
+  // all-frame cache or implicit prefetch at this layer.
   static Archive open(const std::filesystem::path &, Limits = {},
                       std::stop_token = {});
   Archive(Archive &&) noexcept;
   Archive &operator=(Archive &&) noexcept;
   ~Archive();
   [[nodiscard]] const std::vector<MeshInfo> &meshes() const;
+  [[nodiscard]] const std::vector<SkippedObject> &skipped() const;
+  // Sorted distinct sample times of every animated mesh and ancestor
+  // transform; a fully static archive has exactly one time.
+  [[nodiscard]] const std::vector<double> &times() const;
   [[nodiscard]] Sample read(std::size_t mesh, double seconds,
                             std::stop_token = {}) const;
 

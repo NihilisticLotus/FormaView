@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <limits>
@@ -339,6 +340,113 @@ void caches(const std::filesystem::path &dir) {
                                  G::kFacevaryingScope)));
   }
   rejects([&] { (void)cache::Archive::open(malformed).read(0, 0); });
+  require(archive.times() == std::vector<double>{.25, .75, 2},
+          "Timeline is the union of mesh sample times");
+  // Reads from several workers are serialised and stay identical to a
+  // single-threaded direct read.
+  {
+    std::vector<std::future<cache::Sample>> reads;
+    for (int i = 0; i < 8; ++i)
+      reads.push_back(std::async(std::launch::async, [&archive, i] {
+        return archive.read(0, archive.times()[static_cast<std::size_t>(i % 3)]);
+      }));
+    for (int i = 0; i < 8; ++i) {
+      const auto concurrent = reads[static_cast<std::size_t>(i)].get();
+      const auto direct = archive.read(0, archive.times()[static_cast<std::size_t>(i % 3)]);
+      require(concurrent.index == direct.index &&
+                  concurrent.positions.size() == direct.positions.size() &&
+                  concurrent.corner_points == direct.corner_points &&
+                  concurrent.uv[0].x == direct.uv[0].x,
+              "Concurrent ABC read differs from direct read");
+    }
+  }
+  {
+    std::stop_source stop;
+    stop.request_stop();
+    bool cancelled = false;
+    try {
+      (void)archive.read(0, .75, stop.get_token());
+    } catch (const skeletal::Failure &error) {
+      cancelled = error.error.code == ErrorCode::Cancelled;
+    }
+    require(cancelled, "ABC read ignored cancellation");
+  }
+  // Mixed archive: a static mesh under an animated transform, a face set
+  // child, and a curves object that is reported instead of failing.
+  const auto mixed = dir / "mixed.abc";
+  {
+    A::OArchive out(O::WriteArchive(), mixed.string());
+    const std::vector<double> times{0, 1, 2};
+    const auto ts = out.addTimeSampling(A::TimeSampling(
+        A::TimeSamplingType(A::TimeSamplingType::kAcyclic), times));
+    G::OXform xform(out.getTop(), "mover", ts);
+    for (int i = 0; i < 3; ++i) {
+      G::XformSample sample;
+      sample.setTranslation(A::V3d(static_cast<double>(i) * 10, 0, 0));
+      xform.getSchema().set(sample);
+    }
+    G::OPolyMesh mesh(xform, "shape");
+    std::vector<A::V3f> p{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> indices{0, 1, 2}, counts{3};
+    mesh.getSchema().set(G::OPolyMeshSchema::Sample(
+        A::P3fArraySample(p), A::Int32ArraySample(indices),
+        A::Int32ArraySample(counts)));
+    auto faceSet = mesh.getSchema().createFaceSet("set");
+    std::vector<std::int32_t> faces{0};
+    faceSet.getSchema().set(G::OFaceSetSchema::Sample(A::Int32ArraySample(faces)));
+    G::OCurves curves(out.getTop(), "hair");
+    std::vector<A::V3f> cp{{0, 0, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> cv{2};
+    curves.getSchema().set(G::OCurvesSchema::Sample(
+        A::P3fArraySample(cp), A::Int32ArraySample(cv)));
+  }
+  {
+    auto opened = cache::Archive::open(mixed);
+    require(opened.meshes().size() == 1 && opened.meshes()[0].constant,
+            "Mixed archive mesh");
+    require(opened.skipped().size() == 1 &&
+                opened.skipped()[0].path == "/hair" &&
+                opened.skipped()[0].schema.find("Curve") != std::string::npos,
+            "Unsupported schema not reported");
+    require(opened.times() == std::vector<double>{0, 1, 2},
+            "Animated transform times missing from timeline");
+    for (int i = 0; i < 3; ++i) {
+      const auto sample = opened.read(0, i);
+      require(sample.index == 0 &&
+                  std::abs(sample.world[3] - i * 10.0) < 1e-9,
+              "Animated parent transform not applied per sample");
+    }
+  }
+  const auto curvesOnly = dir / "curves-only.abc";
+  {
+    A::OArchive out(O::WriteArchive(), curvesOnly.string());
+    G::OCurves curves(out.getTop(), "hair");
+    std::vector<A::V3f> cp{{0, 0, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> cv{2};
+    curves.getSchema().set(G::OCurvesSchema::Sample(
+        A::P3fArraySample(cp), A::Int32ArraySample(cv)));
+  }
+  const auto unsupported = [](const std::filesystem::path &path,
+                              const char *text) {
+    try {
+      (void)cache::Archive::open(path);
+    } catch (const skeletal::Failure &error) {
+      return error.error.code == ErrorCode::Unsupported &&
+             std::string(error.what()).find(text) != std::string::npos;
+    }
+    return false;
+  };
+  require(unsupported(curvesOnly, "no polygon meshes; unsupported schemas: "
+                                  "AbcGeom_Curve"),
+          "Curves-only archive must be reported as unsupported");
+  const auto hdf5 = dir / "hdf5.abc";
+  {
+    std::ofstream out(hdf5, std::ios::binary);
+    out.write("\x89HDF\r\n\x1a\n", 8);
+    out << std::string(512, '\0');
+  }
+  require(unsupported(hdf5, "HDF5 Alembic archives are not supported"),
+          "HDF5 archive must be reported as unsupported");
 }
 void preview_test() {
   skeletal::ActorAsset source;

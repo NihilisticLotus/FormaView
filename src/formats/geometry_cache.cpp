@@ -1,15 +1,19 @@
 #include "formaview/geometry_cache.hpp"
 #include <Alembic/AbcCoreFactory/All.h>
 #include <Alembic/AbcGeom/All.h>
+#include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <functional>
+#include <mutex>
+#include <set>
 
 namespace formaview::cache {
 namespace {
 namespace A = Alembic::Abc;
 namespace G = Alembic::AbcGeom;
 namespace F = Alembic::AbcCoreFactory;
-void check(bool ok, const char *text,
+void check(bool ok, const std::string &text,
            ErrorCode code = ErrorCode::ResourceLimit) {
   if (!ok)
     throw skeletal::Failure(code, text);
@@ -23,18 +27,39 @@ std::uint64_t count(const A::IArrayProperty &p,
   p.getDimensions(dimensions, selector);
   return dimensions.numPoints();
 }
+std::string schema_name(const A::IObject &object) {
+  const auto &meta = object.getMetaData();
+  auto schema = meta.get("schema");
+  if (schema.empty())
+    schema = meta.get("schemaObjTitle");
+  return schema;
+}
+bool hdf5_signature(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  char head[8]{};
+  file.read(head, sizeof head);
+  return file.gcount() == 8 &&
+         std::equal(head, head + 8, "\x89HDF\r\n\x1a\n");
+}
 } // namespace
 struct Archive::Impl {
   Limits limits;
   A::IArchive archive;
   std::vector<G::IPolyMesh> objects;
   std::vector<MeshInfo> info;
+  std::vector<SkippedObject> skipped;
+  std::vector<double> times;
+  mutable std::mutex reading;
 };
 Archive::Archive(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
 Archive::Archive(Archive &&) noexcept = default;
 Archive &Archive::operator=(Archive &&) noexcept = default;
 Archive::~Archive() = default;
 const std::vector<MeshInfo> &Archive::meshes() const { return impl_->info; }
+const std::vector<SkippedObject> &Archive::skipped() const {
+  return impl_->skipped;
+}
+const std::vector<double> &Archive::times() const { return impl_->times; }
 Archive Archive::open(const std::filesystem::path &path, Limits limits,
                       std::stop_token stop) {
   cancel(stop);
@@ -42,6 +67,9 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
         "ABC input budget exceeded");
   auto p = std::make_unique<Impl>();
   p->limits = limits;
+  check(!hdf5_signature(path),
+        "HDF5 Alembic archives are not supported; re-export as Ogawa",
+        ErrorCode::Unsupported);
   F::IFactory factory;
   factory.setOgawaNumStreams(1);
   factory.setOgawaReadStrategy(F::IFactory::kFileStreams);
@@ -51,6 +79,15 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
   check(p->archive.valid() && type == F::IFactory::kOgawa,
         "Only Ogawa archives are supported", ErrorCode::Unsupported);
   std::uint32_t visited = 0;
+  std::set<double> times;
+  const auto add_times = [&](const A::TimeSamplingPtr &sampling,
+                             std::size_t samples) {
+    check(samples <= limits.samples, "ABC sample count budget exceeded");
+    for (std::size_t i = 0; i < samples; ++i) {
+      times.insert(sampling->getSampleTime(static_cast<A::index_t>(i)));
+      check(times.size() <= limits.samples, "ABC timeline budget exceeded");
+    }
+  };
   std::function<void(A::IObject, unsigned)> visit = [&](A::IObject object,
                                                         unsigned depth) {
     cancel(stop);
@@ -61,32 +98,69 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
       auto &schema = mesh.getSchema();
       MeshInfo info;
       info.path = object.getFullName();
-      info.topology = schema.getTopologyVariance() == G::kHeterogenousTopology
-                          ? Topology::Varying
-                          : Topology::Fixed;
+      const auto variance = schema.getTopologyVariance();
+      info.topology = variance == G::kHeterogenousTopology ? Topology::Varying
+                                                           : Topology::Fixed;
+      info.constant = variance == G::kConstantTopology;
       check(schema.getNumSamples() <= limits.samples,
             "ABC sample count budget exceeded");
       for (std::size_t i = 0; i < schema.getNumSamples(); ++i)
         info.times.push_back(schema.getTimeSampling()->getSampleTime(
             static_cast<A::index_t>(i)));
+      if (schema.getNumSamples() > 1)
+        add_times(schema.getTimeSampling(), schema.getNumSamples());
       info.uv = schema.getUVsParam().valid();
       info.normals = schema.getNormalsParam().valid();
       p->objects.push_back(mesh);
       p->info.push_back(std::move(info));
-    } else if (object.getParent().valid() &&
-               !G::IXform::matches(object.getHeader())) {
-      check(false, "Non-polygon ABC schemas are outside the validated path",
-            ErrorCode::Unsupported);
+      // Face sets and other mesh children carry no separate geometry here.
+      return;
+    }
+    if (G::IXform::matches(object.getHeader())) {
+      G::IXform xform(object, A::kWrapExisting);
+      auto &schema = xform.getSchema();
+      if (!schema.isConstant() && schema.getNumSamples() > 1)
+        add_times(schema.getTimeSampling(), schema.getNumSamples());
+    } else if (object.getParent().valid()) {
+      const auto schema = schema_name(object);
+      // Schema-less objects are plain groups; anything else is recognised
+      // but not previewed, and reported instead of failing the archive.
+      if (!schema.empty()) {
+        check(p->skipped.size() < limits.objects,
+              "ABC hierarchy budget exceeded");
+        p->skipped.push_back({object.getFullName(), schema});
+        return;
+      }
     }
     for (std::size_t i = 0; i < object.getNumChildren(); ++i)
       visit(object.getChild(i), depth + 1);
   };
   visit(p->archive.getTop(), 0);
   cancel(stop);
+  if (p->info.empty()) {
+    std::string kinds;
+    for (const auto &item : p->skipped)
+      if (kinds.find(item.schema) == std::string::npos)
+        kinds += (kinds.empty() ? "" : ", ") + item.schema;
+    check(false,
+          kinds.empty()
+              ? "ABC archive contains no polygon meshes"
+              : "ABC archive contains no polygon meshes; unsupported "
+                "schemas: " + kinds,
+          ErrorCode::Unsupported);
+  }
+  if (times.empty())
+    for (const auto &info : p->info)
+      if (!info.times.empty())
+        times.insert(info.times.front());
+  if (times.empty())
+    times.insert(0);
+  p->times.assign(times.begin(), times.end());
   return Archive(std::move(p));
 }
 Sample Archive::read(std::size_t mesh, double seconds,
                      std::stop_token stop) const {
+  std::scoped_lock lock(impl_->reading);
   cancel(stop);
   check(mesh < impl_->objects.size() && std::isfinite(seconds),
         "Invalid ABC sample request", ErrorCode::InvalidArgument);
