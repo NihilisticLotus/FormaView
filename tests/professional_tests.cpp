@@ -407,6 +407,24 @@ void caches(const std::filesystem::path &dir) {
     forged(first & ~(1ULL << 63), 1ULL << 40); // data block size
     forged(root + 8 + 2 * 8, root); // root child 2 (top object group) refers back to the root
     {
+      // An acyclic but out-of-order tree (child group stored after its
+      // parent) is never written by Ogawa; rejecting it bounds the walk
+      // without per-group bookkeeping.
+      auto moved = std::make_shared<std::string>(*bytes);
+      std::uint64_t top{}, count{};
+      std::memcpy(&top, moved->data() + root + 8 + 2 * 8, sizeof top);
+      std::memcpy(&count, moved->data() + top, sizeof count);
+      const std::uint64_t relocated = moved->size();
+      moved->append(moved->substr(top, 8 + 8 * count));
+      std::memcpy(moved->data() + root + 8 + 2 * 8, &relocated, sizeof relocated);
+      ErrorCode code{};
+      std::string message = "accepted";
+      try { (void)cache::Archive::open(std::span<const char>(*moved), moved); }
+      catch (const skeletal::Failure &error) { code = error.error.code; message = error.what(); }
+      require(code == ErrorCode::InvalidArgument && message.find("precede") != std::string::npos,
+              ("Out-of-order Ogawa group must be rejected: " + message).c_str());
+    }
+    {
       // Structurally sound bytes with an impossible archive version: Alembic
       // throws a library exception, which must surface as invalid input.
       auto copy = std::make_shared<std::string>(*bytes);

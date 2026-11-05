@@ -121,8 +121,11 @@ bool hdf5_signature(std::span<const char> bytes) {
 // Ogawa bounds every group child count and data size by the stream size, but
 // its std::istream reader reports an unlimited size, so forged counts in
 // in-memory bytes reach vector allocations unchecked. Walk the reachable
-// group graph once and require every count, size and position to fit the
-// buffer; reject cycles, which no writer produces and readers may recurse on.
+// group tree and require every count, size and position to fit the buffer.
+// The writer stores a group only after all of its child groups, and never
+// shares a group, so a child group always lies below its parent: requiring
+// that order rejects cycles without a visited set, and the child entries of
+// all visits together cannot exceed the entries the buffer can hold.
 void validate_ogawa(std::span<const char> bytes, std::stop_token stop) {
   const auto malformed = [] {
     throw skeletal::Failure(ErrorCode::InvalidArgument,
@@ -144,21 +147,21 @@ void validate_ogawa(std::span<const char> bytes, std::stop_token stop) {
     std::uint64_t position, children, next;
   };
   std::vector<Frame> path;
-  std::set<std::uint64_t> finished, open;
   std::uint64_t entries = 0;
   const auto enter = [&](std::uint64_t position) {
-    if (position == 0 || finished.contains(position))
-      return; // 0 is the empty group.
-    if (open.contains(position))
+    if (position == 0)
+      return; // The empty group.
+    if (!path.empty() && position >= path.back().position)
       throw skeletal::Failure(ErrorCode::InvalidArgument,
-                              "Malformed Ogawa structure: group cycle");
+                              "Malformed Ogawa structure: child group does "
+                              "not precede its parent");
+    if (path.size() >= 8192)
+      throw skeletal::Failure(ErrorCode::ResourceLimit,
+                              "Ogawa group nesting exceeds 8192 levels");
     const auto children = u64(position);
-    // Written groups never overlap, so all child entries together fit the
-    // buffer; overlapping forged groups cannot multiply the walk.
     if (children > (size - position - 8) / 8 || children > size / 8 - entries)
       malformed();
     entries += children;
-    open.insert(position);
     path.push_back({position, children, 0});
   };
   enter(u64(8));
@@ -168,8 +171,6 @@ void validate_ogawa(std::span<const char> bytes, std::stop_token stop) {
       cancel(stop);
     auto &frame = path.back();
     if (frame.next == frame.children) {
-      open.erase(frame.position);
-      finished.insert(frame.position);
       path.pop_back();
       continue;
     }
