@@ -1032,6 +1032,27 @@ int main(int argc, char **argv) {
         check(argc >= 2, "Expected test case");
         const std::string arg = argv[1];
 #ifdef FORMAVIEW_TEST_FBX
+        if (arg == "fbx-invalid-mesh") {
+            sk::ReadOptions o;
+            o.coordinates = {formaview::Axis::PositiveZ, formaview::Axis::PositiveX,
+                             formaview::Handedness::Right, 0.01, "Synthetic fixture"};
+            const auto valid = sk::read_actor(mesh(), o);
+            for (int variant = 0; variant < 7; ++variant) {
+                auto model = valid;
+                auto &m = *model.mesh;
+                if (variant == 0) m.faces[0].wedges[0] = UINT32_MAX;
+                if (variant == 1) m.wedges[0].point = UINT32_MAX;
+                if (variant == 2) m.wedges[0].material = UINT32_MAX;
+                if (variant == 3) m.weights[0].point = UINT32_MAX;
+                if (variant == 4) m.weights[0].bone = UINT32_MAX;
+                if (variant == 5) m.colours.resize(m.wedges.size() + 1);
+                if (variant == 6) m.extra_uvs["invalid"].resize(m.wedges.size() + 1);
+                reject([&] { (void)sk::encode_fbx_model(model); }, formaview::ErrorCode::InvalidArgument);
+                reject([&] { sk::validate_fbx_export(model, {}, nullptr, {}); }, formaview::ErrorCode::InvalidArgument);
+            }
+            std::cout << "PASS invalid public FBX mesh indices and domains rejected\n";
+            return 0;
+        }
         if (arg == "fbx") {
             check(argc == 3, "FBX test requires external artifact directory");
             fbx(argv[2]);

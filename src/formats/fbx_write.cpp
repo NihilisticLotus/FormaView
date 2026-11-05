@@ -265,6 +265,34 @@ static FbxWriteResult write_actor_fbx(const ActorAsset &a, std::size_t first_cli
     }
     if (paired && options.include_mesh) {
         const auto &m = *paired->mesh;
+        // ActorAsset is a public value type, so callers may supply data that
+        // did not pass through the ActorX reader's index/domain checks.
+        if (m.points.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+            (!m.normals.empty() && m.normals.size() != m.points.size()) ||
+            (!m.colours.empty() && m.colours.size() != m.wedges.size()))
+            throw Failure(ErrorCode::InvalidArgument, "Invalid FBX mesh attribute domains");
+        for (const auto &w : m.wedges) {
+            cancelled(options.stop);
+            if (w.point >= m.points.size() || w.material >= m.materials.size())
+                throw Failure(ErrorCode::InvalidArgument, "FBX mesh wedge index out of range");
+        }
+        for (const auto &face : m.faces) {
+            cancelled(options.stop);
+            if (face.material >= m.materials.size() ||
+                std::any_of(face.wedges.begin(), face.wedges.end(),
+                            [&](auto index) { return index >= m.wedges.size(); }))
+                throw Failure(ErrorCode::InvalidArgument, "FBX mesh face index out of range");
+        }
+        for (const auto &[name, uv] : m.extra_uvs) {
+            (void)name;
+            if (uv.size() != m.wedges.size())
+                throw Failure(ErrorCode::InvalidArgument, "Invalid FBX mesh UV domain");
+        }
+        for (const auto &w : m.weights) {
+            cancelled(options.stop);
+            if (w.point >= m.points.size() || w.bone >= paired->bones.size() || !std::isfinite(w.value))
+                throw Failure(ErrorCode::InvalidArgument, "Invalid FBX skin influence");
+        }
         const auto mesh_estimate = m.points.size() * 512 + m.faces.size() * 2048 + m.weights.size() * 256;
         if (mesh_estimate > options.limits.decoded_bytes - estimate)
             throw Failure(ErrorCode::ResourceLimit, "FBX mesh estimate exceeds export budget");
