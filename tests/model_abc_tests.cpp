@@ -83,7 +83,7 @@ void writeFixed(const std::filesystem::path &path, int samples = 12,
   }
 }
 // Varying topology: point/face counts change every sample; vertex UVs.
-void writeVarying(const std::filesystem::path &path) {
+void writeVarying(const std::filesystem::path &path, bool emptyFirst = false) {
   A::OArchive out(O::WriteArchive(), path.string());
   const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 30, 0));
   G::OPolyMesh mesh(out.getTop(), "fluid", ts);
@@ -91,8 +91,11 @@ void writeVarying(const std::filesystem::path &path) {
     std::vector<A::V3f> p;
     std::vector<std::int32_t> idx, counts;
     std::vector<A::V2f> uv;
-    const int strips = 1 + i;
-    for (int s = 0; s <= strips; ++s) {
+    // Reserved storage keeps empty samples non-null: Alembic writes them as
+    // real zero-length arrays instead of "unchanged" samples.
+    p.reserve(1), idx.reserve(1), counts.reserve(1), uv.reserve(1);
+    const int strips = emptyFirst && i == 0 ? 0 : 1 + i;
+    for (int s = 0; strips && s <= strips; ++s) {
       p.push_back({static_cast<float>(s), 0, 0});
       p.push_back({static_cast<float>(s), 1, 0});
       uv.push_back({static_cast<float>(s) / strips, 0});
@@ -103,9 +106,11 @@ void writeVarying(const std::filesystem::path &path) {
       counts.push_back(4);
     }
     mesh.getSchema().set(G::OPolyMeshSchema::Sample(
-        A::P3fArraySample(p), A::Int32ArraySample(idx),
-        A::Int32ArraySample(counts),
-        G::OV2fGeomParam::Sample(A::V2fArraySample(uv), G::kVertexScope)));
+        A::P3fArraySample(p.data(), p.size()),
+        A::Int32ArraySample(idx.data(), idx.size()),
+        A::Int32ArraySample(counts.data(), counts.size()),
+        G::OV2fGeomParam::Sample(A::V2fArraySample(uv.data(), uv.size()),
+                                 G::kVertexScope)));
   }
 }
 void writeCurvesOnly(const std::filesystem::path &path, bool withMesh) {
@@ -201,6 +206,8 @@ int main(int argc, char **argv) {
                staticOne = dir / "static.abc";
     writeFixed(fixed);
     writeVarying(varying);
+    const auto emptyFirst = dir / "empty-first.abc";
+    writeVarying(emptyFirst, true);
     writeFixed(badSample, 6, 3);
     writeFixed(staticOne, 1);
     writeCurvesOnly(curves, false);
@@ -435,6 +442,28 @@ int main(int argc, char **argv) {
       s.togglePlay();
       require(!s.playing() && s.cacheInfo().value("samples").toInt() == 1,
               "a single sample cannot play");
+    }
+
+    // 9b. A varying cache may start (or pass through) an empty sample.
+    {
+      ModelSession s;
+      s.open(qpath(emptyFirst));
+      waitFor([&] { return !s.busy(); }, "empty-first open");
+      require(s.available(), "empty first sample open: " + s.error().toStdString());
+      waitFor([&] { return !s.preparing(); }, "empty-first frame");
+      require(s.error().isEmpty() && s.cacheInfo().value("points").toULongLong() == 0 &&
+                  s.cacheInfo().value("faces").toULongLong() == 0,
+              "empty first sample: " + s.error().toStdString() + " " +
+                  s.frameError().toStdString());
+      evidence["empty_first_frame_error"] = s.frameError();
+      s.seekSample(3);
+      waitFor([&] { return settled(s, 3); }, "after empty sample");
+      require(s.frameError().isEmpty() &&
+                  s.cacheInfo().value("faces").toULongLong() == 4,
+              "sample after an empty one");
+      s.seekSample(0);
+      waitFor([&] { return !s.preparing() && s.cacheInfo().value("sample").toInt() == 0; },
+              "back to empty sample");
     }
 
     // 10. Real samples (read only): random access against direct reads.
