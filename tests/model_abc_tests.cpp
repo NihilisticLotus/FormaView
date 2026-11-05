@@ -267,7 +267,7 @@ int main(int argc, char **argv) {
                   !session.hasComparableSkeleton(),
               "ABC must not expose skeleton or animation-drive entry points");
       require(i.value("samples").toInt() == 12, "fixed sample count");
-      const auto mesh = i.value("meshes").toList().value(0).toMap();
+      const auto mesh = session.cacheMeshes().value(0).toMap();
       require(mesh.value("path").toString() == "/root/sheet" &&
                   mesh.value("topology").toString() == "fixed" &&
                   mesh.value("samples").toInt() == 12 &&
@@ -393,7 +393,7 @@ int main(int argc, char **argv) {
                     static_cast<qulonglong>(2 * (target + 2)),
                 "varying topology statistics stale");
       }
-      require(s.cacheInfo().value("meshes").toList().value(0).toMap()
+      require(s.cacheMeshes().value(0).toMap()
                       .value("topology").toString() == "varying",
               "varying topology classification");
     }
@@ -565,10 +565,9 @@ int main(int argc, char **argv) {
         sampled.insert(target);
       }
       auto i = s.cacheInfo();
-      i.remove("meshes");
       real.append(QJsonObject{{"path", path}, {"open_ms", static_cast<double>(openMs)},
                               {"samples", count},
-                              {"meshes", QJsonArray::fromVariantList(s.cacheInfo().value("meshes").toList())},
+                              {"meshes", QJsonArray::fromVariantList(s.cacheMeshes())},
                               {"final", QJsonObject::fromVariantMap(i)},
                               {"seeks", seeks}});
     }

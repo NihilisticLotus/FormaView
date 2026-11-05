@@ -160,7 +160,8 @@ void validate_options(const QJsonObject &o) {
   const std::set<QString> allowed{
       "target",       "coordinates", "clip_id",    "clip_ids",
       "reference",    "animation",   "companion",  "pairing_policy",
-      "include_mesh", "output_axes", "output_unit", "abc_sample", "abc_seconds"};
+      "include_mesh", "output_axes", "output_unit", "abc_sample", "abc_seconds",
+      "abc_source_sha256"};
   for (auto it = o.begin(); it != o.end(); ++it)
     if (!allowed.contains(it.key()))
       fail(ErrorCode::InvalidArgument, "Unknown model export option");
@@ -183,6 +184,10 @@ void validate_options(const QJsonObject &o) {
       (!o.contains("abc_sample") || !o["abc_seconds"].isDouble() ||
        !std::isfinite(o["abc_seconds"].toDouble())))
     fail(ErrorCode::InvalidArgument, "abc_seconds needs abc_sample and a finite value");
+  if (o.contains("abc_source_sha256") &&
+      (!o.contains("abc_sample") || !o["abc_source_sha256"].isString() ||
+       o["abc_source_sha256"].toString().size() != 64))
+    fail(ErrorCode::InvalidArgument, "abc_source_sha256 needs abc_sample and a SHA-256 hex digest");
   if (o.contains("include_mesh") && !o["include_mesh"].isBool())
     fail(ErrorCode::InvalidArgument, "include_mesh must be boolean");
   if (o.contains("clip_ids")) {
@@ -222,7 +227,7 @@ QJsonObject capabilities() {
        "automatic same-basename .config; explicit companion overrides"},
       {"abc_frame_export",
        QJsonObject{{"input", "abc"},
-                   {"options", QJsonArray{"abc_sample", "abc_seconds"}},
+                   {"options", QJsonArray{"abc_sample", "abc_seconds", "abc_source_sha256"}},
                    {"content", "one timeline sample; polygon meshes only; "
                                "transforms baked; no animation"}}},
       {"writer", QString::fromStdString(sk::fbx_writer_version())}};

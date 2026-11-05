@@ -112,14 +112,15 @@ protected:
                    std::ios_base::openmode which) override {
     if (!(which & std::ios_base::in))
       return pos_type(off_type(-1));
-    const auto base = dir == std::ios_base::beg   ? eback()
-                      : dir == std::ios_base::cur ? gptr()
-                                                  : egptr();
-    const auto target = base + offset;
-    if (target < eback() || target > egptr())
+    // Integer positions: no pointer arithmetic outside the buffer.
+    const off_type size = egptr() - eback();
+    const off_type base = dir == std::ios_base::beg   ? 0
+                          : dir == std::ios_base::cur ? gptr() - eback()
+                                                      : size;
+    if (offset < -base || offset > size - base)
       return pos_type(off_type(-1));
-    setg(eback(), target, egptr());
-    return pos_type(target - eback());
+    setg(eback(), eback() + (base + offset), egptr());
+    return pos_type(base + offset);
   }
   pos_type seekpos(pos_type position, std::ios_base::openmode which) override {
     return seekoff(off_type(position), std::ios_base::beg, which);

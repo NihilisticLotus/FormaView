@@ -89,7 +89,11 @@ Rectangle {
                     validator: IntValidator { bottom: 0; top: Math.max(0, root.lastSample) }
                     background: Rectangle { radius: 4; color: Theme.field; border.width: sampleInput.activeFocus ? 2 : 1; border.color: sampleInput.activeFocus ? Theme.accent : Theme.line }
                     text: root.ready ? String(root.cache.requested) : ""
-                    onEditingFinished: if (acceptableInput) root.session.seekSample(parseInt(text))
+                    onEditingFinished: {
+                        if (acceptableInput) root.session.seekSample(parseInt(text))
+                        // Typing replaced the binding; follow the session again.
+                        text = Qt.binding(() => root.ready ? String(root.cache.requested) : "")
+                    }
                     Accessible.name: Theme.t("采样索引", "Sample index", "取樣索引")
                 }
                 Label { anchors.verticalCenter: parent.verticalCenter; text: "/ " + root.lastSample; color: Theme.muted; font.pixelSize: Theme.noteText }
@@ -116,7 +120,8 @@ Rectangle {
                 Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight
                 color: Theme.muted; font.family: "Consolas"; font.pixelSize: Theme.noteText
                 text: root.ready ? Theme.t("采样 %1 / %2 · %3", "sample %1 / %2 · %3", "取樣 %1 / %2 · %3").arg(root.cache.sample).arg(root.lastSample).arg(root.seconds(root.cache.time))
-                                   + (root.cache.loading ? " · " + Theme.t("正在读取采样 %1…", "reading sample %1…", "正在讀取取樣 %1…").arg(root.cache.requested) : "") : ""
+                                   + (root.cache.loading ? " · " + Theme.t("正在读取采样 %1…", "reading sample %1…", "正在讀取取樣 %1…").arg(root.cache.requested)
+                                      : root.session.preparing ? " · " + Theme.t("正在准备视图…", "preparing view…", "正在準備視圖…") : "") : ""
             }
             Label {
                 objectName: "cacheStatistics"

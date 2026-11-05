@@ -10,6 +10,7 @@ AppToolWindow {
     // Geometry-cache frame export: the presented timeline sample (-1 otherwise).
     property int abcSample: -1
     property real abcSeconds: 0
+    property string abcSourceSha256: ""
     readonly property var service: controller.imageJobs
     readonly property var inputs: [inputPath]
     property string phase: "settings"
@@ -119,7 +120,7 @@ AppToolWindow {
             ConversionSettings {
                 id: settings; controller: root.controller; inputs: root.inputs
                 quickMode: true; modelMode: root.preset !== "texture"; exportPreset: root.preset
-                abcSample: root.abcSample; abcSeconds: root.abcSeconds
+                abcSample: root.abcSample; abcSeconds: root.abcSeconds; abcSourceSha256: root.abcSourceSha256
                 onEdited: if (root.initialized) root.edit()
                 onBack: root.close()
                 onPreflight: (scope, options, nameTemplate, conflict, metadata) => root.start(scope, options, nameTemplate, conflict, metadata)

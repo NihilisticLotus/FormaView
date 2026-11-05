@@ -15,6 +15,7 @@ ColumnLayout {
     // Geometry-cache frame export: model only, one explicit timeline sample.
     property int abcSample: -1
     property real abcSeconds: 0
+    property string abcSourceSha256: ""
     readonly property bool abcFrame: abcSample >= 0
     property bool compact: false
     property string inspectedKey: ""
@@ -50,7 +51,10 @@ ColumnLayout {
             output_axes: ["source", "maya", "houdini", "unreal", "3ds-max", "cinema4d", "blender", "unity"][axes.currentIndex],
             output_unit: ["source", "cm", "m", "mm", "in"][unit.currentIndex]}
         if (clipMode.currentIndex === 1) result.selected_clips = selectedClips
-        if (abcFrame) { result.export_content = "model"; result.abc_sample = abcSample; result.abc_seconds = abcSeconds }
+        if (abcFrame) {
+            result.export_content = "model"; result.abc_sample = abcSample; result.abc_seconds = abcSeconds
+            if (abcSourceSha256.length === 64) result.abc_source_sha256 = abcSourceSha256
+        }
         return result
     }
     FormGroup {

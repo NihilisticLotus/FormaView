@@ -3747,18 +3747,13 @@ void ModelSession::tickAbc() {
     scheduleAbc();
   emit animChanged();
 }
-QVariantMap ModelSession::cacheInfo() const {
+QVariantList ModelSession::cacheMeshes() const {
   if (!abcActive() || !abcSource_)
     return {};
-  const auto &times = abcSource_->times();
   const auto &infos = abcSource_->meshes();
-  const auto shown = document_->cacheSample;
   QVariantList meshes;
-  bool uv = false, normals = false;
   for (std::size_t i = 0; i < infos.size(); ++i) {
     const auto &info = infos[i];
-    uv = uv || info.uv;
-    normals = normals || info.normals;
     QVariantMap entry{
         {"path", QString::fromStdString(info.path)},
         {"topology", info.constant ? QStringLiteral("static")
@@ -3778,6 +3773,18 @@ QVariantMap ModelSession::cacheInfo() const {
     }
     meshes.append(entry);
   }
+  return meshes;
+}
+QVariantMap ModelSession::cacheInfo() const {
+  if (!abcActive() || !abcSource_)
+    return {};
+  const auto &times = abcSource_->times();
+  const auto shown = document_->cacheSample;
+  bool uv = false, normals = false;
+  for (const auto &info : abcSource_->meshes()) {
+    uv = uv || info.uv;
+    normals = normals || info.normals;
+  }
   const bool loading =
       abcRequested_ != shown || (abcJob_ && !abcJob_->prefetch);
   return {{"active", true},
@@ -3796,7 +3803,6 @@ QVariantMap ModelSession::cacheInfo() const {
           {"triangles", QVariant::fromValue<qulonglong>(document_->triangles)},
           {"uv", uv},
           {"normals", normals},
-          {"meshes", meshes},
           {"skipped", static_cast<int>(abcSource_->skipped().size())},
           {"cachedSamples", static_cast<int>(abcCache_.size())},
           {"cachedBytes", QVariant::fromValue<qulonglong>(abcCache_.bytes())},

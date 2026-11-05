@@ -98,7 +98,7 @@ Item {
                     Readout { objectName: "cacheSampleStatistics"; Layout.fillWidth: true; label: Theme.t("点 / 面 / 角 / 三角形", "Points / faces / corners / triangles", "點 / 面 / 角 / 三角形"); value: cacheDetails.cache.points !== undefined ? [cacheDetails.cache.points, cacheDetails.cache.faces, cacheDetails.cache.corners, cacheDetails.cache.triangles].join(" / ") : "—" }
                     Readout { objectName: "cacheResidency"; Layout.fillWidth: true; label: Theme.t("已缓存采样 · 读取次数", "Cached samples · reads", "已快取取樣 · 讀取次數"); value: cacheDetails.cache.cachedSamples !== undefined ? Theme.t("%1 个（%2 MiB，上限 %3 个 / %4 MiB）· 读取 %5 次", "%1 (%2 MiB, limit %3 / %4 MiB) · %5 reads", "%1 個（%2 MiB，上限 %3 個 / %4 MiB）· 讀取 %5 次").arg(cacheDetails.cache.cachedSamples).arg((cacheDetails.cache.cachedBytes / 1048576).toFixed(1)).arg(cacheDetails.cache.cacheLimitSamples).arg((cacheDetails.cache.cacheLimitBytes / 1048576).toFixed(0)).arg(cacheDetails.cache.reads) : "—" }
                     Repeater {
-                        model: root.session.cacheInfo.meshes || []
+                        model: root.session.cacheMeshes
                         delegate: Readout {
                             required property var modelData
                             objectName: "cacheMeshReadout"

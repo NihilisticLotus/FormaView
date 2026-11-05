@@ -89,6 +89,8 @@ class ModelSession : public QObject {
   // Alembic geometry cache: timeline, sample statistics and cache state.
   Q_PROPERTY(bool geometryCache READ geometryCache NOTIFY changed)
   Q_PROPERTY(QVariantMap cacheInfo READ cacheInfo NOTIFY animChanged)
+  // Per-mesh metadata changes only when a sample lands, not per clock tick.
+  Q_PROPERTY(QVariantList cacheMeshes READ cacheMeshes NOTIFY changed)
 public:
   explicit ModelSession(QObject *parent = nullptr);
   ~ModelSession() override;
@@ -170,6 +172,7 @@ public:
   Q_INVOKABLE void setSpeed(double value);
   bool geometryCache() const { return abcActive(); }
   QVariantMap cacheInfo() const;
+  QVariantList cacheMeshes() const;
   // Jump to a merged-timeline sample (random access; clamps the index).
   Q_INVOKABLE void seekSample(int index);
   // Stop an in-flight sample read and keep the presented sample.

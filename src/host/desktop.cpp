@@ -53,8 +53,8 @@ QString kind(const QString &name) {
   // PMX/VRM convert to FBX but have no professional preview in this release.
   if (suffix == "pmx" || suffix == "vrm")
     return "convert";
-  // Alembic geometry caches preview in the model workspace; they are not
-  // conversion or export inputs.
+  // Alembic geometry caches preview in the model workspace. They are not
+  // batch conversion inputs; the preview exports its current frame only.
   if (suffix == "abc")
     return "cache";
   return "other";

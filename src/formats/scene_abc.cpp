@@ -127,16 +127,19 @@ void read_abc(Scene &s, const QByteArray &bytes, const QJsonObject &options,
     FbxGeometryElementNormal *normal{};
     // Normal matrix: inverse transpose of the upper 3x3.
     double nm[9]{};
-    if (!sample.normals.empty()) {
+    const double a = world[0], b = world[1], c = world[2], d = world[4],
+                 e = world[5], f = world[6], g = world[8], h = world[9],
+                 i = world[10];
+    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    // A singular (zero-scale) transform has no normal matrix: the source
+    // normals cannot be mapped, so FBX normals are regenerated instead.
+    const bool mappable = std::isfinite(det) && std::abs(det) > 1e-300;
+    if (!sample.normals.empty() && !mappable)
+      s.loss("abc_normals_regenerated", QString::fromStdString(infos[mi].path));
+    if (!sample.normals.empty() && mappable) {
       normal = mesh->CreateElementNormal();
       normal->SetMappingMode(FbxLayerElement::eByPolygonVertex);
       normal->SetReferenceMode(FbxLayerElement::eDirect);
-      const double a = world[0], b = world[1], c = world[2], d = world[4],
-                   e = world[5], f = world[6], g = world[8], h = world[9],
-                   i = world[10];
-      const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-      if (std::abs(det) < 1e-300)
-        invalid("ABC transform is singular");
       const double inv[9]{(e * i - f * h) / det, (c * h - b * i) / det,
                           (b * f - c * e) / det, (f * g - d * i) / det,
                           (a * i - c * g) / det, (c * d - a * f) / det,

@@ -622,8 +622,15 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   else if (options.contains("clip_id")) selected.append(options["clip_id"]);
   const bool abc = QFileInfo(QString::fromStdWString(input.resolved_path.wstring()))
                        .suffix().compare("abc", Qt::CaseInsensitive) == 0;
-  if (!abc && (options.contains("abc_sample") || options.contains("abc_seconds")))
+  if (!abc && (options.contains("abc_sample") || options.contains("abc_seconds") ||
+               options.contains("abc_source_sha256")))
     invalid("abc_sample applies only to ABC inputs");
+  // The previewed frame is bound to the previewed content, not only its path.
+  if (options.contains("abc_source_sha256") &&
+      options["abc_source_sha256"].toString().compare(
+          QString::fromStdString(input.content_sha256), Qt::CaseInsensitive))
+    throw sk::Failure(ErrorCode::InputChanged,
+                      "ABC source changed since the previewed frame");
   auto document = Document::read(input.resolved_path, bytes, load, limits, stop,
                                  operation == "inspect", operation == "inspect" ? nullptr : &selected,
                                  &options);

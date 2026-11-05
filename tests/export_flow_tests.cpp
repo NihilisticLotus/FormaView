@@ -386,7 +386,7 @@ void abcFrameExport(const QString &root) {
     for (int i = 0; i < 4; ++i) {
       G::XformSample x;
       x.setTranslation(A::V3d(10.0 * i, 0, 0));
-      x.setScale(A::V3d(1, 2, 1));
+      x.setScale(A::V3d(1, i == 3 ? 0 : 2, 1)); // Sample 3 is singular.
       xform.getSchema().set(x);
       std::vector<A::V3f> p{{0, 0, 0}, {1, 0, static_cast<float>(i)}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}};
       std::vector<std::int32_t> idx{0, 3, 2, 1, 1, 2, 4}, counts{4, 3};
@@ -413,8 +413,10 @@ void abcFrameExport(const QString &root) {
           "ABC inventory: mesh, no clips, four samples");
   auto direct = cache::Archive::open(std::filesystem::path(input.toStdWString()));
   const double seconds = direct.times()[2];
+  const auto sourceSha = inspect["input"].toObject()["sha256"].toString();
+  require(sourceSha.size() == 64, "Inspect reports the source hash");
   const QJsonObject options{{"target", "fbx"}, {"coordinates", "source"}, {"include_mesh", true},
-                            {"abc_sample", 2}, {"abc_seconds", seconds}};
+                            {"abc_sample", 2}, {"abc_seconds", seconds}, {"abc_source_sha256", sourceSha}};
   const auto output = root + "/out/sheet-frame2.fbx";
   QJsonObject request{{"version", 1}, {"operation", "preflight"}, {"input", input},
                       {"output", output}, {"options", options}, {"conflict", "skip"}};
@@ -488,12 +490,25 @@ void abcFrameExport(const QString &root) {
   require(rejected(bad, input, ErrorCode::InvalidArgument), "Sample outside the timeline");
   bad = options; bad["abc_seconds"] = seconds + 1;
   require(rejected(bad, input, ErrorCode::InputChanged), "Timeline mismatch");
-  bad = options; bad.remove("abc_sample"); bad.remove("abc_seconds");
+  bad = options; bad["abc_source_sha256"] = QString(64, '0');
+  require(rejected(bad, input, ErrorCode::InputChanged), "Previewed content hash mismatch");
+  bad = options; bad.remove("abc_sample"); bad.remove("abc_seconds"); bad.remove("abc_source_sha256");
   require(rejected(bad, input, ErrorCode::InvalidArgument), "ABC export requires a sample");
+  {
+    // A singular transform keeps the frame exportable with regenerated normals.
+    auto singular = options; singular["abc_sample"] = 3; singular["abc_seconds"] = direct.times()[3];
+    const auto result = run({{"version", 1}, {"operation", "preflight"}, {"input", input},
+                             {"output", root + "/out/singular.fbx"}, {"options", singular}, {"conflict", "skip"}});
+    bool regenerated = false;
+    for (const auto &v : result["losses"].toArray())
+      regenerated |= v.toObject()["code"] == "abc_normals_regenerated";
+    require(regenerated, "Singular transform reports regenerated normals");
+  }
   QFile obj(root + "/plain.obj");
   require(obj.open(QIODevice::WriteOnly) && obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n") > 0, "OBJ fixture");
   obj.close();
-  require(rejected(options, root + "/plain.obj", ErrorCode::InvalidArgument), "abc_sample only for ABC");
+  auto plainOptions = options; plainOptions.remove("abc_source_sha256");
+  require(rejected(plainOptions, root + "/plain.obj", ErrorCode::InvalidArgument), "abc_sample only for ABC");
   // GUI flow: direct export names the output after the frame.
   qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
   ImageJobs jobs;

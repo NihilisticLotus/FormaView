@@ -58,7 +58,8 @@ Item {
         const cache = preset === "abcFrame" && controller.model ? controller.model.cacheInfo : ({})
         if (preset === "abcFrame" && cache.sample === undefined) return
         quickExportLoader.setSource("QuickExportWindow.qml", {controller: root.controller, inputPath: String(controller.asset.path), preset: preset,
-            abcSample: preset === "abcFrame" ? cache.sample : -1, abcSeconds: preset === "abcFrame" ? cache.time : 0, transientParent: root.Window.window})
+            abcSample: preset === "abcFrame" ? cache.sample : -1, abcSeconds: preset === "abcFrame" ? cache.time : 0,
+            abcSourceSha256: preset === "abcFrame" ? String(controller.model.info.sha256 || "") : "", transientParent: root.Window.window})
     }
     readonly property bool narrow: width <= 1300
     function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }
