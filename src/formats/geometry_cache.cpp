@@ -6,7 +6,10 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <istream>
 #include <set>
+#include <span>
+#include <streambuf>
 #include <type_traits>
 
 namespace formaview::cache {
@@ -92,9 +95,43 @@ bool hdf5_signature(const std::filesystem::path &path) {
   return file.gcount() == 8 &&
          std::equal(head, head + 8, "\x89HDF\r\n\x1a\n");
 }
+bool hdf5_signature(std::span<const char> bytes) {
+  return bytes.size() >= 8 &&
+         std::equal(bytes.begin(), bytes.begin() + 8, "\x89HDF\r\n\x1a\n");
+}
+// Read-only, seekable view of caller-owned bytes for Ogawa's stream reader.
+class MemoryBuffer final : public std::streambuf {
+public:
+  explicit MemoryBuffer(std::span<const char> bytes) {
+    auto *begin = const_cast<char *>(bytes.data());
+    setg(begin, begin, begin + bytes.size());
+  }
+
+protected:
+  pos_type seekoff(off_type offset, std::ios_base::seekdir dir,
+                   std::ios_base::openmode which) override {
+    if (!(which & std::ios_base::in))
+      return pos_type(off_type(-1));
+    const auto base = dir == std::ios_base::beg   ? eback()
+                      : dir == std::ios_base::cur ? gptr()
+                                                  : egptr();
+    const auto target = base + offset;
+    if (target < eback() || target > egptr())
+      return pos_type(off_type(-1));
+    setg(eback(), target, egptr());
+    return pos_type(target - eback());
+  }
+  pos_type seekpos(pos_type position, std::ios_base::openmode which) override {
+    return seekoff(off_type(position), std::ios_base::beg, which);
+  }
+};
 } // namespace
 struct Archive::Impl {
   Limits limits;
+  // Memory sources: declared before the archive so they outlive it.
+  std::shared_ptr<const void> owner;
+  std::unique_ptr<MemoryBuffer> buffer;
+  std::unique_ptr<std::istream> stream;
   A::IArchive archive;
   std::vector<G::IPolyMesh> objects;
   std::vector<MeshInfo> info;
@@ -124,11 +161,11 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
   cancel(stop);
   check(std::filesystem::file_size(path) <= limits.input_bytes,
         "ABC input budget exceeded");
-  auto p = std::make_unique<Impl>();
-  p->limits = limits;
   check(!hdf5_signature(path),
         "HDF5 Alembic archives are not supported; re-export as Ogawa",
         ErrorCode::Unsupported);
+  auto p = std::make_unique<Impl>();
+  p->limits = limits;
   F::IFactory factory;
   factory.setOgawaNumStreams(1);
   factory.setOgawaReadStrategy(F::IFactory::kFileStreams);
@@ -137,6 +174,31 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
   p->archive = factory.getArchive(std::string(utf8.begin(), utf8.end()), type);
   check(p->archive.valid() && type == F::IFactory::kOgawa,
         "Only Ogawa archives are supported", ErrorCode::Unsupported);
+  return index(std::move(p), limits, stop);
+}
+Archive Archive::open(std::span<const char> bytes,
+                      std::shared_ptr<const void> owner, Limits limits,
+                      std::stop_token stop) {
+  cancel(stop);
+  check(bytes.size() <= limits.input_bytes, "ABC input budget exceeded");
+  check(!hdf5_signature(bytes),
+        "HDF5 Alembic archives are not supported; re-export as Ogawa",
+        ErrorCode::Unsupported);
+  auto p = std::make_unique<Impl>();
+  p->limits = limits;
+  p->owner = std::move(owner);
+  p->buffer = std::make_unique<MemoryBuffer>(bytes);
+  p->stream = std::make_unique<std::istream>(p->buffer.get());
+  F::IFactory factory;
+  F::IFactory::CoreType type;
+  std::vector<std::istream *> streams{p->stream.get()};
+  p->archive = factory.getArchive(streams, type);
+  check(p->archive.valid() && type == F::IFactory::kOgawa,
+        "Only Ogawa archives are supported", ErrorCode::Unsupported);
+  return index(std::move(p), limits, stop);
+}
+Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
+                       std::stop_token stop) {
   std::uint32_t visited = 0;
   std::set<double> times;
   const auto add_times = [&](const A::TimeSamplingPtr &sampling,

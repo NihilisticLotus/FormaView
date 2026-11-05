@@ -1,6 +1,7 @@
 #pragma once
 #include "formaview/skeletal.hpp"
 #include <memory>
+#include <span>
 namespace formaview::cache {
 struct Limits {
   std::uint64_t input_bytes{4ULL * 1024 * 1024 * 1024},
@@ -55,6 +56,11 @@ public:
   // all-frame cache or implicit prefetch at this layer.
   static Archive open(const std::filesystem::path &, Limits = {},
                       std::stop_token = {});
+  // Archive over caller-owned bytes (e.g. an exact leased snapshot); `owner`
+  // keeps them alive for the archive's lifetime.
+  static Archive open(std::span<const char> bytes,
+                      std::shared_ptr<const void> owner, Limits = {},
+                      std::stop_token = {});
   Archive(Archive &&) noexcept;
   Archive &operator=(Archive &&) noexcept;
   ~Archive();
@@ -76,6 +82,7 @@ public:
 private:
   struct Impl;
   explicit Archive(std::unique_ptr<Impl>);
+  static Archive index(std::unique_ptr<Impl>, Limits, std::stop_token);
   std::unique_ptr<Impl> impl_;
 };
 } // namespace formaview::cache

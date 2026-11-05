@@ -17,6 +17,8 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iterator>
+#include <span>
 #include <future>
 #include <iostream>
 #include <limits>
@@ -342,6 +344,24 @@ void caches(const std::filesystem::path &dir) {
   rejects([&] { (void)cache::Archive::open(malformed).read(0, 0); });
   require(archive.times() == std::vector<double>{.25, .75, 2},
           "Timeline is the union of mesh sample times");
+  // An archive over exact in-memory bytes reads the same samples.
+  {
+    std::ifstream in(path, std::ios::binary);
+    auto bytes = std::make_shared<std::string>(
+        (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto memory = cache::Archive::open(std::span<const char>(*bytes), bytes);
+    require(memory.times() == archive.times() && memory.meshes().size() == 1,
+            "Memory archive index");
+    for (const double time : {.25, .75, 2.})
+      require(memory.read(0, time).corner_points == archive.read(0, time).corner_points &&
+                  memory.read(0, time).keys == archive.read(0, time).keys,
+              "Memory archive sample");
+    const std::string hdf("\x89HDF\r\n\x1a\n" + std::string(64, '\0'));
+    bool rejected = false;
+    try { (void)cache::Archive::open(std::span<const char>(hdf), nullptr); }
+    catch (const skeletal::Failure &error) { rejected = error.error.code == ErrorCode::Unsupported; }
+    require(rejected, "Memory HDF5 archive must be unsupported");
+  }
   // Content digests: identical samples share keys; reading the same sample
   // again reuses the validated topology instead of decoding it.
   {
