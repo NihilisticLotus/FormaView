@@ -195,6 +195,21 @@ void images(const std::filesystem::path &dir) {
   std::stop_source stop;
   stop.request_stop();
   rejects([&] { (void)input.decode(0, stop.get_token()); });
+  {
+    // A malformed file is invalid input, not an internal fault: library
+    // exceptions from the decoder must keep the structured error contract.
+    std::ifstream in(exr, std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto truncated = dir / "truncated-pixels.exr";
+    std::ofstream(truncated, std::ios::binary).write(bytes.data(), static_cast<std::streamsize>(bytes.size() - 16));
+    ErrorCode code = ErrorCode::Internal;
+    std::string message = "no error";
+    try { (void)imaging::ImageFile::open(truncated).decode(0); }
+    catch (const skeletal::Failure &error) { code = error.error.code; message = error.what(); }
+    catch (const std::exception &error) { message = std::string("unstructured: ") + error.what(); }
+    require(code == ErrorCode::InvalidArgument,
+            ("Truncated EXR must be invalid_argument: " + message).c_str());
+  }
   const std::array<DXGI_FORMAT, 12> formats{
       DXGI_FORMAT_BC1_UNORM,      DXGI_FORMAT_BC2_UNORM,
       DXGI_FORMAT_BC3_UNORM,      DXGI_FORMAT_BC4_UNORM,
@@ -391,6 +406,20 @@ void caches(const std::filesystem::path &dir) {
     require((first >> 63) != 0, "Ogawa root child 0 is data");
     forged(first & ~(1ULL << 63), 1ULL << 40); // data block size
     forged(root + 8 + 2 * 8, root); // root child 2 (top object group) refers back to the root
+    {
+      // Structurally sound bytes with an impossible archive version: Alembic
+      // throws a library exception, which must surface as invalid input.
+      auto copy = std::make_shared<std::string>(*bytes);
+      const std::int32_t version = 0x7fffffff;
+      std::memcpy(copy->data() + (first & ~(1ULL << 63)) + 8, &version, sizeof version);
+      ErrorCode code = ErrorCode::Internal;
+      std::string message = "no error";
+      try { (void)cache::Archive::open(std::span<const char>(*copy), copy); }
+      catch (const skeletal::Failure &error) { code = error.error.code; message = error.what(); }
+      catch (const std::exception &error) { message = std::string("unstructured: ") + error.what(); }
+      require(code == ErrorCode::InvalidArgument,
+              ("Unreadable ABC must be invalid_argument: " + message).c_str());
+    }
   }
   // Content digests: identical samples share keys; reading the same sample
   // again reuses the validated topology instead of decoding it.

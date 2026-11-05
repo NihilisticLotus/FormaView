@@ -27,6 +27,23 @@ void check(bool ok, const std::string &text,
 void cancel(std::stop_token s) {
   check(!s.stop_requested(), "ABC cancelled", ErrorCode::Cancelled);
 }
+// Alembic reports unreadable archives with its own exceptions. Keep the
+// structured contract: malformed input is invalid_argument and a failed
+// library allocation is a resource limit, never an internal fault.
+template <class F> decltype(auto) library(F &&body) {
+  try {
+    return body();
+  } catch (const skeletal::Failure &) {
+    throw;
+  } catch (const std::bad_alloc &) {
+    throw skeletal::Failure(ErrorCode::ResourceLimit, "ABC reader allocation failed");
+  } catch (const std::filesystem::filesystem_error &error) {
+    throw skeletal::Failure(ErrorCode::Io, std::string("ABC input unavailable: ") + error.what());
+  } catch (const std::exception &error) {
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            std::string("ABC reader rejected the archive: ") + error.what());
+  }
+}
 std::uint64_t count(const A::IArrayProperty &p,
                     const A::ISampleSelector &selector) {
   Alembic::Util::Dimensions dimensions;
@@ -241,6 +258,7 @@ UnitConvention unit_convention(std::string_view application) {
 }
 Archive Archive::open(const std::filesystem::path &path, Limits limits,
                       std::stop_token stop) {
+  return library([&]() -> Archive {
   cancel(stop);
   check(std::filesystem::file_size(path) <= limits.input_bytes,
         "ABC input budget exceeded");
@@ -258,10 +276,12 @@ Archive Archive::open(const std::filesystem::path &path, Limits limits,
   check(p->archive.valid() && type == F::IFactory::kOgawa,
         "Only Ogawa archives are supported", ErrorCode::Unsupported);
   return index(std::move(p), limits, stop);
+  });
 }
 Archive Archive::open(std::span<const char> bytes,
                       std::shared_ptr<const void> owner, Limits limits,
                       std::stop_token stop) {
+  return library([&]() -> Archive {
   cancel(stop);
   check(bytes.size() <= limits.input_bytes, "ABC input budget exceeded");
   check(!hdf5_signature(bytes),
@@ -280,6 +300,7 @@ Archive Archive::open(std::span<const char> bytes,
   check(p->archive.valid() && type == F::IFactory::kOgawa,
         "Only Ogawa archives are supported", ErrorCode::Unsupported);
   return index(std::move(p), limits, stop);
+  });
 }
 Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
                        std::stop_token stop) {
@@ -372,6 +393,7 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
 }
 Sample Archive::read(std::size_t mesh, double seconds,
                      std::stop_token stop) const {
+  return library([&]() -> Sample {
   std::scoped_lock lock(impl_->reading);
   cancel(stop);
   check(mesh < impl_->objects.size() && std::isfinite(seconds),
@@ -516,22 +538,28 @@ Sample Archive::read(std::size_t mesh, double seconds,
   result.world = world_of(impl_->objects[mesh], selector);
   cancel(stop);
   return result;
+  });
 }
 SampleKeys Archive::keys(std::size_t mesh, double seconds) const {
+  return library([&]() -> SampleKeys {
   std::scoped_lock lock(impl_->reading);
   check(mesh < impl_->objects.size() && std::isfinite(seconds),
         "Invalid ABC sample request", ErrorCode::InvalidArgument);
   return keys_for(impl_->objects[mesh].getSchema(),
                   A::ISampleSelector(seconds, A::ISampleSelector::kNearIndex));
+  });
 }
 Matrix4 Archive::world(std::size_t mesh, double seconds) const {
+  return library([&]() -> Matrix4 {
   std::scoped_lock lock(impl_->reading);
   check(mesh < impl_->objects.size() && std::isfinite(seconds),
         "Invalid ABC sample request", ErrorCode::InvalidArgument);
   return world_of(impl_->objects[mesh],
                   A::ISampleSelector(seconds, A::ISampleSelector::kNearIndex));
+  });
 }
 std::size_t Archive::sample_index(std::size_t mesh, double seconds) const {
+  return library([&]() -> std::size_t {
   std::scoped_lock lock(impl_->reading);
   check(mesh < impl_->objects.size() && std::isfinite(seconds),
         "Invalid ABC sample request", ErrorCode::InvalidArgument);
@@ -540,6 +568,7 @@ std::size_t Archive::sample_index(std::size_t mesh, double seconds) const {
     return 0;
   return static_cast<std::size_t>(
       schema.getTimeSampling()->getNearIndex(seconds, schema.getNumSamples()).first);
+  });
 }
 std::uint64_t Archive::topology_reuses() const {
   std::scoped_lock lock(impl_->reading);

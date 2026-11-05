@@ -32,6 +32,23 @@ void budget(bool ok) {
   if (!ok)
     throw skeletal::Failure(ErrorCode::ResourceLimit, "Image budget exceeded");
 }
+// Decoder libraries report malformed files with their own exception types.
+// Keep the structured contract: malformed input is invalid_argument and a
+// failed library allocation is a resource limit, never an internal fault.
+template <class F> decltype(auto) library(F &&body) {
+  try {
+    return body();
+  } catch (const skeletal::Failure &) {
+    throw;
+  } catch (const std::bad_alloc &) {
+    throw skeletal::Failure(ErrorCode::ResourceLimit,
+                            "Image decoder allocation failed");
+  } catch (const std::exception &error) {
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            std::string("Image decoder rejected the file: ") +
+                                error.what());
+  }
+}
 void hr(HRESULT result) {
   if (FAILED(result))
     throw skeletal::Failure(
@@ -152,6 +169,7 @@ std::size_t ImageFile::resident_bytes() const {
 }
 ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
                           std::stop_token stop) {
+  return library([&]() -> ImageFile {
   cancel(stop);
   auto p = std::make_unique<Impl>();
   p->limits = limits;
@@ -337,9 +355,11 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
   }
   cancel(stop);
   return ImageFile(std::move(p));
+  });
 }
 ImageSubresource ImageFile::decode(std::size_t index,
                                    std::stop_token stop) const {
+  return library([&]() -> ImageSubresource {
   cancel(stop);
   if (index >= impl_->desc.subresources.size())
     throw skeletal::Failure(ErrorCode::InvalidArgument,
@@ -480,6 +500,7 @@ ImageSubresource ImageFile::decode(std::size_t index,
   }
   cancel(stop);
   return s;
+  });
 }
 double value(const ImageChannel &c, std::size_t pixel) {
   const auto bytes = scalar_size(c.samples.scalar);
