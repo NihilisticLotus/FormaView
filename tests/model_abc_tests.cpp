@@ -53,6 +53,15 @@ bool settled(const ModelSession &s, int sample) {
          i.value("requested").toInt() == sample && i.value("framed").toBool() &&
          !i.value("loading").toBool() && s.frame();
 }
+// The presented frame was built from the presented sample, not a stale one.
+void requireFrameMatches(const ModelSession &s, const char *label) {
+  const auto i = s.info();
+  require(i.value("visibleTriangles").toULongLong() ==
+                  s.cacheInfo().value("triangles").toULongLong() &&
+              i.value("visiblePoints").toULongLong() ==
+                  s.cacheInfo().value("points").toULongLong(),
+          std::string(label) + ": frame statistics do not match the sample");
+}
 // Fixed topology: 12 samples of a moving, bending quad pair with
 // face-varying UVs and normals that change per sample.
 void writeFixed(const std::filesystem::path &path, int samples = 12,
@@ -269,6 +278,7 @@ int main(int argc, char **argv) {
         visited.insert(target);
         compareDirect(*session.documentSnapshot(), fixed,
                       static_cast<std::size_t>(target), "random seek");
+        requireFrameMatches(session, "random seek");
         require(std::abs(session.time() -
                          info(session).value("time").toDouble()) < 1e-12,
                 "seekSample time");
@@ -355,6 +365,7 @@ int main(int argc, char **argv) {
         waitFor([&] { return settled(s, target); }, "varying seek");
         compareDirect(*s.documentSnapshot(), varying,
                       static_cast<std::size_t>(target), "varying");
+        requireFrameMatches(s, "varying");
         require(s.cacheInfo().value("points").toULongLong() ==
                     static_cast<qulonglong>(2 * (target + 2)),
                 "varying topology statistics stale");
@@ -492,6 +503,7 @@ int main(int argc, char **argv) {
         const auto ms = t.elapsed();
         compareDirect(*s.documentSnapshot(), std::filesystem::path(path.toStdWString()),
                       static_cast<std::size_t>(target), "real");
+        requireFrameMatches(s, "real");
         const auto i = s.cacheInfo();
         seeks.append(QJsonObject{{"sample", target}, {"ms", static_cast<double>(ms)},
                                  {"points", static_cast<double>(i.value("points").toULongLong())},
