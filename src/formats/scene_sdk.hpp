@@ -1,6 +1,7 @@
 #pragma once
 #include "scene_export.hpp"
 #include <QMap>
+#include <optional>
 #include <fbxsdk.h>
 
 namespace formaview::scene_export {
@@ -23,6 +24,8 @@ struct Scene {
   QJsonObject metadata;
   QJsonArray clip_catalog;
   bool has_clip_catalog{};
+  // Set by readers whose inventory pass does not build meshes (ABC).
+  std::optional<bool> declared_mesh;
   std::uint64_t allocated{};
   std::unique_ptr<FbxManager, ManagerDelete> manager;
   FbxScene *scene{};
@@ -39,6 +42,9 @@ struct Scene {
 void read_obj(Scene &, const QByteArray &);
 void read_gltf(Scene &, const QByteArray &);
 void read_pmx(Scene &, const QByteArray &);
+// One explicit timeline sample (options.abc_sample); inventory only indexes.
+void read_abc(Scene &, const QByteArray &, const QJsonObject &options,
+              bool inventory_only);
 [[noreturn]] void invalid(const char *message);
 FbxAxisSystem axis_system(const QString &);
 FbxAMatrix matrix(const formaview::Matrix4 &);

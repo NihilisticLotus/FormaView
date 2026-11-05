@@ -325,12 +325,13 @@ bool handles(const QString &s) {
   if (s == "gltf" || s == "glb" || s == "vrm")
     return true;
 #endif
-  return s == "fbx" || s == "obj" || s == "pmx";
+  return s == "fbx" || s == "obj" || s == "pmx" || s == "abc";
 }
 Document Document::read(const std::filesystem::path &path,
                         const QByteArray &bytes, Loader loader,
                         sk::Limits limits, std::stop_token stop,
-                        bool inventory_only, const QJsonArray *selected_clips) {
+                        bool inventory_only, const QJsonArray *selected_clips,
+                        const QJsonObject *options) {
   ProfileStage profile("scene_read");
   auto impl = std::make_unique<Impl>(path, std::move(loader), limits, stop);
   auto &s = impl->source;
@@ -343,6 +344,8 @@ Document Document::read(const std::filesystem::path &path,
                          .toHex())}};
   if (ext == "obj")
     read_obj(s, bytes);
+  else if (ext == "abc")
+    read_abc(s, bytes, options ? *options : QJsonObject{}, inventory_only);
   else if (ext == "pmx")
     read_pmx(s, bytes);
 #ifdef FORMAVIEW_GLTF_EXPORT
@@ -463,7 +466,7 @@ QJsonObject Document::inspect() const {
   }
   if (s.has_clip_catalog) clips = s.clip_catalog;
   return {{"clips", clips},
-          {"has_mesh", s.scene->GetSrcObjectCount<FbxMesh>() > 0},
+          {"has_mesh", s.declared_mesh.value_or(s.scene->GetSrcObjectCount<FbxMesh>() > 0)},
           {"nodes", s.scene->GetNodeCount()},
           {"meshes", s.scene->GetSrcObjectCount<FbxMesh>()},
           {"losses", s.losses},
@@ -617,8 +620,13 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   QJsonArray selected;
   if (options.contains("clip_ids")) selected = options["clip_ids"].toArray();
   else if (options.contains("clip_id")) selected.append(options["clip_id"]);
+  const bool abc = QFileInfo(QString::fromStdWString(input.resolved_path.wstring()))
+                       .suffix().compare("abc", Qt::CaseInsensitive) == 0;
+  if (!abc && (options.contains("abc_sample") || options.contains("abc_seconds")))
+    invalid("abc_sample applies only to ABC inputs");
   auto document = Document::read(input.resolved_path, bytes, load, limits, stop,
-                                 operation == "inspect", operation == "inspect" ? nullptr : &selected);
+                                 operation == "inspect", operation == "inspect" ? nullptr : &selected,
+                                 &options);
   if (operation == "inspect") {
     auto result = document.inspect();
     result["version"] = 1;

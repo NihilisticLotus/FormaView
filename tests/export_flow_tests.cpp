@@ -1,5 +1,8 @@
 #include "image_jobs.hpp"
 #include "../src/formats/fbx_selection.hpp"
+#include "formaview/geometry_cache.hpp"
+#include <Alembic/AbcCoreOgawa/All.h>
+#include <Alembic/AbcGeom/All.h>
 #include <fbxsdk.h>
 #include <QCoreApplication>
 #include <QDir>
@@ -10,6 +13,7 @@
 #include <QJsonDocument>
 #include <QThread>
 #include <QUuid>
+#include <cmath>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -365,6 +369,163 @@ void actorSourceGuard(const QString &root, const QString &fixtures, int variant)
 }
 }
 
+// Current-frame FBX export of an Alembic geometry cache: the exact sample is
+// written (transforms baked, clockwise polygons reversed for FBX), losses are
+// declared, and sample selection is validated and bound to the timeline.
+void abcFrameExport(const QString &root) {
+  using namespace formaview;
+  namespace A = Alembic::Abc;
+  namespace G = Alembic::AbcGeom;
+  require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "New ABC export root required");
+  const auto input = root + "/sheet.abc";
+  {
+    A::OArchive out(Alembic::AbcCoreOgawa::WriteArchive(), input.toStdString());
+    const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 24, 0));
+    G::OXform xform(out.getTop(), "root", ts);
+    G::OPolyMesh mesh(xform, "sheet", ts);
+    for (int i = 0; i < 4; ++i) {
+      G::XformSample x;
+      x.setTranslation(A::V3d(10.0 * i, 0, 0));
+      x.setScale(A::V3d(1, 2, 1));
+      xform.getSchema().set(x);
+      std::vector<A::V3f> p{{0, 0, 0}, {1, 0, static_cast<float>(i)}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}};
+      std::vector<std::int32_t> idx{0, 3, 2, 1, 1, 2, 4}, counts{4, 3};
+      std::vector<A::V2f> uv;
+      for (int c = 0; c < 7; ++c) uv.push_back({static_cast<float>(i), c * .1F});
+      std::vector<A::N3f> n(7, {0, 1, 1});
+      mesh.getSchema().set(G::OPolyMeshSchema::Sample(
+          A::P3fArraySample(p), A::Int32ArraySample(idx), A::Int32ArraySample(counts),
+          G::OV2fGeomParam::Sample(A::V2fArraySample(uv), G::kFacevaryingScope),
+          G::ON3fGeomParam::Sample(A::N3fArraySample(n), G::kFacevaryingScope)));
+    }
+    G::OCurves curves(out.getTop(), "hair");
+    std::vector<A::V3f> cp{{0, 0, 0}, {0, 1, 0}};
+    std::vector<std::int32_t> cv{2};
+    curves.getSchema().set(G::OCurvesSchema::Sample(A::P3fArraySample(cp), A::Int32ArraySample(cv)));
+  }
+  const AccessScope scope{{std::filesystem::path(root.toStdWString())},
+                          {std::filesystem::path((root + "/out").toStdWString())}, false, "abc-frame"};
+  const auto run = [&](const QJsonObject &request) { return imaging::execute_image_request(request, scope); };
+  const auto inspect = run({{"version", 1}, {"operation", "inspect"}, {"input", input},
+                            {"options", QJsonObject{{"target", "fbx"}}}});
+  require(inspect["has_mesh"].toBool() && inspect["clips"].toArray().isEmpty() &&
+              inspect["source_metadata"].toObject()["abc"].toObject()["samples"].toInt() == 4,
+          "ABC inventory: mesh, no clips, four samples");
+  auto direct = cache::Archive::open(std::filesystem::path(input.toStdWString()));
+  const double seconds = direct.times()[2];
+  const QJsonObject options{{"target", "fbx"}, {"coordinates", "source"}, {"include_mesh", true},
+                            {"abc_sample", 2}, {"abc_seconds", seconds}};
+  const auto output = root + "/out/sheet-frame2.fbx";
+  QJsonObject request{{"version", 1}, {"operation", "preflight"}, {"input", input},
+                      {"output", output}, {"options", options}, {"conflict", "skip"}};
+  const auto preflight = run(request);
+  require(!preflight.contains("error"), "ABC frame preflight");
+  QStringList codes;
+  for (const auto &v : preflight["losses"].toArray()) codes << v.toObject()["code"].toString();
+  for (const auto *code : {"abc_single_sample", "abc_transforms_baked", "abc_objects_omitted", "abc_coordinate_assumption"})
+    require(codes.contains(code), "ABC frame loss declared");
+  require(preflight["source_metadata"].toObject()["abc"].toObject()["sample"].toInt() == 2, "Preflight names the sample");
+  request["operation"] = "convert";
+  request["approval_digest"] = preflight["approval_digest"];
+  request["acknowledge_losses"] = true;
+  const auto converted = run(request);
+  require(converted["status"] == "succeeded" && QFileInfo::exists(output), "ABC frame FBX written");
+  // Independent SDK readback against a direct archive read of sample 2.
+  const auto sample = direct.read(0, seconds);
+  std::unique_ptr<FbxManager, FbxDestroy> manager(FbxManager::Create());
+  manager->SetIOSettings(FbxIOSettings::Create(manager.get(), IOSROOT));
+  std::unique_ptr<FbxScene, FbxDestroy> scene(FbxScene::Create(manager.get(), "abc readback"));
+  std::unique_ptr<FbxImporter, FbxDestroy> reader(FbxImporter::Create(manager.get(), "abc readback"));
+  require(reader->Initialize(output.toUtf8().constData(), -1, manager->GetIOSettings()) && reader->Import(scene.get()),
+          "SDK reads ABC frame FBX");
+  require(scene->GetSrcObjectCount<FbxMesh>() == 1 && scene->GetSrcObjectCount<FbxAnimStack>() == 0,
+          "One mesh, no animation");
+  auto *mesh = scene->GetSrcObject<FbxMesh>(0);
+  require(mesh->GetControlPointsCount() == 5 && mesh->GetPolygonCount() == 2, "Point/face counts");
+  for (int p = 0; p < 5; ++p) {
+    const auto &v = sample.positions[static_cast<std::size_t>(p)];
+    const auto &w = sample.world;
+    const FbxVector4 expected(w[0] * v.x + w[1] * v.y + w[2] * v.z + w[3],
+                              w[4] * v.x + w[5] * v.y + w[6] * v.z + w[7],
+                              w[8] * v.x + w[9] * v.y + w[10] * v.z + w[11]);
+    const auto actual = mesh->GetControlPointAt(p);
+    for (int a = 0; a < 3; ++a)
+      require(std::abs(actual[a] - expected[a]) < 1e-9, "Baked control point");
+  }
+  require(std::abs(mesh->GetControlPointAt(1)[0] - 21) < 1e-9 && std::abs(mesh->GetControlPointAt(3)[1] - 2) < 1e-9,
+          "Sample 2 transform (translate 20, scale y 2)");
+  // Polygon order reverses Alembic's clockwise winding, keeping the first corner.
+  const std::vector<std::vector<int>> polygons{{0, 1, 2, 3}, {1, 4, 2}};
+  const std::vector<std::vector<int>> sourceCorners{{0, 3, 2, 1}, {4, 6, 5}};
+  auto *uv = mesh->GetElementUV("UV0");
+  auto *normals = mesh->GetElementNormal();
+  require(uv && normals && uv->GetMappingMode() == FbxLayerElement::eByPolygonVertex, "UV and normals present");
+  int polygonVertex = 0;
+  for (int f = 0; f < 2; ++f)
+    for (int k = 0; k < mesh->GetPolygonSize(f); ++k, ++polygonVertex) {
+      require(mesh->GetPolygonVertex(f, k) == polygons[f][k], "Reversed polygon order");
+      const auto corner = sourceCorners[f][k];
+      const auto value = uv->GetDirectArray().GetAt(polygonVertex);
+      require(value[0] == 2 && std::abs(value[1] - corner * .1) < 1e-6, "UV follows its source corner");
+      const auto n = normals->GetDirectArray().GetAt(polygonVertex);
+      // Normal matrix of scale (1,2,1): (0,1,1) -> (0,.5,1) normalised.
+      require(std::abs(n[0]) < 1e-9 && std::abs(n[1] - .5 / std::sqrt(1.25)) < 1e-9 &&
+                  std::abs(n[2] - 1 / std::sqrt(1.25)) < 1e-9,
+              "Normal transformed by the inverse transpose");
+    }
+  // Rejections: out-of-range sample, stale timeline, non-ABC input, missing sample.
+  const auto rejected = [&](QJsonObject o, const QString &in, ErrorCode code) {
+    QJsonObject r{{"version", 1}, {"operation", "preflight"}, {"input", in},
+                  {"output", root + "/out/rejected.fbx"}, {"options", o}, {"conflict", "skip"}};
+    try {
+      (void)run(r);
+    } catch (const skeletal::Failure &error) {
+      return error.error.code == code;
+    }
+    return false;
+  };
+  auto bad = options; bad["abc_sample"] = 4; bad.remove("abc_seconds");
+  require(rejected(bad, input, ErrorCode::InvalidArgument), "Sample outside the timeline");
+  bad = options; bad["abc_seconds"] = seconds + 1;
+  require(rejected(bad, input, ErrorCode::InputChanged), "Timeline mismatch");
+  bad = options; bad.remove("abc_sample"); bad.remove("abc_seconds");
+  require(rejected(bad, input, ErrorCode::InvalidArgument), "ABC export requires a sample");
+  QFile obj(root + "/plain.obj");
+  require(obj.open(QIODevice::WriteOnly) && obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n") > 0, "OBJ fixture");
+  obj.close();
+  require(rejected(options, root + "/plain.obj", ErrorCode::InvalidArgument), "abc_sample only for ABC");
+  // GUI flow: direct export names the output after the frame.
+  qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
+  ImageJobs jobs;
+  const QVariantMap guiScope{{"input_roots", QStringList{root}}, {"output_roots", QStringList{root + "/gui"}}, {"allow_overwrite", false}};
+  require(QDir().mkpath(root + "/gui"), "GUI output");
+  const QVariantMap guiOptions{{"target", "fbx"}, {"export_content", "model"}, {"file_organization", "per-clip"},
+                               {"abc_sample", 1}, {"abc_seconds", direct.times()[1]}};
+  // A direct export never writes unreviewed losses.
+  jobs.startExport({input}, guiScope, guiOptions, "{name}-{clip}.{ext}", "skip");
+  wait([&] { return !jobs.busy() && ((!jobs.job().value("id").toString().isEmpty() && !active(jobs.job())) || !jobs.error().isEmpty()); });
+  save(root + "/gui-direct-job.json", jobs.job());
+  require(jobs.job().value("state") == "failed" && !QFileInfo::exists(root + "/gui/sheet-frame1.fbx") &&
+              jobs.job().value("items").toList().value(0).toMap().value("error").toMap().value("message")
+                  .toString().contains("loss acknowledgement"),
+          "Direct ABC export waits for loss review");
+  // The preview's frame export preflights, shows the losses, then submits.
+  jobs.preflight({input}, guiScope, guiOptions, "{name}-{clip}.{ext}", "skip");
+  wait([&] { return !jobs.busy() && (jobs.plan().value("state") == "ready" || !jobs.error().isEmpty()); });
+  save(root + "/gui-plan.json", jobs.plan());
+  require(jobs.plan().value("state") == "ready" &&
+              !jobs.plan().value("items").toList().value(0).toMap().value("preflight").toMap()
+                   .value("losses").toList().isEmpty(),
+          "Frame preflight lists losses for review");
+  jobs.submit(true);
+  wait([&] { return !jobs.busy() && !jobs.job().value("id").toString().isEmpty() && !active(jobs.job()) &&
+                    jobs.job().value("state") != "failed"; });
+  save(root + "/gui-job.json", jobs.job());
+  require(jobs.job().value("state") == "succeeded", "Reviewed frame export succeeds");
+  require(QFileInfo::exists(root + "/gui/sheet-frame1.fbx"), "GUI frame export named after the sample");
+  std::cout << "PASS ABC current-frame FBX export, readback, losses, validation and GUI naming\n";
+}
+
 class ExportFlowTests {
 public:
   static void realExport(const QString &root, const QString &input) {
@@ -399,6 +560,7 @@ public:
     require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "Use a new external test directory");
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
     binarySelection(root + "/binary-selection");
+    abcFrameExport(root + "/abc-frame");
     ImageJobs jobs;
     const QVariantMap scope{{"input_roots", QStringList{root}}, {"output_roots", QStringList{root + "/out"}}, {"allow_overwrite", false}};
     const QVariantMap options{{"target", "fbx"}, {"export_content", "animation"}, {"file_organization", "per-clip"}};
@@ -501,7 +663,7 @@ public:
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
-    require(argc == 2 || argc == 4, "External evidence root required");
+    require(argc == 2 || argc == 3 || argc == 4, "External evidence root required");
     if (argc == 4 && app.arguments()[2] == "--real-inspect") {
       const auto root = app.arguments()[1], input = app.arguments()[3];
       require(!QFileInfo::exists(root) && QDir().mkpath(root), "New isolated inspection evidence root required");
@@ -509,6 +671,9 @@ int main(int argc, char **argv) {
         {std::filesystem::path(root.toStdWString())},false,"real-inspect"};
       const auto result = formaview::imaging::execute_image_request({{"version",1},{"operation","inspect"},{"input",input}},scope);
       save(root + "/result.json",result.toVariantMap()); return 0;
+    }
+    if (argc == 3 && app.arguments()[2] == "--abc-frame") {
+      abcFrameExport(app.arguments()[1]); return 0;
     }
     if (argc == 4 && app.arguments()[2] == "--real-export") {
       ExportFlowTests::realExport(app.arguments()[1],app.arguments()[3]); return 0;

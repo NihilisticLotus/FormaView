@@ -10,7 +10,8 @@ class Document {
 public:
   static Document read(const std::filesystem::path &, const QByteArray &,
                        Loader, skeletal::Limits, std::stop_token,
-                       bool inventory_only = false, const QJsonArray *selected_clips = nullptr);
+                       bool inventory_only = false, const QJsonArray *selected_clips = nullptr,
+                       const QJsonObject *options = nullptr);
   Document(Document &&) noexcept;
   ~Document();
   QJsonObject inspect() const;

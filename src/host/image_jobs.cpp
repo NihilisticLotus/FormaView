@@ -547,7 +547,11 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
                 {"output", QDir(outputDirectory).filePath(outputName(input, outputIndex + items.size() - initialSize, "fbx", itemTemplate, clip_name))},
                 {"options", parameters}, {"conflict", itemConflict}});
           };
-          if (content == "model" || clips.isEmpty()) append_model(itemOptions, "model");
+          // An ABC frame export names its single model after the sample.
+          if (content == "model" || clips.isEmpty())
+            append_model(itemOptions, itemOptions.contains("abc_sample")
+                                          ? QStringLiteral("frame%1").arg(itemOptions["abc_sample"].toInteger())
+                                          : QStringLiteral("model"));
           else if (organization == "multiple-stacks") {
             QJsonArray ids;
             for (const auto &v : clips) ids.append(v.toObject()["id"]);
