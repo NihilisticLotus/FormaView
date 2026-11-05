@@ -1247,6 +1247,92 @@ private slots:
         {"render_mode", "offscreen software; workflow assertions only"}};
 #endif
   }
+  void abcCurrentFrameExport() {
+#if !defined(FORMAVIEW_MODEL_UI) || !defined(FORMAVIEW_TEST_ABC) || !defined(FORMAVIEW_IMAGE_UI) || !defined(FORMAVIEW_MODEL_EXPORT)
+    QSKIP("ABC frame export requires the model UI, image jobs and the FBX writer");
+#else
+    const auto dir = root_ + "/abc-frame-export";
+    QVERIFY(QDir().mkpath(dir + "/out"));
+    writeAbc(dir + "/fixed.abc", 8, false);
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(session && service && workspace);
+    const auto findWindow = []() -> QQuickWindow * {
+      for (auto *candidate : QGuiApplication::topLevelWindows())
+        if (candidate->objectName() == "quickExportWindow" && candidate->isVisible())
+          return qobject_cast<QQuickWindow *>(candidate);
+      return nullptr;
+    };
+    const auto cleanup = qScopeGuard([&] {
+      if (auto *w = findWindow()) w->close();
+      desktop_->setLanguage("zh-CN");
+      desktop_->clearAsset();
+    });
+    const auto settled = [&](int sample) {
+      const auto info = session->cacheInfo();
+      return !session->busy() && !session->preparing() && info.value("sample").toInt() == sample &&
+             info.value("requested").toInt() == sample && info.value("framed").toBool();
+    };
+    desktop_->openPath(dir + "/fixed.abc");
+    QTRY_VERIFY_WITH_TIMEOUT(session->geometryCache() && settled(0), 15000);
+    session->seekSample(3);
+    QTRY_VERIFY_WITH_TIMEOUT(settled(3), 10000);
+    auto *menu = window_->findChild<QObject *>("previewActionsMenu");
+    auto *shortcut = window_->findChild<QObject *>("quickAbcFrameExport");
+    QVERIFY(menu && shortcut);
+    // Effective item visibility needs the menu open.
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(shortcut->property("visible").toBool() && shortcut->property("enabled").toBool());
+    QVERIFY(!window_->findChild<QObject *>("quickModelExport")->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+    QVERIFY(QMetaObject::invokeMethod(shortcut, "triggered"));
+    QTRY_VERIFY(findWindow());
+    auto *quick = findWindow();
+    QCOMPARE(quick->property("abcSample").toInt(), 3);
+    const auto expectedSeconds = session->cacheInfo().value("time").toDouble();
+    QCOMPARE(quick->property("abcSeconds").toDouble(), expectedSeconds);
+    // The export keeps the frame bound at open time.
+    session->seekSample(5);
+    QTRY_VERIFY_WITH_TIMEOUT(settled(5), 10000);
+    QCOMPARE(quick->property("abcSample").toInt(), 3);
+    const auto field = [&](const char *name) { return quick->findChild<QQuickItem *>(name); };
+    auto *content = field("modelExportContent");
+    QVERIFY(content && content->property("currentIndex").toInt() == 1 && !content->isEnabled());
+    QTRY_VERIFY(field("modelExportAbcFrame") &&
+                field("modelExportAbcFrame")->property("value").toString().startsWith(QStringLiteral("采样 3 · ")));
+    auto *outputRoot = field("conversionOutputRoot");
+    QVERIFY(outputRoot && outputRoot->setProperty("text", dir + "/out"));
+    QVERIFY(QMetaObject::invokeMethod(outputRoot, "textEdited"));
+    auto *create = field("createImagePlan");
+    QVERIFY(create && create->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(create, "clicked"));
+    // Frame exports declare losses, so the window stops at review.
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready" &&
+                                 quick->property("phase").toString() == "preflight", 20000);
+    const auto items = service->plan().value("items").toList();
+    QCOMPARE(items.size(), 1);
+    const auto request = items.front().toMap().value("request").toMap();
+    QCOMPARE(request.value("options").toMap().value("abc_sample").toInt(), 3);
+    QVERIFY(request.value("output").toString().contains("frame3"));
+    QStringList codes;
+    for (const auto &loss : items.front().toMap().value("preflight").toMap().value("losses").toList())
+      codes << loss.toMap().value("code").toString();
+    QVERIFY2(codes.contains("abc_single_sample") && codes.contains("abc_transforms_baked"), qPrintable(codes.join(",")));
+    auto *submit = field("submitImagePlan");
+    auto *ack = field("acknowledgeImageLosses");
+    QVERIFY(submit && ack && !submit->isEnabled());
+    ack->setProperty("checked", true);
+    QTRY_VERIFY(submit->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(submit, "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(quick->property("phase") == "job", 20000);
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 30000);
+    const auto exported = service->job().value("items").toList().front().toMap().value("result").toMap()
+                              .value("committed_output").toString();
+    QVERIFY2(QFileInfo::exists(exported) && exported.endsWith(".fbx") && exported.contains("frame3"), qPrintable(exported));
+    evidence_["abc_frame_export"] = QJsonObject{{"output", exported}, {"losses", QJsonArray::fromStringList(codes)}};
+#endif
+  }
   void viewHistoryAndResourceRecovery() {
     desktop_->navigate(fixture_);
     QTRY_COMPARE(desktop_->count(), 10024);
@@ -10793,7 +10879,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview"};
+    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

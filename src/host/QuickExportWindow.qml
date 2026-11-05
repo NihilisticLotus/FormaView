@@ -7,6 +7,9 @@ AppToolWindow {
     objectName: "quickExportWindow"
     required property string inputPath
     required property string preset
+    // Geometry-cache frame export: the presented timeline sample (-1 otherwise).
+    property int abcSample: -1
+    property real abcSeconds: 0
     readonly property var service: controller.imageJobs
     readonly property var inputs: [inputPath]
     property string phase: "settings"
@@ -17,7 +20,7 @@ AppToolWindow {
     property bool closingRequested: false
     property bool initialized: false
     readonly property bool settling: phase === "submitting"
-    title: preset === "texture" ? Theme.t("导出贴图", "Export texture", "匯出貼圖") : preset === "animation" ? Theme.t("导出动画", "Export animation", "匯出動畫") : Theme.t("导出模型", "Export model", "匯出模型")
+    title: preset === "texture" ? Theme.t("导出贴图", "Export texture", "匯出貼圖") : preset === "abcFrame" ? Theme.t("导出当前帧", "Export current frame", "匯出目前影格") : preset === "animation" ? Theme.t("导出动画", "Export animation", "匯出動畫") : Theme.t("导出模型", "Export model", "匯出模型")
     width: 900; height: preset === "animation" ? 780 : 660
     minimumWidth: 760; minimumHeight: 560
     visible: true
@@ -34,7 +37,8 @@ AppToolWindow {
         ownedPlan = ""; ownedJob = ""
         results.acknowledged = false
         previousPlan = service.plan.id || ""
-        if (preset !== "texture") {
+        // A frame export always declares losses: preflight shows them here.
+        if (preset !== "texture" && preset !== "abcFrame") {
             autoContinue = false
             phase = "direct"
             service.startExport(inputs, scope, options, nameTemplate, conflict, metadata)
@@ -115,6 +119,7 @@ AppToolWindow {
             ConversionSettings {
                 id: settings; controller: root.controller; inputs: root.inputs
                 quickMode: true; modelMode: root.preset !== "texture"; exportPreset: root.preset
+                abcSample: root.abcSample; abcSeconds: root.abcSeconds
                 onEdited: if (root.initialized) root.edit()
                 onBack: root.close()
                 onPreflight: (scope, options, nameTemplate, conflict, metadata) => root.start(scope, options, nameTemplate, conflict, metadata)

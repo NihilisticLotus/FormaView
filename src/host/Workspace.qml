@@ -54,7 +54,11 @@ Item {
         if (!controller.imageJobs || !controller.asset.path) return
         if (quickExportLoader.item && (quickExportLoader.item.visible || quickExportLoader.item.settling)) { quickExportLoader.item.raise(); quickExportLoader.item.requestActivate(); return }
         quickExportLoader.setSource("", {})
-        quickExportLoader.setSource("QuickExportWindow.qml", {controller: root.controller, inputPath: String(controller.asset.path), preset: preset, transientParent: root.Window.window})
+        // A geometry-cache frame export binds the presented sample at open time.
+        const cache = preset === "abcFrame" && controller.model ? controller.model.cacheInfo : ({})
+        if (preset === "abcFrame" && cache.sample === undefined) return
+        quickExportLoader.setSource("QuickExportWindow.qml", {controller: root.controller, inputPath: String(controller.asset.path), preset: preset,
+            abcSample: preset === "abcFrame" ? cache.sample : -1, abcSeconds: preset === "abcFrame" ? cache.time : 0, transientParent: root.Window.window})
     }
     readonly property bool narrow: width <= 1300
     function hasFocusWithin(pane) { if (!pane) return false; for (let item = root.Window.window.activeFocusItem; item; item = item.parent) if (item === pane) return true; return false }

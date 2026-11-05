@@ -1566,8 +1566,9 @@ void ModelSession::poll() {
         renderedState_ = std::move(r.state);
         frame_ = frames_.mode == 1 ? frames_.uv : frames_.model;
         cacheFrame();
-        if (abcActive())
-          abcFrameDocument_ = document_;
+        // cacheInfo.framed is published through animChanged.
+        if (abcActive() && std::exchange(abcFrameDocument_, document_) != document_)
+          emit animChanged();
       }
       emit frameChanged();
       emit changed();
@@ -3172,8 +3173,8 @@ void ModelSession::startFrame() {
     renderedState_ = std::move(state);
     frameCache_.splice(frameCache_.begin(), frameCache_, cached);
     preparing_ = false;
-    if (abcActive())
-      abcFrameDocument_ = document_;
+    if (abcActive() && std::exchange(abcFrameDocument_, document_) != document_)
+      emit animChanged();
     frame_ = frames_.mode == 1 ? frames_.uv : frames_.model;
     emit frameChanged();
     emit changed();

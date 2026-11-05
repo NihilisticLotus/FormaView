@@ -12,12 +12,18 @@ ColumnLayout {
     signal edited()
     property var selectedClips: []
     property bool animationOnlyPreset: false
+    // Geometry-cache frame export: model only, one explicit timeline sample.
+    property int abcSample: -1
+    property real abcSeconds: 0
+    readonly property bool abcFrame: abcSample >= 0
     property bool compact: false
     property string inspectedKey: ""
     readonly property string inspectionKey: JSON.stringify([inputs, paired.text])
-    function defaultContentIndex(): int { return inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
+    function defaultContentIndex(): int { if (abcFrame) return 1; return inputs && inputs.length > 0 && String(inputs[0]).toLowerCase().endsWith(".psa") ? 2 : 1 }
     onInputsChanged: { selectedClips = []; content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex() }
     onAnimationOnlyPresetChanged: content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex()
+    onAbcFrameChanged: content.currentIndex = defaultContentIndex()
+    Component.onCompleted: if (abcFrame) content.currentIndex = 1
     readonly property bool multipleStacks: organization.currentIndex === 1
     readonly property bool hasActorX: (inputs || []).some(p => /\.(psk|pskx|psa)$/i.test(String(p)))
     readonly property string contentLabel: content.displayText
@@ -44,6 +50,7 @@ ColumnLayout {
             output_axes: ["source", "maya", "houdini", "unreal", "3ds-max", "cinema4d", "blender", "unity"][axes.currentIndex],
             output_unit: ["source", "cm", "m", "mm", "in"][unit.currentIndex]}
         if (clipMode.currentIndex === 1) result.selected_clips = selectedClips
+        if (abcFrame) { result.export_content = "model"; result.abc_sample = abcSample; result.abc_seconds = abcSeconds }
         return result
     }
     FormGroup {
@@ -52,12 +59,15 @@ ColumnLayout {
             RowLayout {
                 Layout.fillWidth: true
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("导出内容", "Export content", "匯出內容") }
-                Choice { id: content; form: true; objectName: "modelExportContent"; Layout.fillWidth: true
+                Choice { id: content; form: true; objectName: "modelExportContent"; Layout.fillWidth: true; enabled: !root.abcFrame
                     labels: [Theme.t("模型 + 动画", "Model + animation", "模型 + 動畫"), Theme.t("只导出模型", "Model only", "只匯出模型"), Theme.t("只导出动画", "Animation only", "只匯出動畫")]
                     notes: [Theme.t("写出模型与选中动画。", "Export the model and selected animations.", "寫出模型與選取動畫。"), Theme.t("只写模型、骨架与绑定，不创建动画。", "Export geometry, skeleton and bind pose, without animation.", "只寫模型、骨架與繫結，不建立動畫。"), Theme.t("只写必要骨架与动画；参考模型仍可用于解释骨架。", "Export skeleton and animation; a reference model can still supply the skeleton.", "只寫必要骨架與動畫；參考模型仍可用於解釋骨架。")]
                     onActivated: root.edited(); Accessible.name: Theme.t("导出内容", "Export content", "匯出內容")
                 }
             }
+            Readout { objectName: "modelExportAbcFrame"; form: true; inlineValue: true; Layout.fillWidth: true; visible: root.abcFrame
+                label: Theme.t("几何缓存帧", "Geometry cache frame", "幾何快取影格")
+                value: Theme.t("采样 %1 · %2 s · 变换烘焙进顶点，不含其他采样与动画", "sample %1 · %2 s · transforms baked into vertices; no other samples or animation", "取樣 %1 · %2 s · 變換烘焙進頂點，不含其他取樣與動畫").arg(root.abcSample).arg(Number(root.abcSeconds).toFixed(3)) }
             RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("配对文件", "Paired file", "配對檔案") }
                 Field { id: paired; objectName: "modelExportPaired"; form: true; Layout.fillWidth: true; placeholderText: Theme.t("模型配 PSA；PSA 配参考 PSK / PSKX", "PSA for model; reference PSK/PSKX for PSA", "模型配 PSA；PSA 配參考 PSK / PSKX"); onTextEdited: { root.selectedClips = []; root.edited() } Accessible.name: placeholderText }
