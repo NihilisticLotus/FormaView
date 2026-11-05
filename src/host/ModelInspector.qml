@@ -88,6 +88,31 @@ Item {
                     Readout { Layout.fillWidth: true; label: Theme.t("当前可见", "Currently visible", "目前可見"); value: (root.session.info.visiblePoints ?? "—")+" / "+(root.session.info.visibleTriangles ?? "—") }
                     Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; text: Explain.noteText(root.session.info.coordinates || ""); font.pixelSize: Theme.noteText; textFormat: Text.PlainText }
                 }
+                SectionHeader { id: cacheSection; objectName: "modelGeometryCache"; Layout.fillWidth: true; visible: root.session.geometryCache; checked: true; text: Theme.t("几何缓存", "Geometry cache", "幾何快取") }
+                ColumnLayout {
+                    id: cacheDetails
+                    objectName: "modelGeometryCacheDetails"
+                    readonly property var cache: root.session.cacheInfo
+                    Layout.fillWidth: true; visible: root.session.geometryCache && cacheSection.checked
+                    Readout { objectName: "cacheTimelineReadout"; Layout.fillWidth: true; label: Theme.t("时间轴采样 / 当前", "Timeline samples / current", "時間軸取樣 / 目前"); value: cacheDetails.cache.samples !== undefined ? cacheDetails.cache.samples + " / " + cacheDetails.cache.sample + " · " + Number(cacheDetails.cache.time).toFixed(3) + " s" : "—" }
+                    Readout { objectName: "cacheSampleStatistics"; Layout.fillWidth: true; label: Theme.t("点 / 面 / 角 / 三角形", "Points / faces / corners / triangles", "點 / 面 / 角 / 三角形"); value: cacheDetails.cache.points !== undefined ? [cacheDetails.cache.points, cacheDetails.cache.faces, cacheDetails.cache.corners, cacheDetails.cache.triangles].join(" / ") : "—" }
+                    Readout { objectName: "cacheResidency"; Layout.fillWidth: true; label: Theme.t("已缓存采样 · 读取次数", "Cached samples · reads", "已快取取樣 · 讀取次數"); value: cacheDetails.cache.cachedSamples !== undefined ? Theme.t("%1 个（%2 MiB，上限 %3 个 / %4 MiB）· 读取 %5 次", "%1 (%2 MiB, limit %3 / %4 MiB) · %5 reads", "%1 個（%2 MiB，上限 %3 個 / %4 MiB）· 讀取 %5 次").arg(cacheDetails.cache.cachedSamples).arg((cacheDetails.cache.cachedBytes / 1048576).toFixed(1)).arg(cacheDetails.cache.cacheLimitSamples).arg((cacheDetails.cache.cacheLimitBytes / 1048576).toFixed(0)).arg(cacheDetails.cache.reads) : "—" }
+                    Repeater {
+                        model: root.session.cacheInfo.meshes || []
+                        delegate: Readout {
+                            required property var modelData
+                            objectName: "cacheMeshReadout"
+                            Layout.fillWidth: true
+                            label: modelData.path
+                            value: (modelData.topology === "varying" ? Theme.t("变化拓扑", "Varying topology", "變化拓撲") : modelData.topology === "static" ? Theme.t("静态", "Static", "靜態") : Theme.t("固定拓扑", "Fixed topology", "固定拓撲"))
+                                   + " · " + Theme.t("采样 %1（当前 %2）", "%1 samples (current %2)", "取樣 %1（目前 %2）").arg(modelData.samples).arg(modelData.sample)
+                                   + " · UV " + (modelData.uv ? Theme.t("有", "yes", "有") : Theme.t("无", "no", "無"))
+                                   + " · " + Theme.t("法线", "normals", "法線") + " " + (modelData.normals ? Theme.t("有", "yes", "有") : Theme.t("无", "no", "無"))
+                                   + " · " + Theme.t("点 %1 · 角 %2 · 三角形 %3", "%1 points · %2 corners · %3 triangles", "點 %1 · 角 %2 · 三角形 %3").arg(modelData.points).arg(modelData.corners).arg(modelData.triangles)
+                        }
+                    }
+                    Label { visible: (cacheDetails.cache.skipped || 0) > 0; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.warning; font.pixelSize: Theme.noteText; text: Theme.t("%1 个非多边形对象（曲线、点、细分曲面等）未预览，详见资源与说明。", "%1 non-polygon objects (curves, points, subdivision surfaces…) are not previewed; see Resources and notes.", "%1 個非多邊形物件（曲線、點、細分曲面等）未預覽，詳見資源與說明。").arg(cacheDetails.cache.skipped || 0) }
+                }
                 SectionHeader { id: issues; objectName: "modelSourceResources"; Layout.fillWidth: true; text: Theme.t("资源与说明", "Resources and notes", "資源與說明")+" · "+(root.session.resources.length+root.session.warnings.length) }
                 ColumnLayout {
                     Layout.fillWidth: true; visible: issues.checked
@@ -104,8 +129,15 @@ Item {
         }
         ModelSkeletonPane {
             Layout.fillWidth: true; Layout.fillHeight: true
-            visible: root.tab===1
+            visible: root.tab===1 && !root.session.geometryCache
             session: root.session
+        }
+        Label {
+            objectName: "modelSkeletonUnavailable"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            visible: root.tab===1 && root.session.geometryCache
+            verticalAlignment: Text.AlignTop; wrapMode: Text.Wrap; color: Theme.muted
+            text: Theme.t("几何缓存（Alembic）只包含逐采样的网格与变换，没有骨架、蒙皮权重或根运动；这些检查在 ABC 模式不可用，也不会被推断。", "Geometry caches (Alembic) contain per-sample meshes and transforms only, with no skeleton, skin weights or root motion; these inspections are unavailable for ABC and are never inferred.", "幾何快取（Alembic）只包含逐取樣的網格與變換，沒有骨架、蒙皮權重或根運動；這些檢查在 ABC 模式不可用，也不會被推斷。")
         }
         ScrollView {
             id: materialScroll

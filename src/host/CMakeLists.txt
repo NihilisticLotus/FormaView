@@ -87,7 +87,7 @@ set(desktop_qml Main.qml Theme.qml Explain.qml ExplainedText.qml AppIcon.qml Nav
     Inspector.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml
-        AnimationBar.qml
+        AnimationBar.qml CacheTimeline.qml
         ModelPane.qml ModelInspector.qml ModelSkeletonPane.qml ModelBindingDetails.qml ModelViewport.qml ModelPointPanel.qml ModelLodPanel.qml ModelMatrix.qml ModelSourceDetails.qml)
 endif()
 if(TARGET formaview_image_conversion)
@@ -228,6 +228,11 @@ if(BUILD_TESTING)
         target_link_libraries(formaview_desktop_tests PRIVATE formaview_desktopplugin)
     endif()
     target_compile_definitions(formaview_desktop_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(TARGET formaview_professional AND TARGET formaview_models)
+        # Synthetic geometry-cache fixtures for the ABC preview workflow.
+        target_link_libraries(formaview_desktop_tests PRIVATE Alembic::Alembic)
+        target_compile_definitions(formaview_desktop_tests PRIVATE FORMAVIEW_TEST_ABC)
+    endif()
     if(MSVC)
         # ASan instrumentation of the desktop regression suite exceeds COFF's
         # default section limit. Keep sanitizer instrumentation enabled.

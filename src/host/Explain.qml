@@ -80,6 +80,13 @@ QtObject {
 
     // Specific messages; first match wins and replaces the generic headline.
     readonly property var messages: ([
+        [/ABC archive contains no polygon meshes; unsupported schemas: (.+)$/, ["此 ABC 文件没有可预览的多边形网格，只包含暂不支持的对象类型：{1}。曲线、点、细分曲面与 NURBS 目前只识别、不显示。", "This ABC file has no previewable polygon meshes; it only contains unsupported object types: {1}. Curves, points, subdivision surfaces and NURBS are recognised but not displayed.", "此 ABC 檔案沒有可預覽的多邊形網格，只包含暫不支援的物件類型：{1}。曲線、點、細分曲面與 NURBS 目前只辨識、不顯示。"]],
+        [/ABC archive contains no polygon meshes/, ["此 ABC 文件没有可预览的多边形网格。", "This ABC file has no previewable polygon meshes.", "此 ABC 檔案沒有可預覽的多邊形網格。"]],
+        [/HDF5 Alembic archives are not supported/, ["这是 HDF5 格式的 Alembic 文件，目前只支持 Ogawa 格式。请在 DCC 软件中重新导出为 Ogawa 后再打开。", "This is an HDF5 Alembic archive; only Ogawa archives are supported. Re-export it as Ogawa from your DCC application.", "這是 HDF5 格式的 Alembic 檔案，目前只支援 Ogawa 格式。請在 DCC 軟體中重新匯出為 Ogawa 後再開啟。"]],
+        [/Only Ogawa archives are supported/, ["无法识别为 Ogawa 格式的 Alembic 文件，可能已损坏或不是 Alembic。", "The file is not a readable Ogawa Alembic archive; it may be damaged or not Alembic.", "無法辨識為 Ogawa 格式的 Alembic 檔案，可能已損壞或不是 Alembic。"]],
+        [/ABC (input|geometry|attribute|aggregate sample|sample count|timeline|hierarchy) budget exceeded/, ["ABC 数据超出预览的大小限制，未读取该内容。", "The ABC data exceeds the preview size limits; it was not read.", "ABC 資料超出預覽的大小限制，未讀取該內容。"]],
+        [/ABC (point index invalid|attribute index invalid|attribute domain mismatch|corner domain mismatch)|Negative polygon size|Missing ABC attribute|Unsupported ABC attribute scope/, ["此采样的 ABC 数据不一致或损坏，未显示该采样；当前画面保持上一个采样，可跳到其他采样继续。", "This ABC sample is inconsistent or damaged and was not shown; the previous sample stays on screen and other samples remain available.", "此取樣的 ABC 資料不一致或損壞，未顯示該取樣；目前畫面保持上一個取樣，可跳至其他取樣繼續。"]],
+        [/ABC preview is not available in this build/, ["此版本未包含 ABC 预览组件。", "This build does not include ABC preview.", "此版本未包含 ABC 預覽元件。"]],
         [/Direct export requires loss acknowledgement/i, ["此项需要确认损失，尚未导出。点击“继续未完成项”可在本窗口查看并确认。", "This item needs loss review and was not exported. Use Continue unfinished items to review and confirm here.", "此項需要確認損失，尚未匯出。點擊「繼續未完成項目」可在本視窗查看並確認。"]],
         [/Input scope root must not be empty/i, ["只读输入范围为空。请在来源与输出中选择包含输入及配对文件的目录，再开始预检。", "The read-only input scope is empty. Under Source and output, choose a folder containing the inputs and paired file, then preflight again.", "唯讀輸入範圍為空。請在來源與輸出中選擇包含輸入及配對檔的資料夾，再開始預檢。"]],
         [/Output scope root must not be empty/i, ["输出范围为空。请在来源与输出中选择输出目录，再开始预检。", "The output scope is empty. Choose the output folder under Source and output, then preflight again.", "輸出範圍為空。請在來源與輸出中選擇輸出資料夾，再開始預檢。"]],
@@ -166,6 +173,9 @@ QtObject {
         [/^PSA paired with current PSK · (\d+) bones · track config applied/, ["PSA 已与当前 PSK 配对 · {1} 个骨骼 · 已应用轨道 .config", "PSA paired with the current PSK · {1} bones · track config applied", "PSA 已與目前 PSK 配對 · {1} 個骨骼 · 已套用軌道 .config"]],
         [/^FBX · source axes preserved · display Y up/, ["FBX · 保留源坐标轴 · 显示为 Y 轴向上", "FBX · source axes preserved · displayed Y-up", "FBX · 保留來源座標軸 · 顯示為 Y 軸向上"]],
         [/^FBX · source axes preserved · (\S+) m\/unit/, ["FBX · 保留源坐标轴 · {1} 米/单位", "FBX · source axes preserved · {1} m/unit", "FBX · 保留來源座標軸 · {1} 公尺/單位"]],
+        [/^Alembic Ogawa · Y up convention · units unspecified/, ["Alembic Ogawa · 按 Y 轴向上约定显示 · 单位未声明 · 多边形按 Alembic 顺时针绕序解读", "Alembic Ogawa · displayed by the Y-up convention · units unspecified · polygons read with Alembic clockwise winding", "Alembic Ogawa · 依 Y 軸向上約定顯示 · 單位未宣告 · 多邊形依 Alembic 順時針繞序解讀"]],
+        [/^ABC object not previewed: (.+) \((.+)\)$/, ["ABC 对象未预览：{1}（类型 {2}，非多边形网格暂不显示）", "ABC object not previewed: {1} (type {2}; non-polygon objects are not displayed)", "ABC 物件未預覽：{1}（類型 {2}，非多邊形網格暫不顯示）"]],
+        [/^ABC objects not previewed: (\d+) more/, ["另有 {1} 个 ABC 对象未预览", "{1} more ABC objects not previewed", "另有 {1} 個 ABC 物件未預覽"]],
         [/^OBJ · source axes and units unspecified/, ["OBJ · 源坐标轴与单位未声明 · 显示为 Y 轴向上", "OBJ · source axes and units unspecified · displayed Y-up", "OBJ · 來源座標軸與單位未宣告 · 顯示為 Y 軸向上"]],
         [/^ActorX PSA · skeleton preview · Z up/, ["ActorX PSA · 骨架预览 · Z 轴向上", "ActorX PSA · skeleton preview · Z-up", "ActorX PSA · 骨架預覽 · Z 軸向上"]],
         [/^ActorX · source axes\/units unknown/, ["ActorX · 源坐标轴/单位未知 · 显示按 Z 轴向上", "ActorX · source axes/units unknown · displayed Z-up", "ActorX · 來源座標軸/單位未知 · 顯示依 Z 軸向上"]],

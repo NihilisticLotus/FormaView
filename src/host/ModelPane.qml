@@ -53,6 +53,8 @@ Rectangle {
                     required property int index
                     required property string modelData
                     objectName: "modelModeTab" + index
+                    // Geometry caches carry no skin: source weights do not apply.
+                    enabled: !(index===2 && root.session.geometryCache)
                     text: modelData; checked: root.session.mode===index
                     onClicked: root.session.setMode(index)
                 }
@@ -127,7 +129,7 @@ Rectangle {
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: animationBarHost.visible ? animationBarHost.top : parent.bottom
+                anchors.bottom: animationBarHost.visible ? animationBarHost.top : cacheTimelineHost.visible ? cacheTimelineHost.top : parent.bottom
                 spacing: 1
                 ModelViewport {
                     id: modelViewport
@@ -183,9 +185,22 @@ Rectangle {
                 anchors.bottom: parent.bottom
                 anchors.margins: 4
             }
+            CacheTimeline {
+                id: cacheTimelineHost
+                objectName: "modelCacheTimelineHost"
+                visible: root.session.geometryCache
+                enabled: visible
+                session: root.session
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 4
+            }
             ColumnLayout {
                 anchors.centerIn: parent; width: Math.min(stage.width-40,480)
-                visible: root.session.busy || root.session.preparing || !!root.session.error || !!root.session.frameError
+                // Geometry-cache sample changes report progress in the timeline
+                // instead of covering the previous sample during playback.
+                visible: root.session.busy || (root.session.preparing && !root.session.geometryCache) || !!root.session.error || !!root.session.frameError
                 BusyIndicator {
                     id: modelBusyIndicator
                     Layout.alignment: Qt.AlignHCenter

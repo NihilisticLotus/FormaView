@@ -6,6 +6,10 @@
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
 #include <QImageReader>
+#if defined(FORMAVIEW_MODEL_UI) && defined(FORMAVIEW_TEST_ABC)
+#include <Alembic/AbcCoreOgawa/All.h>
+#include <Alembic/AbcGeom/All.h>
+#endif
 #ifdef FORMAVIEW_MODEL_UI
 #include "model_session.hpp"
 #include "model_view.hpp"
@@ -83,6 +87,40 @@ QString requireFixture(const char *variable, bool optional = false) {
 bool workflowHeadless() {
   return qEnvironmentVariableIsSet("FORMAVIEW_TEST_HEADLESS");
 }
+#if defined(FORMAVIEW_MODEL_UI) && defined(FORMAVIEW_TEST_ABC)
+void writeAbc(const QString &path, int samples, bool varying) {
+    namespace A = Alembic::Abc;
+    namespace G = Alembic::AbcGeom;
+    A::OArchive out(Alembic::AbcCoreOgawa::WriteArchive(), path.toStdString());
+    const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 24, 0));
+    G::OXform xform(out.getTop(), "root", ts);
+    G::OPolyMesh mesh(xform, varying ? "fluid" : "sheet", ts);
+    for (int i = 0; i < samples; ++i) {
+      G::XformSample x;
+      x.setTranslation(A::V3d(0, .25 * i, 0));
+      xform.getSchema().set(x);
+      std::vector<A::V3f> p;
+      std::vector<std::int32_t> idx, counts;
+      std::vector<A::V2f> uv;
+      const int strips = varying ? 1 + i : 2;
+      for (int k = 0; k <= strips; ++k) {
+        p.push_back({static_cast<float>(k), 0, static_cast<float>(i) * .1F});
+        p.push_back({static_cast<float>(k), 1, 0});
+      }
+      for (int k = 0; k < strips; ++k) {
+        idx.insert(idx.end(), {2 * k, 2 * k + 1, 2 * k + 3, 2 * k + 2});
+        counts.push_back(4);
+        for (int c = 0; c < 4; ++c)
+          uv.push_back({static_cast<float>(i), static_cast<float>(c) * .25F});
+      }
+      std::vector<A::N3f> n(idx.size(), {0, 0, 1});
+      mesh.getSchema().set(G::OPolyMeshSchema::Sample(
+          A::P3fArraySample(p), A::Int32ArraySample(idx), A::Int32ArraySample(counts),
+          G::OV2fGeomParam::Sample(A::V2fArraySample(uv), G::kFacevaryingScope),
+          G::ON3fGeomParam::Sample(A::N3fArraySample(n), G::kFacevaryingScope)));
+    }
+  }
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
 // These waits establish correctness states for the same 64 inputs. ASan
 // instrumentation is not subject to the Release validation deadlines;
@@ -1046,10 +1084,13 @@ private slots:
     }
     QImage(8, 8, QImage::Format_RGBA8888).save(dir + "/d.png");
     desktop_->navigate(dir);
-    QTRY_COMPARE(desktop_->count(), 4); // pmx, vrm, fbx, png; ABC is not a previewable type in this release
+    QTRY_COMPARE(desktop_->count(), 5); // pmx, vrm, abc, fbx, png; ABC previews as a geometry cache
     QTRY_VERIFY(idle());
     desktop_->filter("", 2, 0);
     QTRY_COMPARE(desktop_->count(), 3); // models plus conversion-only inputs
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 4, 0);
+    QTRY_COMPARE(desktop_->count(), 1); // the ABC category lists geometry caches only
     QTRY_VERIFY(idle());
     desktop_->filter("", 5, 0);
     QTRY_COMPARE(desktop_->count(), 6);
@@ -1067,9 +1108,144 @@ private slots:
     QCOMPARE(desktop_->selectedModels(), QStringList{dir + "/a.pmx"});
     desktop_->select(abc);
     QTRY_COMPARE(desktop_->asset().value("name").toString(), QString("c.abc"));
+    QCOMPARE(desktop_->asset().value("kind").toString(), QString("cache"));
+    // ABC is previewed, never offered as a conversion/export input.
     QVERIFY(desktop_->selectedModels().isEmpty());
+#ifdef FORMAVIEW_MODEL_UI
+    // A one-byte .abc is not an archive: an explicit error, no preview.
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(session && !session->busy() && !session->error().isEmpty(), 10000);
+    QVERIFY(!session->available());
+#endif
+    desktop_->clearAsset();
     desktop_->filter("", 0, 0);
     QTRY_VERIFY(idle());
+  }
+  void abcGeometryCachePreview() {
+#if !defined(FORMAVIEW_MODEL_UI) || !defined(FORMAVIEW_TEST_ABC)
+    QSKIP("ABC preview requires the model UI and the professional Alembic adapter");
+#else
+    const auto dir = root_ + "/abc-preview";
+    QVERIFY(QDir().mkpath(dir));
+    writeAbc(dir + "/fixed.abc", 8, false);
+    writeAbc(dir + "/varying.abc", 5, true);
+    {
+      namespace A = Alembic::Abc;
+      namespace G = Alembic::AbcGeom;
+      A::OArchive out(Alembic::AbcCoreOgawa::WriteArchive(), (dir + "/curves.abc").toStdString());
+      G::OCurves curves(out.getTop(), "hair");
+      std::vector<A::V3f> cp{{0, 0, 0}, {0, 1, 0}};
+      std::vector<std::int32_t> cv{2};
+      curves.getSchema().set(G::OCurvesSchema::Sample(A::P3fArraySample(cp), A::Int32ArraySample(cv)));
+    }
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    auto *workspace = item("workspace");
+    QVERIFY(session && workspace);
+    workspace->setProperty("settingsVisible", false);
+    workspace->setProperty("conversionVisible", false);
+    workspace->setProperty("tasksVisible", false);
+    workspace->setProperty("focusMode", false);
+    desktop_->preference("inspectorMode", "auto");
+    const auto restore = qScopeGuard([&] {
+      desktop_->setLanguage("zh-CN");
+      desktop_->clearAsset();
+      desktop_->filter("", 0, 0);
+    });
+    desktop_->navigate(dir);
+    QTRY_COMPARE(desktop_->count(), 3);
+    QTRY_VERIFY(idle());
+    desktop_->filter("", 4, 0);
+    QTRY_COMPARE(desktop_->count(), 3);
+    QTRY_VERIFY(idle());
+    const auto rowOf = [&](const QString &name) {
+      for (int row = 0; row < desktop_->files()->rowCount(); ++row)
+        if (desktop_->files()->index(row, 0).data(FileList::Name).toString() == name) return row;
+      return -1;
+    };
+    QCOMPARE(desktop_->files()->index(rowOf("fixed.abc"), 0).data(FileList::Kind).toString(), QString("cache"));
+    const auto settled = [&](int sample) {
+      const auto info = session->cacheInfo();
+      return !session->busy() && !session->preparing() && info.value("sample").toInt() == sample &&
+             info.value("requested").toInt() == sample && info.value("framed").toBool() && session->frame();
+    };
+    desktop_->select(rowOf("fixed.abc"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->geometryCache() && settled(0), 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(modelPanelsReady() && item("modelPane") && item("modelInspector"), 15000);
+    QCOMPARE(desktop_->asset().value("kind").toString(), QString("cache"));
+    // Timeline replaces the skeletal animation bar; skeleton entry points
+    // are hidden or disabled with an explanation.
+    QTRY_VERIFY(item("modelCacheTimelineHost"));
+    QVERIFY(!item("modelAnimationBarHost"));
+    QVERIFY(!item("animExternalAttach"));
+    QVERIFY(!item("modelCompareSkeleton"));
+    QVERIFY(item("modelModeTab2") && !item("modelModeTab2")->isEnabled());
+    QVERIFY(item("cacheSkeletonNote"));
+    QVERIFY(item("modelGeometryCache"));
+    QTRY_COMPARE(item("cacheMeshReadout")->property("label").toString(), QString("/root/sheet"));
+    QVERIFY(item("cacheMeshReadout")->property("value").toString().contains(QStringLiteral("固定拓扑")));
+    auto *inspector = item("modelInspector");
+    inspector->setProperty("tab", 1);
+    QTRY_VERIFY(item("modelSkeletonUnavailable"));
+    inspector->setProperty("tab", 0);
+    // Random jumps: statistics and labels follow the presented sample.
+    for (const int target : {6, 2, 7, 0, 4}) {
+      session->seekSample(target);
+      QTRY_VERIFY_WITH_TIMEOUT(settled(target), 10000);
+      const auto info = session->cacheInfo();
+      QCOMPARE(info.value("points").toULongLong(), 6ULL);
+      QCOMPARE(info.value("faces").toULongLong(), 2ULL);
+      QCOMPARE(info.value("corners").toULongLong(), 8ULL);
+      QCOMPARE(session->documentSnapshot()->meshes.at(0).uvs.at(0).at(0).x(), static_cast<double>(target));
+      QTRY_VERIFY(item("cacheTime")->property("text").toString().contains(QString("%1 / 7").arg(target)));
+      QVERIFY(item("cacheStatistics")->property("text").toString().contains(QStringLiteral("点 6 · 面 2 · 角 8")));
+      QVERIFY(item("cacheTimelineReadout")->property("value").toString().startsWith(QString("8 / %1").arg(target)));
+    }
+    // The sample field and the step buttons drive the same random access.
+    auto *field = item("cacheSampleInput");
+    QVERIFY(field);
+    field->setProperty("text", "5");
+    QMetaObject::invokeMethod(field, "editingFinished");
+    QTRY_VERIFY_WITH_TIMEOUT(settled(5), 10000);
+    QMetaObject::invokeMethod(item("cacheStepForward"), "clicked");
+    QTRY_VERIFY_WITH_TIMEOUT(settled(6), 10000);
+    // Playback through the timeline button reaches the last sample.
+    session->setLoop(false);
+    session->seekSample(0);
+    QTRY_VERIFY_WITH_TIMEOUT(settled(0), 10000);
+    QMetaObject::invokeMethod(item("cachePlay"), "clicked");
+    QTRY_VERIFY(session->playing());
+    QTRY_VERIFY_WITH_TIMEOUT(!session->playing() && settled(7), 15000);
+    session->setLoop(true);
+    // Three languages.
+    desktop_->setLanguage("en");
+    QTRY_VERIFY(item("cacheTime")->property("text").toString().startsWith("sample 7 / 7"));
+    QVERIFY(item("cacheStatistics")->property("text").toString().contains("points 6 · faces 2 · corners 8"));
+    desktop_->setLanguage("zh-TW");
+    QTRY_VERIFY(item("cacheTime")->property("text").toString().startsWith(QStringLiteral("取樣 7 / 7")));
+    desktop_->setLanguage("zh-CN");
+    // Switching files while a sample read is in flight discards the old one.
+    session->seekSample(3);
+    desktop_->select(rowOf("varying.abc"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->path().endsWith("varying.abc") && settled(0), 15000);
+    QTest::qWait(100);
+    QVERIFY(session->documentSnapshot()->geometryCache->path().endsWith("varying.abc"));
+    QCOMPARE(session->cacheInfo().value("samples").toInt(), 5);
+    for (const int target : {4, 1, 3}) {
+      session->seekSample(target);
+      QTRY_VERIFY_WITH_TIMEOUT(settled(target), 10000);
+      QCOMPARE(session->cacheInfo().value("points").toULongLong(), static_cast<qulonglong>(2 * (target + 2)));
+      QCOMPARE(session->cacheInfo().value("faces").toULongLong(), static_cast<qulonglong>(target + 1));
+    }
+    QTRY_VERIFY(item("cacheMeshReadout")->property("value").toString().contains(QStringLiteral("变化拓扑")));
+    // Unsupported variants are explained, not shown as success.
+    desktop_->select(rowOf("curves.abc"));
+    QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 15000);
+    QVERIFY(!session->available());
+    QTRY_VERIFY(item("modelErrorExplained"));
+    QVERIFY(item("modelErrorExplained")->property("explanation").toString().contains(QStringLiteral("多边形网格")));
+    evidence_["abc_preview"] = QJsonObject{{"fixed_samples", 8}, {"varying_samples", 5},
+        {"render_mode", "offscreen software; workflow assertions only"}};
+#endif
   }
   void viewHistoryAndResourceRecovery() {
     desktop_->navigate(fixture_);
@@ -10617,7 +10793,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership"};
+    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

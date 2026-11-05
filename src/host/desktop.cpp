@@ -53,7 +53,10 @@ QString kind(const QString &name) {
   // PMX/VRM convert to FBX but have no professional preview in this release.
   if (suffix == "pmx" || suffix == "vrm")
     return "convert";
-  // ABC is a future-version format: listed only under "all types".
+  // Alembic geometry caches preview in the model workspace; they are not
+  // conversion or export inputs.
+  if (suffix == "abc")
+    return "cache";
   return "other";
 }
 QString stateName(formaview::TaskState state) {
@@ -520,7 +523,7 @@ void Desktop::filter(const QString &text, int type, int order) {
   start("filter", directory_, revision,
         [data, query, category, sort](std::stop_token stop, Result &out) {
           const auto types =
-              QStringList{"", "image", "model", "animation", "", ""};
+              QStringList{"", "image", "model", "animation", "cache", ""};
           for (const auto &entry : *data) {
             if (stop.stop_requested())
               return failure(formaview::ErrorCode::Cancelled, "Cancelled");
@@ -909,7 +912,8 @@ void Desktop::publish(Job &job) {
 #ifdef FORMAVIEW_MODEL_UI
     // M07: standalone animation sources (PSA, animation-only FBX) preview in
     // the model workspace as skeleton documents.
-    if (asset_["kind"] == "model" || asset_["kind"] == "animation")
+    if (asset_["kind"] == "model" || asset_["kind"] == "animation" ||
+        asset_["kind"] == "cache")
       static_cast<ModelSession *>(model_.get())->open(job.path);
     else
       static_cast<ModelSession *>(model_.get())->clear();

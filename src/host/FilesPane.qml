@@ -121,7 +121,7 @@ Rectangle {
                             anchors.top: parent.top; width: parent.width; height: 84; visible: root.thumbnails
                             source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
                             sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
+                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
                             Label {
                                 objectName: "thumbnailFailure"
                                 anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
@@ -132,7 +132,7 @@ Rectangle {
                         }
                         RowLayout {
                             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
-                            AppIcon { visible: !root.thumbnails; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert") ? "model" : "file"; size: 20; variant: "muted" }
+                            AppIcon { visible: !root.thumbnails; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 20; variant: "muted" }
                             ColumnLayout { Layout.fillWidth: true; spacing: 4
                                 Label { Layout.fillWidth: true; text: entry.fileName; color: Theme.text; font.pixelSize: 13; elide: Text.ElideMiddle }
                                 Label { Layout.fillWidth: true; visible: !root.thumbnails; text: entry.isDirectory ? Theme.t("文件夹", "Folder", "資料夾") : entry.fileName.split('.').pop().toUpperCase(); font.pixelSize: 11; color: Theme.muted; elide: Text.ElideRight }
