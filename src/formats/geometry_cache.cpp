@@ -3,6 +3,7 @@
 #include <Alembic/AbcGeom/All.h>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -99,6 +100,71 @@ bool hdf5_signature(const std::filesystem::path &path) {
 bool hdf5_signature(std::span<const char> bytes) {
   return bytes.size() >= 8 &&
          std::equal(bytes.begin(), bytes.begin() + 8, "\x89HDF\r\n\x1a\n");
+}
+// Ogawa bounds every group child count and data size by the stream size, but
+// its std::istream reader reports an unlimited size, so forged counts in
+// in-memory bytes reach vector allocations unchecked. Walk the reachable
+// group graph once and require every count, size and position to fit the
+// buffer; reject cycles, which no writer produces and readers may recurse on.
+void validate_ogawa(std::span<const char> bytes, std::stop_token stop) {
+  const auto malformed = [] {
+    throw skeletal::Failure(ErrorCode::InvalidArgument,
+                            "Malformed Ogawa structure: size or position "
+                            "outside the archive");
+  };
+  const std::uint64_t size = bytes.size();
+  const auto u64 = [&](std::uint64_t at) {
+    if (at > size || size - at < 8)
+      malformed();
+    std::uint64_t value{};
+    std::memcpy(&value, bytes.data() + at, sizeof value);
+    return value;
+  };
+  if (size < 16 || std::string_view(bytes.data(), 5) != "Ogawa")
+    return; // Not Ogawa: Alembic rejects it without trusting any count.
+  constexpr std::uint64_t data_bit = 1ULL << 63;
+  struct Frame {
+    std::uint64_t position, children, next;
+  };
+  std::vector<Frame> path;
+  std::set<std::uint64_t> finished, open;
+  std::uint64_t entries = 0;
+  const auto enter = [&](std::uint64_t position) {
+    if (position == 0 || finished.contains(position))
+      return; // 0 is the empty group.
+    if (open.contains(position))
+      throw skeletal::Failure(ErrorCode::InvalidArgument,
+                              "Malformed Ogawa structure: group cycle");
+    const auto children = u64(position);
+    // Written groups never overlap, so all child entries together fit the
+    // buffer; overlapping forged groups cannot multiply the walk.
+    if (children > (size - position - 8) / 8 || children > size / 8 - entries)
+      malformed();
+    entries += children;
+    open.insert(position);
+    path.push_back({position, children, 0});
+  };
+  enter(u64(8));
+  std::uint64_t steps = 0;
+  while (!path.empty()) {
+    if ((++steps & 4095) == 0)
+      cancel(stop);
+    auto &frame = path.back();
+    if (frame.next == frame.children) {
+      open.erase(frame.position);
+      finished.insert(frame.position);
+      path.pop_back();
+      continue;
+    }
+    const auto child = u64(frame.position + 8 + 8 * frame.next++);
+    if (child & data_bit) {
+      const auto position = child & ~data_bit;
+      if (position != 0 && u64(position) > size - position - 8)
+        malformed();
+    } else {
+      enter(child);
+    }
+  }
 }
 // Read-only, seekable view of caller-owned bytes for Ogawa's stream reader.
 class MemoryBuffer final : public std::streambuf {
@@ -205,6 +271,7 @@ Archive Archive::open(std::span<const char> bytes,
   p->limits = limits;
   p->owner = std::move(owner);
   p->buffer = std::make_unique<MemoryBuffer>(bytes);
+  validate_ogawa(bytes, stop);
   p->stream = std::make_unique<std::istream>(p->buffer.get());
   F::IFactory factory;
   F::IFactory::CoreType type;

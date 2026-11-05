@@ -367,6 +367,30 @@ void caches(const std::filesystem::path &dir) {
     try { (void)cache::Archive::open(std::span<const char>(hdf), nullptr); }
     catch (const skeletal::Failure &error) { rejected = error.error.code == ErrorCode::Unsupported; }
     require(rejected, "Memory HDF5 archive must be unsupported");
+    // Ogawa bounds group child counts and data sizes by the stream size, but
+    // its std::istream reader reports an unlimited size. A forged count in
+    // exact in-memory bytes must be rejected before Alembic allocates it.
+    const auto forged = [&](std::uint64_t at, std::uint64_t value) {
+      auto copy = std::make_shared<std::string>(*bytes);
+      std::memcpy(copy->data() + at, &value, sizeof value);
+      ErrorCode code{};
+      std::string message;
+      try { (void)cache::Archive::open(std::span<const char>(*copy), copy); }
+      catch (const skeletal::Failure &error) { code = error.error.code; message = error.what(); }
+      catch (const std::exception &error) { code = ErrorCode::Internal; message = error.what(); }
+      require(code == ErrorCode::InvalidArgument &&
+                  message.find("Ogawa") != std::string::npos,
+              ("Forged Ogawa size must be rejected before allocation: " + message).c_str());
+    };
+    std::uint64_t root{};
+    std::memcpy(&root, bytes->data() + 8, sizeof root);
+    require(root >= 16 && root + 16 <= bytes->size(), "Ogawa root group position");
+    forged(root, 1ULL << 40); // root group child count
+    std::uint64_t first{};
+    std::memcpy(&first, bytes->data() + root + 8, sizeof first);
+    require((first >> 63) != 0, "Ogawa root child 0 is data");
+    forged(first & ~(1ULL << 63), 1ULL << 40); // data block size
+    forged(root + 8 + 2 * 8, root); // root child 2 (top object group) refers back to the root
   }
   // Content digests: identical samples share keys; reading the same sample
   // again reuses the validated topology instead of decoding it.
