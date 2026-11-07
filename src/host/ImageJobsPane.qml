@@ -205,6 +205,7 @@ ColumnLayout {
         visible: !!root.job.id && root.working; Layout.fillWidth: true
         BusyIndicator {
             objectName: "exportJobActivity"; Layout.preferredWidth: 20; Layout.preferredHeight: 20
+            padding: 1; palette.dark: Theme.accent
             running: root.working && root.visible && !!root.Window.window?.visible
             Accessible.name: Theme.t("正在处理当前文件", "Processing the current file", "正在處理目前檔案")
         }
