@@ -5,6 +5,7 @@ ApplicationWindow {
     id: root
     required property var controller
     property real nativeCaptionInset: 64
+    property bool escapeClosesWindow: true
     flags: Qt.Tool | Qt.CustomizeWindowHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
     modality: Qt.NonModal
     color: Theme.base
@@ -26,6 +27,6 @@ ApplicationWindow {
         Label { anchors.left: parent.left; anchors.leftMargin: 24; anchors.right: parent.right; anchors.rightMargin: Math.max(64, root.nativeCaptionInset); anchors.verticalCenter: parent.verticalCenter; font.pixelSize: Theme.formHeading; color: Theme.text; text: root.title; elide: Text.ElideRight }
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
     }
-    Shortcut { sequence: "Escape"; context: Qt.WindowShortcut; onActivated: root.close() }
+    Shortcut { sequence: "Escape"; enabled: root.escapeClosesWindow; context: Qt.WindowShortcut; onActivated: root.close() }
     Component.onCompleted: controller.styleToolWindow(root)
 }

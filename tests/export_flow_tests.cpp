@@ -726,10 +726,20 @@ public:
     std::cout << "PASS restored PSA retry preserves pairing, model content, axes and units\n";
   }
 };
+#include "export_benchmark.hpp"
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     require(argc == 2 || argc == 3 || argc == 4, "External evidence root required");
+    if (argc == 3 && app.arguments()[2] == "--benchmark-fixture") {
+      exportBenchmarkFixture(app.arguments()[1]); return 0;
+    }
+    if (argc == 3 && app.arguments()[2] == "--prepared-safety") {
+      preparedExportSafety(app.arguments()[1]); return 0;
+    }
+    if (argc == 4 && app.arguments()[2] == "--benchmark") {
+      exportBenchmarkRun(app.arguments()[1],app.arguments()[3]); return 0;
+    }
     if (argc == 4 && app.arguments()[2] == "--real-inspect") {
       const auto root = app.arguments()[1], input = app.arguments()[3];
       require(!QFileInfo::exists(root) && QDir().mkpath(root), "New isolated inspection evidence root required");

@@ -50,6 +50,7 @@ TestCase {
     }
     Component { id: factory; QuickExportWindow { controller: testController; inputPath: "C:/source.png"; preset: "texture" } }
     property var window: null
+    property string artifactRoot: ""
     function init() {
         service.busy=false; service.error=""; service.plan={}; service.job={}; service.jobs=[]; service.submissions=0; service.directSubmissions=0; service.cancelledId=""
         window=factory.createObject(test)
@@ -139,5 +140,77 @@ TestCase {
         service.error="scope busy";service.changed();wait(0)
         compare(service.submissions,0)
         compare(window.ownedPlan,"")
+    }
+    function exportItem(index, name, status) {
+        return {index:index, status:status, request:{input:"C:/source.fbx", output:"C:/"+name+".fbx", options:{target:"fbx",include_mesh:false}},
+            result:{clips:[{name:name,start:0,end:1}],output:"C:/"+name+".fbx"}}
+    }
+    function test_details_survive_progress_and_other_submission() {
+        const a = {id:"A",state:"running",items:[exportItem(0,"Walk","running")]}
+        service.job=a; service.jobs=[a]; window.ownedJob="A"; window.phase="job"
+        const pane=findChild(window,"quickExportJob")
+        tryVerify(() => !!findChild(pane,"conversionItemDetails"))
+        findChild(pane,"conversionItemDetails").clicked()
+        const details=findChild(pane,"conversionDetails")
+        if (!details) {
+            // Reproduce the old delegate resetting expanded on each snapshot.
+            const row=findChild(pane,"conversionItemDetails").parent.parent.parent
+            verify(row.expanded)
+            service.jobs=[{id:"A",state:"succeeded",items:[exportItem(0,"Walk","succeeded")]}]
+            service.job=service.jobs[0]; service.changed(); wait(50)
+            verify(findChild(pane,"conversionItemDetails").parent.parent.parent.expanded,
+                   "Progress refresh must not close the selected details")
+            return
+        }
+        tryCompare(details,"opened",true)
+        service.jobs=[{id:"A",state:"running",items:[exportItem(0,"Walk","running")]},
+                      {id:"B",state:"running",items:[exportItem(0,"Run","running")]}]
+        service.selectJob("B"); wait(250)
+        verify(details.opened); compare(details.entry.result.clips[0].name,"Walk")
+        // A newly submitted batch may become the visible batch; details stay pinned.
+        window.ownedJob="B"; wait(50)
+        verify(details.opened); compare(details.entry.result.clips[0].name,"Walk")
+        service.jobs=[{id:"A",state:"succeeded",items:[exportItem(0,"Walk","succeeded")]},service.jobs[1]]
+        service.changed()
+        tryCompare(details,"entry",service.jobs[0].items[0])
+        verify(details.opened)
+        if (artifactRoot) grabImage(window.contentItem).save(artifactRoot+"/persistent-details.png")
+        findChild(details,"closeConversionDetails").clicked(); tryCompare(details,"opened",false)
+        findChild(pane,"conversionItemDetails").forceActiveFocus()
+        keyClick(Qt.Key_Space); tryCompare(details,"opened",true)
+        keyClick(Qt.Key_Escape); tryCompare(details,"opened",false)
+        verify(window.visible)
+        findChild(pane,"conversionItemDetails").clicked(); tryCompare(details,"opened",true)
+        service.jobs=[service.jobs[0]]; service.job=service.jobs[0]; service.changed()
+        tryCompare(details,"opened",false)
+    }
+    function test_dense_searchable_large_batch() {
+        window.preset="animation"; window.inputPath="C:/source.fbx"
+        const items=[]
+        for (let i=0;i<138;++i) items.push(exportItem(i,"Clip_"+i,i%2 ? "failed" : "succeeded"))
+        // Clip names must be searchable independently of generated filenames.
+        items[137].result.clips[0].name="Unique Walk Cycle"
+        service.jobs=[{id:"A",state:"succeeded",items:items}];service.job=service.jobs[0]
+        window.ownedJob="A";window.phase="job";window.width=760
+        const pane=findChild(window,"quickExportJob")
+        tryCompare(pane,"items",items)
+        const list=findChild(pane,"imageJobsTable")
+        tryVerify(() => !!list.itemAtIndex(0))
+        verify(list.itemAtIndex(0).height <= 76, "Compact row must not grow with repeated metadata")
+        const search=findChild(pane,"exportItemSearch")
+        search.text="unique walk"
+        tryCompare(list,"count",1);compare(pane.shownItems[0].index,137)
+        findChild(pane,"jobShowFailures").clicked();tryCompare(list,"count",1)
+        search.text="Clip_136";tryCompare(list,"count",0)
+        findChild(pane,"jobShowAll").clicked();tryCompare(list,"count",1)
+        search.clear();tryCompare(list,"count",138)
+        wait(50)
+        const detailsButton=findChild(list.itemAtIndex(0),"conversionItemDetails")
+        verify(detailsButton.mapToItem(window.contentItem,detailsButton.width,0).x <= window.width,
+               "Details action must fit the narrow window")
+        if (artifactRoot) grabImage(window.contentItem).save(artifactRoot+"/compact-760.png")
+        window.width=1100;wait(50)
+        verify(list.itemAtIndex(0).height <= 76)
+        if (artifactRoot) grabImage(window.contentItem).save(artifactRoot+"/compact-1100.png")
     }
 }

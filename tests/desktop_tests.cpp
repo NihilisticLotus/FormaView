@@ -3340,7 +3340,7 @@ private slots:
     for (int i = 0; i < 474; ++i) {
       const auto state = i < 200 ? "ready" : i < 300 ? "failed" : i < 400 ? "pending" : "cancelled";
       const auto format = i < 200 ? "png" : i < 300 ? "jpeg" : i < 400 ? "fbx" : "exr";
-      entries.append(QVariantMap{{"status", state},
+      entries.append(QVariantMap{{"index", i}, {"status", state},
           {"request", QVariantMap{{"input", QString("C:/source/alpha-%1.psa").arg(i, 3, 10, QChar('0'))},
               {"output", QString("C:/output/result-%1.%2").arg(i).arg(format)},
               {"options", QVariantMap{{"target", format}}}}},

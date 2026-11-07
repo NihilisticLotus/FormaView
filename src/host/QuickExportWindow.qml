@@ -21,6 +21,7 @@ AppToolWindow {
     property bool closingRequested: false
     property bool initialized: false
     readonly property bool settling: phase === "submitting"
+    escapeClosesWindow: !jobs.detailsVisible && !results.detailsVisible
     title: preset === "texture" ? Theme.t("导出贴图", "Export texture", "匯出貼圖") : preset === "abcFrame" ? Theme.t("导出当前帧", "Export current frame", "匯出目前影格") : preset === "animation" ? Theme.t("导出动画", "Export animation", "匯出動畫") : Theme.t("导出模型", "Export model", "匯出模型")
     width: 900; height: preset === "animation" ? 780 : 660
     minimumWidth: 760; minimumHeight: 560

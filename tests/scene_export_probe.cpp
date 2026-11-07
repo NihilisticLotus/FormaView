@@ -323,7 +323,8 @@ int main(int argc, char **argv) {
     if(app.arguments().size()==5 && app.arguments()[1]=="--audit-animations") {
       auditAnimations(app.arguments()[2],app.arguments()[3],app.arguments()[4]);return 0;
     }
-    if (app.arguments().size() != 3)
+    const bool bindOnly=app.arguments().size()==4 && app.arguments()[3]=="--bind-only";
+    if (app.arguments().size() != 3 && !bindOnly)
       throw std::runtime_error(
           "Usage: scene_export_probe input.fbx report.json");
     QFile file(app.arguments()[1]);
@@ -332,6 +333,7 @@ int main(int argc, char **argv) {
     const auto bytes = file.readAll();
     ufbx_load_opts options{};
     options.load_external_files = false;
+    options.ignore_animation = bindOnly;
     options.evaluate_skinning = true;
     options.temp_allocator.memory_limit = 512ULL * 1024 * 1024;
     options.result_allocator.memory_limit = 512ULL * 1024 * 1024;
@@ -362,6 +364,7 @@ int main(int argc, char **argv) {
                      QCryptographicHash::Sha256)
                      .toHex())}});
     for (const auto *stack : scene->anim_stacks) {
+      if (bindOnly) break;
       QJsonArray samples;
       for (int i = 0; i <= 8; ++i) {
         const double time =

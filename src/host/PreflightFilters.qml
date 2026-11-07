@@ -28,7 +28,8 @@ ColumnLayout {
         if (kind.currentIndex === 1 && target === "fbx") return false
         if (kind.currentIndex === 2 && target !== "fbx") return false
         if (selectedFormat && target !== selectedFormat) return false
-        const paths = [request.input, request.output, entry.preflight?.output].join("\n").toLocaleLowerCase()
+        const paths = [request.input, request.output, entry.preflight?.output,
+            ...(entry.preflight?.clips || []).map(c => c.name)].join("\n").toLocaleLowerCase()
         return !keyword || paths.includes(keyword)
     })
     readonly property bool active: !!keyword || selectedStates.length > 0 || warnings.checked || kind.currentIndex > 0 || !!selectedFormat
@@ -56,7 +57,7 @@ ColumnLayout {
         Layout.fillWidth: true; columns: root.width < 760 ? 2 : 4; columnSpacing: 10; rowSpacing: 8
         Field {
             id: search; objectName: "preflightSearch"; Layout.fillWidth: true; Layout.minimumWidth: 160
-            placeholderText: Theme.t("搜索来源或输出路径", "Search source or output path", "搜尋來源或輸出路徑")
+            placeholderText: Theme.t("搜索片段名、来源或输出路径", "Search clip, source or output path", "搜尋片段名、來源或輸出路徑")
             Accessible.name: placeholderText
         }
         Choice {

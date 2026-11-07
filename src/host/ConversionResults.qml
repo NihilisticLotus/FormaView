@@ -10,7 +10,16 @@ ColumnLayout {
     property alias acknowledged: acknowledge.checked
     readonly property string approvalDigest: snapshot.approval_digest || ""
     readonly property string planId: snapshot.id || ""
-    onPlanIdChanged: filters.reset()
+    onPlanIdChanged: { filters.reset(); details.close() }
+    property int detailIndex: -1
+    readonly property bool detailsVisible: details.visible
+    onSnapshotChanged: {
+        if (!details.visible) return
+        const item = (snapshot.items || []).find(i => i.index === detailIndex)
+        if (item) details.entry = item
+        else details.close()
+    }
+    ConversionItemDetails { id: details; controller: root.controller; preflight: true }
     onApprovalDigestChanged: acknowledge.checked = false
     readonly property bool hasLoss: (snapshot.items || []).some(i => (i.preflight?.losses || []).length > 0)
     signal submit()
@@ -35,6 +44,7 @@ ColumnLayout {
         delegate: ConversionItemRow {
             required property var modelData
             width: ListView.view.width; controller: root.controller; entry: modelData; preflight: true
+            onDetailsRequested: { root.detailIndex = modelData.index; details.entry = modelData; details.open() }
         }
         Label { anchors.centerIn: parent; width: parent.width - 40; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: Theme.muted; visible: results.count === 0; text: filters.active ? Theme.t("没有符合筛选条件的结果。可调整条件或清空筛选。", "No results match these filters. Adjust or clear the filters.", "沒有符合篩選條件的結果。可調整條件或清空篩選。") : Theme.t("暂无预检结果。", "No preflight results yet.", "尚無預檢結果。") }
     }

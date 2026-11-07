@@ -26,7 +26,10 @@ public:
     if (enabled_) { std::fprintf(stderr,"export_profile begin %s\n",name_); std::fflush(stderr); }
   }
   ~ProfileStage() {
-    if (enabled_) { std::fprintf(stderr,"export_profile end %s ms=%lld\n",name_,static_cast<long long>(timer_.elapsed())); std::fflush(stderr); }
+    finish();
+  }
+  void finish() {
+    if (enabled_) { std::fprintf(stderr,"export_profile end %s ms=%.3f\n",name_,timer_.nsecsElapsed()/1000000.0); std::fflush(stderr); enabled_=false; }
   }
 private:
   const char *name_;
@@ -476,6 +479,7 @@ QJsonObject Document::inspect() const {
 }
 QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
   ProfileStage profile("scene_encode");
+  ProfileStage preparationProfile("geometry_skin_axes_prepare");
   auto &s = impl_->source;
   const auto source = inspect();
   QJsonArray selected, exported;
@@ -536,6 +540,8 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
   }
   s.check();
   Stream stream({}, s.limits.decoded_bytes, s.stop, true);
+  preparationProfile.finish();
+  ProfileStage writerProfile("fbx_write");
   const std::unique_ptr<FbxExporter, Destroy> exporter(
       FbxExporter::Create(s.manager.get(), "output"));
   const auto format =
@@ -557,6 +563,7 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
   if (stream.GetError())
     throw sk::Failure(ErrorCode::ResourceLimit,
                       "FBX output byte budget exceeded");
+  writerProfile.finish();
   result = source;
   result["clips"] = exported;
   result["losses"] = s.losses;
@@ -632,11 +639,26 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
           QString::fromStdString(input.content_sha256), Qt::CaseInsensitive))
     throw sk::Failure(ErrorCode::InputChanged,
                       "ABC source changed since the previewed frame");
-  auto document = Document::read(input.resolved_path, bytes, load, limits, stop,
-                                 operation == "inspect", operation == "inspect" ? nullptr : &selected,
-                                 &options);
+  // One bounded, worker-local prepared output bridges preflight -> convert.
+  // Only self-contained FBX is eligible: dependencies (including failed reads)
+  // disable reuse. The primary source is freshly leased and hashed above.
+  struct PreparedOutput { QByteArray key, encoded; QJsonObject result; };
+  static thread_local PreparedOutput prepared;
+  auto canonicalRequest = request;
+  for (const auto *key : {"operation", "approval_digest", "acknowledge_losses"})
+    canonicalRequest.remove(key);
+  const QJsonObject cacheIdentity{{"input",snapshot(input)},{"request",canonicalRequest},
+    {"limits",QJsonArray{qint64(limits.input_bytes),qint64(limits.decoded_bytes),
+                         qint64(limits.chunks),qint64(limits.bones),qint64(limits.clips),qint64(limits.elements)}}};
+  const auto cacheKey = QJsonDocument(cacheIdentity).toJson(QJsonDocument::Compact);
+  const bool reuse = operation == "convert" && !prepared.key.isEmpty() && prepared.key == cacheKey;
+  std::optional<Document> document;
+  if (!reuse)
+    document.emplace(Document::read(input.resolved_path, bytes, load, limits, stop,
+                                    operation == "inspect", operation == "inspect" ? nullptr : &selected,
+                                    &options));
   if (operation == "inspect") {
-    auto result = document.inspect();
+    auto result = document->inspect();
     result["version"] = 1;
     result["input"] = snapshot(input);
     result["sources"] = sources;
@@ -672,7 +694,22 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   for (const auto &source : inputs)
     (void)inspect_output(scope, output.path, source, conflict);
   QJsonObject result;
-  const auto encoded = document.encode(options, result);
+  QByteArray encoded;
+  if (reuse) {
+    encoded = std::move(prepared.encoded); result = std::move(prepared.result);
+    prepared = {};
+    if (qEnvironmentVariableIsSet("FORMAVIEW_EXPORT_PROFILE"))
+      std::fprintf(stderr,"export_profile prepared_output_hit\n");
+  } else {
+    encoded = document->encode(options, result);
+  }
+  if (operation == "preflight") {
+    prepared = {};
+    if (QFileInfo(QString::fromStdWString(input.resolved_path.wstring())).suffix().compare("fbx",Qt::CaseInsensitive)==0 &&
+        sources.size()==1 && references.size()==1 && result["losses"].toArray().isEmpty() &&
+        encoded.size() <= 32*1024*1024)
+      prepared = {cacheKey,encoded,result};
+  }
   auto canonical = request;
   canonical.remove("operation");
   canonical.remove("approval_digest");
@@ -720,6 +757,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
     invalid("Scene export losses require acknowledgement");
   const auto hash = QString::fromLatin1(
       QCryptographicHash::hash(encoded, QCryptographicHash::Sha256).toHex());
+  ProfileStage commitProfile("transaction_write_commit");
   OutputTransaction transaction(scope, output.path, input, conflict, inputs);
   const auto notify = [&](const OutputIntent &intent) {
     if (observer)

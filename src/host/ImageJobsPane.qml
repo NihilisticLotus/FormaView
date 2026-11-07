@@ -10,6 +10,25 @@ ColumnLayout {
     property bool compact: false
     property bool awaitingJob: false
     property bool failuresOnly: false
+    property string detailJobId: ""
+    property int detailIndex: -1
+    readonly property bool detailsVisible: details.visible
+    function openDetails(entry): void {
+        detailJobId = job.id
+        detailIndex = entry.index
+        details.entry = entry
+        details.open()
+    }
+    function refreshDetails(): void {
+        if (!details.visible) return
+        const snapshot = service.jobSnapshot(detailJobId)
+        if (!snapshot.id && service.busy) return
+        const item = (snapshot.items || []).find(i => i.index === detailIndex)
+        if (item) details.entry = item
+        else details.close()
+    }
+    ConversionItemDetails { id: details; controller: root.controller }
+    Timer { interval: 200; repeat: true; running: details.visible; onTriggered: root.refreshDetails() }
     Label {
         visible: root.service.busy && !root.job.id
         Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted
@@ -29,7 +48,13 @@ ColumnLayout {
         onTriggered: root.snapshotRevision++
     }
     readonly property var items: job.items || []
-    readonly property var shownItems: failuresOnly ? items.filter(i => i.status === "failed" || i.status === "interrupted") : items
+    readonly property var shownItems: items.filter(i => {
+        if (failuresOnly && i.status !== "failed" && i.status !== "interrupted") return false
+        const keyword = itemSearch.text.trim().toLocaleLowerCase()
+        const result = i.result || i.preflight || {}
+        return !keyword || [i.request?.input, i.request?.output, result.committed_output,
+            ...(result.clips || []).map(c => c.name)].join("\n").toLocaleLowerCase().includes(keyword)
+    })
     readonly property var categories: Array.from(new Set(service.jobs.map(j => j.category || ""))).filter(c => !!c).sort()
     property string selectedCategory: ""
     readonly property var visibleJobs: service.jobs.filter(j => !selectedCategory || j.category === selectedCategory).slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
@@ -55,7 +80,7 @@ ColumnLayout {
         Layout.fillWidth: true; kind: "error"
         raw: root.job.error ? (root.job.error.code || "error") + ": " + (root.job.error.message || "") : ""
     }
-    Connections { target: root.service; function onChanged() { Qt.callLater(root.syncJobSelection) } }
+    Connections { target: root.service; function onChanged() { Qt.callLater(root.syncJobSelection); Qt.callLater(root.refreshDetails) } }
     Component.onCompleted: syncJobSelection()
     RowLayout {
       visible: !root.compact; Layout.fillWidth: true
@@ -124,6 +149,11 @@ ColumnLayout {
         Tool { objectName: "jobShowAll"; checkable: true; checked: !root.failuresOnly; text: Theme.t("全部 %1", "All %1", "全部 %1").arg(root.items.length); onClicked: root.failuresOnly = false }
         Tool { objectName: "jobShowFailures"; checkable: true; checked: root.failuresOnly; text: Theme.t("失败 / 中断 %1", "Failed / interrupted %1", "失敗 / 中斷 %1").arg(root.count("failed") + root.count("interrupted")); onClicked: root.failuresOnly = true }
     }
+    Field {
+        id: itemSearch; objectName: "exportItemSearch"; Layout.fillWidth: true
+        placeholderText: Theme.t("查找片段名、来源或输出", "Find clip, source or output", "尋找片段名、來源或輸出")
+        Accessible.name: placeholderText
+    }
     RowLayout {
         Layout.fillWidth: true; spacing: 24
         Label { Layout.fillWidth: true; Layout.preferredWidth: 30; color: Theme.muted; font.pixelSize: Theme.compactText; text: Theme.t("来源 / 选择", "Source / Selection", "來源 / 選擇") }
@@ -138,9 +168,10 @@ ColumnLayout {
         delegate: ConversionItemRow {
             required property var modelData
             width: ListView.view.width; controller: root.controller; entry: modelData; preflight: false
+            onDetailsRequested: root.openDetails(modelData)
         }
         Label { textFormat: Text.PlainText; anchors.centerIn: parent; visible: !root.job.id; color: Theme.muted; text: Theme.t("尚未提交转换任务", "No conversion job submitted", "尚未提交轉換工作") }
-        Label { anchors.centerIn: parent; visible: !!root.job.id && root.failuresOnly && !root.shownItems.length; color: Theme.muted; text: Theme.t("暂无失败或中断项", "No failed or interrupted items", "暫無失敗或中斷項目") }
+        Label { anchors.centerIn: parent; visible: !!root.job.id && !root.shownItems.length; color: Theme.muted; text: Theme.t("没有符合筛选条件的条目", "No items match the filters", "沒有符合篩選條件的項目") }
     }
     Flow {
         Layout.fillWidth: true; spacing: 6
