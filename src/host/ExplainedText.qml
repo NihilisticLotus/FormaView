@@ -10,6 +10,8 @@ ColumnLayout {
     property string code
     property string detail
     property string raw
+    property bool dismissible: false
+    signal dismissed()
     property color tone: Theme.error
     readonly property string explanation: kind === "loss" ? Explain.lossText(code, detail)
                                         : kind === "note" ? Explain.noteText(raw) : Explain.errorText(raw)
@@ -17,7 +19,15 @@ ColumnLayout {
     readonly property bool showTechnical: technical.length > 0 && technical !== explanation
     visible: explanation.length > 0
     spacing: 2
-    Label { objectName: "explainedText"; Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap; color: root.tone; text: root.explanation }
+    RowLayout {
+        Layout.fillWidth: true
+        Label { objectName: "explainedText"; Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap; color: root.tone; text: root.explanation }
+        Tool {
+            objectName: "dismissExplanation"; visible: root.dismissible; quiet: true
+            text: Theme.t("关闭提示", "Dismiss", "關閉提示")
+            onClicked: root.dismissed()
+        }
+    }
     TextEdit {
         objectName: "explainedTechnical"
         Layout.fillWidth: true; visible: root.showTechnical

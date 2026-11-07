@@ -29,6 +29,7 @@ TestCase {
         property int directSubmissions: 0
         property string cancelledId: ""
         function nameExamples() { return {names:["source-converted.png"]} }
+        function dismissError() { error = ""; changed() }
         function invalidatePlan() { plan = {}; changed() }
         function preflight() { busy = true; plan = {}; changed() }
         function submit(ack) { submissions++; busy = true; job = {}; changed() }
@@ -70,6 +71,36 @@ TestCase {
     }
     function cleanup() { window.destroy(); wait(0) }
     function begin() { window.start({}, {}, "{name}.{ext}", "skip", {}) }
+    function test_old_action_error_does_not_follow_new_export_data() {
+        return ["texture","model","animation"].map(preset => ({tag:preset,preset:preset}))
+    }
+    function test_old_action_error_does_not_follow_new_export(data) {
+        service.error="Cancel active work before changing its access scope"
+        const next=createTemporaryObject(factory,test,{preset:data.preset})
+        verify(next)
+        compare(service.error,"")
+        const banner=findChild(next,"quickExportServiceError")
+        verify(banner); verify(!banner.visible)
+        service.error="Select at least one input"; service.changed()
+        tryCompare(banner,"visible",true)
+        mouseClick(findChild(banner,"dismissExplanation"))
+        compare(service.error,""); verify(!banner.visible)
+        service.error="Select at least one input"; service.changed()
+        tryCompare(banner,"visible",true)
+        next.close()
+    }
+    function test_dismissing_action_error_preserves_job_failure() {
+        service.job={id:"failed-A",state:"failed",error:{code:"io",message:"Output is read-only"},items:[]}
+        window.ownedJob="failed-A"; window.phase="job"
+        service.error="Cancel active work before changing its access scope"; service.changed()
+        const pane=findChild(window,"quickExportJob")
+        const failure=findChild(pane,"imageJobError")
+        verify(failure.visible)
+        wait(50)
+        mouseClick(findChild(findChild(window,"quickExportServiceError"),"dismissExplanation"))
+        compare(service.error,""); verify(failure.visible)
+        compare(service.job.error.code,"io")
+    }
     function ready(losses) {
         service.plan={id:"plan-A",state:"ready",approval_digest:"digest-A",items:[{status:"ready",preflight:{losses:losses}}]}
         service.busy=false;service.changed();wait(0)

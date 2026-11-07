@@ -132,7 +132,7 @@ ColumnLayout {
         }
     }
     spacing: 10
-    ExplainedText { Layout.fillWidth: true; visible: !!root.service.error; kind: "error"; raw: root.service.error }
+    ExplainedText { objectName: "jobServiceError"; Layout.fillWidth: true; visible: !root.compact && !!root.service.error; kind: "error"; raw: root.service.error; dismissible: true; onDismissed: root.service.dismissError() }
     ExplainedText {
         objectName: "imageJobError"
         Layout.fillWidth: true; kind: "error"

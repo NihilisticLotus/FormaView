@@ -41,6 +41,7 @@ public:
   }
   bool configured() const { return !!service_; }
   QString error() const { return error_; }
+  Q_INVOKABLE void dismissError();
   QVariantMap plan() const { return plan_; }
   QVariantMap job() const { return job_; }
   QVariantList jobs() const { return jobs_; }

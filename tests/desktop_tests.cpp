@@ -4351,6 +4351,105 @@ private slots:
     }
   }
 
+  void realFbxPreparationGuiCancel() {
+#ifdef FORMAVIEW_MODEL_EXPORT
+    const auto source = qEnvironmentVariable("FORMAVIEW_REAL_FBX");
+    if (source.isEmpty()) QSKIP("Set FORMAVIEW_REAL_FBX to run the real-asset GUI cancellation check");
+    QVERIFY(QFileInfo(source).isFile());
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    desktop_->openPath(source);
+    QTRY_COMPARE_WITH_TIMEOUT(desktop_->asset().value("path").toString(), source, 30000);
+    for (const auto &preset : {QString("model"), QString("animation")}) {
+      QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, preset)));
+      QQuickWindow *quick = nullptr;
+      QTRY_VERIFY([&] { for (auto *w : QGuiApplication::topLevelWindows())
+        if (w->objectName() == "quickExportWindow" && w->isVisible()) {
+          quick = qobject_cast<QQuickWindow *>(w); return quick != nullptr;
+        } return false; }());
+      const auto cleanup = qScopeGuard([&] { quick->close(); });
+      const auto output = root_ + "/real-preparation-" + preset;
+      QVERIFY(QDir().mkpath(output));
+      auto *field = quick->findChild<QQuickItem *>("conversionOutputRoot"); QVERIFY(field);
+      field->setProperty("text", output);
+      QVERIFY(QMetaObject::invokeMethod(field, "textEdited"));
+      const auto before = service->jobs().size();
+      auto *start = quick->findChild<QQuickItem *>("createImagePlan"); QVERIFY(start);
+      QVERIFY(QMetaObject::invokeMethod(start, "clicked"));
+      QElapsedTimer deadline; deadline.start();
+      while (service->busy() && service->preparation().value("stage") != "inspect" && deadline.elapsed() < 10000)
+        QTest::qWait(1);
+      QVERIFY(service->busy());
+      QCOMPARE(service->preparation().value("stage").toString(), QString("inspect"));
+      auto *cancel = quick->findChild<QQuickItem *>("cancelExportPreparation");
+      QVERIFY(cancel && cancel->isVisible() && cancel->isEnabled());
+      const auto preparation = service->preparation();
+      // Click the real QML control while the real worker reads this asset.
+      QTest::mouseClick(quick, Qt::LeftButton, Qt::NoModifier,
+          cancel->mapToScene(QPointF(cancel->width()/2, cancel->height()/2)).toPoint());
+      QVERIFY(service->preparation().value("cancellation_requested").toBool());
+      QVERIFY(captureWindow(quick).save(root_ + "/real-preparation-" + preset + "-cancelling.png"));
+      QTRY_VERIFY_WITH_TIMEOUT(!service->busy(), 60000);
+      QTRY_COMPARE(quick->property("phase").toString(), QString("settings"));
+      QVERIFY2(service->error().startsWith("cancelled:"), qPrintable(service->error()));
+      QCOMPARE(service->jobs().size(), before);
+      QVERIFY(QDir(output).entryList({"*.fbx"}, QDir::Files).isEmpty());
+      evidence_["real_preparation_cancel_" + preset] = QJsonObject{
+        {"input", source}, {"before_cancel", QJsonObject::fromVariantMap(preparation)},
+        {"error", service->error()}, {"jobs_before", before}, {"jobs_after", service->jobs().size()},
+        {"generated_fbx", 0}, {"cancel_elapsed_ms", deadline.elapsed()}};
+      QVERIFY(captureWindow(quick).save(root_ + "/real-preparation-" + preset + "-cancelled.png"));
+      quick->close();
+    }
+#endif
+  }
+  void exitConfirmationAboveQuickExport() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), small_ + "/唯一图片.png");
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openQuickExport", Q_ARG(QVariant, "texture")));
+    QQuickWindow *quick = nullptr;
+    QTRY_VERIFY([&] { for (auto *w : QGuiApplication::topLevelWindows())
+      if (w->objectName() == "quickExportWindow" && w->isVisible()) {
+        quick = qobject_cast<QQuickWindow *>(w); return quick != nullptr;
+      } return false; }());
+    const auto cleanup = qScopeGuard([&] { service->busy_ = false; emit service->changed(); quick->close(); });
+    service->busy_ = true; emit service->changed();
+    bool accepted = true;
+    QVERIFY(QMetaObject::invokeMethod(workspace, "requestWindowClose", Q_RETURN_ARG(bool, accepted)));
+    QVERIFY(!accepted);
+    auto *dialog = window_->findChild<QObject *>("activeWorkExitDialog"); QVERIFY(dialog);
+    QTRY_VERIFY(dialog->property("visible").toBool());
+    QTRY_VERIFY(!quick->isVisible());
+    QVERIFY(service->busy());
+    QVERIFY(captureWindow(window_).save(root_ + "/exit-confirmation-unobscured.png"));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
+    QTRY_VERIFY(quick->isVisible());
+    QVERIFY(service->busy());
+    QCOMPARE(quick->property("phase").toString(), QString("settings"));
+    evidence_["exit_confirmation_preserves_export_window_and_work"] = true;
+  }
+  void imageActionErrorDismissal() {
+    ImageJobs jobs;
+    jobs.error_ = "Cancel active work before changing its access scope";
+    jobs.job_ = {{"id", "failed-job"}, {"state", "failed"},
+                 {"error", QVariantMap{{"code", "io"}, {"message", "Cannot write output"}}}};
+    const auto failedJob = jobs.job();
+    QSignalSpy changes(&jobs, &ImageJobs::changed);
+    jobs.dismissError();
+    QVERIFY(jobs.error().isEmpty());
+    QCOMPARE(jobs.job(), failedJob);
+    QCOMPARE(changes.size(), 1);
+    jobs.dismissError();
+    QCOMPARE(changes.size(), 1);
+    jobs.startExport({}, {}, {{"target", "invalid"}}, "{name}.{ext}", "skip");
+    QVERIFY(!jobs.error().isEmpty());
+    QCOMPARE(changes.size(), 2);
+    QCOMPARE(jobs.job(), failedJob);
+  }
   void imageQueuedPreparationCancel() {
     const auto source = root_ + "/queued-cancel.png";
     QImage image(4, 4, QImage::Format_RGBA8888); image.fill(Qt::red);

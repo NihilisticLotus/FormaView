@@ -266,7 +266,17 @@ Item {
     Loader { id: quickExportLoader }
     Dialog {
         id: exitDialog; objectName: "activeWorkExitDialog"
+        property var suspendedExport: null
         anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
+        onAboutToShow: {
+            const quick = quickExportLoader.item
+            if (quick && quick.visible) { suspendedExport = quick; quick.hide() }
+        }
+        onClosed: {
+            const quick = suspendedExport
+            suspendedExport = null
+            if (quick) { quick.show(); quick.raise(); quick.requestActivate() }
+        }
         title: Theme.t("任务仍在运行", "Tasks are still running", "工作仍在執行")
         background: Rectangle { color: Theme.raised; radius: Theme.dialogRadius; border.color: Theme.line }
         Label {
@@ -279,7 +289,7 @@ Item {
             onRejected: exitDialog.reject()
             onAccepted: exitDialog.accept()
         }
-        onAccepted: { root.exitConfirmed = true; root.Window.window.close() }
+        onAccepted: { suspendedExport = null; root.exitConfirmed = true; root.Window.window.close() }
     }
     Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => navigation.focusDestination("conversion")) } }
     Dialog {

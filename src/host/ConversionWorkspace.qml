@@ -17,6 +17,7 @@ FocusScope {
     readonly property bool modelAvailable: !!service.capabilities.model_export
     signal closed()
     function open(page, preset): void {
+        if (page === 0 && !service.busy) service.dismissError()
         const selected = controller.selectedImages()
         const models = controller.selectedModels()
         const snapshot = JSON.stringify([selected, models, preset || ""])
@@ -55,7 +56,7 @@ FocusScope {
             }
             Tool { objectName: "returnToPreview"; quiet: true; iconName: "return"; text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.close() }
         }
-        ExplainedText { objectName: "conversionServiceError"; Layout.fillWidth: true; kind: "error"; raw: root.service.error }
+        ExplainedText { objectName: "conversionServiceError"; Layout.fillWidth: true; kind: "error"; raw: root.service.error; dismissible: true; onDismissed: root.service.dismissError() }
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: tabs.currentIndex
             ConversionSettings {

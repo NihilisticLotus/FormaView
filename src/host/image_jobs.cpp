@@ -334,6 +334,11 @@ ImageJobs::~ImageJobs() {
   groups_.reset();
   service_.reset();
 }
+void ImageJobs::dismissError() {
+  if (error_.isEmpty()) return;
+  error_.clear();
+  emit changed();
+}
 bool ImageJobs::activeJobs() const {
   if (groups_ && groups_->has_active_work()) return true;
   if (!service_)
