@@ -866,6 +866,72 @@ private slots:
     desktop_->filter("", 0, 0);
     QTRY_VERIFY(idle());
   }
+  void fileViewResetDuringIncubation_data() {
+    QTest::addColumn<bool>("thumbnails");
+    QTest::addColumn<int>("replacementCount");
+    QTest::newRow("list-empty") << false << 0;
+    QTest::newRow("list-shrink") << false << 1;
+    QTest::newRow("grid-empty") << true << 0;
+    QTest::newRow("grid-shrink") << true << 1;
+  }
+  void fileViewResetDuringIncubation() {
+    QFETCH(bool, thumbnails);
+    QFETCH(int, replacementCount);
+    QTest::failOnWarning(QRegularExpression(".*DelegateModel::cancel.*"));
+    desktop_->navigate(small_);
+    QTRY_VERIFY(idle() && desktop_->directory() == small_);
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    const auto visible = workspace->isVisible();
+    workspace->setVisible(false);
+    const auto restoreWorkspace = qScopeGuard([&] { workspace->setVisible(visible); });
+    QQmlComponent component(engine_.get());
+    component.loadFromModule("FormaView.TestUI", "FilesPane");
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    std::unique_ptr<QObject> object(component.createWithInitialProperties(
+        {{"controller", QVariant::fromValue(desktop_.get())}, {"thumbnails", thumbnails}}));
+    auto *pane = qobject_cast<QQuickItem *>(object.get());
+    QVERIFY(pane);
+    pane->setParentItem(window_->contentItem());
+    pane->setSize({320, 600});
+    auto *view = pane->findChild<QQuickItem *>(thumbnails ? "fileGrid" : "fileList");
+    auto *files = static_cast<FileList *>(desktop_->files());
+    QVERIFY(view && view->isVisible());
+    files->replace({});
+    auto *original = engine_->incubationController();
+    QVERIFY(original);
+    QTRY_COMPARE(original->incubatingObjectCount(), 0);
+    QQmlIncubationController controlled;
+    engine_->setIncubationController(&controlled);
+    const auto restore = qScopeGuard([&] {
+      engine_->setIncubationController(original);
+      files->replace({});
+      desktop_->navigate(small_);
+    });
+    const auto entries = [](int count, const QString &prefix) {
+      std::vector<FileEntry> rows;
+      for (int i = 0; i < count; ++i) {
+        const auto name = prefix + QString::number(i) + ".obj";
+        rows.push_back({"C:/synthetic/" + name, name, "model"});
+      }
+      return rows;
+    };
+    for (int repeat = 0; repeat < 3; ++repeat) {
+      files->replace(entries(200, "before-"));
+      QTRY_COMPARE(view->property("count").toInt(), 200);
+      // Withhold the incubation budget until a cache-buffer delegate is pending.
+      QTRY_VERIFY_WITH_TIMEOUT(controlled.incubatingObjectCount() > 0, 5000);
+      files->replace(entries(replacementCount, "after-"));
+      QTRY_COMPARE(view->property("count").toInt(), replacementCount);
+      controlled.incubateFor(100);
+      QTRY_COMPARE(controlled.incubatingObjectCount(), 0);
+      if (replacementCount) {
+        QTRY_VERIFY(view->property("currentItem").value<QQuickItem *>());
+        auto *current = view->property("currentItem").value<QQuickItem *>();
+        QCOMPARE(current->property("fileName").toString(), QString("after-0.obj"));
+      }
+    }
+  }
   void staleCancellationAndFailure() {
     for (auto i = 0; i < 20; ++i) {
       desktop_->navigate(fixture_);
@@ -4147,6 +4213,7 @@ private slots:
     }
   }
   void conversionEditorPlanBinding() {
+    QTest::failOnWarning(QRegularExpression(".*DelegateModel::cancel.*"));
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
     auto *workspace = item("workspace");
     QVERIFY(service && workspace);

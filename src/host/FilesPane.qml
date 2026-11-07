@@ -15,6 +15,15 @@ Rectangle {
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
     function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
     property bool restorePending: false
+    property bool modelResetting: false
+    function finishModelReset() { modelResetting = false }
+    Connections {
+        target: root.controller.files
+        // Cancel pending cache delegates while their old indices are still valid.
+        function onModelAboutToBeReset() { root.modelResetting = true }
+        // Rebind after all Qt modelReset handlers have finished clearing old items.
+        function onModelReset() { Qt.callLater(root.finishModelReset) }
+    }
     property real restorePosition: 0
     function applyRestore() {
         if (!visible) return
@@ -151,7 +160,7 @@ Rectangle {
                 id: list
                 objectName: "fileList"
                 anchors.fill: parent; visible: !root.thumbnails; clip: true
-                model: root.visible && !root.thumbnails ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
+                model: root.visible && !root.thumbnails && !root.modelResetting ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
                 focus: true; activeFocusOnTab: true
                 keyNavigationEnabled: false
                 ScrollBar.vertical: ScrollBar {}
@@ -162,7 +171,7 @@ Rectangle {
                 id: grid
                 objectName: "fileGrid"
                 anchors.fill: parent; visible: root.thumbnails; clip: true
-                model: root.visible && visible ? root.controller.files : null
+                model: root.visible && visible && !root.modelResetting ? root.controller.files : null
                 cellWidth: width / Math.max(1, Math.floor(width/128)); cellHeight: 116
                 delegate: entryDelegate; cacheBuffer: 116; activeFocusOnTab: visible
                 keyNavigationEnabled: false
