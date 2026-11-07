@@ -15,6 +15,7 @@
 #include <QUuid>
 #include <QtEndian>
 #include <cmath>
+#include <bit>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -125,6 +126,76 @@ void binarySelection(const QString &root) {
     require(cancelled,"Binary selection respects cancellation");
   }
   std::cout << "PASS 32/64-bit FBX binary take graphs, exact SDK keys, malformed fallback and cancellation\n";
+}
+void bindingSerialization() {
+  using namespace formaview;
+  using scene_export::BindMatrices;
+  for (const bool wide : {false, true}) {
+    const qsizetype header = wide ? 25 : 13;
+    QByteArray bytes("Kaydara FBX Binary  \0\x1a\0", 23);
+    bytes.resize(27); qToLittleEndian<quint32>(wide ? 7500 : 7400, bytes.data() + 23);
+    const auto begin = [&](const QByteArray &name, const QByteArray &properties, quint64 count) {
+      const auto at = bytes.size(); bytes.append(QByteArray(header, '\0'));
+      if (wide) {
+        qToLittleEndian<quint64>(count, bytes.data() + at + 8);
+        qToLittleEndian<quint64>(properties.size(), bytes.data() + at + 16);
+      } else {
+        qToLittleEndian<quint32>(static_cast<quint32>(count), bytes.data() + at + 4);
+        qToLittleEndian<quint32>(static_cast<quint32>(properties.size()), bytes.data() + at + 8);
+      }
+      bytes[at + header - 1] = static_cast<char>(name.size()); bytes += name; bytes += properties;
+      return at;
+    };
+    const auto end = [&](qsizetype at) {
+      if (wide) qToLittleEndian<quint64>(bytes.size(), bytes.data() + at);
+      else qToLittleEndian<quint32>(static_cast<quint32>(bytes.size()), bytes.data() + at);
+    };
+    const auto string = [](const QByteArray &value) {
+      QByteArray p(5, '\0'); p[0] = 'S';
+      qToLittleEndian<quint32>(static_cast<quint32>(value.size()), p.data() + 1); return p + value;
+    };
+    const auto array = [](const std::array<double, 16> &values) {
+      QByteArray p(141, '\0'); p[0] = 'd';
+      qToLittleEndian<quint32>(16, p.data() + 1); qToLittleEndian<quint32>(128, p.data() + 9);
+      for (std::size_t i = 0; i < values.size(); ++i)
+        qToLittleEndian<quint64>(std::bit_cast<quint64>(values[i]), p.data() + 13 + i * 8);
+      return p;
+    };
+    std::array<BindMatrices, 2> records;
+    const auto objects = begin("Objects", {}, 0);
+    for (std::size_t i = 0; i < records.size(); ++i) {
+      auto &r = records[i]; r.marker = "__FormaViewBinding_test_" + QByteArray::number(i); r.name = "Same";
+      for (std::size_t j = 0; j < 16; ++j) { r.transform[j] = .001 + i * 20.0 + j; r.link[j] = .002 + i * 40.0 + j; }
+      QByteArray properties(9, '\0'); properties[0] = 'L'; qToLittleEndian<quint64>(i + 1, properties.data() + 1);
+      properties += string(r.marker + QByteArray("\0\1SubDeformer", 13)) + string("Cluster");
+      const auto cluster = begin("Deformer", properties, 3);
+      for (const auto *name : {"Transform", "TransformLink", "Transform"}) {
+        const auto matrix = begin(name, array({}), 1); end(matrix);
+      }
+      bytes += QByteArray(header, '\0'); end(cluster);
+    }
+    bytes += QByteArray(header, '\0'); end(objects); bytes += QByteArray(header, '\0');
+    const auto rewritten = scene_export::restore_fbx_bind_matrices(bytes, records, 100000, {});
+    scene_export::validate_fbx_structure(rewritten, 100000, {});
+    require(!rewritten.contains("__FormaViewBinding_"), "Binding markers must be removed");
+    for (const auto &r : records) {
+      require(rewritten.count(array(r.transform)) == 1 && rewritten.count(array(r.link)) == 1, "Binding doubles serialized exactly once");
+    }
+    require(rewritten.count(array({})) == 2, "SDK duplicate Transform parent metadata is preserved");
+    const auto fails = [&](const QByteArray &input, std::span<const BindMatrices> values, std::uint64_t budget, std::stop_token token, ErrorCode code) {
+      bool rejected = false;
+      try { (void)scene_export::restore_fbx_bind_matrices(input, values, budget, token); }
+      catch (const skeletal::Failure &e) { rejected = e.error.code == code; }
+      require(rejected, "Binding serialization must fail closed");
+    };
+    fails(bytes, records, rewritten.size() - 1, {}, ErrorCode::ResourceLimit);
+    std::stop_source stop; stop.request_stop(); fails(bytes, records, 100000, stop.get_token(), ErrorCode::Cancelled);
+    auto missing = records; missing[0].marker = "absent"; fails(bytes, missing, 100000, {}, ErrorCode::Internal);
+    auto duplicate = records; duplicate[1].marker = duplicate[0].marker; fails(bytes, duplicate, 100000, {}, ErrorCode::Internal);
+    fails(bytes.left(bytes.size() - header - 1), records, 100000, {}, ErrorCode::Internal);
+    fails("ASCII FBX", records, 100000, {}, ErrorCode::Internal);
+  }
+  std::cout << "PASS exact 32/64-bit binding serialization, duplicate names, parent metadata, budgets, cancellation and malformed records\n";
 }
 void queuedSourceReplacement(const QString &root, QJsonObject first, int variant) {
   using namespace formaview;
@@ -639,6 +710,7 @@ public:
     require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "Use a new external test directory");
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
     binarySelection(root + "/binary-selection");
+    bindingSerialization();
     abcFrameExport(root + "/abc-frame");
     ImageJobs jobs;
     const QVariantMap scope{{"input_roots", QStringList{root}}, {"output_roots", QStringList{root + "/out"}}, {"allow_overwrite", false}};
@@ -789,6 +861,9 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     require(argc == 2 || argc == 3 || argc == 4, "External evidence root required");
+    if (argc == 3 && app.arguments()[2] == "--binding-safety") {
+      bindingSerialization(); return 0;
+    }
     if (argc == 3 && app.arguments()[2] == "--benchmark-fixture") {
       exportBenchmarkFixture(app.arguments()[1]); return 0;
     }

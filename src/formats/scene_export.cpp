@@ -7,11 +7,14 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QUrl>
+#include <QUuid>
 #include <algorithm>
 #include <climits>
 #include <cstring>
 #include <cstdio>
 #include <set>
+#include <cmath>
+#include <map>
 
 namespace formaview::scene_export {
 namespace sk = skeletal;
@@ -41,6 +44,88 @@ struct Destroy {
     if (p)
       p->Destroy();
   }
+};
+// The pinned 2020.2 SDK stores full FbxMatrix values but its public AMatrix
+// getters decompose them into TRS, discarding shear (including producer
+// round-off). Access the declared protected members through legal member
+// pointers, without downcasts or assumptions about object memory layout.
+// A different SDK must be validated before changing this version guard.
+static_assert(FBXSDK_VERSION_MAJOR == 2020 && FBXSDK_VERSION_MINOR == 2 && FBXSDK_VERSION_POINT == 0);
+struct FullClusterMatrices : FbxCluster {
+  static auto transform() { return &FullClusterMatrices::mTransform; }
+  static auto link() { return &FullClusterMatrices::mTransformLink; }
+};
+class ExactBindings {
+public:
+  std::vector<BindMatrices> records;
+  ExactBindings(Scene &s, const QString &axes, const QString &unit) : scene_(s.scene) {
+    auto sourceAxes = s.scene->GetGlobalSettings().GetAxisSystem();
+    auto targetAxes = axes == "source" ? sourceAxes : axis_system(axes);
+    FbxAMatrix a, b;
+    sourceAxes.GetMatrix(a); targetAxes.GetMatrix(b);
+    const FbxMatrix basis = FbxMatrix(b) * FbxMatrix(a).Inverse();
+    const auto inverse = basis.Inverse();
+    FbxMatrix scale;
+    const QMap<QString, double> units{{"m", 100}, {"cm", 1}, {"mm", .1}, {"in", 2.54}};
+    if (unit != "source") {
+      if (!units.contains(unit)) invalid("Unknown output unit");
+      const auto factor = s.scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor() / units[unit];
+      for (int i = 0; i < 3; ++i) scale.Set(i, i, factor);
+    }
+    const auto flatten = [](const FbxMatrix &m) {
+      std::array<double, 16> result;
+      for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) {
+        const auto value = m.Get(r, c);
+        if (!std::isfinite(value)) invalid("Non-finite skin binding matrix");
+        result[static_cast<std::size_t>(r * 4 + c)] = value;
+      }
+      return result;
+    };
+    const auto prefix = QByteArray("__FormaViewBinding_") + QUuid::createUuid().toByteArray(QUuid::Id128) + '_';
+    std::set<FbxCluster *> seen;
+    for (int m = 0; m < s.scene->GetSrcObjectCount<FbxMesh>(); ++m) {
+      const auto *mesh = s.scene->GetSrcObject<FbxMesh>(m);
+      for (int d = 0; d < mesh->GetDeformerCount(FbxDeformer::eSkin); ++d) {
+        auto *skin = static_cast<FbxSkin *>(mesh->GetDeformer(d, FbxDeformer::eSkin));
+        for (int i = 0; i < skin->GetClusterCount(); ++i) {
+          s.check();
+          auto *cluster = skin->GetCluster(i);
+          if (!seen.insert(cluster).second) continue;
+          if (!cluster->GetLink()) invalid("Skin cluster has no linked bone");
+          const auto &link = cluster->*FullClusterMatrices::link();
+          if (!std::isfinite(link.Determinant()) || link.Determinant() == 0)
+            invalid("Singular skin binding matrix");
+          BindMatrices record;
+          record.marker = prefix + QByteArray::number(records.size());
+          record.name = cluster->GetName();
+          record.transform = flatten(basis * (link.Inverse() * (cluster->*FullClusterMatrices::transform())) * inverse);
+          record.link = flatten(scale * basis * link * inverse);
+          s.reserve(sizeof(BindMatrices) + 128 + static_cast<std::uint64_t>(2 * record.marker.size() + record.name.size()));
+          names_.emplace(record.marker.toStdString(), record.name);
+          records.push_back(std::move(record)); clusters_.push_back(cluster);
+        }
+      }
+    }
+  }
+  void tag() {
+    tagged_ = true;
+    for (std::size_t i = 0; i < records.size(); ++i) clusters_[i]->SetName(records[i].marker.constData());
+    // DeepConvertScene may replace mesh/deformer objects. Only markers, not
+    // those object pointers, may be used after coordinate conversion.
+    clusters_.clear();
+  }
+  ~ExactBindings() {
+    if (tagged_) for (int i = 0; i < scene_->GetSrcObjectCount<FbxCluster>(); ++i) {
+      auto *cluster = scene_->GetSrcObject<FbxCluster>(i);
+      const auto found = names_.find(cluster->GetName());
+      if (found != names_.end()) cluster->SetName(found->second.constData());
+    }
+  }
+private:
+  FbxScene *scene_{};
+  std::vector<FbxCluster *> clusters_;
+  std::map<std::string, QByteArray, std::less<>> names_;
+  bool tagged_{};
 };
 QString key(const char *name) {
   return QString::fromUtf8(name).replace('\\', '/');
@@ -529,6 +614,8 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
   }
   const auto axes = options["output_axes"].toString("source"),
              unit = options["output_unit"].toString("source");
+  ExactBindings bindings(s, axes, unit);
+  bindings.tag();
   if (axes != "source")
     axis_system(axes).DeepConvertScene(s.scene);
   const QMap<QString, double> units{
@@ -573,7 +660,7 @@ QByteArray Document::encode(const QJsonObject &options, QJsonObject &result) {
       {"metres_per_unit",
        s.scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor() / 100.0}};
   result["embedded_media"] = s.media.size();
-  return stream.data;
+  return restore_fbx_bind_matrices(stream.data, bindings.records, s.limits.decoded_bytes, s.stop);
 }
 QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
                     sk::Limits limits, std::stop_token stop,
@@ -729,7 +816,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
       {"overwrite", scope.allow_overwrite},
       {"output", QString::fromStdWString(output.path.wstring())},
       {"policy", QString::fromStdString(scope.policy_revision)},
-      {"implementation", "M12-scene-v4-take-selection"}};
+      {"implementation", "M12-scene-v5-exact-bindings"}};
   const auto approval = QString::fromLatin1(
       QCryptographicHash::hash(
           QJsonDocument(approval_data).toJson(QJsonDocument::Compact),

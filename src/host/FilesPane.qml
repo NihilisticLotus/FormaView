@@ -15,6 +15,12 @@ Rectangle {
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
     function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
     property bool restorePending: false
+    property int restoreStableFrames: 0
+    function restoreGeometryChanged() {
+        if (!restorePending) return
+        restoreStableFrames = 0
+        Qt.callLater(applyRestore)
+    }
     property bool modelResetting: false
     function finishModelReset() { modelResetting = false }
     Connections {
@@ -26,24 +32,34 @@ Rectangle {
     }
     property real restorePosition: 0
     function applyRestore() {
-        if (!visible) return
+        if (!visible || modelResetting) return false
         const view = thumbnails ? grid : list
         view.forceLayout()
         const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1
+        // Reattaching the model can span frames while delegates incubate.
+        // Do not finish against an empty or partially measured view.
+        const expectedHeight = thumbnails ? Math.ceil(controller.count/columns)*grid.cellHeight : controller.count*Theme.fileRowHeight
+        if (view.count !== controller.count || Math.abs(view.contentHeight-expectedHeight) > 1) return false
         const offset = restorePosition/columns*(thumbnails ? grid.cellHeight : Theme.fileRowHeight)
         view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height))
+        return true
     }
     function restore() {
         restorePosition = controller.scrollPosition
         restorePending = true
+        restoreStableFrames = 0
         Qt.callLater(applyRestore)
     }
     Connections {
         target: root.Window.window
         enabled: root.visible && root.restorePending
         function onFrameSwapped() {
-            root.applyRestore()
-            root.restorePending = false
+            if (!root.applyRestore()) { root.restoreStableFrames = 0; return }
+            // A stale frame can arrive before visibility-driven layouts finish.
+            // Require another rendered frame with unchanged view geometry.
+            root.restoreStableFrames += 1
+            if (root.restoreStableFrames >= 2) root.restorePending = false
+            else root.Window.window.update()
         }
     }
     function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
@@ -166,6 +182,9 @@ Rectangle {
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
+                onContentHeightChanged: if (!root.thumbnails) root.restoreGeometryChanged()
+                onHeightChanged: if (!root.thumbnails) root.restoreGeometryChanged()
+                onWidthChanged: if (!root.thumbnails) root.restoreGeometryChanged()
             }
             GridView {
                 id: grid
@@ -178,6 +197,9 @@ Rectangle {
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
+                onContentHeightChanged: if (root.thumbnails) root.restoreGeometryChanged()
+                onHeightChanged: if (root.thumbnails) root.restoreGeometryChanged()
+                onWidthChanged: if (root.thumbnails) root.restoreGeometryChanged()
             }
             Label { anchors.centerIn: parent; visible: root.controller.count === 0; color: Theme.muted; text: root.controller.busy ? Theme.t("正在扫描…", "Scanning…", "正在掃描…") : Theme.t("没有文件", "No files", "沒有檔案") }
         }

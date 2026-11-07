@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <bit>
 
 namespace formaview::scene_export {
 namespace {
@@ -239,6 +240,117 @@ std::optional<QByteArray> select_fbx_takes(const QByteArray &source,
     return out;
   } catch (const Invalid &) {
     return std::nullopt;
+  }
+}
+QByteArray restore_fbx_bind_matrices(const QByteArray &source,
+                                    std::span<const BindMatrices> bindings,
+                                    std::uint64_t output_budget, std::stop_token stop) {
+  if (stop.stop_requested())
+    throw skeletal::Failure(ErrorCode::Cancelled, "FBX binding serialization cancelled");
+  if (bindings.empty()) return source;
+  try {
+    if (source.size() < 27 || !source.startsWith(QByteArray("Kaydara FBX Binary  \0\x1a\0", 23))) throw Invalid{};
+    const Binary b(source, qFromLittleEndian<quint32>(source.constData() + 23) >= 7500, stop);
+    std::map<QByteArray, const BindMatrices *> byMarker;
+    for (const auto &record : bindings)
+      if (record.marker.isEmpty() || !byMarker.emplace(record.marker, &record).second) throw Invalid{};
+    std::set<QByteArray> restored;
+    QByteArray out;
+    const auto append = [&](const char *data, qsizetype size) {
+      if (size < 0 || static_cast<std::uint64_t>(out.size()) > output_budget ||
+          static_cast<std::uint64_t>(size) > output_budget - static_cast<std::uint64_t>(out.size()))
+        throw skeletal::Failure(ErrorCode::ResourceLimit, "FBX binding output exceeds byte budget");
+      out.append(data, size);
+    };
+    const auto copy = [&](const Node &n) {
+      b.check();
+      const auto delta = out.size() - n.begin;
+      append(source.constData() + n.begin, n.end - n.begin);
+      b.rebase(out, n, delta);
+    };
+    const auto propertySize = [&](qsizetype at, qsizetype size) {
+      if (b.header == 25) qToLittleEndian<quint64>(static_cast<quint64>(size), out.data() + at + 16);
+      else qToLittleEndian<quint32>(static_cast<quint32>(size), out.data() + at + 8);
+    };
+    const auto matrix = [&](const Node &n, const std::array<double, 16> &values) {
+      if (n.children != n.end || (b.header == 25 ? b.read<quint64>(n.begin + 8) : b.read<quint32>(n.begin + 4)) != 1)
+        throw Invalid{};
+      const auto begin = out.size();
+      append(source.constData() + n.begin, n.properties - n.begin);
+      QByteArray payload(141, '\0'); payload[0] = 'd';
+      qToLittleEndian<quint32>(16, payload.data() + 1);
+      qToLittleEndian<quint32>(128, payload.data() + 9);
+      for (std::size_t i = 0; i < values.size(); ++i)
+        qToLittleEndian<quint64>(std::bit_cast<quint64>(values[i]), payload.data() + 13 + i * 8);
+      append(payload.constData(), payload.size());
+      propertySize(begin, payload.size()); b.endOffset(out, begin, out.size());
+    };
+    append(source.constData(), 27);
+    qsizetype tail = 27;
+    bool objectsSeen = false;
+    while (tail < source.size()) {
+      const auto top = b.node(tail, source.size());
+      if (!top.end) break;
+      tail = top.end;
+      if (top.name != "Objects") { copy(top); continue; }
+      if (objectsSeen) throw Invalid{};
+      objectsSeen = true;
+      const auto begin = out.size();
+      append(source.constData() + top.begin, top.children - top.begin);
+      const auto objects = b.children(top);
+      for (const auto &n : objects) {
+        b.check();
+        if (n.name != "Deformer") { copy(n); continue; }
+        auto at = n.properties;
+        (void)b.integer(at, n);
+        const auto nameBegin = at;
+        const auto rawName = b.string(at, n);
+        const auto nameEnd = at;
+        const auto separator = rawName.indexOf(QByteArray("\0\1", 2));
+        const auto marker = separator < 0 ? rawName : rawName.left(separator);
+        const auto found = byMarker.find(marker);
+        if (found == byMarker.end()) { copy(n); continue; }
+        if (b.string(at, n) != "Cluster" || !restored.insert(marker).second) throw Invalid{};
+        const auto &record = *found->second;
+        const auto clusterBegin = out.size();
+        append(source.constData() + n.begin, nameBegin - n.begin);
+        const auto name = record.name + (separator < 0 ? QByteArray{} : rawName.mid(separator));
+        QByteArray encoded(5, '\0'); encoded[0] = 'S';
+        qToLittleEndian<quint32>(static_cast<quint32>(name.size()), encoded.data() + 1);
+        append(encoded.constData(), encoded.size()); append(name.constData(), name.size());
+        append(source.constData() + nameEnd, n.children - nameEnd);
+        propertySize(clusterBegin, n.propertyEnd - n.properties + name.size() - rawName.size());
+        std::set<QByteArray> seen;
+        const auto children = b.children(n);
+        for (const auto &child : children) {
+          const std::array<double, 16> *values = nullptr;
+          if (child.name == "Transform") values = &record.transform;
+          else if (child.name == "TransformLink") values = &record.link;
+          if (values) {
+            // SDK 2020.2 writes an optional parent matrix as a second
+            // "Transform" after DeepConvertScene. The first is the skin
+            // inverse bind; retain the SDK's parent metadata unchanged.
+            if (!seen.insert(child.name).second) {
+              if (child.name != "Transform") throw Invalid{};
+              copy(child); continue;
+            }
+            matrix(child, *values);
+          } else copy(child);
+        }
+        if (!seen.contains("Transform") || !seen.contains("TransformLink")) throw Invalid{};
+        const auto end = children.empty() ? n.children : children.back().end;
+        append(source.constData() + end, n.end - end);
+        b.endOffset(out, clusterBegin, out.size());
+      }
+      const auto end = objects.empty() ? top.children : objects.back().end;
+      append(source.constData() + end, top.end - end);
+      b.endOffset(out, begin, out.size());
+    }
+    if (restored.size() != bindings.size()) throw Invalid{};
+    append(source.constData() + tail, source.size() - tail);
+    return out;
+  } catch (const Invalid &) {
+    throw skeletal::Failure(ErrorCode::Internal, "Cannot match SDK binding matrix records safely");
   }
 }
 void validate_fbx_structure(const QByteArray &source,
