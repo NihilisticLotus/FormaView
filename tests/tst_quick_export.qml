@@ -12,6 +12,7 @@ TestCase {
         signal submissionFinished(string planId, string jobId)
         signal directExportFinished(string jobId)
         property bool busy: false
+        property var preparation: ({})
         property bool importing: false
         property string error: ""
         property var plan: ({})
@@ -32,7 +33,7 @@ TestCase {
         function preflight() { busy = true; plan = {}; changed() }
         function submit(ack) { submissions++; busy = true; job = {}; changed() }
         function startExport() { directSubmissions++; busy = true; job = {}; changed() }
-        function cancelPreparation() { cancelledId = "preparation"; changed() }
+        function cancelPreparation() { cancelledId = "preparation"; preparation = Object.assign({}, preparation, {cancellation_requested:true}); changed() }
         function cancel(kind,id) { cancelledId = id; changed() }
         function jobSnapshot(id) { return JSON.parse(JSON.stringify(jobs.find(j => j.id === id) || {})) }
         function selectJob(id) { job = jobSnapshot(id); changed() }
@@ -49,10 +50,17 @@ TestCase {
         function reveal(p) {}
     }
     Component { id: factory; QuickExportWindow { controller: testController; inputPath: "C:/source.png"; preset: "texture" } }
+    Component {
+        id: taskPaneFactory
+        ApplicationWindow {
+            visible: true; width: 900; height: 700
+            ImageJobsPane { objectName: "taskCenterPane"; controller: testController; anchors.fill: parent }
+        }
+    }
     property var window: null
     property string artifactRoot: ""
     function init() {
-        service.busy=false; service.error=""; service.plan={}; service.job={}; service.jobs=[]; service.submissions=0; service.directSubmissions=0; service.cancelledId=""
+        service.busy=false; service.preparation={}; service.error=""; service.plan={}; service.job={}; service.jobs=[]; service.submissions=0; service.directSubmissions=0; service.cancelledId=""
         window=factory.createObject(test)
         verify(window)
         compare(window.modality, Qt.NonModal)
@@ -122,6 +130,60 @@ TestCase {
         service.directExportFinished("direct-A");service.changed();wait(0)
         compare(window.ownedJob,"direct-A")
         compare(window.phase,"job")
+    }
+    function test_preparation_feedback_data() { return [{tag:"model",preset:"model"},{tag:"animation",preset:"animation"}] }
+    function test_preparation_feedback(data) {
+        window.preset=data.preset
+        window.inputPath="C:/source.fbx"
+        begin()
+        service.preparation={active:true,stage:"inspect",input:"C:/source.fbx",completed:0,total:0,elapsed_ms:4200,cancellation_requested:false}
+        const pane=findChild(window,"quickExportJob")
+        const progress=findChild(pane,"exportPreparationProgress")
+        verify(progress, "Preparation must have a visible activity indicator")
+        tryCompare(progress,"visible",true)
+        verify(progress.indeterminate)
+        verify(!findChild(pane,"noConversionJob").visible)
+        verify(findChild(pane,"exportPreparationElapsed").text.includes("4"))
+        if (artifactRoot) {
+            wait(300); grabImage(window.contentItem).save(artifactRoot+"/reading-"+data.preset+"-1.png")
+            wait(300); grabImage(window.contentItem).save(artifactRoot+"/reading-"+data.preset+"-2.png")
+        }
+        service.preparation=Object.assign({},service.preparation,{stage:"record",completed:12,total:138,elapsed_ms:6000})
+        tryCompare(progress,"indeterminate",false)
+        compare(progress.value,12); compare(progress.to,138)
+        wait(50)
+        if (artifactRoot) grabImage(window.contentItem).save(artifactRoot+"/preparation-"+data.preset+".png")
+        const cancel=findChild(pane,"cancelExportPreparation")
+        verify(cancel.enabled); cancel.clicked()
+        compare(service.cancelledId,"preparation"); verify(!cancel.enabled)
+        service.busy=false;service.preparation={active:false};service.error="cancelled: Preparation cancelled"
+        // A queued cancellation has no worker callback; the error notification
+        // alone must also return the window to its settings.
+        if (data.preset === "model") service.directExportFinished("")
+        service.changed()
+        tryCompare(window,"phase","settings")
+        verify(!progress.visible)
+    }
+    function test_pinned_job_does_not_show_other_preparation() {
+        service.job={id:"A",state:"succeeded",items:[]};window.ownedJob="A";window.phase="job"
+        service.busy=true;service.preparation={active:true,stage:"inspect",elapsed_ms:4000}
+        const pane=findChild(window,"quickExportJob")
+        const progress=findChild(pane,"exportPreparationProgress")
+        verify(progress); verify(!progress.visible)
+        verify(!findChild(pane,"cancelExportPreparation").visible)
+        compare(pane.job.id,"A")
+    }
+    function test_task_center_can_cancel_background_preparation() {
+        window.preset="animation"; begin(); window.close()
+        service.preparation={active:true,stage:"protect",elapsed_ms:6000,cancellation_requested:false}
+        service.job={id:"old",state:"succeeded",items:[]}
+        const taskWindow=createTemporaryObject(taskPaneFactory,test)
+        verify(taskWindow)
+        const pane=findChild(taskWindow,"taskCenterPane")
+        tryCompare(findChild(pane,"exportPreparationProgress"),"visible",true)
+        findChild(pane,"cancelExportPreparation").clicked()
+        compare(service.cancelledId,"preparation")
+        compare(pane.job.id,"old")
     }
     function test_close_during_direct_export_does_not_cancel() {
         window.preset="animation"

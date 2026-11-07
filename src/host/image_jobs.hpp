@@ -4,12 +4,14 @@
 #include "formaview/image_endpoint.hpp"
 #include "formaview/scheduler.hpp"
 #include <QObject>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QVariantMap>
 
 class ImageJobs final : public QObject {
   Q_OBJECT
   Q_PROPERTY(bool busy READ busy NOTIFY changed)
+  Q_PROPERTY(QVariantMap preparation READ preparation NOTIFY changed)
   Q_PROPERTY(QVariantMap capabilities READ capabilities CONSTANT)
   Q_PROPERTY(bool configured READ configured NOTIFY changed)
   Q_PROPERTY(QString error READ error NOTIFY changed)
@@ -33,6 +35,7 @@ public:
   explicit ImageJobs(QObject *parent = nullptr);
   ~ImageJobs() override;
   bool busy() const { return busy_; }
+  QVariantMap preparation() const { return preparationStatus_; }
   QVariantMap capabilities() const {
     return formaview::imaging::image_capabilities().toVariantMap();
   }
@@ -123,6 +126,11 @@ private:
   quint64 revision_{};
   quint64 jobSelectionRevision_{};
   std::optional<formaview::TaskHandle> preparation_;
+  struct PreparationState;
+  std::shared_ptr<PreparationState> preparationState_;
+  QVariantMap preparationStatus_;
+  QElapsedTimer preparationClock_;
+  void finishPreparation();
   std::unique_ptr<formaview::imaging::ImageEndpoint> endpoint_;
   std::vector<std::unique_ptr<formaview::imaging::ImageEndpoint>>
       retiredEndpoints_;

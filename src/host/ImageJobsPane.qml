@@ -9,6 +9,22 @@ ColumnLayout {
     property string fixedJobId: ""
     property bool compact: false
     property bool awaitingJob: false
+    readonly property var preparation: service.preparation || ({})
+    readonly property bool preparing: !!preparation.active && (awaitingJob || !compact)
+    readonly property string preparationStage: {
+        if (preparation.cancellation_requested) return Theme.t("取消中：等待当前可中断点", "Cancelling: waiting for the current cancellation boundary", "取消中：等待目前可中斷點")
+        switch (preparation.stage) {
+        case "queued": return Theme.t("等待准备工作开始", "Waiting to start preparation", "等待準備工作開始")
+        case "setup": return Theme.t("初始化导出服务", "Initializing export services", "初始化匯出服務")
+        case "inspect": return Theme.t("读取源文件与片段目录", "Reading source and clip inventory", "讀取來源檔案與片段目錄")
+        case "expand": return Theme.t("生成导出条目", "Expanding export items", "產生匯出項目")
+        case "validate": return Theme.t("检查导出设置与文件名", "Checking export settings and names", "檢查匯出設定與檔名")
+        case "record": return Theme.t("保存任务条目", "Saving task items", "儲存工作項目")
+        case "protect": return Theme.t("校验源文件与依赖保护", "Verifying source and dependency protection", "校驗來源檔案與相依保護")
+        case "publish": return Theme.t("提交导出任务", "Submitting export job", "提交匯出工作")
+        default: return Theme.t("准备导出", "Preparing export", "準備匯出")
+        }
+    }
     property bool failuresOnly: false
     property string detailJobId: ""
     property int detailIndex: -1
@@ -29,10 +45,44 @@ ColumnLayout {
     }
     ConversionItemDetails { id: details; controller: root.controller }
     Timer { interval: 200; repeat: true; running: details.visible; onTriggered: root.refreshDetails() }
-    Label {
-        visible: root.service.busy && !root.job.id
-        Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted
-        text: Theme.t("正在读取片段列表，随后逐项检查并导出…", "Reading the clip list, then checking and exporting each item…", "正在讀取片段清單，隨後逐項檢查並匯出…")
+    ColumnLayout {
+        visible: root.preparing; Layout.fillWidth: true
+        Label { objectName: "exportPreparationStage"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.text; text: root.preparationStage }
+        Label { Layout.fillWidth: true; visible: !!root.preparation.input; elide: Text.ElideMiddle; textFormat: Text.PlainText; color: Theme.muted; text: root.preparation.input || "" }
+        ProgressBar {
+            id: preparationBar; objectName: "exportPreparationProgress"; Layout.fillWidth: true
+            indeterminate: !(root.preparation.total > 0)
+            from: 0; to: Math.max(1, root.preparation.total || 0); value: root.preparation.completed || 0
+            Accessible.name: root.preparationStage
+            background: Rectangle { implicitHeight: 6; radius: 3; color: Theme.field }
+            contentItem: Item {
+                implicitHeight: 6; clip: true
+                Rectangle { visible: !preparationBar.indeterminate; width: parent.width * preparationBar.position; height: parent.height; radius: 3; color: Theme.accent }
+                Rectangle {
+                    id: preparationPulse; visible: preparationBar.indeterminate
+                    width: parent.width * 0.2; height: parent.height; radius: 3; color: Theme.accent
+                    XAnimator on x {
+                        running: preparationBar.visible && preparationBar.indeterminate
+                        from: -preparationPulse.width; to: preparationBar.availableWidth
+                        duration: 1400; loops: Animation.Infinite
+                    }
+                }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Label {
+                objectName: "exportPreparationElapsed"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted
+                text: Theme.t("已用 %1 秒", "Elapsed %1 s", "已用 %1 秒").arg(Math.floor((root.preparation.elapsed_ms || 0) / 1000))
+                    + (root.preparation.total > 0 ? Theme.t(" · 当前步骤 %1 / %2 项", " · Current step %1 / %2 items", " · 目前步驟 %1 / %2 項").arg(root.preparation.completed || 0).arg(root.preparation.total)
+                       : Theme.t(" · 当前步骤无法估算百分比", " · Percentage unavailable for this step", " · 目前步驟無法估算百分比"))
+            }
+            Tool {
+                objectName: "cancelExportPreparation"; enabled: !root.preparation.cancellation_requested
+                text: root.preparation.cancellation_requested ? Theme.t("取消中…", "Cancelling…", "取消中…") : Theme.t("取消准备", "Cancel preparation", "取消準備")
+                onClicked: root.service.cancelPreparation()
+            }
+        }
     }
     property int snapshotRevision: 0
     // Poll notifications refresh a pinned job without changing the main task selection.
@@ -170,7 +220,7 @@ ColumnLayout {
             width: ListView.view.width; controller: root.controller; entry: modelData; preflight: false
             onDetailsRequested: root.openDetails(modelData)
         }
-        Label { textFormat: Text.PlainText; anchors.centerIn: parent; visible: !root.job.id; color: Theme.muted; text: Theme.t("尚未提交转换任务", "No conversion job submitted", "尚未提交轉換工作") }
+        Label { objectName: "noConversionJob"; textFormat: Text.PlainText; anchors.centerIn: parent; visible: !root.job.id && !root.preparing; color: Theme.muted; text: Theme.t("尚未提交转换任务", "No conversion job submitted", "尚未提交轉換工作") }
         Label { anchors.centerIn: parent; visible: !!root.job.id && !root.shownItems.length; color: Theme.muted; text: Theme.t("没有符合筛选条件的条目", "No items match the filters", "沒有符合篩選條件的項目") }
     }
     Flow {

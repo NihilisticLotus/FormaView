@@ -581,11 +581,12 @@ struct ImageTaskGroups::Impl {
       fail(submitted.error->code, submitted.error->message.c_str());
     }
   }
-  QJsonObject create(QJsonArray requests, QJsonArray protect = {}, const QJsonObject &metadata = {}, bool direct = false, std::stop_token stop = {}) {
+  QJsonObject create(QJsonArray requests, QJsonArray protect = {}, const QJsonObject &metadata = {}, bool direct = false, std::stop_token stop = {}, const PreparationProgress &progress = {}) {
     QElapsedTimer preparation; preparation.start();
     if (requests.isEmpty()) fail(ErrorCode::InvalidArgument, "Conversion group needs at least one input");
     std::set<QString> outputs;
     for (qsizetype index = 0; index < requests.size(); ++index) {
+      if (progress) progress({{"stage", "validate"}, {"completed", index}, {"total", requests.size()}});
       if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
       auto r = requests[index].toObject();
       if (!r["input"].isString() || !r["output"].isString() || !r["options"].isObject())
@@ -631,6 +632,7 @@ struct ImageTaskGroups::Impl {
       return v.toObject()["options"].toObject()["target"] == "fbx";
     }) ? 1 : 64;
     for (qsizetype offset = 0; offset < requests.size(); offset += chunkSize) {
+      if (progress) progress({{"stage", "record"}, {"completed", offset}, {"total", requests.size()}});
       if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
       QJsonArray chunk;
       for (qsizetype n = offset; n < std::min(requests.size(), offset + chunkSize); ++n) chunk.append(requests[n]);
@@ -656,6 +658,7 @@ struct ImageTaskGroups::Impl {
         for (const auto &p : model_export::auxiliary_inputs(request)) protect.append(QString::fromStdWString(p.wstring()));
         const auto suffix = QFileInfo(request["input"].toString()).suffix().toLower();
         if (suffix == "psk" || suffix == "pskx" || suffix == "psa") {
+          if (progress) progress({{"stage", "protect"}, {"input", request["input"]}});
           // ActorX has an explicit finite graph: primary, paired asset and PSA
           // config. Hash without decoding/baking, once per unique input, while
           // retaining these handles until the durable group is complete.
@@ -709,6 +712,7 @@ struct ImageTaskGroups::Impl {
           }
           inspectedPaths.insert(sourceKey);
           ++protectionInspections;
+          if (progress) progress({{"stage", "protect"}, {"input", request["input"]}});
           auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
           QJsonObject source;
           try {
@@ -745,6 +749,8 @@ struct ImageTaskGroups::Impl {
       }
 #endif
     }
+    if (progress) progress({{"stage", "publish"}, {"completed", requests.size()}, {"total", requests.size()}});
+    if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group preparation cancelled");
     int protectionFragments = 0;
     for (qsizetype offset = 0; offset < protect.size(); offset += 64) {
       QJsonArray chunk;
@@ -773,7 +779,7 @@ struct ImageTaskGroups::Impl {
     enqueue(g, false);
     return {{"version", 1}, {"plan_id", g->manifest["id"]}};
   }
-  QJsonObject dispatch(const QJsonObject &q, std::stop_token stop) {
+  QJsonObject dispatch(const QJsonObject &q, std::stop_token stop, const PreparationProgress &progress) {
     const auto op = q["operation"].toString();
     if (op == "get_plan" || op == "get_job") {
       auto g = find(q["id"].toString()); const std::lock_guard lock(state);
@@ -817,8 +823,8 @@ struct ImageTaskGroups::Impl {
       wake.notify_all(); return {{"accepted", true}};
     }
     const std::lock_guard write(mutation);
-    if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, false, stop);
-    if (op == "create_job") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, true, stop);
+    if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, false, stop, progress);
+    if (op == "create_job") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, true, stop, progress);
     if (op == "retry_plan") {
       auto g = find(q["id"].toString()); QJsonObject job;
       { const std::lock_guard lock(state); job = g->job; }
@@ -868,12 +874,12 @@ struct ImageTaskGroups::Impl {
 ImageTaskGroups::ImageTaskGroups(AccessScope scope, std::filesystem::path journal, ImageBatchLimits limits)
   : impl_(std::make_unique<Impl>(std::move(scope), std::move(journal), limits)) {}
 ImageTaskGroups::~ImageTaskGroups() = default;
-QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop) {
+QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop, PreparationProgress progress) {
   try {
     if (stop.stop_requested()) fail(ErrorCode::Cancelled, "Conversion group request cancelled");
     if (q["version"].toDouble() != 1)
       fail(ErrorCode::InvalidArgument, "Batch request version must be 1");
-    return impl_->dispatch(q, stop);
+    return impl_->dispatch(q, stop, progress);
   } catch (const skeletal::Failure &e) { return image_error_json(e); }
   catch (const std::exception &e) { return image_error_json(skeletal::Failure(ErrorCode::Internal, e.what())); }
 }

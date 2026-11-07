@@ -594,12 +594,22 @@ void abcFrameExport(const QString &root) {
 
 class ExportFlowTests {
 public:
-  static void realExport(const QString &root, const QString &input) {
+  static void realExport(const QString &root, const QString &input, bool model = false) {
     require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "New isolated real-export evidence root required");
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (root + "/state").toUtf8());
     ImageJobs jobs;
     const QVariantMap scope{{"input_roots", QStringList{QFileInfo(input).absolutePath()}}, {"output_roots",QStringList{root + "/out"}}, {"allow_overwrite",false}};
-    const QVariantMap options{{"target","fbx"},{"export_content","animation"},{"file_organization","per-clip"}};
+    const QVariantMap options{{"target","fbx"},{"export_content",model ? "model" : "animation"},{"file_organization","per-clip"}};
+    QVariantList preparationEvents;
+    QString lastStage;
+    QObject::connect(&jobs, &ImageJobs::changed, &jobs, [&] {
+      const auto progress = jobs.preparation();
+      const auto stage = progress.value("stage").toString();
+      if (progress.value("active").toBool() && (stage != lastStage || preparationEvents.isEmpty() ||
+          progress.value("elapsed_ms").toLongLong() - preparationEvents.last().toMap().value("elapsed_ms").toLongLong() >= 1000)) {
+        preparationEvents.append(progress); lastStage = stage;
+      }
+    });
     QElapsedTimer clock; clock.start();
     qint64 submitted = -1, firstFile = -1, nextReport = 1000;
     QObject::connect(&jobs,&ImageJobs::directExportFinished,&jobs,[&](const QString &id) {
@@ -619,8 +629,11 @@ public:
       return !jobs.busy() && ((!jobs.job().isEmpty() && !active(jobs.job())) || !jobs.error().isEmpty());
     },1800000);
     save(root + "/result.json",{{"elapsed_ms",clock.elapsed()},{"submitted_ms",submitted},{"first_file_ms",firstFile},
-      {"input_bytes",QFileInfo(input).size()},{"input_info",jobs.inputInfo()},{"error",jobs.error()},{"job",jobs.job()}});
+      {"input_bytes",QFileInfo(input).size()},{"input_info",jobs.inputInfo()},{"error",jobs.error()},{"job",jobs.job()},
+      {"preparation_events",preparationEvents},{"preparation_final",jobs.preparation()}});
     std::cout << "complete_ms=" << clock.elapsed() << " state=" << jobs.job().value("state").toString().toStdString() << std::endl;
+    require(jobs.error().isEmpty() && jobs.job().value("state") == "succeeded", "Real source export succeeds");
+    require(!jobs.preparation().value("active").toBool() && !preparationEvents.isEmpty(), "Real preparation reports progress and finishes");
   }
   static void run(const QString &root) {
     require(!QFileInfo::exists(root) && QDir().mkpath(root + "/out"), "Use a new external test directory");
@@ -650,6 +663,27 @@ public:
     save(root + "/observed-timing.json", {{"first_file_from_call_ms", firstFile}, {"total_from_call_ms", observed.elapsed()}, {"reported", timing}, {"synthetic", true}});
     std::cout << "PASS multi-clip deduplication and end-to-end timing: first=" << firstFile << "ms total=" << observed.elapsed() << "ms\n";
 
+    // Cancel at the last preparation stage: no registered/runnable job may
+    // escape, and every observer count must describe the current stage only.
+    const auto callbackRoot = root + "/callback-state";
+    require(QDir().mkpath(callbackRoot), "Create progress callback test journal");
+    formaview::imaging::ImageTaskGroups callbackGroups(
+        formaview::imaging::parse_image_scope(QJsonObject::fromVariantMap(jobs.scope())),
+        std::filesystem::path(callbackRoot.toStdWString()));
+    std::stop_source cancelPublish;
+    QStringList reportedStages;
+    auto one = QJsonObject::fromVariantMap(baselineJob.value("items").toList().first().toMap().value("request").toMap());
+    const auto cancelledPublish = callbackGroups.request({{"version",1},{"operation","create_job"},{"items",QJsonArray{one}}},
+      cancelPublish.get_token(), [&](const QJsonObject &progress) {
+        const auto stage = progress["stage"].toString(); reportedStages.append(stage);
+        if (progress.contains("total")) require(progress["completed"].toInteger() >= 0 && progress["completed"].toInteger() <= progress["total"].toInteger(), "Stage progress counts bounded");
+        if (stage == "publish") cancelPublish.request_stop();
+      });
+    require(cancelledPublish["error"].toObject()["code"] == "cancelled", "Cancellation before publication returns no job");
+    require(callbackGroups.request({{"version",1},{"operation","list_jobs"}})["items"].toArray().isEmpty(), "Cancelled preparation not registered");
+    for (const auto &stage : {"validate", "record", "protect", "publish"}) require(reportedStages.contains(stage), "Preparation reports each real stage");
+    std::cout << "PASS preparation stage callbacks and cancellation before publication\n";
+
     // Queue A behind a deterministic scheduler barrier, then select B while A
     // is preparing. Its completion must still be published without selecting it.
     std::promise<void> release, entered;
@@ -662,13 +696,37 @@ public:
     auto connection = QObject::connect(&jobs, &ImageJobs::directExportFinished, &jobs, [&](const QString &id) { a = id; });
     jobs.startExport({input}, scope, options, "a-{clip}.{ext}", "skip");
     const auto b = baselineJob.value("id").toString(); jobs.selectJob(b);
-    QThread::msleep(220); release.set_value();
+    const auto queued = jobs.preparation();
+    QElapsedTimer queuedClock; queuedClock.start();
+    while (queuedClock.elapsed() < 220) { QCoreApplication::processEvents(); QThread::msleep(2); }
+    const auto stillQueued = jobs.preparation();
+    release.set_value();
+    require(queued.value("active").toBool() && queued.value("stage") == "queued", "Preparation visible immediately before worker starts");
+    require(stillQueued.value("elapsed_ms").toLongLong() >= 100, "Queued preparation clock ticks without worker progress");
     wait([&] { return !jobs.busy() && !a.isEmpty() && !active(jobs.jobSnapshot(a)); });
     QObject::disconnect(connection);
     require(jobs.job().value("id") == b, "A completion cannot replace selected B");
     require(jobs.jobSnapshot(a).value("state") == "succeeded", "A continues while B is selected");
+    require(!jobs.preparation().value("active").toBool(), "Successful preparation clears activity");
     require(jobs.jobSnapshot(a).value("timings").toMap().value("dispatch_wait_ms").toLongLong() >= 200, "End-to-end clock includes scheduler wait");
     std::cout << "PASS delayed A / selected B isolation and queued timing\n";
+
+    std::promise<void> releaseCancel, enteredCancel;
+    auto cancelBarrier = releaseCancel.get_future().share(); auto cancelStarted = enteredCancel.get_future();
+    formaview::TaskRequest cancelBlocker;
+    cancelBlocker.work = [&](std::stop_token) { enteredCancel.set_value(); cancelBarrier.wait(); return formaview::TaskResult{}; };
+    require(jobs.control_.submit(std::move(cancelBlocker)).task.has_value(), "Queue cancellation barrier");
+    cancelStarted.wait();
+    jobs.startExport({input}, scope, options, "cancel-{clip}.{ext}", "skip");
+    jobs.cancelPreparation();
+    const auto cancellation = jobs.preparation();
+    QElapsedTimer cancelClock; cancelClock.start();
+    while (jobs.busy() && cancelClock.elapsed() < 3000) { QCoreApplication::processEvents(); QThread::msleep(2); }
+    releaseCancel.set_value();
+    require(cancellation.value("cancellation_requested").toBool(), "Cancellation acknowledged immediately");
+    require(!jobs.busy() && !jobs.preparation().value("active").toBool() && !jobs.error().isEmpty(), "Queued cancellation clears progress and reports cancellation");
+    require(QDir(root + "/out").entryList({"cancel-*.fbx"}, QDir::Files).isEmpty(), "Cancelled preparation creates no outputs");
+    std::cout << "PASS preparation cancellation and clock lifecycle\n";
 
     // Missing input is repaired after failure. Retry must expand the original
     // selection, naming, content and output options, not the display placeholder.
@@ -751,8 +809,8 @@ int main(int argc, char **argv) {
     if (argc == 3 && app.arguments()[2] == "--abc-frame") {
       abcFrameExport(app.arguments()[1]); return 0;
     }
-    if (argc == 4 && app.arguments()[2] == "--real-export") {
-      ExportFlowTests::realExport(app.arguments()[1],app.arguments()[3]); return 0;
+    if (argc == 4 && (app.arguments()[2] == "--real-export" || app.arguments()[2] == "--real-model-export")) {
+      ExportFlowTests::realExport(app.arguments()[1],app.arguments()[3],app.arguments()[2] == "--real-model-export"); return 0;
     }
     if (argc == 4 && app.arguments()[2] == "--actor-guard") {
       require(!QFileInfo::exists(app.arguments()[1]), "New isolated ActorX test root required");

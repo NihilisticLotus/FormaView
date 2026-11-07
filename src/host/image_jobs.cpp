@@ -15,6 +15,21 @@
 #include <QUuid>
 #include <algorithm>
 #include <set>
+#include <mutex>
+
+struct ImageJobs::PreparationState {
+  std::mutex mutex;
+  QVariantMap status;
+  void update(const QJsonObject &value) {
+    const std::lock_guard lock(mutex);
+    status = value.toVariantMap();
+  }
+};
+
+void ImageJobs::finishPreparation() {
+  preparationState_.reset();
+  preparationStatus_["active"] = false;
+}
 
 namespace {
 using namespace formaview;
@@ -379,6 +394,12 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
   if (direct) { ++jobSelectionRevision_; jobId_.clear(); job_.clear(); polledJob_ = {}; }
   const auto selectionRevision = jobSelectionRevision_;
   QElapsedTimer requested; requested.start();
+  preparationClock_.start();
+  const auto progress = std::make_shared<PreparationState>();
+  progress->update({{"stage", "queued"}});
+  preparationState_ = progress;
+  preparationStatus_ = {{"active", true}, {"stage", "queued"}, {"elapsed_ms", 0},
+                        {"cancellation_requested", false}};
   busy_ = true;
   error_.clear();
   timer_.start();
@@ -397,11 +418,12 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
   task.resources = {1, 1, 3ULL * 1024 * 1024 * 1024, 0};
   task.work = [receiver, existing, existingGroups, inputs, policy, requestedScope, options,
                nameTemplate, conflict, journalRoot, itemOverrides, metadata,
-               revision, selectionRevision, requested, direct](std::stop_token stop) mutable {
+               revision, selectionRevision, requested, direct, progress](std::stop_token stop) mutable {
     QJsonObject response;
     QVariantList inputInfo;
     QElapsedTimer elapsed; elapsed.start();
     try {
+      progress->update({{"stage", "setup"}});
       if (!existing) {
         (void)validated_local_path(std::filesystem::path(journalRoot.toStdWString()));
         if (!QDir().mkpath(journalRoot))
@@ -452,6 +474,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
         // budget. An image-specific limit must not reject a larger model here.
         auto lease = InputIdentityLease::open(access, path, stop);
         ++inspectionCount;
+        progress->update({{"stage", "inspect"}, {"input", q["input"]}});
         auto result = existing->request(q, stop);
         if (!result.contains("error")) {
           inspectionLeases.push_back(std::move(lease));
@@ -610,6 +633,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
             {"preparation_error", image_error_json(e)["error"]}});
         }
       }
+      progress->update({{"stage", "expand"}, {"completed", items.size()}, {"total", items.size()}});
       if (items.isEmpty() && !inputs.isEmpty())
         throw skeletal::Failure(ErrorCode::InvalidArgument, "No selected source clips match the current inputs");
       if (items.isEmpty())
@@ -623,7 +647,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
         if (direct) create["timings"] = QJsonObject{{"preparation_ms", requested.elapsed()},
             {"request_started_ms", requested.msecsSinceReference()}, {"dispatch_wait_ms", requested.elapsed() - elapsed.elapsed()},
             {"setup_ms", setupMs}, {"expansion_ms", elapsed.elapsed() - setupMs}, {"source_inspections", inspectionCount}};
-        response = existingGroups->request(create, stop);
+        response = existingGroups->request(create, stop, [progress](const QJsonObject &value) { progress->update(value); });
         if (direct && stop.stop_requested() && response.contains("job_id")) {
           auto cancel = request("cancel"); cancel["kind"] = "job"; cancel["id"] = response["job_id"];
           (void)existingGroups->request(cancel);
@@ -642,6 +666,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
             if (!receiver)
               return;
             receiver->busy_ = false;
+            receiver->finishPreparation();
             if (existing) {
               if (receiver->service_ != existing) {
                 receiver->discoveryId_.clear();
@@ -672,6 +697,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
   preparation_ = submitted.task;
   if (!submitted.task) {
     busy_ = false;
+    finishPreparation();
     error_ = QString::fromStdString(submitted.error->message);
     emit changed();
   }
@@ -742,6 +768,10 @@ void ImageJobs::cancelPreparation() {
   ++revision_;
   if (preparation_)
     preparation_->cancel();
+  if (preparationState_) {
+    preparationStatus_["cancellation_requested"] = true;
+    emit changed();
+  }
   if (!planId_.isEmpty())
     cancel("plan", planId_);
 }
@@ -921,9 +951,19 @@ void ImageJobs::poll() {
     const auto state = preparation_->snapshot();
     if (state.result && state.result->error) {
       busy_ = false;
+      finishPreparation();
       error_ = QString::fromStdString(state.result->error->message);
       emit changed();
     }
+  }
+  if (busy_ && preparationState_) {
+    QVariantMap status;
+    { const std::lock_guard lock(preparationState_->mutex); status = preparationState_->status; }
+    status["active"] = true;
+    status["elapsed_ms"] = preparationClock_.elapsed();
+    status["cancellation_requested"] = preparationStatus_.value("cancellation_requested");
+    preparationStatus_ = std::move(status);
+    emit changed();
   }
   if (!service_) {
     if (!busy_ && retiredEndpoints_.empty() && !historyTask_ && !historyDirty_) timer_.stop();

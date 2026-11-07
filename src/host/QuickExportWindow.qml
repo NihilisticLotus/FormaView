@@ -112,7 +112,9 @@ AppToolWindow {
         anchors.topMargin: 20 + Math.max(0, root.header.mapToItem(parent, 0, root.header.height).y)
         Readout { objectName: "quickExportSource"; Layout.fillWidth: true; label: Theme.t("当前文件", "Current file", "目前檔案"); value: root.inputPath }
         Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.WordWrap
-            text: root.phase === "settings" ? Theme.t("点击导出后逐项检查并导出，失败会列出原因。可继续操作预览窗口。", "Export checks and writes each item, with failure reasons shown here. You can keep using the preview.", "點擊匯出後逐項檢查並匯出，失敗會列出原因。可繼續操作預覽視窗。") : Theme.t("进度与失败原因显示在此。已提交任务在关闭窗口后继续运行，可到任务中心查看。", "Progress and failures stay here. Submitted jobs continue after closing; find them in the task center.", "進度與失敗原因顯示於此。已提交工作在關閉視窗後繼續執行，可到工作中心查看。") }
+            text: root.phase === "settings" ? Theme.t("点击导出后逐项检查并导出，失败会列出原因。可继续操作预览窗口。", "Export checks and writes each item, with failure reasons shown here. You can keep using the preview.", "點擊匯出後逐項檢查並匯出，失敗會列出原因。可繼續操作預覽視窗。")
+                : root.phase === "direct" ? Theme.t("正在准备导出。关闭窗口后仍在后台继续，可到任务中心查看进度或取消。", "Preparing export. Work continues after closing; view progress or cancel in the task center.", "正在準備匯出。關閉視窗後仍在背景繼續，可到工作中心查看進度或取消。")
+                : Theme.t("进度与失败原因显示在此。已提交任务在关闭窗口后继续运行，可到任务中心查看。", "Progress and failures stay here. Submitted jobs continue after closing; find them in the task center.", "進度與失敗原因顯示於此。已提交工作在關閉視窗後繼續執行，可到工作中心查看。") }
         ExplainedText { Layout.fillWidth: true; kind: "error"; raw: root.service.error }
         Label { visible: root.closingRequested; text: Theme.t("提交完成后关闭…", "Closing after submission…", "提交完成後關閉…"); color: Theme.muted }
         StackLayout {
