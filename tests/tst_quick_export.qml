@@ -207,6 +207,29 @@ TestCase {
         return {index:index, status:status, request:{input:"C:/source.fbx", output:"C:/"+name+".fbx", options:{target:"fbx",include_mesh:false}},
             result:{clips:[{name:name,start:0,end:1}],output:"C:/"+name+".fbx"}}
     }
+    function test_running_file_has_activity_without_completed_items() {
+        service.job={id:"A",state:"running",created_at:new Date(Date.now()-4000).toISOString(),items:[exportItem(0,"All takes","running")]}
+        service.jobs=[service.job]; window.ownedJob="A"; window.phase="job"
+        const pane=findChild(window,"quickExportJob")
+        const activity=findChild(pane,"exportJobActivity")
+        verify(activity, "A long single-file export must not look idle at 0/1")
+        tryCompare(activity,"running",true)
+        compare(pane.finished,0)
+        const elapsed=findChild(pane,"exportJobElapsed")
+        verify(elapsed.visible)
+        const before=elapsed.text
+        tryVerify(() => elapsed.text !== before, 2200)
+        service.job=Object.assign({},service.job,{cancellation_requested:true}); service.changed()
+        verify(elapsed.text.includes("取消") || elapsed.text.includes("Cancelling"))
+        verify(!findChild(pane,"cancelImageJob").enabled)
+        verify(activity.running)
+        service.job=Object.assign({},service.job,{state:"cancelled",items:[exportItem(0,"All takes","cancelled")]});service.changed()
+        tryCompare(activity,"running",false)
+        verify(!elapsed.visible)
+        compare(pane.finished,1)
+        service.job=Object.assign({},service.job,{state:"paused"});service.changed()
+        verify(!activity.running)
+    }
     function test_details_survive_progress_and_other_submission() {
         const a = {id:"A",state:"running",items:[exportItem(0,"Walk","running")]}
         service.job=a; service.jobs=[a]; window.ownedJob="A"; window.phase="job"

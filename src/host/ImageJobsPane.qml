@@ -111,6 +111,14 @@ ColumnLayout {
     function categoryLabel(value): string { return value === "model" ? Theme.t("模型与动画", "Models and animation", "模型與動畫") : value === "image" ? Theme.t("图片", "Images", "影像") : value }
     function batchKey(value): string { return String(value || "").replace(/-job$/, "").slice(-8) }
     readonly property bool active: ["queued", "running", "paused", "pausing"].includes(job.state)
+    readonly property bool working: ["queued", "running", "pausing"].includes(job.state)
+    property double activityClock: Date.now()
+    onJobChanged: activityClock = Date.now()
+    Timer {
+        interval: 1000; repeat: true
+        running: root.working && root.visible && !!root.Window.window?.visible
+        onTriggered: root.activityClock = Date.now()
+    }
     readonly property string firstOutput: (items.find(i => i.result && i.result.committed_output) || { result: {} }).result.committed_output || ""
     signal retry(string id)
     function count(state): int { return items.filter(i => i.status === state).length }
@@ -192,6 +200,22 @@ ColumnLayout {
         visible: !!root.job.id; Layout.fillWidth: true; from: 0; to: Math.max(1, root.items.length); value: root.finished
         background: Rectangle { implicitHeight: 4; radius: 2; color: Theme.field }
         contentItem: Item { implicitHeight: 4; Rectangle { width: parent.width * (root.finished / Math.max(1, root.items.length)); height: parent.height; radius: 2; color: Theme.accent } }
+    }
+    RowLayout {
+        visible: !!root.job.id && root.working; Layout.fillWidth: true
+        BusyIndicator {
+            objectName: "exportJobActivity"; Layout.preferredWidth: 20; Layout.preferredHeight: 20
+            running: root.working && root.visible && !!root.Window.window?.visible
+            Accessible.name: Theme.t("正在处理当前文件", "Processing the current file", "正在處理目前檔案")
+        }
+        Label {
+            objectName: "exportJobElapsed"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted
+            text: (root.job.cancellation_requested
+                ? Theme.t("正在取消，等待当前可中断点", "Cancelling, waiting for the current cancellation boundary", "正在取消，等待目前可中斷點")
+                : Theme.t("正在检查或导出当前文件", "Checking or exporting the current file", "正在檢查或匯出目前檔案"))
+                + Theme.t(" · 自提交起 %1 秒（含等待和暂停）", " · %1 s since submission (including waits and pauses)", " · 自提交起 %1 秒（含等待和暫停）")
+                    .arg(Math.floor(Math.max(0, root.activityClock - (Date.parse(root.job.created_at || "") || root.activityClock)) / 1000))
+        }
     }
     Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("成功 %1 · 失败 %2 · 跳过 %3 · 取消 %4 · 中断 %5", "Success %1 · Failed %2 · Skipped %3 · Cancelled %4 · Interrupted %5", "成功 %1 · 失敗 %2 · 略過 %3 · 取消 %4 · 中斷 %5").arg(root.count("succeeded")).arg(root.count("failed")).arg(root.count("skipped")).arg(root.count("cancelled")).arg(root.count("interrupted")) }
     Flow {
