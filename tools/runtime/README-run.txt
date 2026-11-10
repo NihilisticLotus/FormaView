@@ -8,6 +8,7 @@ This is a functional run directory, not an installer.
 启动 / Start / 啟動
   双击 formaview.exe。无需修改 PATH，无需安装 Qt 或 Visual C++ 运行库（已随目录提供）。
   Run formaview.exe. No PATH change, Qt or Visual C++ redistributable install is needed.
+  开发验证版与安装版分别保存各自的任务历史。 / Development and installed builds store separate task histories.
   命令行 / Command line:
     formaview.exe --open <文件或目录>       打开文件或目录 / open a file or folder
     formaview.exe --capabilities             输出实际可用的图片与模型导出能力 / print real capabilities
@@ -27,7 +28,8 @@ This is a functional run directory, not an installer.
   - 打开目录或单文件后，在列表选择文件，右侧查看；菜单“文件 → 转换选定文件…”进入 设置 → 预检 → 任务。
   - 所有转换先预检；有损项必须勾选“已阅读并接受全部损失”才能提交。输出不会覆盖输入或其硬链接。
   - 模型/动画导出为 FBX：支持 PSK/PSKX(+PSA)、OBJ、glTF/GLB、FBX(多动作拆分)、PMX、VRM。
-  - ABC 与视频不在本版范围内。 / ABC and video are not part of this release.
+  - ABC：支持 Ogawa 多边形几何缓存预览、采样时间轴，以及当前采样导出为静态 FBX。
+  - ABC: Ogawa polygon cache preview and current-sample static FBX export.
 
 MCP（可选 / optional）
   MCP 默认关闭。需要 Python 3.12 与锁定依赖（需 uv）：

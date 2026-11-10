@@ -1,4 +1,5 @@
 #include "image_jobs.hpp"
+#include "task_history_root.hpp"
 #include "../src/formats/fbx_selection.hpp"
 #include "formaview/geometry_cache.hpp"
 #include <Alembic/AbcCoreOgawa/All.h>
@@ -12,6 +13,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QThread>
+#include <QScopeGuard>
 #include <QUuid>
 #include <QtEndian>
 #include <cmath>
@@ -24,6 +26,42 @@
 
 namespace {
 void require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
+void taskHistoryChannels(const QString &root) {
+  const auto data = root + "/appdata", installed = root + "/installed-program",
+             development = root + "/development-program";
+  require(!QFileInfo::exists(root) && QDir().mkpath(installed) && QDir().mkpath(development),
+          "New task history fixtures required");
+  const auto write = [](const QString &path, const QByteArray &bytes) {
+    require(QDir().mkpath(QFileInfo(path).absolutePath()), "Create task history fixture folder");
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Write task history fixture");
+  };
+  write(installed + "/installation.ini", "[Install]\nAppId={618397E7-C70C-4D14-B601-D6FB2F562BA1}\n");
+  const auto previous = qgetenv("FORMAVIEW_IMAGE_STATE_ROOT");
+  const auto restore = qScopeGuard([&] { qputenv("FORMAVIEW_IMAGE_STATE_ROOT", previous); });
+  const auto select = [&](const QString &program, const QString &layout) {
+    const auto directory = formaview::taskHistoryRoot(data, program, layout, {});
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", directory.toUtf8());
+    return directory;
+  };
+  const auto seed = [&](const QString &directory, const QString &id) {
+    const QJsonObject row{{"id", id}, {"name", id}, {"state", "succeeded"}};
+    write(directory + "/desktop-history.json", QJsonDocument(QJsonObject{{id, row}}).toJson());
+  };
+  seed(data + "/image-journal", "legacy-user-job");
+  const auto dev = select(development, "legacy");
+  require(dev == data + "/development/image-journal", "Development stays separate on upgraded accounts");
+  seed(dev, "development-test-job");
+  { const ImageJobs jobs; require(jobs.jobs().size() == 1 && jobs.job().value("id") == "development-test-job", "Development reads only development history"); }
+  const auto fresh = select(installed, "installed");
+  { const ImageJobs jobs; require(jobs.jobs().isEmpty(), "First install must not read legacy or development history"); }
+  seed(fresh, "installed-user-job");
+  { const ImageJobs jobs; require(jobs.jobs().size() == 1 && jobs.job().value("id") == "installed-user-job", "Installed history survives a restart or upgrade"); }
+  require(select(installed, "legacy") == data + "/image-journal", "Legacy upgrades retain the original recovery directory");
+  { const ImageJobs jobs; require(jobs.jobs().size() == 1 && jobs.job().value("id") == "legacy-user-job", "Legacy upgrade keeps the original task history"); }
+  require(formaview::taskHistoryRoot(data, installed, "legacy", root + "/override") == root + "/override", "Explicit test override wins");
+  std::cout << "PASS isolated development and installed history, empty first install, stable legacy and installed upgrades\n";
+}
 bool active(const QVariantMap &job) {
   return QStringList{"queued", "running", "paused", "pausing", "planning"}.contains(job.value("state").toString());
 }
@@ -863,6 +901,9 @@ int main(int argc, char **argv) {
     require(argc == 2 || argc == 3 || argc == 4, "External evidence root required");
     if (argc == 3 && app.arguments()[2] == "--binding-safety") {
       bindingSerialization(); return 0;
+    }
+    if (argc == 3 && app.arguments()[2] == "--task-history-channels") {
+      taskHistoryChannels(app.arguments()[1]); return 0;
     }
     if (argc == 3 && app.arguments()[2] == "--benchmark-fixture") {
       exportBenchmarkFixture(app.arguments()[1]); return 0;

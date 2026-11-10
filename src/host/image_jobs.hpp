@@ -112,6 +112,7 @@ private:
   QTimer timer_;
   QVariantMap scope_, plan_, job_;
   QVariantMap archivedJobs_;
+  const QString stateRoot_;
   QString historyPath_;
   void saveHistory();
   void pollHistory();

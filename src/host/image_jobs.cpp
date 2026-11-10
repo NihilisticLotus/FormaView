@@ -1,4 +1,5 @@
 #include "image_jobs.hpp"
+#include "task_history_root.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -34,6 +35,17 @@ void ImageJobs::finishPreparation() {
 namespace {
 using namespace formaview;
 using namespace formaview::imaging;
+QString currentTaskHistoryRoot() {
+  QString layout;
+#ifdef Q_OS_WIN
+  const QSettings installerState(QStringLiteral("HKEY_CURRENT_USER\\Software\\FormaView\\Installer"),
+                                 QSettings::Registry64Format);
+  layout = installerState.value("TaskHistoryLayout").toString();
+#endif
+  return taskHistoryRoot(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
+                         QCoreApplication::applicationDirPath(), layout,
+                         qEnvironmentVariable("FORMAVIEW_IMAGE_STATE_ROOT"));
+}
 SchedulerLimits controlLimits() {
   SchedulerLimits l;
   l.workers = 1;
@@ -248,9 +260,8 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
   return {{"names", names}};
 }
 ImageJobs::ImageJobs(QObject *parent)
-    : QObject(parent), control_(controlLimits()) {
-  historyPath_ = qEnvironmentVariable("FORMAVIEW_IMAGE_STATE_ROOT",
-      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/image-journal") + "/desktop-history.json";
+    : QObject(parent), control_(controlLimits()), stateRoot_(currentTaskHistoryRoot()),
+      historyPath_(QDir(stateRoot_).filePath("desktop-history.json")) {
   QFile history(historyPath_);
   if (history.open(QIODevice::ReadOnly)) {
     QJsonParseError error;
@@ -412,11 +423,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
   const auto revision = revision_;
   auto existing = sameScope ? service_ : nullptr;
   auto existingGroups = sameScope ? groups_ : nullptr;
-  const auto base = qEnvironmentVariable(
-      "FORMAVIEW_IMAGE_STATE_ROOT",
-      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) +
-          "/image-journal");
-  const auto journalRoot = base + "/" + policy["policy_revision"].toString();
+  const auto journalRoot = QDir(stateRoot_).filePath(policy["policy_revision"].toString());
   QPointer<ImageJobs> receiver(this);
   TaskRequest task;
   task.priority = Priority::Foreground;
