@@ -181,6 +181,16 @@ if(BUILD_TESTING)
                 set_tests_properties(model_abc PROPERTIES TIMEOUT 600
                     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
                     LABELS "model")
+                # Opt-in read-only real-asset benchmark; never writes beside the input.
+                qt_add_executable(formaview_model_abc_performance ../../tests/model_abc_performance.cpp)
+                target_link_libraries(formaview_model_abc_performance PRIVATE formaview_models formaview_options)
+                target_include_directories(formaview_model_abc_performance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+                target_link_libraries(formaview_model_abc_performance PRIVATE Qt6::QuickControls2)
+                set_target_properties(formaview_model_abc_performance PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
+                qt_add_qml_module(formaview_model_abc_performance URI FormaView.AbcPerfUI
+                    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/FormaView/AbcPerfUI QML_FILES ${desktop_qml})
+                qt_add_resources(formaview_model_abc_performance abc_perf_icons PREFIX "/formaview"
+                    BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${desktop_icons})
             endif()
             foreach(test IN ITEMS model_state model_format model_gpu model_performance)
                 set(required_roots "${FORMAVIEW_MODEL_FIXTURES}")

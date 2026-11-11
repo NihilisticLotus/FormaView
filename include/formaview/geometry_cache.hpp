@@ -89,6 +89,7 @@ public:
   [[nodiscard]] std::size_t sample_index(std::size_t mesh, double seconds) const;
   // Reads whose topology arrays were reused (verification instrument).
   [[nodiscard]] std::uint64_t topology_reuses() const;
+  [[nodiscard]] std::uint64_t uv_memo_bytes() const;
 
 private:
   struct Impl;

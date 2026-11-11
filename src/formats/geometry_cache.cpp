@@ -2,6 +2,7 @@
 #include <Alembic/AbcCoreFactory/All.h>
 #include <Alembic/AbcGeom/All.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstring>
 #include <cmath>
@@ -231,6 +232,13 @@ struct Archive::Impl {
     std::size_t max_point{};
   };
   std::vector<Memo> memo;
+  struct UvMemo {
+    std::string values, indices;
+    std::shared_ptr<const std::vector<skeletal::Vec2>> expanded;
+    int scope{};
+  };
+  std::vector<UvMemo> uvMemo;
+  std::atomic<std::uint64_t> uvMemoBytes{};
   std::uint64_t topology_reuses{};
   mutable std::mutex reading;
 };
@@ -238,6 +246,7 @@ Archive::Archive(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
 Archive::Archive(Archive &&) noexcept = default;
 Archive &Archive::operator=(Archive &&) noexcept = default;
 Archive::~Archive() = default;
+std::uint64_t Archive::uv_memo_bytes() const { return impl_->uvMemoBytes.load(std::memory_order_relaxed); }
 const std::vector<MeshInfo> &Archive::meshes() const { return impl_->info; }
 const std::vector<SkippedObject> &Archive::skipped() const {
   return impl_->skipped;
@@ -384,6 +393,7 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
     times.insert(0);
   p->times.assign(times.begin(), times.end());
   p->memo.resize(p->objects.size());
+  p->uvMemo.resize(p->objects.size());
   {
     std::string version, written, description;
     Alembic::Util::uint32_t number{};
@@ -485,9 +495,11 @@ Sample Archive::read(std::size_t mesh, double seconds,
   {
     A::P3fArraySamplePtr positions;
     schema.getPositionsProperty().get(positions, selector);
-    if (positions)
+    if (positions) {
+      result.positions.reserve(positions->size());
       for (const auto &v : std::span(positions->get(), positions->size()))
         result.positions.push_back({v.x, v.y, v.z});
+    }
   }
   cancel(stop);
   // Topology whose stored content digests equal the previous read is the
@@ -534,7 +546,35 @@ Sample Archive::read(std::size_t mesh, double seconds,
             result.corner_points.size() == corners,
         "ABC corner domain mismatch", ErrorCode::InvalidArgument);
   cancel(stop);
-  load_param(uv, result.uv, result.uv_scope);
+  auto &uvMemo=impl_->uvMemo[mesh];
+  if (!result.keys.uv.empty() && result.keys.uv==uvMemo.values &&
+      result.keys.uv_indices==uvMemo.indices && uvMemo.expanded) {
+    // Content-identical indexed arrays were already validated. Recheck the
+    // domain: even constant UV data can become invalid with varying topology.
+    const auto scope=static_cast<G::GeometryScope>(uvMemo.scope);
+    const auto expected=scope==G::kConstantScope?1:scope==G::kUniformScope?faces:
+        scope==G::kFacevaryingScope?corners:points;
+    check(uvMemo.expanded->size()==expected,"ABC attribute domain mismatch",ErrorCode::InvalidArgument);
+    result.uv=*uvMemo.expanded; result.uv_scope=uvMemo.scope;
+  } else {
+    load_param(uv, result.uv, result.uv_scope);
+    constexpr std::uint64_t uvBudget=64ULL*1024*1024;
+    const auto bytes=result.uv.size()*sizeof(skeletal::Vec2);
+    if (!result.keys.uv.empty() && bytes<=uvBudget) {
+      auto copy=std::make_shared<const std::vector<skeletal::Vec2>>(result.uv);
+      const auto resident=copy->capacity()*sizeof(skeletal::Vec2);
+      if (uvMemo.expanded) impl_->uvMemoBytes-=uvMemo.expanded->capacity()*sizeof(skeletal::Vec2);
+      uvMemo={};
+      if (resident<=uvBudget) {
+        if (impl_->uvMemoBytes+resident>uvBudget) {
+          for(auto &entry:impl_->uvMemo) entry={};
+          impl_->uvMemoBytes=0;
+        }
+        uvMemo={result.keys.uv,result.keys.uv_indices,std::move(copy),result.uv_scope};
+        impl_->uvMemoBytes+=resident;
+      }
+    }
+  }
   load_param(normals, result.normals, result.normal_scope);
   result.world = world_of(impl_->objects[mesh], selector);
   cancel(stop);

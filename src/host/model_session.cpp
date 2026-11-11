@@ -358,6 +358,11 @@ void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
     for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
       const auto a = m.triangles[t], b = m.triangles[t + 1],
                  c = m.triangles[t + 2];
+      // Authored (or already filled) corner normals need no face normal.
+      // ABC samples run this tail for every frame, usually with complete N.
+      if (!m.normals.at(a).isNull() && !m.normals.at(b).isNull() &&
+          !m.normals.at(c).isNull())
+        continue;
       const auto n =
           QVector3D::crossProduct(
               m.points.at(m.corners.at(b)) - m.points.at(m.corners.at(a)),
@@ -1334,6 +1339,7 @@ void ModelSession::reset(bool opening) {
   abcCache_.clear();
   abcFrameDocument_.reset();
   abcRequested_ = 0;
+  abcPlaybackFloor_ = 0;
   abcDirection_ = 1;
   abcError_.clear();
   // A std::async future blocks in its destructor. Keep the single cancelled
@@ -2170,6 +2176,7 @@ void ModelSession::togglePlay() {
       abcDirection_ = 1;
       if (time_ >= times.back()) {
         time_ = times.front();
+        abcPlaybackFloor_ = 0;
         requestAbcSample(0);
       }
       animClock_.restart();
@@ -2201,6 +2208,7 @@ void ModelSession::seek(double seconds) {
   if (abcActive() && std::isfinite(seconds)) {
     const auto &times = abcSource_->times();
     time_ = std::clamp(seconds, times.front(), times.back());
+    abcPlaybackFloor_ = abcSource_->nearest(time_);
     requestAbcSample(abcSource_->nearest(time_));
     return;
   }
@@ -3181,19 +3189,24 @@ void ModelSession::startFrame() {
     return;
   }
   const auto document = document_;
+  const auto previousAbcFrame = document->geometryCache ? frames_.model : nullptr;
   const auto revision = ++frameRevision_;
   std::stop_source stop;
   const auto token = stop.get_token();
   auto future =
-      std::async(std::launch::async, [document, state = std::move(state),
+      std::async(std::launch::async, [this, document, previousAbcFrame, state = std::move(state),
                                       revision, token] {
         FrameResult r;
         try {
-          r.frames = buildModelFrames(*document, state, revision, token);
+          r.frames = document->geometryCache
+              ? buildAbcStreamFrames(*document,state,revision,token,previousAbcFrame)
+              : buildModelFrames(*document, state, revision, token);
           r.state = state;
         } catch (const std::exception &e) {
           r.error = QString::fromUtf8(e.what());
         }
+        if (document->geometryCache)
+          QMetaObject::invokeMethod(this, [this] { poll(); }, Qt::QueuedConnection);
         return r;
       });
   frameJobs_.push_back(
@@ -3600,6 +3613,7 @@ void ModelSession::seekSample(int index) {
   const auto clamped = static_cast<std::size_t>(
       std::clamp(index, 0, static_cast<int>(times.size()) - 1));
   time_ = times[clamped];
+  abcPlaybackFloor_ = clamped;
   requestAbcSample(clamped);
 }
 void ModelSession::cancelSample() {
@@ -3614,6 +3628,7 @@ void ModelSession::cancelSample() {
   if (abcFrameDocument_ && abcFrameDocument_ != document_)
     document_ = abcFrameDocument_;
   abcRequested_ = document_->cacheSample;
+  abcPlaybackFloor_ = abcRequested_;
   time_ = abcSource_->times().at(abcRequested_);
   emit animChanged();
   emit changed();
@@ -3629,7 +3644,7 @@ void ModelSession::startAbcJob(std::size_t index, bool prefetch) {
   const auto token = stop.get_token();
   abcJob_ = AbcJob{
       generation_, index, prefetch, std::move(stop),
-      std::async(std::launch::async, [source, index, display, reference, token] {
+      std::async(std::launch::async, [this, source, index, display, reference, token] {
         AbcResult r;
         try {
           r.document = source->read(index, token, display, reference);
@@ -3639,6 +3654,11 @@ void ModelSession::startAbcJob(std::size_t index, bool prefetch) {
         } catch (const std::exception &e) {
           r.error = QString::fromUtf8(e.what());
         }
+        // Wake the GUI instead of adding a fixed 0..20 ms poll delay to
+        // each stage. The future is still consumed only when ready; the
+        // existing poll timer covers a wake delivered before thread exit.
+        // Session destruction joins these async futures before QObject dies.
+        QMetaObject::invokeMethod(this, [this] { poll(); }, Qt::QueuedConnection);
         return r;
       })};
 }
@@ -3660,8 +3680,10 @@ void ModelSession::finishAbcJob() {
     abcCache_.insert(r.document);
     if (job.prefetch)
       ++abcPrefetched_;
-    else if (job.index != abcRequested_)
-      ++abcDiscarded_; // Superseded: cached for reuse, never presented.
+    else if (job.index != abcRequested_ &&
+             !(playing_ && job.index >= abcPlaybackFloor_ &&
+               job.index > document_->cacheSample && job.index < abcRequested_))
+      ++abcDiscarded_; // Outside the current seek/forward catch-up window.
   } else if (!r.cancelled && !job.prefetch && job.index == abcRequested_) {
     abcError_ = r.error;
     playing_ = false;
@@ -3675,18 +3697,26 @@ void ModelSession::scheduleAbc() {
   if (!abcActive() || busy_)
     return;
   if (abcRequested_ != document_->cacheSample) {
-    if (abcCache_.contains(abcRequested_)) {
-      // During playback keep the presented sample until its frame is ready,
-      // so frame building is never starved by back-to-back landings.
-      if (!(playing_ && preparing_))
-        landAbcSample(abcCache_.find(abcRequested_));
+    if (!(playing_ && preparing_)) {
+      auto ready = abcCache_.find(abcRequested_);
+      // A 33 ms request cadence must not discard a 34 ms read forever.
+      // Keep exact seeks; during forward play publish the newest completed
+      // sample between the last landing/explicit seek and the current clock.
+      if (!ready && playing_ && abcRequested_ > document_->cacheSample)
+        ready = abcCache_.latestBetween(
+            std::max(document_->cacheSample + 1, abcPlaybackFloor_), abcRequested_);
+      if (ready)
+        landAbcSample(std::move(ready));
+    }
+    if (abcRequested_ != document_->cacheSample) {
+      if (!abcJob_ && !abcCache_.contains(abcRequested_))
+        startAbcJob(abcRequested_, false);
+      else if (abcJob_ && abcJob_->prefetch && abcJob_->index != abcRequested_ &&
+               (!playing_ || abcJob_->index < abcPlaybackFloor_ ||
+                abcRequested_ < document_->cacheSample))
+        abcJob_->stop.request_stop();
       return;
     }
-    if (!abcJob_)
-      startAbcJob(abcRequested_, false);
-    else if (abcJob_->prefetch && abcJob_->index != abcRequested_)
-      abcJob_->stop.request_stop();
-    return;
   }
   // Limited prefetch while playing: the next two samples in play order.
   if (!playing_ || abcJob_ || !abcError_.isEmpty())
@@ -3725,7 +3755,10 @@ void ModelSession::tickAbc() {
     emit animChanged();
     return;
   }
-  const double dt = static_cast<double>(animClock_.restart()) / 1000.0;
+  // restart() returns whole milliseconds and loses the fractional part on
+  // every tick. Keep sub-millisecond elapsed time so playback follows wall time.
+  const double dt = static_cast<double>(animClock_.nsecsElapsed()) / 1e9;
+  animClock_.restart();
   const double start = times.front(), end = times.back();
   time_ += dt * speed_;
   if (!std::isfinite(time_))
@@ -3733,6 +3766,7 @@ void ModelSession::tickAbc() {
   if (time_ > end) {
     if (loop_) {
       time_ = start + std::fmod(time_ - start, std::max(1e-9, end - start));
+      abcPlaybackFloor_ = 0;
     } else {
       time_ = end;
       playing_ = false;

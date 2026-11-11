@@ -79,7 +79,15 @@ void ModelSession::cacheFrame() {
             (frame->vertices.capacity() + frame->guides.capacity()) *
                 sizeof(formaview::render::Vertex) +
             frame->draws.capacity() * sizeof(formaview::render::DrawRange) +
-            frame->rgba.capacity() * sizeof(float));
+            frame->rgba.capacity() * sizeof(float) +
+            frame->deformation.capacity() * sizeof(formaview::render::DeformedVertex) +
+            frame->streamSignature.capacity());
+        // Charge shared static ABC data conservatively to every cached frame.
+        if (const auto &base=frame->streamGeometry)
+          size += (base->vertices.capacity()+base->guides.capacity())*sizeof(formaview::render::Vertex) +
+                  base->sourceCorners.capacity()*sizeof(std::array<std::uint32_t,2>) +
+                  base->draws.capacity()*sizeof(formaview::render::DrawRange) +
+                  base->rgba.capacity()*sizeof(float);
         for (const auto &texture : frame->textures)
           size += texture->rgba.capacity() * sizeof(float);
         return size;
@@ -96,4 +104,11 @@ void ModelSession::cacheFrame() {
   frameCache_.push_front(
       {stateKey(renderedState_), frames_, renderedState_, size});
   cachedBytes_ += size;
+}
+QVariantMap ModelSession::performanceInfoForTest() const {
+  return {{"frame_cache_bytes",QVariant::fromValue<qulonglong>(cachedBytes_)},
+          {"frame_cache_entries",static_cast<int>(frameCache_.size())},
+          {"uv_memo_bytes",QVariant::fromValue<qulonglong>(abcSource_?abcSource_->uvMemoBytes():0)},
+          {"active_reads",abcJob_?1:0}, {"frame_jobs",static_cast<int>(frameJobs_.size())},
+          {"pending_frame",pendingFrame_}, {"preparing",preparing_}};
 }

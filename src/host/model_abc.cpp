@@ -349,6 +349,15 @@ std::shared_ptr<ModelDocument> ModelAbcCache::find(std::size_t index) {
   ++hits_;
   return entries_.front().document;
 }
+std::shared_ptr<ModelDocument>
+ModelAbcCache::latestBetween(std::size_t first, std::size_t last) const {
+  std::shared_ptr<ModelDocument> result;
+  for (const auto &e : entries_)
+    if (e.index >= first && e.index <= last &&
+        (!result || e.index > result->cacheSample))
+      result = e.document;
+  return result;
+}
 std::shared_ptr<const ModelDocument>
 ModelAbcCache::nearest(std::size_t index) const {
   const Entry *best = nullptr;
@@ -392,6 +401,13 @@ void ModelAbcCache::trim() {
 void ModelAbcCache::clear() {
   entries_.clear();
   bytes_ = 0;
+}
+std::uint64_t ModelAbcSource::uvMemoBytes() const {
+#ifdef FORMAVIEW_MODEL_ABC
+  return impl_->archive.uv_memo_bytes();
+#else
+  return 0;
+#endif
 }
 void ModelAbcCache::setLimits(std::uint64_t maxBytes, std::size_t maxSamples) {
   maxBytes_ = maxBytes;

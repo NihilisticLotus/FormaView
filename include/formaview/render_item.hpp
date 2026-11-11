@@ -31,6 +31,11 @@ struct Vertex {
   float nx{}, ny{}, nz{1}, r{1}, g{1}, b{1};
   float alpha{1}, alphaMode{}, alphaCutoff{.5F};
 };
+// ABC positions and normals change independently of the shading attributes.
+struct DeformedVertex { float x{}, y{}, z{}, nx{}, ny{}, nz{}; };
+struct StaticVertex {
+  float u{}, v{}, weight{}, r{}, g{}, b{}, alpha{}, alphaMode{}, alphaCutoff{};
+};
 struct SkinData {
   // Source-point ranges are integer attributes; influences retain every slot.
   std::vector<std::array<std::uint32_t, 2>> ranges;
@@ -49,6 +54,11 @@ struct SkinData {
 };
 struct Frame {
   std::vector<Vertex> vertices;
+  // Separate from skeletal `geometry`: exact ABC sampling/picking continues
+  // to use its document, without entering the animation-palette path.
+  std::shared_ptr<const Frame> streamGeometry;
+  QByteArray streamSignature;
+  std::vector<DeformedVertex> deformation;
   // Geometry owns no pose. Pose frames hold this immutable static payload and
   // a small row-major palette (four RGBA texels per matrix).
   std::shared_ptr<const Frame> geometry;

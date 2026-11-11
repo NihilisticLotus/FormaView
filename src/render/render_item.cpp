@@ -73,10 +73,12 @@ public:
   void synchronize(QQuickRhiItem *item) override {
     const auto *source = static_cast<Item *>(item);
     payload = source->frame;
-    data = payload && payload->geometry ? payload->geometry : payload;
+    data = payload && payload->streamGeometry ? payload->streamGeometry
+        : payload && payload->geometry ? payload->geometry : payload;
     skinFailure = source->skinFailure;
     frameFailure = source->frameFailure;
-    if (failedFrame.lock() != data || (data && failedRevision != data->revision))
+    const auto &failureKey = payload && payload->streamGeometry ? payload : data;
+    if (failedFrame.lock() != failureKey || (failureKey && failedRevision != failureKey->revision))
       frameFailed = false;
     frameSubmitted = source->frameSubmitted;
     viewMatrix = source->useViewMatrix
@@ -95,6 +97,7 @@ public:
   void initialize(QRhiCommandBuffer *) override {
     if (owner != rhi()) {
       retiredBuffers.clear();
+      deformationBuffer.reset(); deformationBytes=0; deformationFrame.reset();
       if (!readbackCompleted) {
         readback_started = false;
         readbackPasses = 0;
@@ -138,6 +141,7 @@ public:
     // The previous frame has been submitted: buffers replaced during it can go now.
     retiredBuffers.clear();
     if (!data || data->vertices.empty()) {
+      deformationBuffer.reset(); deformationBytes=0; deformationFrame.reset();
       residentCache.clear();
       guidePipeline.reset();
       selectionPipeline.reset();
@@ -204,18 +208,24 @@ public:
       }
     }
     const bool wire = requestedWireframe && !data->lines && !data->uv;
-    if (lineMode != data->lines || wireMode != wire || pipelineProbe!=skinProbe) {
+    const bool streaming = bool(payload->streamGeometry);
+    if (lineMode != data->lines || wireMode != wire || pipelineProbe!=skinProbe ||
+        streamMode != streaming) {
+      if (streamMode != streaming) uploadedFrame.reset();
       guidePipeline.reset();selectionPipeline.reset();pipelineProbe=skinProbe;
       pipeline.reset();
       blendedPipeline.reset();
       uvBackgroundPipeline.reset();
       lineMode = data->lines;
       wireMode = wire;
+      streamMode = streaming;
+      deformationFrame.reset();
+      if (!streaming) { deformationBuffer.reset(); deformationBytes=0; }
     }
     if (uploadedFrame.lock() != data || data->revision != revision) {
-      const auto bytes = data->vertices.size() * sizeof(Vertex);
+      const auto bytes = data->vertices.size() * (streaming ? sizeof(StaticVertex) : sizeof(Vertex));
       uploadedBytes += bytes + data->rgba.size() * sizeof(float);
-      if (bytes > vertex_upload_budget || data->width <= 0 ||
+      if (data->vertices.size() > vertex_upload_budget / sizeof(Vertex) || data->width <= 0 ||
           data->height <= 0 ||
           data->rgba.size() !=
               static_cast<std::size_t>(data->width) *
@@ -232,7 +242,14 @@ public:
           rejectFrame(cb, updates, "Vertex allocation failed"); return;
           }
       }
-      if(skinSource)updates->uploadStaticBuffer(vertices.get(),data->vertices.data());
+      if (streaming) {
+        std::vector<StaticVertex> attributes;
+        attributes.reserve(data->vertices.size());
+        for (const auto &v:data->vertices)
+          attributes.push_back({v.u,v.v,v.weight,v.r,v.g,v.b,v.alpha,v.alphaMode,v.alphaCutoff});
+        updates->updateDynamicBuffer(vertices.get(),0,static_cast<quint32>(bytes),attributes.data());
+      }
+      else if(skinSource)updates->uploadStaticBuffer(vertices.get(),data->vertices.data());
       else updates->updateDynamicBuffer(vertices.get(), 0,static_cast<quint32>(bytes),data->vertices.data());
       if (data->guides.empty()) {
         guidePipeline.reset();
@@ -370,6 +387,24 @@ public:
         } while (true);
       }
     }
+    if (streaming) {
+      const auto bytes=payload->deformation.size()*sizeof(DeformedVertex);
+      if (skinSource || payload->deformation.size()!=data->vertices.size() ||
+          bytes>vertex_upload_budget) {
+        rejectFrame(cb,updates,"ABC deformation shape/budget rejected"); return;
+      }
+      if (deformationFrame.lock()!=payload) {
+        if (!deformationBuffer || deformationBuffer->size()!=bytes) {
+          if(deformationBuffer) retiredBuffers.push_back(std::move(deformationBuffer));
+          deformationBuffer.reset(rhi()->newBuffer(QRhiBuffer::Dynamic,QRhiBuffer::VertexBuffer,static_cast<quint32>(bytes)));
+          if(!deformationBuffer->create()) {
+            rejectFrame(cb,updates,"ABC deformation allocation failed"); return;
+          }
+        }
+        updates->updateDynamicBuffer(deformationBuffer.get(),0,static_cast<quint32>(bytes),payload->deformation.data());
+        uploadedBytes+=bytes; deformationBytes=bytes; deformationFrame=payload;
+      }
+    }
     if (skinSource && payload->selectionVertices && payload->revision!=guidePoseRevision) {
       const auto bytes=payload->guides.size()*sizeof(Vertex);
       if (!guideVertices || guideVertices->size()!=bytes) {
@@ -404,6 +439,13 @@ public:
            QRhiVertexInputAttribute(0, 5, QRhiVertexInputAttribute::Float3,
                                     48)});
       guideLayout=layout;
+      if (streaming) {
+        layout.setBindings({QRhiVertexInputBinding(sizeof(StaticVertex)),QRhiVertexInputBinding(sizeof(DeformedVertex))});
+        layout.setAttributes({
+            {1,0,QRhiVertexInputAttribute::Float3,0}, {0,1,QRhiVertexInputAttribute::Float2,0},
+            {0,2,QRhiVertexInputAttribute::Float,8}, {1,3,QRhiVertexInputAttribute::Float3,12},
+            {0,4,QRhiVertexInputAttribute::Float3,12}, {0,5,QRhiVertexInputAttribute::Float3,24}});
+      }
       if (skinSource) {
         layout.setBindings({QRhiVertexInputBinding(sizeof(Vertex)), QRhiVertexInputBinding(8), QRhiVertexInputBinding(8)});
         layout.setAttributes({
@@ -537,8 +579,8 @@ public:
                      static_cast<float>(renderTarget()->pixelSize().height())});
     cb->setShaderResources();
 
-    const QRhiCommandBuffer::VertexInput meshInputs[]={{vertices.get(),0},{skinRanges.get(),0},{morphRanges.get(),0}};
-    cb->setVertexInput(0, skinSource?3:1, meshInputs);
+    const QRhiCommandBuffer::VertexInput meshInputs[]={{vertices.get(),0},{streaming?deformationBuffer.get():skinRanges.get(),0},{morphRanges.get(),0}};
+    cb->setVertexInput(0, skinSource?3:streaming?2:1, meshInputs);
     if (data->backgroundVertices) {
       cb->setGraphicsPipeline(uvBackgroundPipeline.get());
       cb->setShaderResources(
@@ -574,7 +616,7 @@ public:
       }
       cb->setGraphicsPipeline(pipeline.get());
       cb->setShaderResources(bindings.get());
-      cb->setVertexInput(0, skinSource?2:1, meshInputs);
+      cb->setVertexInput(0, skinSource?3:streaming?2:1, meshInputs);
     };
     if (draws().empty() && !payload->explicitDraws) {
       cb->draw(static_cast<quint32>(data->vertices.size()) -
@@ -625,7 +667,7 @@ public:
     }
     if (observe)
       observe({prepare, elapsed(record), cb->lastCompletedGpuTime(),
-               residentBytes() + skinBytes + uniformBytes, gpu_usage(rhi()), false, payload->revision,
+               residentBytes() + skinBytes + deformationBytes + uniformBytes, gpu_usage(rhi()), false, payload->revision,
                uploadedBytes,
                static_cast<std::uint32_t>(residentCache.size() + 1),
                residentHit, payload->clip, payload->seconds, bool(skinSource)});
@@ -661,6 +703,10 @@ private:
   static constexpr std::uint64_t residentBudget = 256ULL * 1024 * 1024;
   std::list<Resident> residentCache;
   std::weak_ptr<const Frame> uploadedFrame;
+  std::unique_ptr<QRhiBuffer> deformationBuffer;
+  std::weak_ptr<const Frame> deformationFrame;
+  std::uint64_t deformationBytes{};
+  bool streamMode{};
   std::uint64_t activeBytes{};
   std::uint64_t residentBytes() const {
     auto totalBytes = activeBytes;
@@ -760,8 +806,9 @@ private:
       if (frameFailure) frameFailure(reason, payload);
     }
     frameFailed = true;
-    failedFrame = data;
-    failedRevision = data ? data->revision : 0;
+    const auto &failureKey = payload && payload->streamGeometry ? payload : data;
+    failedFrame = failureKey;
+    failedRevision = failureKey ? failureKey->revision : 0;
     // A partially created resource must never be reused by the next frame.
     // initialize() retires all resources before a new payload is rendered.
     owner = nullptr;

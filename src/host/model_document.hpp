@@ -279,6 +279,9 @@ ModelFrames buildModelFrames(const ModelDocument &, const ModelRenderState &,
                              std::uint64_t, std::stop_token,
                              const formaview::render::Frame *pose = nullptr,
                              bool recordSources = false);
+ModelFrames buildAbcStreamFrames(const ModelDocument &, const ModelRenderState &,
+    std::uint64_t, std::stop_token,
+    std::shared_ptr<const formaview::render::Frame> previous = {});
 // Animation skeleton frame: per-bone world matrices -> line segments with
 // joint crosses, fit to bounds, never cached, never mutating source data.
 std::shared_ptr<const formaview::render::Frame>

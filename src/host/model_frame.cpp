@@ -1,10 +1,13 @@
 #include "model_document.hpp"
+#include "model_abc.hpp"
 #include "formaview/preview.hpp"
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <optional>
+#include <QDataStream>
+#include <QIODevice>
 namespace {
 using namespace formaview;
 void appendGuides(render::Frame &frame, const ModelDocument &document) {
@@ -54,7 +57,12 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
   auto f = std::make_shared<render::Frame>();
   f->revision = revision;
   if(pose){f->clip=pose->clip;f->seconds=pose->seconds;}
-  f->cacheable = !pose;
+  // ABC playback streams new geometry every sample. Keeping its old VBOs
+  // resident would move all active resources into the LRU and recreate the
+  // buffers, textures, bindings and pipelines on every cache miss. Reuse the
+  // dynamic buffers/pipelines instead; the bounded CPU frame cache still
+  // serves inspection and backward seeks.
+  f->cacheable = !pose && !document.geometryCache;
   f->rgba = {1, 1, 1, 1};
   f->lit = mode == 0;
   f->heat = mode == 2;
@@ -418,9 +426,8 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
 void appendModelGuides(render::Frame &frame, const ModelDocument &document) {
   appendGuides(frame, document);
 }
-ModelFrames buildModelFrames(const ModelDocument &d, const ModelRenderState &s,
-                             std::uint64_t revision, std::stop_token stop,
-                             const render::Frame *pose, bool recordSources) {
+namespace {
+void validateModelState(const ModelDocument &d, const ModelRenderState &s) {
   if (s.mode < 0 || s.mode > 3 || s.mesh < 0 ||
       s.mesh >= static_cast<int>(d.meshes.size()) ||
       s.bindings.size() != d.meshes.size() || s.uvs.size() != d.meshes.size() ||
@@ -444,6 +451,12 @@ ModelFrames buildModelFrames(const ModelDocument &d, const ModelRenderState &s,
           formaview::ErrorCode::InvalidArgument,
           "Model selection is outside source data");
   }
+}
+} // namespace
+ModelFrames buildModelFrames(const ModelDocument &d, const ModelRenderState &s,
+                             std::uint64_t revision, std::stop_token stop,
+                             const render::Frame *pose, bool recordSources) {
+  validateModelState(d,s);
   ModelFrames result;
   result.mode = s.mode;
   auto modelState = s;
@@ -453,6 +466,59 @@ ModelFrames buildModelFrames(const ModelDocument &d, const ModelRenderState &s,
   if (s.mode == 1)
     result.uv = build(d, s, 1, revision * 2 + 1, stop, nullptr);
   return result;
+}
+
+ModelFrames buildAbcStreamFrames(const ModelDocument &d, const ModelRenderState &s,
+    std::uint64_t revision, std::stop_token stop,
+    std::shared_ptr<const formaview::render::Frame> previous) {
+  validateModelState(d,s);
+  // The normal builder remains the oracle/fallback for UV inspection, heat,
+  // collision overlays, selected-node guides and session texture overrides.
+  const bool plain = d.geometryCache && s.mode == 0 && s.highlightedNode.isEmpty() &&
+      d.cacheMeshKeys.size() == d.meshes.size() &&
+      std::none_of(s.classes.begin(),s.classes.end(),[](const auto &c){return c.collision;}) &&
+      std::all_of(s.textures.begin(),s.textures.end(),[](const auto &t){return t.empty();});
+  if (!plain) return buildModelFrames(d,s,revision,stop);
+  QByteArray signature;
+  QDataStream out(&signature,QIODevice::WriteOnly);
+  bool reusable = true;
+  out << d.hash << d.center << d.radius << d.displayBasis << s.mesh << s.isolated;
+  for (std::size_t mi=0;mi<d.meshes.size();++mi) {
+    const auto &m=d.meshes[mi]; const auto &keys=d.cacheMeshKeys[mi];
+    reusable = reusable && !keys.face_indices.empty() && !keys.face_counts.empty() &&
+        (m.uvs.empty() || !keys.uv.empty());
+    out << m.id << quint64(m.points.size()) << quint64(m.corners.size())
+        << quint64(m.triangles.size()) << (s.visible.empty() || s.visible.at(mi))
+        << s.uvs.at(mi) << QString::fromStdString(keys.face_indices)
+        << QString::fromStdString(keys.face_counts) << QString::fromStdString(keys.uv)
+        << QString::fromStdString(keys.uv_indices);
+  }
+  std::shared_ptr<const formaview::render::Frame> base;
+  if (reusable && previous && previous->streamGeometry && previous->streamSignature == signature)
+    base=previous->streamGeometry;
+  else
+    base=buildModelFrames(d,s,revision,stop,nullptr,true).model;
+  auto f=std::make_shared<formaview::render::Frame>();
+  f->streamGeometry=base; f->streamSignature=std::move(signature);
+  f->revision=revision*2; f->seconds=d.geometryCache->times().at(d.cacheSample);
+  f->lit=base->lit; f->linearColour=base->linearColour;
+  f->sourcePoints=base->sourcePoints; f->sourceTriangles=base->sourceTriangles;
+  f->deformation.reserve(base->sourceCorners.size());
+  for (std::size_t vi=0;vi<base->sourceCorners.size();++vi) {
+    if ((vi&4095)==0 && stop.stop_requested())
+      throw formaview::skeletal::Failure(formaview::ErrorCode::Cancelled,"ABC frame cancelled");
+    const auto [mi,corner]=base->sourceCorners[vi];
+    const auto &m=d.meshes.at(mi);
+    const auto p=(m.points.at(m.corners.at(corner))-d.center)/d.radius;
+    const auto n=m.unlit?QVector3D(.4F,.7F,1):m.normals.at(corner);
+    f->deformation.push_back({p.x(),p.y(),p.z(),n.x(),n.y(),n.z()});
+    if (!f->hasDisplayBounds) { f->displayLow=f->displayHigh=p; f->hasDisplayBounds=true; }
+    else for(int axis=0;axis<3;++axis) {
+      f->displayLow[axis]=std::min(f->displayLow[axis],p[axis]);
+      f->displayHigh[axis]=std::max(f->displayHigh[axis],p[axis]);
+    }
+  }
+  ModelFrames result; result.model=std::move(f); return result;
 }
 
 formaview::Matrix4 lockRootLocal(const formaview::Matrix4 &source,

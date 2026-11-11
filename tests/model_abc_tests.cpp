@@ -55,17 +55,32 @@ bool settled(const ModelSession &s, int sample) {
 }
 // The presented frame was built from the presented sample, not a stale one.
 void requireFrameMatches(const ModelSession &s, const char *label) {
-  const auto i = s.info();
-  require(i.value("visibleTriangles").toULongLong() ==
+  const auto statistics = s.info();
+  require(statistics.value("visibleTriangles").toULongLong() ==
                   s.cacheInfo().value("triangles").toULongLong() &&
-              i.value("visiblePoints").toULongLong() ==
+              statistics.value("visiblePoints").toULongLong() ==
                   s.cacheInfo().value("points").toULongLong(),
           std::string(label) + ": frame statistics do not match the sample");
+  const auto streamed=s.frameFor(false);
+  if (streamed && streamed->streamGeometry) {
+    const auto direct=buildModelFrames(*s.documentSnapshot(),s.renderStateForTest(),1,{}).model;
+    const auto &base=*streamed->streamGeometry;
+    require(direct->vertices.size()==streamed->deformation.size() &&
+                direct->vertices.size()==base.vertices.size(),"ABC stream shape differs");
+    for(std::size_t i=0;i<direct->vertices.size();++i) {
+      const auto &v=direct->vertices[i]; const auto &p=streamed->deformation[i];
+      const auto &a=base.vertices[i];
+      require(v.x==p.x && v.y==p.y && v.z==p.z && v.nx==p.nx && v.ny==p.ny && v.nz==p.nz &&
+                  v.u==a.u && v.v==a.v && v.r==a.r && v.g==a.g && v.b==a.b &&
+                  v.alpha==a.alpha && v.alphaMode==a.alphaMode && v.alphaCutoff==a.alphaCutoff,
+              std::string(label)+": ABC split stream differs from ordinary frame");
+    }
+  }
 }
 // Fixed topology: 12 samples of a moving, bending quad pair with
 // face-varying UVs and normals that change per sample.
 void writeFixed(const std::filesystem::path &path, int samples = 12,
-                int badSample = -1) {
+                int badSample = -1, bool stableUv = false) {
   A::OArchive out(O::WriteArchive(), path.string());
   const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 24, 1.0 / 24));
   G::OXform xform(out.getTop(), "root", ts);
@@ -80,7 +95,7 @@ void writeFixed(const std::filesystem::path &path, int samples = 12,
     std::vector<std::int32_t> idx{0, 3, 2, 1, 1, 2, 5, 4}, counts{4, 4};
     std::vector<A::V2f> uv;
     for (std::size_t c = 0; c < idx.size(); ++c)
-      uv.push_back({f + static_cast<float>(c) * .01F, .5F});
+      uv.push_back({(stableUv?0.F:f) + static_cast<float>(c) * .01F, .5F});
     std::vector<A::N3f> n(idx.size(), {0, f * .05F, 1});
     if (i == badSample)
       idx.back() = 99; // Corner references a point that does not exist.
@@ -92,7 +107,8 @@ void writeFixed(const std::filesystem::path &path, int samples = 12,
   }
 }
 // Varying topology: point/face counts change every sample; vertex UVs.
-void writeVarying(const std::filesystem::path &path, bool emptyFirst = false) {
+void writeVarying(const std::filesystem::path &path, bool emptyFirst = false,
+                  bool invalidCachedUv = false) {
   A::OArchive out(O::WriteArchive(), path.string());
   const auto ts = out.addTimeSampling(A::TimeSampling(1.0 / 30, 0));
   G::OPolyMesh mesh(out.getTop(), "fluid", ts);
@@ -114,6 +130,7 @@ void writeVarying(const std::filesystem::path &path, bool emptyFirst = false) {
       idx.insert(idx.end(), {2 * s, 2 * s + 1, 2 * s + 3, 2 * s + 2});
       counts.push_back(4);
     }
+    if (invalidCachedUv) uv={{0,0},{0,1},{1,0},{1,1}};
     mesh.getSchema().set(G::OPolyMeshSchema::Sample(
         A::P3fArraySample(p.data(), p.size()),
         A::Int32ArraySample(idx.data(), idx.size()),
@@ -235,13 +252,28 @@ int main(int argc, char **argv) {
                mixed = dir / "mixed.abc", hdf5 = dir / "hdf5.abc",
                staticOne = dir / "static.abc";
     writeFixed(fixed);
+    const auto stable=dir/"stable-attributes.abc";
+    writeFixed(stable,12,-1,true);
     writeVarying(varying);
+    const auto cachedBadUv=dir/"cached-uv-wrong-domain.abc";
+    writeVarying(cachedBadUv,false,true);
+    {
+      auto archive=cache::Archive::open(cachedBadUv);
+      const auto first=archive.read(0,archive.times()[0]);
+      require(first.uv.size()==4,"cached UV fixture first domain");
+      bool rejected=false;
+      try { const auto bad=archive.read(0,archive.times()[1]); }
+      catch(const skeletal::Failure &e) { rejected=e.error.code==ErrorCode::InvalidArgument; }
+      require(rejected,"cached UV bypassed varying-topology domain validation");
+    }
     const auto twoMeshes = dir / "two-meshes.abc";
     writeTwoMeshes(twoMeshes);
     const auto emptyFirst = dir / "empty-first.abc";
     writeVarying(emptyFirst, true);
     writeFixed(badSample, 6, 3);
     writeFixed(staticOne, 1);
+    const auto fastTimeline = dir / "fast-timeline.abc";
+    writeFixed(fastTimeline, 1200);
     writeCurvesOnly(curves, false);
     writeCurvesOnly(mixed, true);
     {
@@ -253,6 +285,36 @@ int main(int argc, char **argv) {
       return QString::fromStdWString(p.wstring());
     };
     QJsonObject evidence;
+    {
+      ModelSession s; s.open(qpath(stable));
+      waitFor([&]{return settled(s,0);},"stable stream open");
+      const auto base=s.frame()->streamGeometry;
+      require(bool(base),"ABC stream static payload missing");
+      for(int sample=1;sample<4;++sample) {
+        s.seekSample(sample);
+        waitFor([&]{return settled(s,sample);},"stable stream sample");
+        require(s.frame()->streamGeometry==base,"constant topology/UV rebuilt static payload");
+        requireFrameMatches(s,"stable stream");
+      }
+      s.setMode(1); waitFor([&]{return !s.preparing();},"UV stream fallback");
+      require(!s.frame()->streamGeometry,"UV inspection must use its complete frame");
+      s.setMode(0); waitFor([&]{return !s.preparing();},"return to shaded stream");
+      requireFrameMatches(s,"return to stream");
+    }
+
+    // Playback catch-up is bounded by both the clock and an explicit seek.
+    // Selection is by sample order, independent of the LRU insertion order.
+    {
+      ModelAbcCache cache;
+      for (const std::size_t index : {2U, 9U, 4U, 7U}) {
+        auto d = std::make_shared<ModelDocument>(); d->cacheSample = index;
+        cache.insert(std::move(d));
+      }
+      require(cache.latestBetween(3, 8)->cacheSample == 7 &&
+                  cache.latestBetween(8, 9)->cacheSample == 9 &&
+                  !cache.latestBetween(8, 8) && !cache.latestBetween(9, 3),
+              "catch-up selected a sample outside its playback/seek window");
+    }
 
     // 1. Open: first sample, metadata, no skeleton/animation entry points.
     std::cerr << "stage 1" << std::endl;
@@ -432,6 +494,51 @@ int main(int argc, char **argv) {
       s.togglePlay();
     }
 
+    // Requests outrun the 20 ms fallback poll. Completed forward samples
+    // must still reach the screen, rather than all being marked superseded.
+    // This is a starvation guard, not a machine-dependent 30 FPS assertion.
+    {
+      ModelSession s;
+      s.open(qpath(fastTimeline));
+      waitFor([&] { return settled(s, 0); }, "fast timeline open");
+      s.setLoop(false); s.setSpeed(20);
+      std::vector<int> order;
+      QObject::connect(&s, &ModelSession::frameChanged, &s, [&] {
+        if (!s.cacheInfo().value("framed").toBool()) return;
+        const int sample = s.cacheInfo().value("sample").toInt();
+        if (order.empty() || order.back() != sample) order.push_back(sample);
+      });
+      QElapsedTimer elapsed; elapsed.start();
+      s.togglePlay();
+      waitFor([&] { return elapsed.elapsed() >= 650; }, "fast playback interval");
+      s.togglePlay();
+      require(order.size() >= 8, "forward playback starved behind changing requests");
+      for (std::size_t i=1;i<order.size();++i)
+        require(order[i] > order[i-1], "catch-up playback went backwards");
+      evidence["catch_up_updates"] = static_cast<int>(order.size());
+      // Explicit backward seek while playing cannot land samples left over
+      // between the old position and the new seek boundary.
+      s.setSpeed(.01); s.togglePlay();
+      order.clear(); s.seekSample(40);
+      waitFor([&] { return settled(s, 40); }, "seek while playing");
+      require(!order.empty() && order.back()==40 &&
+                  std::all_of(order.begin(),order.end(),[](int i){return i==40;}),
+              "playback catch-up leaked a sample across an explicit seek");
+      s.togglePlay();
+    }
+
+    // Worker wakeups are queued against the session context. Destroying a
+    // session with an in-flight sample must join it and remove its wakeups.
+    for (int i=0;i<8;++i) {
+      {
+        ModelSession s;
+        s.open(qpath(fastTimeline));
+        waitFor([&] { return settled(s, 0); }, "teardown open");
+        s.seekSample(500);
+      }
+      QCoreApplication::processEvents();
+    }
+
     // 8. A malformed later sample fails alone; the archive stays usable.
     std::cerr << "stage 8" << std::endl;
     {
@@ -502,6 +609,8 @@ int main(int argc, char **argv) {
       // Revisiting a recent sample reuses its cached frame.
       require(s.info().value("cachedFrameCount").toInt() > 1,
               "frames of recent samples must stay cached");
+      require(!s.frame()->cacheable,
+              "ABC frames must stream through reusable GPU resources");
       evidence["reuse"] = QJsonObject{{"meshReuses", static_cast<double>(i.value("meshReuses").toULongLong())},
                                       {"topologyReuses", static_cast<double>(i.value("topologyReuses").toULongLong())},
                                       {"meshDecodes", static_cast<double>(i.value("meshDecodes").toULongLong())},

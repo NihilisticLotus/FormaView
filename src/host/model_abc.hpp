@@ -18,6 +18,7 @@ public:
   static std::shared_ptr<const ModelAbcSource> open(const QString &path,
                                                     std::stop_token);
   ~ModelAbcSource();
+  [[nodiscard]] std::uint64_t uvMemoBytes() const;
   [[nodiscard]] const QString &path() const { return path_; }
   [[nodiscard]] const QString &hash() const { return hash_; }
   [[nodiscard]] const std::vector<double> &times() const;
@@ -66,6 +67,9 @@ public:
   std::shared_ptr<ModelDocument> find(std::size_t index);
   // Cached document closest in timeline order (no LRU promotion).
   [[nodiscard]] std::shared_ptr<const ModelDocument> nearest(std::size_t index) const;
+  // Latest completed sample inside a forward playback window (no promotion).
+  [[nodiscard]] std::shared_ptr<ModelDocument> latestBetween(std::size_t first,
+                                                           std::size_t last) const;
   [[nodiscard]] bool contains(std::size_t index) const;
   void insert(std::shared_ptr<ModelDocument>);
   void clear();

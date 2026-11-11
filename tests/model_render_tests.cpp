@@ -28,7 +28,7 @@ struct Result {
   std::uint64_t owned{};
   int gridPixels{}, axisPixels{};
 };
-void rejectedFrame(const std::shared_ptr<Frame> &frame) {
+void rejectedFrame(const std::shared_ptr<Frame> &frame, std::shared_ptr<Frame> recovery = {}) {
   QQuickWindow window;
   window.setFlags(window.flags() | Qt::WindowDoesNotAcceptFocus | Qt::WindowTransparentForInput);
   window.resize(128, 128);
@@ -56,9 +56,11 @@ void rejectedFrame(const std::shared_ptr<Frame> &frame) {
   };
   item->setFrame(frame); window.show();
   wait([&] { return state->failures == 1 && state->readbackFailed; });
-  auto valid = std::make_shared<Frame>();
-  valid->rgba = {1, 1, 1, 1}; valid->revision = frame->revision + 1;
-  quad(*valid, 0, {1, 0, 0}, 1, 0);
+  auto valid = recovery ? recovery : std::make_shared<Frame>();
+  if (!recovery) {
+    valid->rgba = {1, 1, 1, 1}; valid->revision = frame->revision + 1;
+    quad(*valid, 0, {1, 0, 0}, 1, 0);
+  }
   item->frameSubmitted = [state, valid](auto submitted) { state->recovered = submitted == valid; };
   item->setFrame(valid);
   wait([&] { return state->recovered.load(); });
@@ -489,6 +491,64 @@ int main(int argc, char **argv) {
                  .arg(result.expired.resident_frames)
                  .arg(result.cleared.owned_gpu_bytes))
                 .toStdString());
+    }
+    {
+      auto red = cached({1, 0, 0}), blue = cached({0, 0, 1});
+      red->cacheable = blue->cacheable = false;
+      // A changed vertex count exercises the dynamic-buffer resize path;
+      // returning to A checks that B's data/bindings do not remain visible.
+      quad(*blue, .5F, {0, 0, 1}, 1, 0);
+      const auto result = residency({red, blue, red});
+      ++assertions;
+      if (result.stages[2].resident_hit ||
+          !result.stages[2].uploaded_bytes ||
+          result.stages[2].resident_frames != 1 ||
+          result.rgba != std::array<float, 4>{1, 0, 0, 1} ||
+          result.cleared.owned_gpu_bytes != renderer_uniform_bytes)
+        throw std::runtime_error("Streaming geometry resize/backseek/clear failed");
+    }
+    {
+      const auto split=[](const std::shared_ptr<Frame> &base,float offset=0.F) {
+        base->cacheable=false;
+        auto f=std::make_shared<Frame>(); f->streamGeometry=base;
+        for(const auto &v:base->vertices)
+          f->deformation.push_back({v.x+offset,v.y,v.z,v.nx,v.ny,v.nz});
+        return f;
+      };
+      auto red=cached({1,0,0});
+      auto a=split(red), b=split(red,10.F), restored=split(red);
+      const auto result=residency({a,b,restored});
+      const auto dynamicBytes=red->vertices.size()*sizeof(DeformedVertex);
+      ++assertions;
+      if(result.stages[1].uploaded_bytes!=dynamicBytes || result.stages[2].uploaded_bytes!=dynamicBytes ||
+          result.rgba!=std::array<float,4>{1,0,0,1} ||
+          result.cleared.owned_gpu_bytes!=renderer_uniform_bytes)
+        throw std::runtime_error("ABC split stream did not reuse static data or restore deformation");
+      auto blue=cached({0,0,1}); quad(*blue,.5F,{0,0,1},1,0);
+      const auto resized=residency({split(red),split(blue),split(red)});
+      ++assertions;
+      if(resized.rgba!=std::array<float,4>{1,0,0,1} ||
+          resized.cleared.owned_gpu_bytes!=renderer_uniform_bytes)
+        throw std::runtime_error("ABC split buffers failed resize/backseek/clear");
+      auto bad=split(red); bad->deformation.pop_back();
+      rejectedFrame(bad,split(red)); ++assertions;
+      auto lit=cached({.7F,.2F,.1F}); lit->lit=true;
+      lit->width=lit->height=2;
+      lit->rgba={1,0,0,1, 0,1,0,1, 0,0,1,1, .2F,.5F,.8F,1};
+      for(auto &v:lit->vertices) {
+        v.u=.75F; v.v=.25F; v.nx=.2F; v.ny=.4F; v.nz=.8F;
+        v.alpha=.6F; v.alphaCutoff=.25F;
+      }
+      const auto ordinary=render(lit), streamed=render(split(lit));
+      ++assertions;
+      for(std::size_t channel=0;channel<4;++channel)
+        if(std::abs(ordinary.rgba[channel]-streamed.rgba[channel])>1e-5F)
+          throw std::runtime_error("ABC split UV/normal/colour/coverage differs from ordinary shader");
+      const auto transition=residency({lit,split(lit),lit});
+      ++assertions;
+      for(std::size_t channel=0;channel<4;++channel)
+        if(std::abs(ordinary.rgba[channel]-transition.rgba[channel])>1e-5F)
+          throw std::runtime_error("ABC split/ordinary layout transition reused the wrong vertex buffer");
     }
     records.append(idleRendering(cached({1, 0, 0}), false));
     ++assertions;

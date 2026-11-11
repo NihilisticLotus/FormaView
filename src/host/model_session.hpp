@@ -231,6 +231,7 @@ public:
   std::shared_ptr<const ModelDocument> documentSnapshot() const { return document_; }
   // True once the presented pose reflects the current view state (verification).
   ModelRenderState renderStateForTest() const { return renderState(); }
+  QVariantMap performanceInfoForTest() const;
   bool renderedStateCurrent() const { return document_ && stateKey(renderState())==stateKey(renderedState_); }
   std::pair<QVector3D, float> focusBounds(bool selected) const;
   std::pair<QVector3D, float> uvBounds(bool reference = true) const;
@@ -428,8 +429,8 @@ private:
   };
   std::optional<AsyncFrame> asyncFrame_;
   // Geometry cache state. Sample documents are immutable; the GUI thread
-  // owns the bounded cache and lands only the latest requested sample of the
-  // current generation. Stale reads are cached, never presented.
+  // owns the bounded cache. Explicit seeks land exactly; forward playback
+  // may present completed samples behind the clock to avoid read starvation.
   bool abcActive() const { return document_ && document_->geometryCache; }
   struct AbcResult {
     std::shared_ptr<ModelDocument> document;
@@ -448,6 +449,7 @@ private:
   std::shared_ptr<ModelDocument> abcFrameDocument_; // Sample of the presented frame.
   std::optional<AbcJob> abcJob_;
   std::size_t abcRequested_{};
+  std::size_t abcPlaybackFloor_{}; // Explicit seek/restart boundary for catch-up.
   std::pair<QVector3D, float> abcDisplay_{{}, 1.F};
   int abcDirection_{1};
   std::uint64_t abcPrefetched_{}, abcDiscarded_{};
