@@ -3,11 +3,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/host/Workspace.qml'), 'utf8');
-const area = source.slice(source.indexOf('MouseArea { id: mouse;'));
+const hitAreaStart = source.indexOf('objectName: "filesPaneSplitterHitArea"');
+const hitArea = source.slice(hitAreaStart, source.indexOf('PreviewPane {', hitAreaStart));
+assert.match(hitArea, /width: 14/, 'splitter keeps a usable pointer target around its visible divider');
+const area = source.slice(source.indexOf('MouseArea { id: splitterMouse;'));
+assert.ok(area.length > 0, 'splitter pointer handlers exist');
 let writes = [];
 const mouse = {pressed: true, dragWidth: 300, start: 0, old: 300};
 mouse.mapToItem = (root, x) => ({x});
-const context = vm.createContext({mouse, pressed: true, old: 300, start: 0,
+const context = vm.createContext({splitterMouse: mouse, pressed: true, old: 300, start: 0,
   root: {controller: {preference(key, value) { writes.push([key, value]); }}},
   mapToItem(root, x) { return {x}; }});
 function invoke(name, event = {}) {

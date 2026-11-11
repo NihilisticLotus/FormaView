@@ -473,6 +473,23 @@ private slots:
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
   }
+  void filesPaneSplitterCanBeDraggedAndPersistsWidth() {
+    desktop_->preference("fileWidth", 236);
+    desktop_->preference("filesVisible", true);
+    auto *files = item("filesPane");
+    auto *handle = item("filesPaneSplitterMouseArea");
+    QVERIFY(files);
+    QVERIFY(handle && handle->width() >= 14);
+    window_->requestActivate();
+    QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+    QTRY_COMPARE(qRound(files->width()), 236);
+    const auto start = handle->mapToScene({handle->width()/2, handle->height()/2}).toPoint();
+    QTest::mousePress(window_, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(window_, start + QPoint(80, 0), 30);
+    QTRY_COMPARE(qRound(files->width()), 316);
+    QTest::mouseRelease(window_, Qt::LeftButton, Qt::NoModifier, start + QPoint(80, 0));
+    QTRY_COMPARE(desktop_->preferences().value("fileWidth").toInt(), 316);
+  }
   void scanSortFilterAndSelection() {
     auto time = QElapsedTimer{};
     time.start();
@@ -11045,7 +11062,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport"};
+    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

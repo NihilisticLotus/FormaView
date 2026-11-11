@@ -174,15 +174,21 @@ Item {
                 }
                 FilesPane {
                     id: files
-                    Layout.fillHeight: true; Layout.preferredWidth: mouse.pressed ? mouse.dragWidth : Math.max(220,Math.min(400, root.controller.preferences.fileWidth || Theme.filesWidth))
+                    Layout.fillHeight: true; Layout.preferredWidth: splitterMouse.pressed ? splitterMouse.dragWidth : Math.max(220,Math.min(400, root.controller.preferences.fileWidth || Theme.filesWidth))
                     visible: !root.narrow && !root.focusMode && root.filesVisible
                     controller: root.controller; onCollapse: root.toggleFiles(); onEditAddress: folderNavigation.addressFocus()
                 Rectangle {
-                    anchors.right: parent.right; height: parent.height; width: 4; z: 2; color: mouse.containsMouse ? Theme.accent : Theme.base
-                    MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor; property real start: 0; property real old: 0; property real dragWidth: 300
-                        onPressed: event => { mouse.start = mouse.mapToItem(root,event.x,0).x; mouse.old = files.width; mouse.dragWidth = files.width }
-                        onPositionChanged: event => { if(mouse.pressed) mouse.dragWidth = Math.max(220, Math.min(400,mouse.old+mouse.mapToItem(root,event.x,0).x-mouse.start)) }
-                        onReleased: { root.controller.preference("fileWidth", mouse.dragWidth) }
+                    objectName: "filesPaneSplitterHitArea"
+                    anchors.right: parent.right; height: parent.height; width: 14; z: 2; color: "transparent"
+                    Rectangle {
+                        objectName: "filesPaneSplitterVisual"
+                        anchors.right: parent.right; width: 4; height: parent.height
+                        color: splitterMouse.containsMouse ? Theme.accent : Theme.base
+                    }
+                    MouseArea { id: splitterMouse; objectName: "filesPaneSplitterMouseArea"; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor; property real start: 0; property real old: 0; property real dragWidth: 300
+                        onPressed: event => { splitterMouse.start = splitterMouse.mapToItem(root,event.x,0).x; splitterMouse.old = files.width; splitterMouse.dragWidth = files.width }
+                        onPositionChanged: event => { if(splitterMouse.pressed) splitterMouse.dragWidth = Math.max(220, Math.min(400,splitterMouse.old+splitterMouse.mapToItem(root,event.x,0).x-splitterMouse.start)) }
+                        onReleased: event => { root.controller.preference("fileWidth", splitterMouse.dragWidth) }
                     }
                 }
                 }
