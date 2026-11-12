@@ -49,6 +49,7 @@ private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
   QString path_, hash_;
+  std::vector<std::vector<formaview::Matrix4>> cameraTrails_;
   mutable std::atomic<std::uint64_t> reads_{}, meshDecodes_{}, meshReuses_{},
       topologyReuses_{};
 };

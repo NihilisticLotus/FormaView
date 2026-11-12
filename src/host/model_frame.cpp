@@ -6,6 +6,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <QDataStream>
 #include <QIODevice>
 namespace {
@@ -39,6 +40,123 @@ void appendGuides(render::Frame &frame, const ModelDocument &document) {
     guide(origin, tint); guide(tip, tint);
     guide(tip, tint); guide(base + wing, tint);
     guide(tip, tint); guide(base - wing, tint);
+  }
+}
+void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
+                          int clip, double seconds) {
+  if (document.cameras.empty()) return;
+  const auto samples = document.cameraAt && clip >= 0
+      ? document.cameraAt(static_cast<std::size_t>(clip), seconds)
+      : [&] { std::vector<CameraSample> result;
+              for (const auto &camera : document.cameras) result.push_back(camera.sample);
+              return result; }();
+  const auto normalized = [&](const Matrix4 &m, QVector3D local = {}) {
+    const QVector3D world(float(m[0]*local.x()+m[1]*local.y()+m[2]*local.z()+m[3]),
+                          float(m[4]*local.x()+m[5]*local.y()+m[6]*local.z()+m[7]),
+                          float(m[8]*local.x()+m[9]*local.y()+m[10]*local.z()+m[11]));
+    return (document.displayBasis.map(world) - document.center) /
+           std::max(document.radius, 1e-6F);
+  };
+  std::vector<render::Vertex> lines;
+  const auto line = [&](QVector3D a, QVector3D b, QVector3D color) {
+    for (const auto &p : {a, b}) {
+      if (!std::isfinite(p.x()) || !std::isfinite(p.y()) || !std::isfinite(p.z()))
+        return;
+      lines.push_back({p.x(),p.y(),p.z(),0,0,0,0,1,0,
+                       color.x(),color.y(),color.z(),1,-2,.5F});
+    }
+  };
+  const auto direction = [](std::string_view key) -> std::optional<QVector3D> {
+    if (key == "+X") return QVector3D(1,0,0);
+    if (key == "-X") return QVector3D(-1,0,0);
+    if (key == "+Y") return QVector3D(0,1,0);
+    if (key == "-Y") return QVector3D(0,-1,0);
+    if (key == "+Z") return QVector3D(0,0,1);
+    if (key == "-Z") return QVector3D(0,0,-1);
+    return std::nullopt;
+  };
+  struct Basis { QVector3D forward, right, up; };
+  const auto basis = [&](const std::string &axes) -> std::optional<Basis> {
+    constexpr std::string_view separator = " forward, ";
+    constexpr std::string_view ending = " up";
+    const std::string_view value(axes);
+    const auto split = value.find(separator);
+    if (split == std::string_view::npos || !value.ends_with(ending))
+      return std::nullopt;
+    if (split + separator.size() + ending.size() > value.size())
+      return std::nullopt;
+    const auto forward = direction(value.substr(0, split));
+    const auto sourceUp = direction(value.substr(
+        split + separator.size(), value.size() - split - separator.size() - ending.size()));
+    if (!forward || !sourceUp) return std::nullopt;
+    const auto upOffset = *sourceUp - QVector3D::dotProduct(*sourceUp, *forward) * *forward;
+    if (upOffset.lengthSquared() < 1e-6F) return std::nullopt;
+    const auto up = upOffset.normalized();
+    const auto right = QVector3D::crossProduct(*forward, up).normalized();
+    return Basis{*forward, right, QVector3D::crossProduct(right, *forward).normalized()};
+  };
+  for (std::size_t i = 0; i < samples.size(); ++i) {
+    const auto &camera = samples[i];
+    const auto origin = normalized(camera.world);
+    const auto orientation = basis(camera.axes);
+    const float extent = std::max(document.radius, 1e-6F) * .22F;
+    const auto tint = QVector3D(.98F,.64F,.25F);
+    const auto marker = [&] {
+      for (const auto &axis : {QVector3D(1,0,0), QVector3D(0,1,0), QVector3D(0,0,1)})
+        line(origin-axis*.0264F,origin+axis*.0264F,tint);
+    };
+    const auto transformedBasisValid = [&] {
+      if (!orientation) return false;
+      const auto &[forward, right, up] = *orientation;
+      const auto f = normalized(camera.world,forward*extent)-origin;
+      const auto r = normalized(camera.world,right*extent)-origin;
+      const auto u = normalized(camera.world,up*extent)-origin;
+      return f.lengthSquared() > 1e-10F && r.lengthSquared() > 1e-10F &&
+             u.lengthSquared() > 1e-10F &&
+             QVector3D::crossProduct(r,u).lengthSquared() > 1e-10F;
+    };
+    if (!transformedBasisValid()) {
+      marker();
+    } else {
+      const auto &[forward, right, up] = *orientation;
+      const auto tip = normalized(camera.world, forward * extent);
+      line(origin,tip,tint);
+      if (camera.has_fov_x && camera.has_fov_y) {
+      const float halfX = std::tan(float(camera.fov_x_deg) * .00872664626F) * extent;
+      const float halfY = std::tan(float(camera.fov_y_deg) * .00872664626F) * extent;
+      if (std::isfinite(halfX) && std::isfinite(halfY) &&
+          halfX > extent*1e-5F && halfY > extent*1e-5F &&
+          halfX < extent*20 && halfY < extent*20) {
+        QVector3D corners[4];
+        for (int c = 0; c < 4; ++c) {
+          const auto local = forward*extent + right*halfX*(c==0||c==3?-1:1)
+                                         + up*halfY*(c<2?-1:1);
+          corners[c] = normalized(camera.world, local);
+          line(origin,corners[c],tint);
+        }
+        for (int c = 0; c < 4; ++c) line(corners[c],corners[(c+1)%4],tint);
+      }
+      } else {
+        line(tip,normalized(camera.world,forward*extent+right*extent*.12F),tint);
+        line(tip,normalized(camera.world,forward*extent+up*extent*.12F),tint);
+      }
+    }
+    if (!document.cameraTrails.empty()) {
+      const auto trailClip = std::min<std::size_t>(std::max(clip,0),document.cameraTrails.size()-1);
+      if (i < document.cameraTrails[trailClip].size()) {
+        const auto &trail = document.cameraTrails[trailClip][i];
+        for (std::size_t t = 1; t < trail.size(); ++t)
+          line(normalized(trail[t-1]),normalized(trail[t]),QVector3D(.34F,.72F,.84F));
+      }
+    }
+  }
+  if (document.cameraOnly) {
+    frame.lines = true;
+    frame.lit = false;
+    frame.vertices.insert(frame.vertices.end(),lines.begin(),lines.end());
+  } else {
+    const auto position = frame.guides.end() - frame.selectionVertices;
+    frame.guides.insert(position,lines.begin(),lines.end());
   }
 }
 void checkUv(const QPointF &uv) {
@@ -420,6 +538,7 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
       }
     }
   }
+  if (mode != 1) appendCameraGeometry(*f, document, state.clip, state.time);
   return f;
 }
 } // namespace
@@ -428,6 +547,9 @@ void appendModelGuides(render::Frame &frame, const ModelDocument &document) {
 }
 namespace {
 void validateModelState(const ModelDocument &d, const ModelRenderState &s) {
+  if (d.cameraOnly && d.meshes.empty() && s.mode == 0 && s.mesh == 0 &&
+      s.bindings.empty() && s.uvs.empty() && s.visible.empty())
+    return;
   if (s.mode < 0 || s.mode > 3 || s.mesh < 0 ||
       s.mesh >= static_cast<int>(d.meshes.size()) ||
       s.bindings.size() != d.meshes.size() || s.uvs.size() != d.meshes.size() ||
@@ -474,7 +596,7 @@ ModelFrames buildAbcStreamFrames(const ModelDocument &d, const ModelRenderState 
   validateModelState(d,s);
   // The normal builder remains the oracle/fallback for UV inspection, heat,
   // collision overlays, selected-node guides and session texture overrides.
-  const bool plain = d.geometryCache && s.mode == 0 && s.highlightedNode.isEmpty() &&
+  const bool plain = d.geometryCache && d.cameras.empty() && s.mode == 0 && s.highlightedNode.isEmpty() &&
       d.cacheMeshKeys.size() == d.meshes.size() &&
       std::none_of(s.classes.begin(),s.classes.end(),[](const auto &c){return c.collision;}) &&
       std::all_of(s.textures.begin(),s.textures.end(),[](const auto &t){return t.empty();});

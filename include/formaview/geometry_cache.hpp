@@ -1,5 +1,6 @@
 #pragma once
 #include "formaview/skeletal.hpp"
+#include "formaview/camera.hpp"
 #include <memory>
 #include <span>
 #include <string_view>
@@ -19,7 +20,7 @@ struct MeshInfo {
   bool uv{}, normals{};
 };
 // Objects that were recognised but are not previewed (curves, points,
-// subdivision surfaces, NURBS, cameras, lights, unknown schemas).
+// subdivision surfaces, NURBS, lights, unknown schemas).
 // Alembic stores no units. The writing application's documented working
 // unit is the only evidence: Maya and Cinema 4D write centimetres, Houdini
 // and Blender write metres. Anything else is unknown (metres by convention).
@@ -74,6 +75,9 @@ public:
   Archive &operator=(Archive &&) noexcept;
   ~Archive();
   [[nodiscard]] const std::vector<MeshInfo> &meshes() const;
+  [[nodiscard]] const std::vector<formaview::CameraInfo> &cameras() const;
+  [[nodiscard]] formaview::CameraSample camera(std::size_t camera,
+                                               double seconds) const;
   [[nodiscard]] const std::vector<SkippedObject> &skipped() const;
   // Sorted distinct sample times of every animated mesh and ancestor
   // transform; a fully static archive has exactly one time.

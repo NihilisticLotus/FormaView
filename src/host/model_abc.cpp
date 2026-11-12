@@ -102,6 +102,19 @@ std::shared_ptr<const ModelAbcSource> ModelAbcSource::open(const QString &path,
   result->path_ = path;
   result->hash_ =
       QString::fromStdString(result->impl_->lease.snapshot().content_sha256);
+  if (!result->impl_->archive.cameras().empty()) {
+    result->cameraTrails_.resize(result->impl_->archive.cameras().size());
+    const auto &times = result->times();
+    const auto stride = std::max<std::size_t>(1, (times.size() + 128) / 129);
+    for (std::size_t t = 0; t < times.size(); t += stride) {
+      check(stop);
+      for (std::size_t i = 0; i < result->cameraTrails_.size(); ++i)
+        result->cameraTrails_[i].push_back(result->impl_->archive.camera(i, times[t]).world);
+    }
+    if ((times.size() - 1) % stride)
+      for (std::size_t i = 0; i < result->cameraTrails_.size(); ++i)
+        result->cameraTrails_[i].push_back(result->impl_->archive.camera(i, times.back()).world);
+  }
   return result;
 }
 std::shared_ptr<ModelDocument>
@@ -118,6 +131,13 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
   d->geometryCache = shared_from_this();
   d->cacheSample = index;
   d->hash = hash_;
+  d->cameraOnly = meshes().empty() && !impl_->archive.cameras().empty();
+  d->cameras = impl_->archive.cameras();
+  if (!d->cameras.empty()) {
+    d->cameraTrails = {cameraTrails_};
+    for (std::size_t i = 0; i < d->cameras.size(); ++i)
+      d->cameras[i].sample = impl_->archive.camera(i, seconds);
+  }
   d->coordinates = QStringLiteral(
       "Alembic Ogawa 路 Y up convention 路 units unspecified 路 clockwise "
       "polygon winding");
@@ -267,6 +287,17 @@ ModelAbcSource::read(std::size_t index, std::stop_token stop,
     d->cacheFaces += sample.face_sizes.size();
     d->cacheCorners += corners;
     d->meshes.push_back(std::move(m));
+  }
+  for (std::size_t i = 0; i < d->cameras.size(); ++i) {
+    auto &camera = d->cameras[i];
+    camera.node = static_cast<std::uint32_t>(infos.size() + i);
+    const auto nodeId = QString("node/%1").arg(infos.size() + i);
+    const auto world = modelMatrixValues(camera.sample.world);
+    d->nodes.append(QVariantMap{{"id", nodeId},
+                                {"stableId", QString::fromStdString(camera.path)},
+                                {"name", QString::fromStdString(camera.name)},
+                                {"parent", QString{}}, {"bone", false},
+                                {"world", world}, {"active", true}});
   }
   constexpr std::size_t listed = 20;
   const auto &skipped = this->skipped();

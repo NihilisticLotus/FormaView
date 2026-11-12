@@ -1,6 +1,7 @@
 #pragma once
 #include "formaview/transform_validation.hpp"
 #include "formaview/skeletal.hpp"
+#include "formaview/camera.hpp"
 #include <memory>
 
 namespace formaview::skeletal {
@@ -64,6 +65,7 @@ struct FbxData {
   std::vector<FbxNode>
       nodes; // Includes auxiliary parents and the synthetic scene root.
   std::vector<FbxMesh> meshes;
+  std::vector<formaview::CameraInfo> cameras;
   std::vector<FbxClip> clips;
   struct Resource {
     std::string reference, resolved, detail;
@@ -73,6 +75,7 @@ struct FbxData {
 };
 struct MatrixPose {
   std::vector<Matrix4> local, world;
+  std::vector<formaview::CameraSample> cameras;
 };
 class FbxDocument final {
 public:

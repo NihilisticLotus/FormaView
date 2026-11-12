@@ -80,7 +80,7 @@ SampleKeys keys_for(G::IPolyMeshSchema &schema,
   return keys;
 }
 // World matrix of a mesh object from its transform ancestors.
-Matrix4 world_of(G::IPolyMesh mesh, const A::ISampleSelector &selector) {
+Matrix4 world_of(A::IObject mesh, const A::ISampleSelector &selector) {
   auto world = skeletal::matrix({});
   // Alembic matrices act on row vectors; transpose at the contract boundary.
   for (auto parent = mesh.getParent(); parent.valid();
@@ -100,6 +100,40 @@ Matrix4 world_of(G::IPolyMesh mesh, const A::ISampleSelector &selector) {
     }
   }
   return world;
+}
+formaview::CameraSample camera_value(G::ICamera camera,
+                                     const A::ISampleSelector &selector) {
+  const auto source = camera.getSchema().getValue(selector);
+  formaview::CameraSample result;
+  result.world = world_of(camera, selector);
+  // Alembic camera is perspective, looking along local -Z with local +Y up.
+  // Filmback is centimetres, focal length millimetres, clipping centimetres.
+  result.axes = "-Z forward, +Y up";
+  result.projection = "perspective";
+  const auto valid = [](double v) { return std::isfinite(v) && v > 0; };
+  result.focal_mm = source.getFocalLength();
+  result.aperture_x_mm = source.getHorizontalAperture() * 10;
+  result.aperture_y_mm = source.getVerticalAperture() * 10;
+  result.has_focal = valid(result.focal_mm);
+  result.has_aperture_x = valid(result.aperture_x_mm);
+  result.has_aperture_y = valid(result.aperture_y_mm);
+  constexpr double radToDeg = 57.29577951308232;
+  if (result.has_focal && result.has_aperture_x) {
+    result.fov_x_deg = 2 * std::atan(result.aperture_x_mm /
+                                      (2 * result.focal_mm)) * radToDeg;
+    result.has_fov_x = valid(result.fov_x_deg) && result.fov_x_deg < 180;
+  }
+  if (result.has_focal && result.has_aperture_y) {
+    result.fov_y_deg = 2 * std::atan(result.aperture_y_mm /
+                                      (2 * result.focal_mm)) * radToDeg;
+    result.has_fov_y = valid(result.fov_y_deg) && result.fov_y_deg < 180;
+  }
+  result.near_plane = source.getNearClippingPlane();
+  result.far_plane = source.getFarClippingPlane();
+  result.has_near = valid(result.near_plane);
+  result.has_far = valid(result.far_plane) &&
+                   (!result.has_near || result.far_plane > result.near_plane);
+  return result;
 }
 std::string schema_name(const A::IObject &object) {
   const auto &meta = object.getMetaData();
@@ -222,6 +256,8 @@ struct Archive::Impl {
   A::IArchive archive;
   std::vector<G::IPolyMesh> objects;
   std::vector<MeshInfo> info;
+  std::vector<G::ICamera> cameraObjects;
+  std::vector<formaview::CameraInfo> cameraInfo;
   std::vector<SkippedObject> skipped;
   std::vector<double> times;
   std::string application;
@@ -248,6 +284,17 @@ Archive &Archive::operator=(Archive &&) noexcept = default;
 Archive::~Archive() = default;
 std::uint64_t Archive::uv_memo_bytes() const { return impl_->uvMemoBytes.load(std::memory_order_relaxed); }
 const std::vector<MeshInfo> &Archive::meshes() const { return impl_->info; }
+const std::vector<formaview::CameraInfo> &Archive::cameras() const {
+  return impl_->cameraInfo;
+}
+formaview::CameraSample Archive::camera(std::size_t index, double seconds) const {
+  return library([&] {
+    std::lock_guard lock(impl_->reading);
+    check(index < impl_->cameraObjects.size() && std::isfinite(seconds),
+          "ABC camera index/time invalid", ErrorCode::InvalidArgument);
+    return camera_value(impl_->cameraObjects[index], A::ISampleSelector(seconds));
+  });
+}
 const std::vector<SkippedObject> &Archive::skipped() const {
   return impl_->skipped;
 }
@@ -329,6 +376,23 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
     cancel(stop);
     check(++visited <= limits.objects && depth <= 256,
           "ABC hierarchy budget exceeded");
+    if (G::ICamera::matches(object.getHeader())) {
+      G::ICamera camera(object, A::kWrapExisting);
+      auto &schema = camera.getSchema();
+      check(schema.getNumSamples() > 0 && schema.getNumSamples() <= limits.samples,
+            "ABC camera sample count invalid", ErrorCode::InvalidArgument);
+      if (schema.getNumSamples() > 1)
+        add_times(schema.getTimeSampling(), schema.getNumSamples());
+      formaview::CameraInfo info;
+      info.path = object.getFullName();
+      info.name = object.getName();
+      info.node = static_cast<std::uint32_t>(p->cameraInfo.size());
+      info.sample = camera_value(camera,
+                                 A::ISampleSelector(schema.getTimeSampling()->getSampleTime(0)));
+      p->cameraObjects.push_back(camera);
+      p->cameraInfo.push_back(std::move(info));
+      return;
+    }
     if (G::IPolyMesh::matches(object.getHeader())) {
       G::IPolyMesh mesh(object, A::kWrapExisting);
       auto &schema = mesh.getSchema();
@@ -373,14 +437,14 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
   };
   visit(p->archive.getTop(), 0);
   cancel(stop);
-  if (p->info.empty()) {
+  if (p->info.empty() && p->cameraInfo.empty()) {
     std::string kinds;
     for (const auto &item : p->skipped)
       if (kinds.find(item.schema) == std::string::npos)
         kinds += (kinds.empty() ? "" : ", ") + item.schema;
     check(false,
           kinds.empty()
-              ? "ABC archive contains no polygon meshes"
+              ? "ABC archive contains no polygon meshes or cameras"
               : "ABC archive contains no polygon meshes; unsupported "
                 "schemas: " + kinds,
           ErrorCode::Unsupported);
@@ -389,6 +453,8 @@ Archive Archive::index(std::unique_ptr<Impl> p, Limits limits,
     for (const auto &info : p->info)
       if (!info.times.empty())
         times.insert(info.times.front());
+  if (times.empty() && !p->cameraObjects.empty())
+    times.insert(p->cameraObjects.front().getSchema().getTimeSampling()->getSampleTime(0));
   if (times.empty())
     times.insert(0);
   p->times.assign(times.begin(), times.end());

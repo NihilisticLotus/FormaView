@@ -1,5 +1,6 @@
 #include "model_scene.hpp"
 #include <QHash>
+#include <algorithm>
 
 void ModelScene::replace(const ModelDocument *document) {
   replace(prepare(document));
@@ -20,7 +21,10 @@ ModelScene::Prepared ModelScene::prepare(const ModelDocument *document) {
   for (const auto &value : document->nodes) {
     const auto node = value.toMap();
     const auto id = node.value("id").toString();
+    const bool camera = std::any_of(document->cameras.begin(), document->cameras.end(),
+        [&](const auto &item) { return id == QString("node/%1").arg(item.node); });
     auto item = std::make_unique<QStandardItem>(node.value("name").toString() +
+                                                (camera ? " [camera]" : "") +
                                                 " [" + id + "]");
     item->setData(id, NodeId);
     item->setData(node.value("stableId", id), StableId);

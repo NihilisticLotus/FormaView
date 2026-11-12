@@ -54,7 +54,8 @@ Rectangle {
                     required property string modelData
                     objectName: "modelModeTab" + index
                     // Geometry caches carry no skin: source weights do not apply.
-                    enabled: !(index===2 && root.session.geometryCache)
+                    enabled: !(index===2 && root.session.geometryCache) &&
+                             !(root.session.info.cameraOnly && index!==0)
                     text: modelData; checked: root.session.mode===index
                     onClicked: root.session.setMode(index)
                 }
@@ -244,7 +245,7 @@ Rectangle {
             text: Theme.t("左键拖动旋转 · 中/右拖平移 · 滚轮缩放 · F 聚焦 · 单击检查源点", "Left drag orbit · Middle/right drag pan · Wheel zoom · F focus · Click to inspect", "左鍵拖曳旋轉 · 中/右拖平移 · 滾輪縮放 · F 聚焦 · 按一下檢查來源點")
         }
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
-        ModelPointPanel { Layout.fillWidth: true; session: root.session }
+        ModelPointPanel { Layout.fillWidth: true; visible: !root.session.info.cameraOnly; session: root.session }
     }
     FileDialog {
         id: externalDialog

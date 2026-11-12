@@ -18,6 +18,51 @@ Matrix4 convert(const ufbx_matrix &m) {
   return {m.m00, m.m01, m.m02, m.m03, m.m10, m.m11, m.m12, m.m13,
           m.m20, m.m21, m.m22, m.m23, 0,     0,     0,     1};
 }
+formaview::CameraSample camera_sample(const ufbx_camera &camera,
+                                      const Matrix4 &world) {
+  formaview::CameraSample out;
+  out.world = world;
+  out.projection = camera.projection_mode == UFBX_PROJECTION_MODE_PERSPECTIVE
+                       ? "perspective" : "orthographic";
+  // The FBX projection axis metadata can be absent; do not infer a direction
+  // from a transform alone when ufbx marks the axis set invalid.
+  const auto axis = [](ufbx_coordinate_axis value) -> const char * {
+    switch (value) {
+    case UFBX_COORDINATE_AXIS_POSITIVE_X: return "+X";
+    case UFBX_COORDINATE_AXIS_NEGATIVE_X: return "-X";
+    case UFBX_COORDINATE_AXIS_POSITIVE_Y: return "+Y";
+    case UFBX_COORDINATE_AXIS_NEGATIVE_Y: return "-Y";
+    case UFBX_COORDINATE_AXIS_POSITIVE_Z: return "+Z";
+    case UFBX_COORDINATE_AXIS_NEGATIVE_Z: return "-Z";
+    default: return "unknown";
+    }
+  };
+  out.axes = ufbx_coordinate_axes_valid(camera.projection_axes)
+      ? std::string(axis(static_cast<ufbx_coordinate_axis>(camera.projection_axes.front ^ 1))) +
+            " forward, " + axis(camera.projection_axes.up) + " up"
+      : "unknown";
+  const auto positive = [](double value) {
+    return std::isfinite(value) && value > 0;
+  };
+  out.focal_mm = camera.focal_length_mm;
+  out.has_focal = positive(out.focal_mm);
+  out.aperture_x_mm = camera.aperture_size_inch.x * 25.4;
+  out.aperture_y_mm = camera.aperture_size_inch.y * 25.4;
+  out.has_aperture_x = positive(out.aperture_x_mm);
+  out.has_aperture_y = positive(out.aperture_y_mm);
+  if (out.projection == "perspective") {
+    out.fov_x_deg = camera.field_of_view_deg.x;
+    out.fov_y_deg = camera.field_of_view_deg.y;
+    out.has_fov_x = positive(out.fov_x_deg) && out.fov_x_deg < 180;
+    out.has_fov_y = positive(out.fov_y_deg) && out.fov_y_deg < 180;
+  }
+  out.near_plane = camera.near_plane;
+  out.far_plane = camera.far_plane;
+  out.has_near = positive(out.near_plane);
+  out.has_far = positive(out.far_plane) &&
+                (!out.has_near || out.far_plane > out.near_plane);
+  return out;
+}
 // SDK 2020.2 inheritance boundary, independently checked against SDK-authored
 // negative-scale, pivot, Euler-order and mixed-inheritance chains. Source
 // local channels remain ufbx-decoded; only their hierarchical composition is
@@ -490,6 +535,17 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
     }
     d.nodes.push_back(std::move(node));
   }
+  budget(s.cameras.count, sizeof(formaview::CameraInfo) + 256);
+  for (const auto *camera : s.cameras)
+    for (const auto *instance : camera->instances) {
+      cancelled(stop);
+      formaview::CameraInfo info;
+      info.node = instance->typed_id;
+      info.name = std::string(instance->name.data, instance->name.length);
+      info.path = info.name + " [node/" + std::to_string(info.node) + "]";
+      info.sample = camera_sample(*camera, d.nodes.at(info.node).default_world);
+      d.cameras.push_back(std::move(info));
+    }
   budget(s.meshes.count, 2 * sizeof(FbxMesh) + 512);
   for (const auto *m : s.meshes) {
     cancelled(stop);
@@ -649,6 +705,12 @@ MatrixPose FbxDocument::evaluate(std::size_t clip, double seconds,
     cancelled(stop);
     result.local.push_back(convert(effective_local(*n, evaluated.values)));
     result.world.push_back(convert(evaluated.values[n->typed_id]));
+  }
+  result.cameras.reserve(impl_->data.cameras.size());
+  for (const auto &info : impl_->data.cameras) {
+    const auto *node = pose->nodes[info.node];
+    result.cameras.push_back(camera_sample(*node->camera,
+                                           result.world.at(info.node)));
   }
   return result;
 }

@@ -117,6 +117,13 @@ QVariantMap compareFixedDecoder(const std::shared_ptr<const ModelDecoderSnapshot
     const FixedDecoderOptions &options = {});
 class ModelAbcSource;
 struct ModelDocument {
+  std::vector<formaview::CameraInfo> cameras;
+  // FBX evaluates the selected clip at source time. ABC rebuilds the sample
+  // document on cache seek and stores its current camera values directly.
+  std::function<std::vector<formaview::CameraSample>(std::size_t, double)> cameraAt;
+  // Bounded trajectory positions, indexed by clip then camera.
+  std::vector<std::vector<std::vector<formaview::Matrix4>>> cameraTrails;
+  bool cameraOnly{};
   std::shared_ptr<const ModelDecoderSnapshot> decoderSnapshot;
   // Alembic geometry cache: every document is one immutable timeline sample
   // of the shared archive (never animated through worldAt/clips). The source
@@ -214,8 +221,9 @@ struct ModelDocument {
              animNodeLocals.size() == animNodeParents.size())) && !externallyDriven;
   }
   [[nodiscard]] bool animated() const {
-    return worldAt && !animationClips.empty() &&
-           (skeletonOnly || externallyDriven || nativeAnimated);
+    return !animationClips.empty() &&
+           ((worldAt && (skeletonOnly || externallyDriven || nativeAnimated)) ||
+            (cameraOnly && cameraAt));
   }
   [[nodiscard]] int firstPlayableAnimation() const {
     if (animated())

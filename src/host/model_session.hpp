@@ -93,6 +93,9 @@ class ModelSession : public QObject {
   Q_PROPERTY(QVariantMap cacheInfo READ cacheInfo NOTIFY animChanged)
   // Per-mesh metadata changes only when a sample lands, not per clock tick.
   Q_PROPERTY(QVariantList cacheMeshes READ cacheMeshes NOTIFY changed)
+  Q_PROPERTY(QStringList cameras READ cameras NOTIFY changed)
+  Q_PROPERTY(int cameraIndex READ cameraIndex NOTIFY changed)
+  Q_PROPERTY(QVariantMap cameraInfo READ cameraInfo NOTIFY animChanged)
 public:
   explicit ModelSession(QObject *parent = nullptr);
   ~ModelSession() override;
@@ -183,6 +186,10 @@ public:
   bool geometryCache() const { return abcActive(); }
   QVariantMap cacheInfo() const;
   QVariantList cacheMeshes() const;
+  QStringList cameras() const;
+  int cameraIndex() const { return cameraIndex_; }
+  QVariantMap cameraInfo() const;
+  Q_INVOKABLE void selectCamera(int index);
   // Jump to a merged-timeline sample (random access; clamps the index).
   Q_INVOKABLE void seekSample(int index);
   // Stop an in-flight sample read and keep the presented sample.
@@ -385,6 +392,7 @@ private:
   quint64 textureRequest_{};
   int mesh_{}, bone_{}, mode_{}, material_{};
   int clipIndex_{};
+  int cameraIndex_{};
   double time_{};
   bool playing_{}, loop_{true};
   bool pairMeshVisible_{};

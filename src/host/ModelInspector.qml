@@ -10,6 +10,12 @@ Item {
     objectName: "modelInspector"
     required property var controller
     readonly property var session: controller.model
+    readonly property var camera: session.cameraInfo
+    function cameraValue(value, unit): string {
+        return value === undefined || value === null || !isFinite(Number(value))
+               ? Theme.t("源文件未提供 / 无法推导", "Not provided / cannot derive", "來源未提供 / 無法推導")
+               : Number(value).toFixed(3) + unit
+    }
     property int tab: 0
     onTabChanged: {
         if (tab!==1 && session.mode===2) session.setMode(0)
@@ -26,6 +32,7 @@ Item {
                     objectName: "modelInspectorTab" + index
                     Layout.fillWidth: true
                     text: modelData; checked: root.tab===index
+                    enabled: !root.session.info.cameraOnly || index===0
                     onClicked: root.tab=index
                 }
             }
@@ -72,6 +79,19 @@ Item {
                     ScrollBar.vertical: ScrollBar {}
                 }
                 Choice { Layout.fillWidth: true; model: root.session.meshes; currentIndex: root.session.meshIndex; onActivated: root.session.selectMesh(currentIndex); Accessible.name: Theme.t("检查网格", "Inspected mesh", "檢查網格") }
+                SectionHeader { id: camerasSection; objectName: "modelCameras"; Layout.fillWidth: true; visible: root.session.cameras.length>0; checked: true; text: Theme.t("资产相机 · 轨迹与视锥", "Asset cameras · path and frustum", "資產相機 · 軌跡與視錐") }
+                ColumnLayout {
+                    Layout.fillWidth: true; visible: camerasSection.visible && camerasSection.checked
+                    Choice { objectName: "modelCameraChoice"; Layout.fillWidth: true; model: root.session.cameras; currentIndex: root.session.cameraIndex; onActivated: root.session.selectCamera(currentIndex); Accessible.name: Theme.t("选择资产相机", "Select asset camera", "選取資產相機") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("源路径 · 当前时间", "Source path · current time", "來源路徑 · 目前時間"); value: (root.camera.path || "—") + " · " + Number(root.camera.time || 0).toFixed(3) + " s" }
+                    Readout { Layout.fillWidth: true; label: Theme.t("投影 · 局部轴向", "Projection · local axes", "投影 · 局部軸向"); value: (root.camera.projection || "unknown") + " · " + (root.camera.axes || "unknown") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("源世界位置", "Source world position", "來源世界位置"); value: root.camera.position || "—" }
+                    Readout { Layout.fillWidth: true; label: Theme.t("水平 / 垂直 FOV", "Horizontal / vertical FOV", "水平 / 垂直 FOV"); value: root.cameraValue(root.camera.fovX,"°") + " / " + root.cameraValue(root.camera.fovY,"°") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("焦距", "Focal length", "焦距"); value: root.cameraValue(root.camera.focalMm," mm") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("水平 / 垂直 filmback", "Horizontal / vertical filmback", "水平 / 垂直 filmback"); value: root.cameraValue(root.camera.apertureXmm," mm") + " / " + root.cameraValue(root.camera.apertureYmm," mm") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("近 / 远裁剪", "Near / far clipping", "近 / 遠裁剪"); value: root.cameraValue(root.camera.near,"") + " / " + root.cameraValue(root.camera.far,"") }
+                    Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.muted; font.pixelSize: Theme.noteText; text: (root.camera.fovSource || "") + " · " + (root.camera.unit || ""); textFormat: Text.PlainText }
+                }
                 OptionCheck { text: Theme.t("仅显示当前网格", "Isolate this mesh", "僅顯示目前網格"); checked: root.session.isolated; onToggled: root.session.setIsolated(checked) }
                 SectionHeader { id: sourceNode; objectName: "modelNodeMatrices"; Layout.fillWidth: true; text: Theme.t("节点与默认矩阵", "Node and default matrices", "節點與預設矩陣") }
                 Loader { objectName: "modelNodeDetails"; Layout.fillWidth: true; active: sourceNode.checked; visible: active; sourceComponent: Component { ModelSourceDetails { source: root.session.sourceNode } } }

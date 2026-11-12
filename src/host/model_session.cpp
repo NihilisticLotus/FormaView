@@ -373,7 +373,28 @@ void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
           m.normals[i] = n;
     }
   }
-  if (!d->triangles && !d->skeletonOnly && !allowEmpty)
+  for (const auto &camera : d->cameras) {
+    const auto &m = camera.sample.world;
+    const auto p = d->displayBasis.map(QVector3D(float(m[3]),float(m[7]),float(m[11])));
+    for (int axis = 0; axis < 3; ++axis) {
+      if (!std::isfinite(p[axis]))
+        throw skeletal::Failure(ErrorCode::InvalidArgument, "Non-finite camera position");
+      low[axis] = std::min(low[axis],p[axis]);
+      high[axis] = std::max(high[axis],p[axis]);
+    }
+  }
+  for (const auto &clip : d->cameraTrails)
+    for (const auto &trail : clip)
+      for (const auto &m : trail) {
+        const auto p = d->displayBasis.map(QVector3D(float(m[3]),float(m[7]),float(m[11])));
+        for (int axis = 0; axis < 3; ++axis) {
+          if (!std::isfinite(p[axis]))
+            throw skeletal::Failure(ErrorCode::InvalidArgument, "Non-finite camera trajectory");
+          low[axis] = std::min(low[axis],p[axis]);
+          high[axis] = std::max(high[axis],p[axis]);
+        }
+      }
+  if (!d->triangles && !d->skeletonOnly && d->cameras.empty() && !allowEmpty)
     throw skeletal::Failure(ErrorCode::InvalidArgument,
                             "No visible triangles in model");
   if (d->skeletonOnly || low.x() > high.x()) {
@@ -385,7 +406,7 @@ void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
     return;
   }
   d->center = (low + high) * .5F;
-  d->radius = std::max((high - low).length() * .5F, 1e-6F);
+  d->radius = std::max((high - low).length() * .5F, d->cameraOnly ? 1.F : 1e-6F);
 }
 std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
                                                  std::stop_token stop,
@@ -416,6 +437,69 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
         return holder->transform_evidence(token);
       };
     d->displayBasis = displayBasisFor(data.source.coordinates.up);
+    if (suffix == "fbx" && !data.cameras.empty()) {
+      d->cameras = data.cameras;
+      d->cameraAt = [holder](std::size_t clip, double seconds) {
+        if (holder->data().clips.empty()) {
+          std::vector<CameraSample> values;
+          for (const auto &camera : holder->data().cameras)
+            values.push_back(camera.sample);
+          return values;
+        }
+        return holder->evaluate(clip, seconds).cameras;
+      };
+      if (!data.clips.empty()) {
+        d->cameraTrails.resize(data.clips.size());
+        for (std::size_t c = 0; c < data.clips.size(); ++c) {
+          check(stop);
+          const auto &clip = data.clips[c];
+          auto &paths = d->cameraTrails[c];
+          paths.resize(data.cameras.size());
+          if (!clip.hasAnimatedChannels || !(clip.end > clip.start)) continue;
+          constexpr int steps = 32;
+          for (int sample = 0; sample <= steps; ++sample) {
+            check(stop);
+            const double time = clip.start + (clip.end - clip.start) * sample / steps;
+            const auto values = holder->evaluate(c, time).cameras;
+            for (std::size_t i = 0; i < values.size(); ++i)
+              paths[i].push_back(values[i].world);
+          }
+        }
+      }
+    }
+    if (suffix == "fbx" && data.meshes.empty() && !data.cameras.empty()) {
+      d->cameraOnly = true;
+      d->hash = text(data.source.identity.sha256);
+      d->coordinates = QString("FBX · source axes preserved · %1 m/unit")
+                           .arg(data.metres_per_unit, 0, 'g', 8);
+      for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+        const auto &node = data.nodes[i];
+        d->nodes.append(QVariantMap{
+            {"id", QString("node/%1").arg(i)},
+            {"name", text(node.source.original_name)},
+            {"parent", node.parent && !data.nodes[*node.parent].implicit_scene_root
+                           ? QString("node/%1").arg(*node.parent) : QString{}},
+            {"world", modelMatrixValues(node.default_world)},
+            {"active", true}});
+      }
+      for (const auto &clip : data.clips) {
+        ModelAnimationClip entry;
+        entry.name = text(clip.source.original_name);
+        entry.hasAnimatedChannels = clip.hasAnimatedChannels;
+        entry.start = clip.start; entry.end = clip.end;
+        entry.fps = clip.fps > 0 ? clip.fps : 30.0;
+        entry.lastFrame = static_cast<int>(std::max(0.0,
+            std::round((entry.end - entry.start) * entry.fps)));
+        d->animationClips.push_back(entry);
+        d->clips.push_back(QVariantMap{{"name", entry.name}, {"start", entry.start},
+                                        {"end", entry.end}, {"fps", entry.fps},
+                                        {"lastFrame", entry.lastFrame}});
+      }
+      d->name = QFileInfo(path).fileName();
+      finalizeModelGeometry(*d, stop);
+      lease.require_unchanged(lease.snapshot());
+      return d;
+    }
     if (suffix == "fbx" && data.meshes.empty() && !data.clips.empty()) {
       // M07: animation-only FBX becomes a skeleton preview document instead
       // of being rejected; target-driven external animation stays a separate
@@ -1361,6 +1445,7 @@ void ModelSession::reset(bool opening) {
   playing_ = false;
   time_ = 0;
   clipIndex_ = 0;
+  cameraIndex_ = 0;
   renderedState_ = {};
   frameCache_.clear();
   cachedBytes_ = 0;
@@ -1922,7 +2007,7 @@ void ModelSession::attachRenderWindow(QQuickWindow *window) {
 }
 
 bool ModelSession::gpuSkinActive() const {
-  return document_ && (document_->gpuSkinDomain() ||
+  return document_ && document_->cameras.empty() && (document_->gpuSkinDomain() ||
                        (pairMeshVisible_ && document_->pairPreviewDomain()));
 }
 void ModelSession::enableGpuSkinning(bool enabled) {
@@ -2094,6 +2179,23 @@ void ModelSession::refreshAnimationFrame() {
   if (clipIndex_ < 0 ||
       static_cast<std::size_t>(clipIndex_) >= document_->animationClips.size())
     return;
+  if (document_->cameraOnly) {
+    try {
+      const auto result = buildModelFrames(*document_, renderState(), ++frameRevision_, {});
+      frames_ = result;
+      frame_ = result.model;
+      renderedState_.clip = clipIndex_;
+      renderedState_.time = time_;
+      frameError_.clear();
+      emit frameChanged();
+    } catch (const std::exception &e) {
+      frameError_ = QString::fromUtf8(e.what());
+      playing_ = false;
+      animTimer_.stop();
+      emit changed();
+    }
+    return;
+  }
   if (refreshGpuFrame()) return;
   // Explicit changes invalidate in-flight frames; clock ticks may publish
   // their sampled time while coalescing the next pose into one pending job.
@@ -2139,7 +2241,7 @@ void ModelSession::refreshAnimationFrame() {
                              return !mesh.materials.empty() || !mesh.colours.empty() || !mesh.textures.empty();
                            }) ||
                            std::any_of(state.textures.begin(), state.textures.end(), [](const auto &links) { return !links.empty(); }) ||
-                           !state.highlightedNode.isEmpty() ||
+                           !state.highlightedNode.isEmpty() || !document->cameras.empty() ||
                            std::find(state.visible.begin(), state.visible.end(), false) != state.visible.end())
                          result = buildModelFrames(*document, state, revision, token, pose.get());
                        else
@@ -2922,6 +3024,10 @@ QVariantMap ModelSession::clipInfo() const {
 QVariantMap ModelSession::info() const {
   if (!document_)
     return {};
+  if (document_->cameraOnly)
+    return {{"sha256", document_->hash}, {"path", path_},
+            {"name", document_->name}, {"coordinates", document_->coordinates},
+            {"cameraOnly", true}, {"points", 0}, {"triangles", 0}};
   if (document_->skeletonOnly) {
     const auto &clip = document_->animated()
                            ? document_->animationClips[
@@ -2973,6 +3079,57 @@ QStringList ModelSession::meshes() const {
       v.append(m.name);
   return v;
 }
+QStringList ModelSession::cameras() const {
+  QStringList names;
+  if (document_)
+    for (const auto &camera : document_->cameras)
+      names.append(QString::fromStdString(camera.name));
+  return names;
+}
+void ModelSession::selectCamera(int index) {
+  if (!document_ || index < 0 ||
+      static_cast<std::size_t>(index) >= document_->cameras.size() ||
+      cameraIndex_ == index) return;
+  cameraIndex_ = index;
+  emit changed();
+  emit animChanged();
+}
+QVariantMap ModelSession::cameraInfo() const {
+  if (!document_ || document_->cameras.empty() || cameraIndex_ < 0 ||
+      static_cast<std::size_t>(cameraIndex_) >= document_->cameras.size()) return {};
+  const auto &camera = document_->cameras[static_cast<std::size_t>(cameraIndex_)];
+  auto sample = camera.sample;
+  if (document_->cameraAt && document_->animated() && clipIndex_ >= 0) {
+    try {
+      const auto values = document_->cameraAt(static_cast<std::size_t>(clipIndex_), time_);
+      if (static_cast<std::size_t>(cameraIndex_) < values.size())
+        sample = values[static_cast<std::size_t>(cameraIndex_)];
+    } catch (...) { return {{"name",QString::fromStdString(camera.name)},
+                           {"status",QStringLiteral("sample unavailable")}}; }
+  }
+  const auto number = [](bool valid, double value) -> QVariant {
+    return valid ? QVariant(value) : QVariant{};
+  };
+  const auto &m = sample.world;
+  return {{"name", QString::fromStdString(camera.name)},
+          {"path", QString::fromStdString(camera.path)},
+          {"projection", QString::fromStdString(sample.projection)},
+          {"axes", QString::fromStdString(sample.axes)},
+          {"position", QString("%1, %2, %3").arg(m[3],0,'g',6)
+                         .arg(m[7],0,'g',6).arg(m[11],0,'g',6)},
+          {"focalMm", number(sample.has_focal,sample.focal_mm)},
+          {"apertureXmm", number(sample.has_aperture_x,sample.aperture_x_mm)},
+          {"apertureYmm", number(sample.has_aperture_y,sample.aperture_y_mm)},
+          {"fovX", number(sample.has_fov_x,sample.fov_x_deg)},
+          {"fovY", number(sample.has_fov_y,sample.fov_y_deg)},
+          {"near", number(sample.has_near,sample.near_plane)},
+          {"far", number(sample.has_far,sample.far_plane)},
+          {"fovSource", document_->geometryCache ? QStringLiteral("derived from filmback / focal length")
+                                                  : QStringLiteral("ufbx evaluated camera")},
+          {"time", document_->geometryCache ? document_->geometryCache->times()[document_->cacheSample] : time_},
+          {"unit", document_->geometryCache ? QStringLiteral("ABC source units unspecified; clipping in centimetres")
+                                            : document_->coordinates}};
+}
 QStringList ModelSession::uvSets() const {
   return document_ && !document_->meshes.empty()
              ? document_->meshes.at(static_cast<std::size_t>(mesh_)).uvNames
@@ -3007,6 +3164,10 @@ void ModelSession::selectTreeIndex(const QModelIndex &index) {
   if (index.model() != &scene_)
     return;
   selectedNode_ = index.data(ModelScene::NodeId).toString();
+  if (document_)
+    for (std::size_t i = 0; i < document_->cameras.size(); ++i)
+      if (selectedNode_ == QString("node/%1").arg(document_->cameras[i].node))
+        selectCamera(static_cast<int>(i));
   emit changed();
   const int mesh = index.data(ModelScene::MeshIndex).toInt();
   if (mesh >= 0) {
