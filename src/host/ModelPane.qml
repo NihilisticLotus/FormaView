@@ -177,7 +177,7 @@ Rectangle {
             AnimationBar {
                 id: animationBarHost
                 objectName: "modelAnimationBarHost"
-                visible: root.session.animated || root.session.canAttachExternalAnimation
+                visible: root.session.hasPlayableAnimation || animationBarHost.hasDiagnostics
                 enabled: visible
                 session: root.session
                 anchors.left: parent.left

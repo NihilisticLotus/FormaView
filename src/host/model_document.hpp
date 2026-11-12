@@ -10,6 +10,7 @@
 #include "formaview/geometry_cache.hpp"
 #include <map>
 #include <stop_token>
+#include <cmath>
 
 struct ModelWeight {
   int bone;
@@ -34,6 +35,12 @@ struct ModelAnimationClip {
   double start{}, end{}; // Real seconds from the source time domain.
   double fps{30};
   int lastFrame{};       // Last sample index for display mapping.
+  bool hasAnimatedChannels{true};
+  [[nodiscard]] bool playable() const {
+    return hasAnimatedChannels && std::isfinite(start) && std::isfinite(end) &&
+           end > start && std::isfinite(end - start) &&
+           std::isfinite(fps) && fps > 0;
+  }
 };
 struct ModelMorphTarget {
   std::vector<formaview::skeletal::Vec3> positionDeltas; // Geometry-local.
@@ -209,6 +216,12 @@ struct ModelDocument {
   [[nodiscard]] bool animated() const {
     return worldAt && !animationClips.empty() &&
            (skeletonOnly || externallyDriven || nativeAnimated);
+  }
+  [[nodiscard]] int firstPlayableAnimation() const {
+    if (animated())
+      for (std::size_t i = 0; i < animationClips.size(); ++i)
+        if (animationClips[i].playable()) return static_cast<int>(i);
+    return -1;
   }
   // Full-node animation domain (external drive or native glTF clips): parent
   // chains, root candidates and lock worlds use it instead of boneParents.

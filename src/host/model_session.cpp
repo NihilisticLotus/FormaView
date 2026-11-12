@@ -442,6 +442,7 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
         const auto &clip = data.clips[c];
         ModelAnimationClip entry;
         entry.name = text(clip.source.original_name);
+        entry.hasAnimatedChannels = clip.hasAnimatedChannels;
         entry.start = clip.start;
         entry.end = clip.end;
         entry.fps = clip.fps > 0 ? clip.fps : 30.0;
@@ -897,6 +898,7 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
       for (const auto &clip : data.clips) {
         ModelAnimationClip entry;
         entry.name = text(clip.source.original_name);
+        entry.hasAnimatedChannels = clip.hasAnimatedChannels;
         entry.start = clip.start;
         entry.end = clip.end;
         entry.fps = clip.fps > 0 ? clip.fps : 30.0;
@@ -1051,6 +1053,7 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
       const auto &sequence = asset->sequences[c];
       ModelAnimationClip entry;
       entry.name = text(sequence.source.original_name);
+      entry.hasAnimatedChannels = sequence.frame_count > 1;
       entry.start = sequence.time.source_start_seconds;
       entry.end = sequence.time.source_end_seconds;
       entry.fps = sequence.fps > 0 ? sequence.fps : 30.0;
@@ -1651,8 +1654,9 @@ void ModelSession::poll() {
           (!document_ || document_->referenceLocals.empty()))
         rootBase_ = 0;
       if (document_ && document_->animated()) {
-        time_ = document_->animationClips.front().start;
-        if (resumePlaybackOnLanding_) {
+        clipIndex_ = std::max(0, document_->firstPlayableAnimation());
+        time_ = document_->animationClips[static_cast<std::size_t>(clipIndex_)].start;
+        if (resumePlaybackOnLanding_ && canPlayAnimation()) {
           playing_ = true;
           animClock_.restart();
           animTimer_.start();
@@ -2048,7 +2052,7 @@ void ModelSession::tickAnimation() {
     tickAbc();
     return;
   }
-  if (!playing_ || !document_ || !document_->animated()) {
+  if (!playing_ || !canPlayAnimation()) {
     animTimer_.stop();
     playing_ = false;
     emit animChanged();
@@ -2064,7 +2068,7 @@ void ModelSession::tickAnimation() {
   time_ += dt * speed_;
   if (time_ > clip.end) {
     if (loop_) {
-      const double duration = std::max(1e-9, clip.end - clip.start);
+      const double duration = clip.end - clip.start;
       if (std::isfinite(time_)) {
         time_ = clip.start + std::fmod(time_ - clip.start, duration);
       } else {
@@ -2188,7 +2192,7 @@ void ModelSession::togglePlay() {
     emit animChanged();
     return;
   }
-  if (!document_ || !document_->animated())
+  if (!canPlayAnimation())
     return;
   playing_ = !playing_;
   if (playing_) {
@@ -2212,7 +2216,7 @@ void ModelSession::seek(double seconds) {
     requestAbcSample(abcSource_->nearest(time_));
     return;
   }
-  if (!document_ || !document_->animated() || !std::isfinite(seconds))
+  if (!canPlayAnimation() || !std::isfinite(seconds))
     return;
   const auto &clip =
       document_->animationClips[static_cast<std::size_t>(clipIndex_)];
@@ -2230,7 +2234,7 @@ void ModelSession::stepFrame(int frames) {
         static_cast<long long>(abcRequested_) + frames, 0LL, last)));
     return;
   }
-  if (!document_ || !document_->animated() || !frames)
+  if (!canPlayAnimation() || !frames)
     return;
   const auto &clip =
       document_->animationClips[static_cast<std::size_t>(clipIndex_)];
@@ -2247,6 +2251,10 @@ void ModelSession::setClipIndex(int index) {
     return;
   clipIndex_ = index;
   time_ = document_->animationClips[static_cast<std::size_t>(index)].start;
+  if (!canPlayAnimation()) {
+    playing_ = false;
+    animTimer_.stop();
+  }
   ++poseRequest_;
   refreshAnimationFrame();
   emit animChanged();
@@ -2704,6 +2712,7 @@ void ModelSession::applyExternalDrive(
     const auto &clip = data.clips[c];
     ModelAnimationClip entry;
     entry.name = text(clip.source.original_name);
+    entry.hasAnimatedChannels = clip.hasAnimatedChannels;
     entry.source = source;
     entry.start = clip.start;
     entry.end = clip.end;
@@ -2896,16 +2905,17 @@ QVariantMap ModelSession::clipInfo() const {
     return {};
   const auto &clip =
       document_->animationClips[static_cast<std::size_t>(clipIndex_)];
-  const int frame = clip.fps > 0
-                        ? static_cast<int>(std::llround(
-                              (time_ - clip.start) * clip.fps))
-                        : 0;
+  const auto lastFrame = std::max(0, clip.lastFrame);
+  const double sample = (time_ - clip.start) * clip.fps;
+  const int frame = std::isfinite(sample)
+      ? static_cast<int>(std::clamp(std::round(sample), 0.0, double(lastFrame))) : 0;
   return {{"name", clip.name},
+          {"playable", clip.playable()},
           {"start", clip.start},
           {"end", clip.end},
           {"fps", clip.fps},
-          {"lastFrame", clip.lastFrame},
-          {"frame", std::clamp(frame, 0, clip.lastFrame)},
+          {"lastFrame", lastFrame},
+          {"frame", frame},
           {"time", time_}};
 }
 

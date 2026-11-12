@@ -14,7 +14,9 @@ Rectangle {
     property bool detailsVisible: false
     readonly property int controlHeight: 28
     readonly property var clipData: root.session.clipInfo
-    readonly property bool ready: root.session.animated && root.clipData && root.clipData.name !== undefined
+    readonly property bool ready: root.session.canPlayAnimation
+    readonly property bool hasDiagnostics: root.session.externalInfo.driven === true || root.session.externalInfo.status === "refused" || root.session.info.psa === true || !!root.session.info.referencePath
+    readonly property bool effectiveCollapsed: root.collapsed && root.session.hasPlayableAnimation
     ButtonGroup { id: rootBaseGroup }
     ButtonGroup { id: rootBoneGroup }
     function speedText(value: real): string {
@@ -24,7 +26,7 @@ Rectangle {
     radius: Theme.radius
     border.width: 0
     border.color: Theme.line
-    implicitHeight: (collapsed ? expandRow.implicitHeight + 8 : content.implicitHeight + 12)
+    implicitHeight: (effectiveCollapsed ? expandRow.implicitHeight + 8 : content.implicitHeight + 12)
 
     RowLayout {
         id: expandRow
@@ -32,7 +34,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 4
-        visible: root.collapsed
+        visible: root.effectiveCollapsed
         Tool {
             objectName: "animBarExpand"
             text: Theme.t("时间轴", "Timeline", "時間軸")
@@ -54,10 +56,11 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: 6
         spacing: 2
-        visible: !root.collapsed
+        visible: !root.effectiveCollapsed
         Flow {
             id: controls
             objectName: "animControls"
+            visible: root.session.hasPlayableAnimation
             Layout.fillWidth: true
             spacing: 6
             Tool {
@@ -160,7 +163,7 @@ Rectangle {
                     model: root.session.clips
                     textRole: "name"
                     currentIndex: root.session.clipIndex
-                    enabled: root.ready
+                    enabled: root.session.hasPlayableAnimation
                     onActivated: index => root.session.setClipIndex(index)
                     Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
                 }
@@ -299,7 +302,7 @@ Rectangle {
         Flow {
             objectName: "animDetails"
             Layout.fillWidth: true
-            visible: root.detailsVisible
+            visible: root.detailsVisible || (!root.session.hasPlayableAnimation && root.session.info.psa === true)
             spacing: 6
             Tool {
                 objectName: "animPairMeshToggle"
@@ -382,6 +385,7 @@ Rectangle {
 
         Slider {
             objectName: "animScrubber"
+            visible: root.session.hasPlayableAnimation
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             Layout.preferredHeight: 24
@@ -394,7 +398,7 @@ Rectangle {
         }
         Flow {
             Layout.fillWidth: true
-            visible: root.detailsVisible
+            visible: root.detailsVisible && root.session.hasPlayableAnimation
             spacing: 12
             Label {
                 objectName: "animStart"

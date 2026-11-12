@@ -604,9 +604,19 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
     d.meshes.push_back(std::move(out));
   }
   budget(s.anim_stacks.count, 2 * sizeof(FbxClip) + 512);
-  for (const auto *clip : s.anim_stacks)
+  for (const auto *clip : s.anim_stacks) {
+    bool animated = false;
+    for (const auto *layer : clip->layers)
+      for (const auto &prop : layer->anim_props)
+        if (prop.anim_value)
+          for (const auto *curve : prop.anim_value->curves)
+            if (curve && curve->keyframes.count > 1 &&
+                curve->keyframes.data[0].time <
+                    curve->keyframes.data[curve->keyframes.count - 1].time)
+              animated = true;
     d.clips.push_back({source(d.source, clip->element), clip->time_begin,
-                       clip->time_end, d.fps});
+                       clip->time_end, d.fps, animated});
+  }
   cancelled(stop);
   return FbxDocument{std::move(impl)};
 }

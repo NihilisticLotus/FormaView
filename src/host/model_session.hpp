@@ -66,6 +66,8 @@ class ModelSession : public QObject {
   Q_PROPERTY(QString textureError READ textureError NOTIFY changed)
   Q_PROPERTY(bool textureBusy READ textureBusy NOTIFY changed)
   Q_PROPERTY(bool animated READ animated NOTIFY changed)
+  Q_PROPERTY(bool hasPlayableAnimation READ hasPlayableAnimation NOTIFY changed)
+  Q_PROPERTY(bool canPlayAnimation READ canPlayAnimation NOTIFY animChanged)
   Q_PROPERTY(QVariantList clips READ clips NOTIFY changed)
   Q_PROPERTY(int clipIndex READ clipIndex NOTIFY animChanged)
   Q_PROPERTY(double time READ time NOTIFY animChanged)
@@ -155,6 +157,14 @@ public:
   bool canClearTexture() const;
   bool textureBusy() const { return textureBusy_; }
   bool animated() const { return document_ && document_->animated(); }
+  bool hasPlayableAnimation() const {
+    return document_ && document_->firstPlayableAnimation() >= 0;
+  }
+  bool canPlayAnimation() const {
+    return animated() && clipIndex_ >= 0 &&
+           static_cast<std::size_t>(clipIndex_) < document_->animationClips.size() &&
+           document_->animationClips[static_cast<std::size_t>(clipIndex_)].playable();
+  }
   QVariantList clips() const {
     return document_ ? document_->clips : QVariantList{};
   }

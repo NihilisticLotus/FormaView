@@ -191,7 +191,24 @@ int main(int argc, char **argv) {
             {"binding", QJsonObject::fromVariantMap(session.bindingInfo())},
             {"lines", lines}};
       }
-      records.append(QJsonObject{{"source_nodes", sourceNodes},
+      QJsonObject playback;
+      if (qEnvironmentVariableIsSet("FORMAVIEW_PROBE_PLAYBACK")) {
+        session.setMode(0);
+        wait();
+        session.togglePlay();
+        const auto started = session.playing();
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < 250) {
+          QCoreApplication::processEvents();
+          QThread::msleep(2);
+        }
+        playback = {{"started", started}, {"playing", session.playing()},
+                    {"time", session.time()}, {"frame_error", session.frameError()},
+                    {"clip", QJsonObject::fromVariantMap(session.clipInfo())}};
+        if (session.playing()) session.togglePlay();
+      }
+      records.append(QJsonObject{{"playback", playback}, {"source_nodes", sourceNodes},
                                  {"skeleton_tree", skeletonTree},
                                  {"source_meshes", sourceMeshes},
                                  {"skeleton", skeletonEvidence},

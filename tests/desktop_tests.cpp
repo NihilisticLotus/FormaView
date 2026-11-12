@@ -505,6 +505,168 @@ private slots:
     QTRY_VERIFY(std::abs(brand->mapToItem(rail, {0, 0}).x()-20) < .01);
     evidence_["icon_alignment"] = "narrow rail centred; list icons centred in both densities; offscreen scaling is not native DPI acceptance";
   }
+  void modelAnimationCapability() {
+#ifdef FORMAVIEW_MODEL_UI
+    ModelAnimationClip valid;
+    valid.start = -1; valid.end = 1; valid.fps = 30;
+    QVERIFY(valid.playable());
+    auto clip = valid; clip.end = clip.start; QVERIFY(!clip.playable());
+    clip = valid; clip.end = -2; QVERIFY(!clip.playable());
+    clip = valid; clip.start = std::numeric_limits<double>::quiet_NaN(); QVERIFY(!clip.playable());
+    clip = valid; clip.end = std::numeric_limits<double>::infinity(); QVERIFY(!clip.playable());
+    clip = valid; clip.fps = 0; QVERIFY(!clip.playable());
+    clip = valid; clip.fps = std::numeric_limits<double>::infinity(); QVERIFY(!clip.playable());
+    clip = valid; clip.hasAnimatedChannels = false; QVERIFY(!clip.playable());
+    clip = valid; clip.start = -std::numeric_limits<double>::max();
+    clip.end = std::numeric_limits<double>::max(); QVERIFY(!clip.playable());
+    ModelDocument mixed;
+    mixed.nativeAnimated = true;
+    mixed.worldAt = [](std::size_t, double) { return std::vector<formaview::Matrix4>{}; };
+    auto pose = valid; pose.end = pose.start;
+    mixed.animationClips = {pose, valid};
+    QCOMPARE(mixed.firstPlayableAnimation(), 1);
+    mixed.animationClips = {pose};
+    QCOMPARE(mixed.firstPlayableAnimation(), -1);
+    mixed.animationClips.clear();
+    QCOMPARE(mixed.firstPlayableAnimation(), -1);
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
+  void modelAnimationAvailability() {
+#ifdef FORMAVIEW_MODEL_UI
+    try {
+    const QDir samples(requireFixture("FORMAVIEW_PLAYBACK_FIXTURES"));
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(session);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    const auto open = [&](const QString &name) {
+      const auto path = samples.filePath(name);
+      if (!QFileInfo::exists(path)) return false;
+      desktop_->openPath(path);
+      return QTest::qWaitFor([&] {
+        const auto frame = session->frame();
+        const auto geometry = frame && frame->geometry ? frame->geometry : frame;
+        return session->path() == path && !session->busy() && !session->preparing() &&
+               modelPanelsReady() && geometry && !geometry->vertices.empty();
+      }, 30000) && session->inspectable() && session->frameError().isEmpty();
+    };
+    for (const auto *name : {"static.gltf", "single-key.gltf", "placeholder-zero.fbx", "placeholder-range.fbx"}) {
+      QVERIFY2(open(name), qPrintable(session->error()+session->frameError()));
+      QVERIFY(!session->hasPlayableAnimation());
+      QVERIFY(!session->canPlayAnimation());
+      auto *bar = window_->findChild<QQuickItem *>("modelAnimationBarHost");
+      QVERIFY(bar && !bar->isVisible());
+      auto *view = item("modelViewport");
+      QVERIFY(view);
+      const auto time = session->time();
+      for (int i=0; i<3; ++i) {
+        session->togglePlay(); session->stepFrame(1); session->stepFrame(-1); session->seek(100);
+        view->forceActiveFocus(); QTest::keyClick(window_, Qt::Key_Space);
+      }
+      QTest::qWait(60);
+      QVERIFY(!session->playing());
+      QCOMPARE(session->time(), time);
+      QVERIFY(session->frameError().isEmpty());
+      QVERIFY(window_->grabWindow().save(root_ + "/no-animation-" + name + ".png"));
+    }
+    QVERIFY(session->canAttachExternalAnimation());
+    QVERIFY(item("animExternalAttach"));
+    session->attachExternalAnimation(samples.filePath("invalid.fbx"));
+    QTRY_VERIFY(!session->externalBusy());
+    QCOMPARE(session->externalInfo().value("status").toString(), "refused");
+    auto *diagnosticBar = window_->findChild<QQuickItem *>("modelAnimationBarHost");
+    QTRY_VERIFY(diagnosticBar && diagnosticBar->isVisible());
+    QVERIFY(item("animExternalStatus"));
+    QVERIFY(!item("animPlay"));
+    QVERIFY(!item("animScrubber"));
+    QVERIFY(window_->grabWindow().save(root_ + "/no-animation-real-diagnostic.png"));
+    QVERIFY2(open("mixed.gltf"), qPrintable(session->error()+session->frameError()));
+    QCOMPARE(session->clipIndex(), 1); // Keep source indices; skip the one-key pose at landing.
+    QVERIFY(session->hasPlayableAnimation() && session->canPlayAnimation());
+    auto *bar = window_->findChild<QQuickItem *>("modelAnimationBarHost");
+    QVERIFY(bar && bar->isVisible());
+    bar->setProperty("collapsed", false);
+    session->togglePlay();
+    QTRY_VERIFY(session->time() > 0.01);
+    session->setClipIndex(0);
+    QVERIFY(!session->playing() && !session->canPlayAnimation());
+    QVERIFY(bar->isVisible());
+    auto *choice = item("animClip");
+    QVERIFY(choice && choice->isEnabled());
+    session->togglePlay(); session->seek(0.5); session->stepFrame(1);
+    QVERIFY(!session->playing()); QCOMPARE(session->time(), 0.);
+    session->setClipIndex(1);
+    QVERIFY(session->canPlayAnimation());
+    session->seek(.5);
+    QCOMPARE(session->time(), .5);
+    session->stepFrame(-1);
+    QCOMPARE(session->time(), 0.);
+    QVERIFY(window_->grabWindow().save(root_ + "/animation-restored.png"));
+    session->togglePlay();
+    QVERIFY2(open("static.gltf"), qPrintable(session->error()+session->frameError())); // Static landing stops the old clock.
+    QVERIFY(!session->playing());
+    QVERIFY(!bar->isVisible());
+    QVERIFY2(open("animated.gltf"), qPrintable(session->error()+session->frameError()));
+    QVERIFY(bar->isVisible() && session->canPlayAnimation());
+    session->togglePlay(); QTRY_VERIFY(session->time() > 0.01);
+    session->togglePlay();
+    QVERIFY2(open("animated.fbx"), qPrintable(session->error()+session->frameError()));
+    QVERIFY(session->canPlayAnimation());
+    session->togglePlay(); QTRY_VERIFY(session->time() > 0.01);
+    session->togglePlay();
+    QVERIFY(session->frameError().isEmpty());
+    const auto animatedFbx = formaview::skeletal::FbxDocument::read(
+        std::filesystem::path(samples.filePath("animated.fbx").toStdWString()));
+    QVERIFY(animatedFbx.data().clips.front().hasAnimatedChannels);
+    QVERIFY(animatedFbx.evaluate(0, 0).world != animatedFbx.evaluate(0, .5).world);
+    const auto source = formaview::skeletal::FbxDocument::read(
+        std::filesystem::path(samples.filePath("placeholder-zero.fbx").toStdWString()));
+    QVERIFY(!source.data().clips.front().hasAnimatedChannels);
+    QVERIFY_THROWS_EXCEPTION(formaview::skeletal::Failure, (void)source.evaluate(0, 1.0));
+    session->open(samples.filePath("invalid.fbx"));
+    QTRY_VERIFY(!session->busy());
+    QVERIFY(!session->error().isEmpty()); // Genuine read errors remain visible.
+    for (const auto &name : {QStringLiteral("single-key.psa"), QStringLiteral("animated.psa")}) {
+      const auto path = samples.filePath(name);
+      desktop_->openPath(path);
+      QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && !session->busy() && !session->preparing(), 15000);
+      QVERIFY2(session->inspectable(), qPrintable(session->error()+session->frameError()));
+      const auto playable = name == "animated.psa";
+      QCOMPARE(session->canPlayAnimation(), playable);
+      session->togglePlay();
+      QCOMPARE(session->playing(), playable);
+      if (playable) session->togglePlay();
+      else {
+        QVERIFY(item("animReferenceStatus"));
+        QVERIFY(item("animPairingMenuButton"));
+        QVERIFY(!item("animPlay"));
+        QVERIFY(!item("animScrubber"));
+      }
+    }
+#ifdef FORMAVIEW_TEST_ABC
+    const auto singleCache = root_ + "/single-animation-sample.abc";
+    writeAbc(singleCache, 1, false);
+    desktop_->openPath(singleCache);
+    QTRY_VERIFY_WITH_TIMEOUT(session->geometryCache() && !session->busy() && !session->preparing(), 15000);
+    QCOMPARE(session->cacheInfo().value("samples").toInt(), 1);
+    QTRY_VERIFY(item("modelCacheTimelineHost"));
+    QVERIFY(!item("modelAnimationBarHost"));
+    QVERIFY(item("cachePlay") && !item("cachePlay")->isEnabled());
+    session->togglePlay(); session->stepFrame(1); session->seek(1.);
+    QVERIFY(!session->playing());
+    QCOMPARE(session->time(), session->cacheInfo().value("start").toDouble());
+#endif
+    evidence_["animation_availability"] = "no clips, one-key pose, zero/positive-range curve-less FBX; hidden bar, direct/Space guards, mixed source indices/clip recovery, static landing stops resume; genuine read/range errors retained; offscreen CPU state/layout only";
+    } catch (const MissingFixture &error) {
+      QSKIP(error.what());
+    } catch (const std::exception &error) {
+      QFAIL(error.what());
+    }
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
   void desktopQuickNavigation() {
     QString target = root_ + "/OneDrive/重定向桌面";
     QVERIFY(QDir().mkpath(target));
@@ -11257,7 +11419,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"desktopQuickNavigation", "fileViewPreferenceCompatibility", "fileViewModes", "fileViewResetDuringIncubation", "iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
+    const QSet<QString> allowed{"modelAnimationCapability", "modelAnimationAvailability", "desktopQuickNavigation", "fileViewPreferenceCompatibility", "fileViewModes", "fileViewResetDuringIncubation", "iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

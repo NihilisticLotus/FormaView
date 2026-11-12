@@ -52,6 +52,7 @@ struct FbxMesh {
 struct FbxClip {
   SourceMetadata source;
   double start{}, end{}, fps{};
+  bool hasAnimatedChannels{};
 };
 struct FbxData {
   SourceMetadata source;

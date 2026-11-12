@@ -30,7 +30,7 @@ FocusScope {
         Keys.onPressed: event => {
             if (event.key === Qt.Key_F) { viewport.fit(true); event.accepted = true }
             else if (event.key === Qt.Key_Home) { viewport.fit(); event.accepted = true }
-            else if (event.key === Qt.Key_Space && !root.uv && root.session && root.session.animated) { root.session.togglePlay(); event.accepted = true }
+            else if (event.key === Qt.Key_Space && !root.uv && root.session && root.session.canPlayAnimation) { root.session.togglePlay(); event.accepted = true }
         }
         MouseArea {
             anchors.fill: parent
