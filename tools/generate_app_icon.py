@@ -26,7 +26,9 @@ def polygon(commands):
                 points.append(tuple((1-t)**2*a[j]+2*(1-t)*t*b[j]+t*t*c[j] for j in (0,1)))
     return points
 svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><rect x="4" y="4" width="248" height="248" rx="52" fill="#242429"/><path d="M58 91V58h34M164 58h34v34M198 164v34h-34M92 198H58v-34" fill="none" stroke="#f4f0e8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>'
-svg += ''.join(f'<path fill="{color}" d="{path_data(commands)}"/>' for color,commands in faces) + '</svg>\n'
+# Centre the folded mark within the preview frame without changing its facets.
+mark_offset = (-0.5, 26.5)
+svg += '<g transform="translate(-0.5 26.5)">' + ''.join(f'<path fill="{color}" d="{path_data(commands)}"/>' for color,commands in faces) + '</g></svg>\n'
 (root/'formaview.svg').write_text(svg,encoding='utf-8')
 scale=4
 image=Image.new('RGBA',(256*scale,256*scale))
@@ -36,6 +38,6 @@ draw.line([(58*scale,91*scale),(58*scale,58*scale),(92*scale,58*scale)],fill='#f
 draw.line([(164*scale,58*scale),(198*scale,58*scale),(198*scale,92*scale)],fill='#f4f0e8',width=12*scale,joint='curve')
 draw.line([(198*scale,164*scale),(198*scale,198*scale),(164*scale,198*scale)],fill='#f4f0e8',width=12*scale,joint='curve')
 draw.line([(92*scale,198*scale),(58*scale,198*scale),(58*scale,164*scale)],fill='#f4f0e8',width=12*scale,joint='curve')
-for color,commands in faces: draw.polygon([(x*scale,y*scale) for x,y in polygon(commands)],fill=color)
+for color,commands in faces: draw.polygon([((x+mark_offset[0])*scale,(y+mark_offset[1])*scale) for x,y in polygon(commands)],fill=color)
 image=image.resize((256,256),Image.Resampling.LANCZOS)
 image.save(root/'formaview.ico',sizes=[(n,n) for n in (16,20,24,32,40,48,64,128,256)])

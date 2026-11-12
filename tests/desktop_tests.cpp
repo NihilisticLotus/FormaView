@@ -473,6 +473,37 @@ private slots:
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
   }
+  void iconAlignment() {
+    desktop_->preference("thumbnails", false);
+    desktop_->navigate(small_);
+    QTRY_VERIFY(idle() && desktop_->directory() == small_);
+    QQmlComponent component(engine_.get());
+    component.loadFromModule("FormaView.TestUI", "NavigationRail");
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    std::unique_ptr<QObject> object(component.createWithInitialProperties(
+        {{"page", "assets"}, {"collapsed", true}}));
+    auto *rail = qobject_cast<QQuickItem *>(object.get());
+    QVERIFY(rail);
+    rail->setParentItem(window_->contentItem());
+    rail->setSize({56, 600});
+    auto *brand = rail->findChild<QQuickItem *>("navigationBrand");
+    QVERIFY(brand);
+    const auto density = desktop_->preferences().value("density", "standard");
+    const auto restore = qScopeGuard([&] { desktop_->preference("density", density); });
+    for (const auto &mode : {"standard", "compact"}) {
+      desktop_->preference("density", mode);
+      QTRY_VERIFY(std::abs(brand->mapToItem(rail, {brand->width()/2, 0}).x()-28) < .01);
+      QTRY_VERIFY(item("fileDelegate"));
+      auto *row = item("fileDelegate");
+      auto *icon = row->findChild<QQuickItem *>("fileTypeIcon");
+      QVERIFY(icon && icon->isVisible());
+      QTRY_VERIFY(std::abs(icon->mapToItem(row, {0, icon->height()/2}).y()-row->height()/2) < .01);
+    }
+    rail->setProperty("collapsed", false);
+    rail->setWidth(200);
+    QTRY_VERIFY(std::abs(brand->mapToItem(rail, {0, 0}).x()-20) < .01);
+    evidence_["icon_alignment"] = "narrow rail centred; list icons centred in both densities; offscreen scaling is not native DPI acceptance";
+  }
   void filesPaneSplitterCanBeDraggedAndPersistsWidth() {
     desktop_->preference("fileWidth", 236);
     desktop_->preference("filesVisible", true);
@@ -11062,7 +11093,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
+    const QSet<QString> allowed{"iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {
