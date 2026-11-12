@@ -83,6 +83,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.margins: 10; Layout.minimumHeight: 34
             Label { text: Theme.t("文件", "Files", "檔案"); font.pixelSize: Theme.compactText; font.bold: true; color: Theme.text; Layout.fillWidth: true }
+            Tool { objectName: "navigateDesktopButton"; iconName: "preview"; quiet: true; hint: Theme.t("转到桌面", "Go to Desktop", "前往桌面"); onClicked: { root.remember(); root.controller.navigateDesktop() } }
             Tool { id: collapseButton; objectName: "collapseFiles"; iconName: "files-close"; quiet: true; Accessible.name: Theme.t("收起文件区", "Collapse files", "收起檔案區"); onClicked: { root.remember(); root.collapse() } }
         }
         Field {

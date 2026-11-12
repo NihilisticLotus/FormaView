@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <QVariantList>
 #include <memory>
+#include <functional>
 
 struct FileEntry {
   QString path, name, kind;
@@ -75,7 +76,8 @@ class Desktop final : public QObject {
   Q_PROPERTY(double scrollPosition READ scrollPosition NOTIFY viewRestored)
   Q_PROPERTY(QVariantMap folderMenu READ folderMenu NOTIFY folderMenuChanged)
 public:
-  explicit Desktop(QObject *parent = nullptr);
+  explicit Desktop(QObject *parent = nullptr,
+                   std::function<QString()> desktopLocation = {});
   ~Desktop() override;
   QAbstractItemModel *files() { return &files_; }
   QObject *image() const { return image_.get(); }
@@ -127,6 +129,7 @@ public:
   Q_INVOKABLE void closeFolderMenu();
   Q_INVOKABLE QVariantList breadcrumbs(const QString &path) const;
   Q_INVOKABLE void navigate(const QString &path);
+  Q_INVOKABLE void navigateDesktop();
   Q_INVOKABLE void history(int offset);
   Q_INVOKABLE void parentDirectory();
   Q_INVOKABLE void refresh();
@@ -186,6 +189,7 @@ private:
   void saveDirectory();
   void publish(Job &);
   FileList files_;
+  std::function<QString()> desktopLocation_;
   std::unique_ptr<QObject> image_;
   std::unique_ptr<QObject> model_;
   std::unique_ptr<QObject> imageJobs_;

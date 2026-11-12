@@ -88,6 +88,8 @@ QtObject {
 
     // Specific messages; first match wins and replaces the generic headline.
     readonly property var messages: ([
+        [/Desktop directory unavailable/, ["无法取得当前用户的桌面位置。请检查 Windows 桌面文件夹设置后重试。", "The current user's Desktop location is unavailable. Check the Windows Desktop folder settings and retry.", "無法取得目前使用者的桌面位置。請檢查 Windows 桌面資料夾設定後重試。"]],
+        [/Directory unavailable:/, ["目录不可用。请检查路径和访问权限后重试。", "The folder is unavailable. Check the path and permissions and retry.", "目錄無法使用。請檢查路徑和存取權限後重試。"]],
         [/ABC archive contains no polygon meshes; unsupported schemas: (.+)$/, ["此 ABC 文件没有可预览的多边形网格，只包含暂不支持的对象类型：{1}。曲线、点、细分曲面与 NURBS 目前只识别、不显示。", "This ABC file has no previewable polygon meshes; it only contains unsupported object types: {1}. Curves, points, subdivision surfaces and NURBS are recognised but not displayed.", "此 ABC 檔案沒有可預覽的多邊形網格，只包含暫不支援的物件類型：{1}。曲線、點、細分曲面與 NURBS 目前只辨識、不顯示。"]],
         [/ABC archive contains no polygon meshes/, ["此 ABC 文件没有可预览的多边形网格。", "This ABC file has no previewable polygon meshes.", "此 ABC 檔案沒有可預覽的多邊形網格。"]],
         [/HDF5 Alembic archives are not supported/, ["这是 HDF5 格式的 Alembic 文件，目前只支持 Ogawa 格式。请在 DCC 软件中重新导出为 Ogawa 后再打开。", "This is an HDF5 Alembic archive; only Ogawa archives are supported. Re-export it as Ogawa from your DCC application.", "這是 HDF5 格式的 Alembic 檔案，目前只支援 Ogawa 格式。請在 DCC 軟體中重新匯出為 Ogawa 後再開啟。"]],

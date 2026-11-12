@@ -20,6 +20,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QUrl>
 #include <algorithm>
 #include <filesystem>
@@ -180,7 +181,10 @@ int Desktop::activeTasks() const {
 void Desktop::styleToolWindow(QObject *window) {
   installWindowChrome(qobject_cast<QQuickWindow *>(window));
 }
-Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
+Desktop::Desktop(QObject *parent, std::function<QString()> desktopLocation)
+    : QObject(parent), files_(this), desktopLocation_(std::move(desktopLocation)) {
+  if (!desktopLocation_)
+    desktopLocation_ = [] { return QStandardPaths::writableLocation(QStandardPaths::DesktopLocation); };
   recentWriter_.setMaxThreadCount(1);
 #ifdef FORMAVIEW_MODEL_UI
   model_ = std::make_unique<ModelSession>();
@@ -324,6 +328,24 @@ void Desktop::start(
   poll();
 }
 void Desktop::navigate(const QString &path) { scan(localPath(path)); }
+void Desktop::navigateDesktop() {
+  const auto path = desktopLocation_();
+  if (!path.trimmed().isEmpty()) {
+    navigate(path);
+    return;
+  }
+  // An unresolved Known Folder must never become the process working directory.
+  closeFolderMenu();
+  for (const auto &job : jobs_)
+    if (!job.consumed && (job.operation == "scan" || job.operation == "filter"))
+      job.handle.cancel();
+  ++directoryRevision_;
+  ++filterRevision_;
+  scanning_ = filtering_ = false;
+  error_ = "Desktop directory unavailable";
+  errorTarget_ = "Desktop";
+  emit changed();
+}
 QVariantList Desktop::drives() const {
   QVariantList result;
   for (const auto &drive : QDir::drives()) {

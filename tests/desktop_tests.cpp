@@ -56,6 +56,7 @@
 #include <QAbstractNativeEventFilter>
 #include <QScreen>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QSignalSpy>
 #include <QStyleHints>
 #include <QTemporaryDir>
@@ -503,6 +504,84 @@ private slots:
     rail->setWidth(200);
     QTRY_VERIFY(std::abs(brand->mapToItem(rail, {0, 0}).x()-20) < .01);
     evidence_["icon_alignment"] = "narrow rail centred; list icons centred in both densities; offscreen scaling is not native DPI acceptance";
+  }
+  void desktopQuickNavigation() {
+    QString target = root_ + "/OneDrive/重定向桌面";
+    QVERIFY(QDir().mkpath(target));
+    Desktop probe(nullptr, [&] { return target; });
+    const auto settled = [&] { return !probe.busy() && probe.activeTasks() == 0; };
+    probe.navigate(small_);
+    QTRY_VERIFY(settled());
+    QCOMPARE(probe.directory(), small_);
+    probe.select(0, Qt::ControlModifier);
+    probe.saveView(3);
+    const auto selection = probe.currentIndex();
+    const auto revision = probe.sessionRevision();
+    for (int i = 0; i < 3; ++i) probe.navigateDesktop();
+    QTRY_VERIFY(settled());
+    QCOMPARE(probe.directory(), target);
+    QCOMPARE(probe.sessionRevision(), revision);
+    QVERIFY(probe.error().isEmpty());
+    probe.history(-1);
+    QTRY_VERIFY(settled());
+    QCOMPARE(probe.directory(), small_); // Repeat clicks did not duplicate history.
+    QCOMPARE(probe.currentIndex(), selection);
+    QCOMPARE(probe.selectedCount(), 1);
+    QCOMPARE(probe.scrollPosition(), 3.);
+    probe.history(1);
+    QTRY_VERIFY(settled());
+    const auto landed = probe.directory();
+    const auto back = probe.canBack(), forward = probe.canForward();
+    target += "/不存在";
+    probe.navigateDesktop();
+    QTRY_VERIFY(settled());
+    QVERIFY(!probe.error().isEmpty());
+    QCOMPARE(probe.requested(), target);
+    QCOMPARE(probe.directory(), landed);
+    QCOMPARE(probe.canBack(), back);
+    QCOMPARE(probe.canForward(), forward);
+    target.clear();
+    probe.navigateDesktop();
+    QVERIFY(probe.error().contains("Desktop directory unavailable"));
+    QCOMPARE(probe.directory(), landed);
+    QCOMPARE(probe.canBack(), back);
+    QCOMPARE(probe.canForward(), forward);
+
+    probe.navigate(fixture_);
+    QVERIFY(probe.busy());
+    const auto scanId = probe.tasks().front().toMap().value("id").toString();
+    probe.navigateDesktop(); // Empty resolver replaces an in-flight 10024-entry scan.
+    QVERIFY(!probe.busy());
+    QTRY_VERIFY(settled());
+    QCOMPARE(probe.directory(), landed);
+    QVERIFY(probe.error().contains("Desktop directory unavailable"));
+    const auto taskRows = probe.tasks();
+    const auto cancelled = std::find_if(taskRows.cbegin(), taskRows.cend(),
+        [&](const auto &row) { return row.toMap().value("id").toString() == scanId; });
+    QVERIFY(cancelled != taskRows.cend());
+    QVERIFY(cancelled->toMap().value("cancelRequested").toBool());
+    QVERIFY(cancelled->toMap().value("terminal").toBool());
+
+    // Production resolver and the real QML keyboard entry, read-only directory scan.
+    desktop_->navigate(small_);
+    QTRY_VERIFY(idle());
+    auto *button = item("navigateDesktopButton");
+    QVERIFY(button);
+    QVERIFY(!button->property("hint").toString().isEmpty());
+    const auto currentSession = desktop_->sessionRevision();
+    button->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(idle());
+    const auto realDesktop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+    QVERIFY(!realDesktop.isEmpty());
+    QCOMPARE(desktop_->directory(), QDir::cleanPath(QDir::fromNativeSeparators(realDesktop)));
+    QCOMPARE(desktop_->sessionRevision(), currentSession);
+    QVERIFY(desktop_->error().isEmpty());
+    desktop_->history(-1);
+    QTRY_VERIFY(idle());
+    QCOMPARE(desktop_->directory(), small_);
+    QVERIFY(window_->grabWindow().save(root_ + "/desktop-navigation.png"));
+    evidence_["desktop_navigation"] = "Known Folder Desktop via QStandardPaths, real QML Space activation, redirected Unicode resolver fixture, duplicate clicks, back/forward view restoration, missing/empty resolver errors preserve directory/history; no OS Known Folder settings changed";
   }
   void fileViewPreferenceCompatibility() {
     const auto saved = QSettings{}.value("preferences");
@@ -11178,7 +11257,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"fileViewPreferenceCompatibility", "fileViewModes", "fileViewResetDuringIncubation", "iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
+    const QSet<QString> allowed{"desktopQuickNavigation", "fileViewPreferenceCompatibility", "fileViewModes", "fileViewResetDuringIncubation", "iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {
