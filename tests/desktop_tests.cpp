@@ -504,6 +504,88 @@ private slots:
     QTRY_VERIFY(std::abs(brand->mapToItem(rail, {0, 0}).x()-20) < .01);
     evidence_["icon_alignment"] = "narrow rail centred; list icons centred in both densities; offscreen scaling is not native DPI acceptance";
   }
+  void fileViewPreferenceCompatibility() {
+    const auto saved = QSettings{}.value("preferences");
+    const auto restore = qScopeGuard([&] { QSettings{}.setValue("preferences", saved); });
+    for (const auto legacy : {false, true}) {
+      QSettings{}.setValue("preferences", QVariantMap{{"thumbnails", legacy}});
+      Desktop migrated;
+      QCOMPARE(migrated.preferences().value("fileViewMode").toString(), legacy ? "thumbnails" : "list");
+      migrated.preference("fileViewMode", "tiles");
+      Desktop restarted;
+      QCOMPARE(restarted.preferences().value("fileViewMode").toString(), "tiles");
+      QVERIFY(!restarted.preferences().value("thumbnails").toBool());
+      restarted.preference("fileViewMode", "unknown");
+      QCOMPARE(restarted.preferences().value("fileViewMode").toString(), "tiles");
+      restarted.preference("thumbnails", false);
+      QCOMPARE(restarted.preferences().value("fileViewMode").toString(), "list");
+    }
+    QSettings{}.setValue("preferences", QVariantMap{{"fileViewMode", "invalid"}, {"thumbnails", true}});
+    Desktop invalid;
+    QCOMPARE(invalid.preferences().value("fileViewMode").toString(), "thumbnails");
+    QSettings{}.setValue("preferences", QVariantMap{});
+    Desktop defaults;
+    QCOMPARE(defaults.preferences().value("fileViewMode").toString(), "list");
+  }
+  void fileViewModes() {
+    desktop_->navigate(fixture_);
+    desktop_->filter("", 0, 0);
+    QTRY_VERIFY(idle() && desktop_->count() == 10024);
+    desktop_->select(0, Qt::ControlModifier);
+    const auto index = desktop_->currentIndex();
+    const auto selection = desktop_->selectedCount();
+    auto *pane = item("filesPane");
+    auto *choice = item("fileViewChoice");
+    QVERIFY(pane && choice);
+    const auto oldWidth = desktop_->preferences().value("fileWidth", 236);
+    const auto restore = qScopeGuard([&] {
+      desktop_->preference("fileWidth", oldWidth);
+      desktop_->preference("fileViewMode", "list");
+    });
+    for (const auto width : {176, 600}) {
+      desktop_->preference("fileWidth", width);
+      for (const auto &mode : {"list", "thumbnails", "tiles"}) {
+        desktop_->preference("fileViewMode", mode);
+        QTRY_COMPARE(pane->property("viewMode").toString(), QString(mode));
+        auto *view = item(QString(mode) == "list" ? "fileList" : "fileGrid");
+        QVERIFY(view);
+        QTRY_COMPARE(view->property("count").toInt(), 10024);
+        QTRY_VERIFY(delegateCount(pane) > 0 && delegateCount(pane) < 150);
+        QVERIFY(choice->width() <= pane->width()-19);
+        // Workspace clamps persisted widths to 220..400 (pane excludes spacing).
+        QVERIFY(pane->width() >= 210 && pane->width() <= 400);
+        if (QString(mode) == "tiles")
+          QCOMPARE(pane->property("columns").toInt(), width == 176 ? 1 : 2);
+        QCOMPARE(desktop_->currentIndex(), index);
+        QCOMPARE(desktop_->selectedCount(), selection);
+        desktop_->saveView(9000);
+        QMetaObject::invokeMethod(pane, "restore");
+        QTRY_VERIFY(view->property("contentY").toDouble() > 100000);
+        QMetaObject::invokeMethod(pane, "remember");
+        QVERIFY(std::abs(desktop_->scrollPosition()-9000) < .1);
+        QVERIFY(window_->grabWindow().save(root_ + "/file-view-" + mode + "-" + QString::number(width) + ".png"));
+      }
+    }
+    desktop_->preference("fileViewMode", "list");
+    choice->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_COMPARE(desktop_->preferences().value("fileViewMode").toString(), "thumbnails");
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTRY_COMPARE(desktop_->preferences().value("fileViewMode").toString(), "tiles");
+    auto *grid = item("fileGrid");
+    QVERIFY(grid);
+    desktop_->select(0, Qt::ControlModifier);
+    grid->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Down, Qt::ControlModifier);
+    QCOMPARE(desktop_->currentIndex(), pane->property("columns").toInt());
+    const auto current = desktop_->currentIndex();
+    desktop_->setLanguage("en");
+    QTRY_COMPARE(choice->property("displayText").toString(), "Tiles");
+    QCOMPARE(desktop_->currentIndex(), current);
+    QCOMPARE(desktop_->preferences().value("fileViewMode").toString(), "tiles");
+    desktop_->setLanguage("zh-CN");
+    evidence_["file_views"] = "legacy migration, persistence, invalid values, 3 modes at persisted 176/600 widths (Workspace clamps 220..400; pane 216/396), tiles 1/2 columns, 10024 rows virtualized, logical scroll restore, keyboard choice/grid, translation stability";
+  }
   void filesPaneSplitterCanBeDraggedAndPersistsWidth() {
     desktop_->preference("fileWidth", 236);
     desktop_->preference("filesVisible", true);
@@ -915,15 +997,18 @@ private slots:
     QTRY_VERIFY(idle());
   }
   void fileViewResetDuringIncubation_data() {
-    QTest::addColumn<bool>("thumbnails");
+    QTest::addColumn<QString>("viewMode");
     QTest::addColumn<int>("replacementCount");
-    QTest::newRow("list-empty") << false << 0;
-    QTest::newRow("list-shrink") << false << 1;
-    QTest::newRow("grid-empty") << true << 0;
-    QTest::newRow("grid-shrink") << true << 1;
+    QTest::newRow("list-empty") << QString("list") << 0;
+    QTest::newRow("list-shrink") << QString("list") << 1;
+    QTest::newRow("grid-empty") << QString("thumbnails") << 0;
+    QTest::newRow("grid-shrink") << QString("thumbnails") << 1;
+    QTest::newRow("tiles-empty") << QString("tiles") << 0;
+    QTest::newRow("tiles-shrink") << QString("tiles") << 1;
   }
   void fileViewResetDuringIncubation() {
-    QFETCH(bool, thumbnails);
+    QFETCH(QString, viewMode);
+    const auto thumbnails = viewMode != "list";
     QFETCH(int, replacementCount);
     QTest::failOnWarning(QRegularExpression(".*DelegateModel::cancel.*"));
     desktop_->navigate(small_);
@@ -937,7 +1022,7 @@ private slots:
     component.loadFromModule("FormaView.TestUI", "FilesPane");
     QVERIFY2(component.isReady(), qPrintable(component.errorString()));
     std::unique_ptr<QObject> object(component.createWithInitialProperties(
-        {{"controller", QVariant::fromValue(desktop_.get())}, {"thumbnails", thumbnails}}));
+        {{"controller", QVariant::fromValue(desktop_.get())}, {"viewMode", viewMode}}));
     auto *pane = qobject_cast<QQuickItem *>(object.get());
     QVERIFY(pane);
     pane->setParentItem(window_->contentItem());
@@ -11093,7 +11178,7 @@ int main(int argc, char **argv) {
   QCoreApplication::setOrganizationName("FormaViewTests");
   QCoreApplication::setApplicationName("Desktop");
   if (workflowHeadless()) {
-    const QSet<QString> allowed{"iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
+    const QSet<QString> allowed{"fileViewPreferenceCompatibility", "fileViewModes", "fileViewResetDuringIncubation", "iconAlignment", "quickExportWorkflow", "settingsDirtyLeaveCallbacks", "conversionEditorPlanBinding", "imageJobsCancelAndShutdown", "folderMenuIsolationAndPaths", "folderNavigationInteraction", "imageHistoryBeyondTwoPages", "preparedModelTreesTransferOwnership", "convertOnlyInputsAndFutureFormats", "abcGeometryCachePreview", "abcCurrentFrameExport", "filesPaneSplitterCanBeDraggedAndPersistsWidth"};
     auto selected = 0;
     const auto arguments = app.arguments();
     for (auto i = 1; i < arguments.size(); ++i) {

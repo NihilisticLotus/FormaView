@@ -193,6 +193,10 @@ Desktop::Desktop(QObject *parent) : QObject(parent), files_(this) {
   auto settings = QSettings{};
   language_ = settings.value("language", "zh-CN").toString();
   preferences_ = settings.value("preferences").toMap();
+  const auto savedView = preferences_.value("fileViewMode").toString();
+  preferences_["fileViewMode"] = QStringList{"list", "thumbnails", "tiles"}.contains(savedView)
+      ? savedView : preferences_.value("thumbnails").toBool() ? "thumbnails" : "list";
+  preferences_["thumbnails"] = preferences_.value("fileViewMode").toString() == "thumbnails";
   if (preferences_.contains("restoreLayout") &&
       !preferences_.value("restoreLayout").toBool()) {
     preferences_.remove("fileWidth");
@@ -219,7 +223,7 @@ void Desktop::setLanguage(const QString &value) {
   }
 }
 void Desktop::preference(const QString &key, const QVariant &value) {
-  if (!QStringList{"fileWidth", "thumbnails", "filesVisible", "mcpInputRoot",
+  if (!QStringList{"fileWidth", "thumbnails", "fileViewMode", "filesVisible", "mcpInputRoot",
                    "mcpOutputRoot", "mcpPython", "mcpAdapter", "density",
                    "restoreLayout", "defaultFilesVisible", "inspectorMode"}
            .contains(key))
@@ -230,9 +234,17 @@ void Desktop::preference(const QString &key, const QVariant &value) {
   if (key == "inspectorMode" &&
       !QStringList{"auto", "always", "hidden"}.contains(value.toString()))
     return;
-  if (preferences_.value(key) == value)
+  if (key == "fileViewMode" && !QStringList{"list", "thumbnails", "tiles"}.contains(value.toString()))
     return;
-  preferences_[key] = value;
+  auto updated = preferences_;
+  if (key == "fileViewMode" || key == "thumbnails") {
+    const auto mode = key == "fileViewMode" ? value.toString()
+        : value.toBool() ? QStringLiteral("thumbnails") : QStringLiteral("list");
+    updated["fileViewMode"] = mode;
+    updated["thumbnails"] = mode == "thumbnails";
+  } else updated[key] = value;
+  if (preferences_ == updated) return;
+  preferences_ = std::move(updated);
   QSettings{}.setValue("preferences", preferences_);
   emit preferencesChanged();
 }

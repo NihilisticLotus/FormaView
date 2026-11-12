@@ -5,15 +5,26 @@ import QtQuick.Controls.Basic
 Rectangle {
     id: root
     required property var controller
-    property bool thumbnails: !!controller.preferences.thumbnails
+    property string viewMode: controller.preferences.fileViewMode || (controller.preferences.thumbnails ? "thumbnails" : "list")
+    readonly property bool thumbnails: viewMode === "thumbnails"
+    readonly property bool tiles: viewMode === "tiles"
+    readonly property bool gridMode: thumbnails || tiles
+    readonly property int columns: gridMode ? Math.max(1, Math.floor(grid.width / (tiles ? 190 : 128))) : 1
+    readonly property var activeView: gridMode ? grid : list
+    function sizeText(bytes) {
+        if (bytes < 1024) return bytes + " B"
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KiB"
+        if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MiB"
+        return (bytes / 1073741824).toFixed(1) + " GiB"
+    }
     signal collapse()
     objectName: "filesPane"
     color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
     signal editAddress()
     function addressFocus() { editAddress() }
-    function viewFocus() { (thumbnails ? grid : list).forceActiveFocus() }
+    function viewFocus() { activeView.forceActiveFocus() }
     Keys.onEscapePressed: event => { root.remember(); root.collapse(); event.accepted = true }
-    function remember() { if (!visible) return; const view = thumbnails ? grid : list; const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1; controller.saveView(Math.max(0,view.contentY-view.originY)/(thumbnails ? grid.cellHeight : Theme.fileRowHeight)*columns) }
+    function remember() { if (!visible) return; controller.saveView(Math.max(0,activeView.contentY-activeView.originY)/(gridMode ? grid.cellHeight : Theme.fileRowHeight)*columns) }
     property bool restorePending: false
     property int restoreStableFrames: 0
     function restoreGeometryChanged() {
@@ -33,14 +44,13 @@ Rectangle {
     property real restorePosition: 0
     function applyRestore() {
         if (!visible || modelResetting) return false
-        const view = thumbnails ? grid : list
+        const view = activeView
         view.forceLayout()
-        const columns = thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1
         // Reattaching the model can span frames while delegates incubate.
         // Do not finish against an empty or partially measured view.
-        const expectedHeight = thumbnails ? Math.ceil(controller.count/columns)*grid.cellHeight : controller.count*Theme.fileRowHeight
+        const expectedHeight = gridMode ? Math.ceil(controller.count/columns)*grid.cellHeight : controller.count*Theme.fileRowHeight
         if (view.count !== controller.count || Math.abs(view.contentHeight-expectedHeight) > 1) return false
-        const offset = restorePosition/columns*(thumbnails ? grid.cellHeight : Theme.fileRowHeight)
+        const offset = restorePosition/columns*(gridMode ? grid.cellHeight : Theme.fileRowHeight)
         view.contentY = Math.max(view.originY, Math.min(view.originY+offset, view.originY+view.contentHeight-view.height))
         return true
     }
@@ -62,9 +72,9 @@ Rectangle {
             else root.Window.window.update()
         }
     }
-    function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); (thumbnails ? grid : list).positionViewAtIndex(next, ListView.Contain) }
+    function step(delta, modifiers) { if (!controller.count) return; const next = Math.max(0, Math.min(controller.count-1, controller.currentIndex+delta)); if (next === controller.currentIndex) return; controller.select(next, modifiers); activeView.positionViewAtIndex(next, ListView.Contain) }
     Connections { target: root.controller; function onViewRestored() { root.restore() } }
-    onThumbnailsChanged: restore()
+    onViewModeChanged: restore()
     onVisibleChanged: if (visible) restore()
     ColumnLayout {
         anchors.fill: parent
@@ -112,10 +122,15 @@ Rectangle {
                 onClosed: filterButton.forceActiveFocus()
             }
         }
-        RowLayout {
+        Choice {
+            objectName: "fileViewChoice"
             Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
-            Tool { iconName: "list-view"; text: Theme.t("列表", "List", "清單"); checked: !root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", false) } }
-            Tool { iconName: "thumbnail-view"; text: Theme.t("缩略图", "Thumbnails", "縮圖"); checked: root.thumbnails; onClicked: { root.remember(); root.controller.preference("thumbnails", true) } }
+            Layout.minimumWidth: 0
+            readonly property var modes: ["list", "thumbnails", "tiles"]
+            labels: [Theme.t("列表", "List", "清單"), Theme.t("缩略图", "Thumbnails", "縮圖"), Theme.t("平铺", "Tiles", "並排")]
+            currentIndex: modes.indexOf(root.viewMode)
+            Accessible.name: Theme.t("文件显示方式", "File view", "檔案顯示方式")
+            onActivated: index => { root.remember(); root.controller.preference("fileViewMode", modes[index]) }
         }
         Item {
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.leftMargin: 6; Layout.rightMargin: 6
@@ -132,8 +147,8 @@ Rectangle {
                     required property double fileModified
                     required property double fileBytes
                     objectName: "fileDelegate"
-                    width: root.thumbnails ? grid.cellWidth : list.width
-                    height: root.thumbnails ? grid.cellHeight : Theme.fileRowHeight
+                    width: root.gridMode ? grid.cellWidth : list.width
+                    height: root.gridMode ? grid.cellHeight : Theme.fileRowHeight
                     highlighted: selected
                     text: fileName
                     padding: 8
@@ -143,9 +158,11 @@ Rectangle {
                         Image {
                             id: thumbnail
                             objectName: "fileThumbnail"
-                            anchors.top: parent.top; width: parent.width; height: 84; visible: root.thumbnails
-                            source: root.thumbnails && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
-                            sourceSize: Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
+                            anchors.top: root.thumbnails ? parent.top : undefined; anchors.left: parent.left
+                            anchors.verticalCenter: root.tiles ? parent.verticalCenter : undefined
+                            width: root.tiles ? 48 : parent.width; height: root.tiles ? 48 : 84; visible: root.gridMode
+                            source: root.gridMode && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
+                            sourceSize: root.tiles ? Qt.size(64,64) : Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
                             AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
                             Label {
                                 objectName: "thumbnailFailure"
@@ -156,18 +173,19 @@ Rectangle {
                             }
                         }
                         RowLayout {
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
-                            AppIcon { objectName: "fileTypeIcon"; visible: !root.thumbnails; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 20; variant: "muted" }
+                            anchors.left: parent.left; anchors.leftMargin: root.tiles ? 60 : 0; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
+                            AppIcon { objectName: "fileTypeIcon"; visible: !root.gridMode; name: entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 20; variant: "muted" }
                             ColumnLayout { Layout.fillWidth: true; spacing: 4
                                 Label { Layout.fillWidth: true; text: entry.fileName; color: Theme.text; font.pixelSize: 13; elide: Text.ElideMiddle }
                                 Label { Layout.fillWidth: true; visible: !root.thumbnails; text: entry.isDirectory ? Theme.t("文件夹", "Folder", "資料夾") : entry.fileName.split('.').pop().toUpperCase(); font.pixelSize: 11; color: Theme.muted; elide: Text.ElideRight }
+                                Label { Layout.fillWidth: true; visible: root.tiles && !entry.isDirectory; text: root.sizeText(entry.fileBytes); font.pixelSize: 11; color: Theme.muted; elide: Text.ElideRight }
                             }
                         }
                     }
                     background: Rectangle { radius: Theme.radius; color: entry.selected ? Theme.selection : entry.hovered ? Theme.raised : "transparent"; border.color: entry.activeFocus ? Theme.accent : "transparent" }
                     MouseArea {
                         anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        onClicked: mouse => { if(mouse.button === Qt.RightButton) { context.targetPath = entry.filePath; context.popup() } else { root.controller.select(entry.index, mouse.modifiers); (root.thumbnails ? grid : list).forceActiveFocus() } }
+                        onClicked: mouse => { if(mouse.button === Qt.RightButton) { context.targetPath = entry.filePath; context.popup() } else { root.controller.select(entry.index, mouse.modifiers); root.activeView.forceActiveFocus() } }
                         onDoubleClicked: mouse => { if(mouse.button === Qt.LeftButton) root.controller.activate(entry.index) }
                     }
                 }
@@ -175,31 +193,31 @@ Rectangle {
             ListView {
                 id: list
                 objectName: "fileList"
-                anchors.fill: parent; visible: !root.thumbnails; clip: true
-                model: root.visible && !root.thumbnails && !root.modelResetting ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
+                anchors.fill: parent; visible: !root.gridMode; clip: true
+                model: root.visible && visible && !root.modelResetting ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
                 focus: true; activeFocusOnTab: true
                 keyNavigationEnabled: false
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
-                onContentHeightChanged: if (!root.thumbnails) root.restoreGeometryChanged()
-                onHeightChanged: if (!root.thumbnails) root.restoreGeometryChanged()
-                onWidthChanged: if (!root.thumbnails) root.restoreGeometryChanged()
+                onContentHeightChanged: if (!root.gridMode) root.restoreGeometryChanged()
+                onHeightChanged: if (!root.gridMode) root.restoreGeometryChanged()
+                onWidthChanged: if (!root.gridMode) root.restoreGeometryChanged()
             }
             GridView {
                 id: grid
                 objectName: "fileGrid"
-                anchors.fill: parent; visible: root.thumbnails; clip: true
+                anchors.fill: parent; visible: root.gridMode; clip: true
                 model: root.visible && visible && !root.modelResetting ? root.controller.files : null
-                cellWidth: width / Math.max(1, Math.floor(width/128)); cellHeight: 116
+                cellWidth: width / root.columns; cellHeight: root.tiles ? 80 : 116
                 delegate: entryDelegate; cacheBuffer: 116; activeFocusOnTab: visible
                 keyNavigationEnabled: false
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
-                onContentHeightChanged: if (root.thumbnails) root.restoreGeometryChanged()
-                onHeightChanged: if (root.thumbnails) root.restoreGeometryChanged()
-                onWidthChanged: if (root.thumbnails) root.restoreGeometryChanged()
+                onContentHeightChanged: if (root.gridMode) root.restoreGeometryChanged()
+                onHeightChanged: if (root.gridMode) root.restoreGeometryChanged()
+                onWidthChanged: if (root.gridMode) root.restoreGeometryChanged()
             }
             Label { anchors.centerIn: parent; visible: root.controller.count === 0; color: Theme.muted; text: root.controller.busy ? Theme.t("正在扫描…", "Scanning…", "正在掃描…") : Theme.t("没有文件", "No files", "沒有檔案") }
         }
@@ -215,10 +233,10 @@ Rectangle {
     function handleKey(event) {
         if (event.modifiers & Qt.AltModifier) return
         if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) controller.selectAll()
-        else if (thumbnails && event.key === Qt.Key_Right && !(event.modifiers & Qt.AltModifier)) step(1,event.modifiers)
-        else if (thumbnails && event.key === Qt.Key_Left && !(event.modifiers & Qt.AltModifier)) step(-1,event.modifiers)
-        else if (event.key === Qt.Key_Down) step(thumbnails ? Math.max(1,Math.floor(grid.width/128)) : 1,event.modifiers)
-        else if (event.key === Qt.Key_Up) step(thumbnails ? -Math.max(1,Math.floor(grid.width/128)) : -1,event.modifiers)
+        else if (gridMode && event.key === Qt.Key_Right) step(1,event.modifiers)
+        else if (gridMode && event.key === Qt.Key_Left) step(-1,event.modifiers)
+        else if (event.key === Qt.Key_Down) step(columns,event.modifiers)
+        else if (event.key === Qt.Key_Up) step(-columns,event.modifiers)
         else if (event.key === Qt.Key_Home) step(-controller.count,event.modifiers)
         else if (event.key === Qt.Key_End) step(controller.count,event.modifiers)
         else if (event.key === Qt.Key_PageDown) step(10,event.modifiers)
