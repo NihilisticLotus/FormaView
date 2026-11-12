@@ -556,30 +556,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       // QVariant/string containers also retain decoded metadata and indices.
       p->bytes += static_cast<std::size_t>(p->subresources.size()) * 512 +
                   static_cast<std::size_t>(p->channels.size()) * 256;
-      const auto pixels =
-          p->source.data_window.width * p->source.data_window.height;
-      if (pixels > (512ULL * 1024 * 1024 -
-                    std::min<std::size_t>(p->bytes, 512ULL * 1024 * 1024)) /
-                       16)
-        throw skeletal::Failure(
-            ErrorCode::ResourceLimit,
-            "Source plus display upload exceeds 512 MiB preview budget");
-      p->rgba.resize(static_cast<std::size_t>(pixels) * 4);
-      for (std::size_t i = 0; i < pixels; ++i) {
-        if ((i & 4095) == 0 && stop.stop_requested())
-          throw skeletal::Failure(ErrorCode::Cancelled,
-                                  "Image preparation cancelled");
-        for (std::size_t c = 0; c < 4; ++c)
-          p->rgba[i * 4 + c] =
-              p->mapping[c] >= 0
-                  ? static_cast<float>(interpreted_value(
-                        p->source
-                            .channels[static_cast<std::size_t>(p->mapping[c])],
-                        i))
-              : c == 3 ? 1.F
-                       : 0.F;
-      }
-      p->bytes += p->rgba.size() * sizeof(float);
+      p->prepareUpload(stop);
       if (stop.stop_requested())
         throw skeletal::Failure(ErrorCode::Cancelled,
                                 "Image preparation cancelled");

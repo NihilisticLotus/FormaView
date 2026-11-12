@@ -42,9 +42,12 @@ public:
     const QSize dimensions(
         static_cast<int>(pixels_->source.data_window.width),
         static_cast<int>(pixels_->source.data_window.height));
-    if (!texture_ || texture_->pixelSize() != dimensions) {
+    const auto format = pixels_->byteUpload() ? QRhiTexture::RGBA8
+                                             : QRhiTexture::RGBA32F;
+    if (!texture_ || texture_->pixelSize() != dimensions ||
+        texture_->format() != format) {
       release();
-      texture_.reset(rhi()->newTexture(QRhiTexture::RGBA32F, dimensions));
+      texture_.reset(rhi()->newTexture(format, dimensions));
       uniform_.reset(rhi()->newBuffer(QRhiBuffer::Dynamic,
                                       QRhiBuffer::UniformBuffer, 128));
       sampler_.reset(rhi()->newSampler(
@@ -75,9 +78,8 @@ public:
           texture_.get(), QRhiTextureUploadDescription({QRhiTextureUploadEntry(
                               0, 0,
                               QRhiTextureSubresourceUploadDescription(
-                                  pixels_->rgba.data(),
-                                  static_cast<quint32>(pixels_->rgba.size() *
-                                                       sizeof(float))))}));
+                                  pixels_->uploadData(),
+                                  static_cast<quint32>(pixels_->uploadBytes())))}));
       uploaded_ = pixels_;
     }
     if (!pipeline_) {

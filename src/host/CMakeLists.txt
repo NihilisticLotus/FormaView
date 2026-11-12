@@ -38,7 +38,7 @@ endif()
 if(TARGET formaview_image_conversion)
     qt_add_qml_module(formaview_desktop URI FormaView.Images
         OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/FormaView/Images
-        SOURCES image_session.cpp image_session.hpp gif_decoder.hpp image_view.cpp image_view.hpp image_jobs.cpp image_jobs.hpp)
+        SOURCES image_session.cpp image_session.hpp image_upload.cpp gif_decoder.hpp image_view.cpp image_view.hpp image_jobs.cpp image_jobs.hpp)
     target_link_libraries(formaview_desktop PUBLIC FormaView::ImageConversion PRIVATE Qt6::GuiPrivate)
     target_compile_definitions(formaview_desktop PUBLIC FORMAVIEW_IMAGE_UI)
     qt_add_shaders(formaview_desktop image_shaders PREFIX "/shaders" FILES image.vert image.frag)

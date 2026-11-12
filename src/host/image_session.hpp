@@ -7,17 +7,29 @@
 #include <QtQml/qqmlregistration.h>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <memory>
 
 struct ImagePixels {
   formaview::ImageSubresource source;
   std::vector<float> rgba;
+  std::vector<std::byte> rgba8;
   std::array<int, 4> mapping{-1, -1, -1, -1};
   QVariantMap info;
   QVariantList subresources, channels;
   QString path;
   quint64 revision{};
   std::size_t bytes{};
+  // Called once after accounting for the retained source and metadata.
+  void prepareUpload(std::stop_token stop);
+  bool byteUpload() const { return !rgba8.empty(); }
+  const void *uploadData() const {
+    return byteUpload() ? static_cast<const void *>(rgba8.data())
+                        : static_cast<const void *>(rgba.data());
+  }
+  std::size_t uploadBytes() const {
+    return byteUpload() ? rgba8.size() : rgba.size() * sizeof(float);
+  }
 };
 
 class ImageSession : public QObject {
