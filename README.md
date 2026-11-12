@@ -88,7 +88,7 @@ flowchart LR
 
 | 类别 | 当前格式 | 可用能力与注意事项 |
 |---|---|---|
-| 图片 / 纹理读取 | PNG、JPEG（JPG/JPE/JFIF）、BMP（DIB）、TGA、TIFF、WebP、GIF、ICO、DDS、HDR/RGBE、EXR | 图片预览与可用元数据检查；GIF 当前显示静态帧。DDS 可包含多个子资源；EXR 的 Deep、子采样通道等变体不在普通图像路径范围内 |
+| 图片 / 纹理读取 | PNG、JPEG（JPG/JPE/JFIF）、BMP（DIB）、TGA、TIFF、WebP、GIF、ICO、DDS、HDR/RGBE、EXR | 图片预览与可用元数据检查；GIF 支持播放/暂停、循环、逐帧步进与时间轴拖动，并可把合成后的各帧无损导出为独立 PNG。DDS 可包含多个子资源；EXR 的 Deep、子采样通道等变体不在普通图像路径范围内 |
 | 图片导出 | PNG、JPEG、BMP、TGA、TIFF、WebP、DDS、HDR、EXR | 输出选项随目标格式变化；有损压缩、量化、Alpha 删除或数值范围变化会在预检中报告 |
 | 模型预览 | FBX、OBJ、glTF、GLB、PSK、PSKX | 查看模型、UV、骨架/绑定、权重、LOD 与碰撞；不承诺支持这些格式的全部版本和私有变体 |
 | 几何缓存预览 | Alembic ABC（Ogawa） | 当前源码支持多边形几何缓存、采样时间轴与可用 UV/法线；不支持 HDF5、曲线、点、细分曲面等非多边形 schema，也不提供骨架/权重检查 |

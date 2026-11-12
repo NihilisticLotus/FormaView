@@ -6,6 +6,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 #include <array>
+#include <atomic>
 #include <memory>
 
 struct ImagePixels {
@@ -37,6 +38,15 @@ class ImageSession : public QObject {
   Q_PROPERTY(bool samplePinned READ samplePinned NOTIFY pixelChanged)
   Q_PROPERTY(QVariantMap display READ display NOTIFY displayChanged)
   Q_PROPERTY(QVariantMap dimensions READ dimensions NOTIFY changed)
+  Q_PROPERTY(bool animated READ animated NOTIFY animationChanged)
+  Q_PROPERTY(bool playing READ playing NOTIFY animationChanged)
+  Q_PROPERTY(bool loop READ loop NOTIFY animationChanged)
+  Q_PROPERTY(int frame READ frame NOTIFY animationChanged)
+  Q_PROPERTY(int frameCount READ frameCount NOTIFY animationChanged)
+  Q_PROPERTY(int frameDelay READ frameDelay NOTIFY animationChanged)
+  Q_PROPERTY(bool exporting READ exporting NOTIFY exportChanged)
+  Q_PROPERTY(int exportProgress READ exportProgress NOTIFY exportChanged)
+  Q_PROPERTY(QString exportError READ exportError NOTIFY exportChanged)
 public:
   explicit ImageSession(QObject *parent = nullptr);
   ~ImageSession() override;
@@ -62,6 +72,17 @@ public:
   bool samplePinned() const { return samplePinned_; }
   QVariantMap display() const { return display_; }
   QVariantMap dimensions() const;
+  bool animated() const { return frameCount_ > 1; }
+  bool playing() const { return playing_; }
+  bool loop() const {
+    return loopOverride_ ? loop_ : sourceLoopCount_ != 0;
+  }
+  int frame() const { return frame_; }
+  int frameCount() const { return frameCount_; }
+  int frameDelay() const { return frameDelay_; }
+  bool exporting() const { return exporting_; }
+  int exportProgress() const { return exportProgress_; }
+  QString exportError() const { return exportError_; }
   std::shared_ptr<const ImagePixels> pixels() const { return pixels_; }
   Q_INVOKABLE void open(const QString &path, int index = 0);
   Q_INVOKABLE void clear();
@@ -74,10 +95,20 @@ public:
   Q_INVOKABLE void sample(double x, double y, int tileX = 0, int tileY = 0);
   Q_INVOKABLE void setSamplePinned(bool pinned);
   Q_INVOKABLE QString pixelReport() const;
+  Q_INVOKABLE void seekFrame(int frame);
+  Q_INVOKABLE void stepFrame(int frames);
+  Q_INVOKABLE void togglePlay();
+  Q_INVOKABLE void setLoop(bool loop);
+  Q_INVOKABLE void exportFrames(const QString &directory,
+                                const QString &prefix,
+                                const QString &conflict);
+  Q_INVOKABLE void cancelExport();
 signals:
   void changed();
   void displayChanged();
   void pixelChanged();
+  void animationChanged();
+  void exportChanged();
 
 private:
   struct Pending;
@@ -90,10 +121,18 @@ private:
   std::optional<formaview::TaskHandle> cleanup_;
   std::shared_ptr<const ImagePixels> pixels_;
   QTimer timer_;
+  QTimer playbackTimer_;
   QVariantMap display_, pixel_;
   QString error_, requested_;
   quint64 generation_{};
   int selected_{}, resourceOffset_{};
+  int frame_{}, frameCount_{1}, frameDelay_{100}, sourceLoopCount_{1};
+  int playbackWraps_{};
+  int exportProgress_{};
   bool busy_{};
   bool samplePinned_{};
+  bool playing_{}, loop_{true}, loopOverride_{}, exporting_{};
+  QString exportError_;
+  std::optional<formaview::TaskHandle> exportTask_;
+  std::shared_ptr<std::atomic_int> exportProgressShared_;
 };

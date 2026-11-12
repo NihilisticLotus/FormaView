@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import FormaView.Images
 
 ColumnLayout {
@@ -134,6 +135,47 @@ ColumnLayout {
             Label { textFormat: Text.PlainText; id: hud; x: 6; y: 4; width: parent.width - 12; color: Theme.text; wrapMode: Text.WordWrap; text: (view.pixelScale * 100).toFixed(1) + "% · " + (root.session.display.channel < 0 ? "RGB" : ["R", "G", "B", "A"][root.session.display.channel]) + (root.session.pixel.valid ? " · (" + root.session.pixel.x + ", " + root.session.pixel.y + ")" + (root.session.display.tiled ? " · tile (" + root.session.pixel.tileX + ", " + root.session.pixel.tileY + ")" : "") : "") + (root.fixedSample ? Theme.t(" · 固定取样", " · Pinned sample", " · 固定取樣") : "") }
         }
     }
+    Rectangle {
+        objectName: "gifTimeline"
+        Layout.fillWidth: true
+        Layout.preferredHeight: gifControls.implicitHeight + 12
+        visible: root.session.animated
+        color: Theme.panel
+        radius: Theme.radius
+        ColumnLayout {
+            id: gifControls
+            anchors.fill: parent
+            anchors.margins: 6
+            spacing: 4
+            RowLayout {
+                Layout.fillWidth: true
+                Tool { objectName: "gifPlay"; iconName: root.session.playing ? "animation-pause" : "animation-play"; quiet: true; hint: root.session.playing ? Theme.t("暂停", "Pause", "暫停") : Theme.t("播放", "Play", "播放"); onClicked: root.session.togglePlay() }
+                Tool { objectName: "gifPrevious"; iconName: "animation-step-back"; quiet: true; hint: Theme.t("上一帧", "Previous frame", "上一幀"); onClicked: root.session.stepFrame(-1) }
+                Tool { objectName: "gifNext"; iconName: "animation-step-forward"; quiet: true; hint: Theme.t("下一帧", "Next frame", "下一幀"); onClicked: root.session.stepFrame(1) }
+                OptionCheck { objectName: "gifLoop"; text: Theme.t("循环", "Loop", "循環"); checked: root.session.loop; onToggled: root.session.setLoop(checked) }
+                Label { Layout.fillWidth: true; color: Theme.muted; font.family: "Consolas"; text: Theme.t("帧 %1 / %2 · %3 ms", "Frame %1 / %2 · %3 ms", "幀 %1 / %2 · %3 ms").arg(root.session.frame + 1).arg(root.session.frameCount).arg(root.session.frameDelay) }
+                Tool { objectName: "gifExportFrames"; text: Theme.t("导出逐帧 PNG…", "Export frame PNGs…", "匯出逐幀 PNG…"); enabled: !root.session.exporting; onClicked: gifFolder.open() }
+            }
+            Slider {
+                objectName: "gifScrubber"
+                Layout.fillWidth: true
+                from: 0
+                to: Math.max(0, root.session.frameCount - 1)
+                stepSize: 1
+                snapMode: Slider.SnapAlways
+                value: root.session.frame
+                onMoved: root.session.seekFrame(Math.round(value))
+                Accessible.name: Theme.t("GIF 帧时间轴", "GIF frame timeline", "GIF 幀時間軸")
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: root.session.exporting || !!root.session.exportError
+                ProgressBar { Layout.fillWidth: true; from: 0; to: root.session.frameCount; value: root.session.exportProgress; visible: root.session.exporting }
+                Label { Layout.fillWidth: true; color: Theme.error; wrapMode: Text.Wrap; visible: !!root.session.exportError; text: root.session.exportError }
+                Tool { visible: root.session.exporting; text: Theme.t("取消", "Cancel", "取消"); onClicked: root.session.cancelExport() }
+            }
+        }
+    }
     SectionHeader { Layout.fillWidth: true; id: pixelToggle; objectName: "pixelToggle"; checkable: true; text: Theme.t("像素检查 · 原值 / 显示值", "Pixel inspection · Source / Display", "像素檢查 · 原值 / 顯示值") }
     // Keep this lightweight readout alive: a deferred inline Component can lose
     // its creation context during QML Preview updates and leave an empty panel.
@@ -142,5 +184,29 @@ ColumnLayout {
         Layout.minimumHeight: 0; Layout.maximumHeight: Math.max(0, root.height * .35)
         visible: pixelToggle.checked
         controller: root.controller
+    }
+    FolderDialog {
+        id: gifFolder
+        title: Theme.t("选择逐帧 PNG 输出目录", "Choose frame PNG output folder", "選擇逐幀 PNG 輸出目錄")
+        onAccepted: { gifDirectory.text = root.controller.localFile(selectedFolder); gifExportDialog.open() }
+    }
+    Dialog {
+        id: gifExportDialog
+        modal: true
+        title: Theme.t("导出 GIF 逐帧 PNG", "Export GIF frame PNGs", "匯出 GIF 逐幀 PNG")
+        footer: RowLayout {
+            Tool { Layout.fillWidth: true; text: Theme.t("取消", "Cancel", "取消"); onClicked: gifExportDialog.reject() }
+            Tool { Layout.fillWidth: true; primary: true; text: Theme.t("导出", "Export", "匯出"); enabled: gifPrefix.text.trim().length > 0 && (gifConflict.currentIndex !== 2 || gifOverwrite.checked); onClicked: gifExportDialog.accept() }
+        }
+        onAccepted: root.session.exportFrames(gifDirectory.text, gifPrefix.text, ["skip", "rename", "overwrite"][gifConflict.currentIndex])
+        ColumnLayout {
+            width: 420
+            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: Theme.t("每帧按合成后的完整画面无损写为 PNG，并保留透明度。源 GIF 不会被修改。", "Each fully composed frame is written losslessly as PNG with transparency. The source GIF is not modified.", "每幀依合成後的完整畫面無損寫為 PNG，並保留透明度。來源 GIF 不會被修改。") }
+            TextField { id: gifDirectory; Layout.fillWidth: true; readOnly: true; Accessible.name: Theme.t("输出目录", "Output folder", "輸出目錄") }
+            TextField { id: gifPrefix; Layout.fillWidth: true; text: "frame-"; placeholderText: Theme.t("文件名前缀", "File-name prefix", "檔名前綴") }
+            Choice { id: gifConflict; Layout.fillWidth: true; labels: [Theme.t("跳过已有文件", "Skip existing files", "略過現有檔案"), Theme.t("自动重命名", "Rename new files", "自動重新命名"), Theme.t("覆盖已有文件", "Overwrite existing files", "覆寫現有檔案")] }
+            OptionCheck { id: gifOverwrite; Layout.fillWidth: true; visible: gifConflict.currentIndex === 2; text: Theme.t("我确认覆盖上述目录内同名 PNG", "I confirm replacing same-name PNGs in this folder", "我確認覆寫上述目錄內同名 PNG") }
+        }
+        onOpened: gifOverwrite.checked = false
     }
 }

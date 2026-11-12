@@ -1,7 +1,12 @@
 #include "image_session.hpp"
+#include "gif_decoder.hpp"
 #include "formaview/image_batch.hpp"
+#include "formaview/file_access.hpp"
+#include <QBuffer>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QDir>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -117,6 +122,89 @@ SchedulerLimits limits() {
   l.foreground_reserve = {0, 0, 0, 0};
   return l;
 }
+
+constexpr int maxGifFrames = 10000;
+// RGBA float upload + planar source + decoder/compositor working images.
+constexpr quint64 maxGifCanvasPixels = 16ULL * 1024 * 1024;
+constexpr quint64 maxGifDecodedPixels = 4ULL * 1024 * 1024 * 1024;
+
+std::shared_ptr<ImagePixels> gifPixels(formaview::host::GifDecoder &reader, int &next,
+                                      const QString &path, int wanted,
+                                      quint64 revision,
+                                      std::stop_token stop) {
+  const int count = reader.imageCount();
+  if (count < 1 || count > maxGifFrames)
+    throw skeletal::Failure(ErrorCode::ResourceLimit,
+                            "GIF frame count is invalid or exceeds 10,000");
+  const auto size = reader.size();
+  const quint64 canvas = static_cast<quint64>(size.width()) * size.height();
+  if (!size.isValid() || size.width() > 16384 || size.height() > 16384 ||
+      canvas > maxGifCanvasPixels || canvas * static_cast<quint64>(count) >
+                                        maxGifDecodedPixels)
+    throw skeletal::Failure(
+        ErrorCode::ResourceLimit,
+        "GIF dimensions or total decoded animation exceed the safety budget");
+  wanted = std::clamp(wanted, 0, count - 1);
+  QImage image;
+  int delay = 100;
+  for (; next <= wanted; ++next) {
+    if (stop.stop_requested())
+      throw skeletal::Failure(ErrorCode::Cancelled, "GIF seek cancelled");
+    image = reader.read(stop);
+    delay = std::max(10, reader.nextImageDelay());
+  }
+  image = image.convertToFormat(QImage::Format_RGBA8888);
+  auto p = std::make_shared<ImagePixels>();
+  p->path = path;
+  p->revision = revision;
+  p->source.data_window = {0, 0, static_cast<std::uint64_t>(image.width()),
+                           static_cast<std::uint64_t>(image.height())};
+  p->source.display_window = p->source.data_window;
+  const auto pixels = static_cast<std::size_t>(image.width()) * image.height();
+  p->rgba.resize(pixels * 4);
+  static constexpr std::array names{"R", "G", "B", "A"};
+  for (int c = 0; c < 4; ++c) {
+    Buffer samples;
+    samples.scalar = ScalarType::UInt8;
+    samples.element_count = pixels;
+    samples.bytes.resize(pixels);
+    for (int y = 0; y < image.height(); ++y) {
+      if (stop.stop_requested())
+        throw skeletal::Failure(ErrorCode::Cancelled, "GIF preparation cancelled");
+      const auto *row = image.constScanLine(y);
+      for (int x = 0; x < image.width(); ++x) {
+        const auto i = static_cast<std::size_t>(y) * image.width() + x;
+        const auto value = row[x * 4 + c];
+        samples.bytes[i] = static_cast<std::byte>(value);
+        p->rgba[i * 4 + c] = value / 255.F;
+      }
+    }
+    p->source.channels.push_back(
+        {names[static_cast<std::size_t>(c)], std::move(samples),
+         SampleEncoding::UNorm});
+    p->mapping[static_cast<std::size_t>(c)] = c;
+    p->channels.push_back(QVariantMap{{"name", names[c]},
+                                      {"type", "uint8"},
+                                      {"encoding", "UNorm"}});
+  }
+  p->info = {{"format", "GIF"},
+             {"alpha", 2},
+             {"containerAlpha", 2},
+             {"meaning", static_cast<int>(ImageMeaning::Colour)},
+             {"colourSpace", "sRGB"},
+             {"mapping", QVariantList{"R", "G", "B", "A"}},
+             {"frame", wanted},
+             {"frameCount", count},
+             {"frameDelay", delay},
+             {"loopCount", reader.loopCount()},
+             {"dataWindow", window(p->source.data_window)},
+             {"displayWindow", window(p->source.display_window)}};
+  p->subresources.push_back(QVariantMap{{"index", 0},
+                                        {"width", image.width()},
+                                        {"height", image.height()}});
+  p->bytes = p->rgba.size() * sizeof(float) + pixels * 4;
+  return p;
+}
 } // namespace
 struct ImageSession::Pending {
   formaview::TaskHandle task;
@@ -126,6 +214,9 @@ struct ImageSession::Pending {
   bool preserveDisplay{};
 };
 struct ImageSession::Cache {
+  QString gifKey;
+  std::unique_ptr<formaview::host::GifDecoder> gifReader;
+  int gifNext{};
   struct Entry {
     QString key;
     std::shared_ptr<ImagePixels> pixels;
@@ -153,9 +244,35 @@ ImageSession::ImageSession(QObject *parent)
               {"background", 0}};
   connect(&timer_, &QTimer::timeout, this, &ImageSession::poll);
   timer_.setInterval(8);
+  playbackTimer_.setSingleShot(true);
+  connect(&playbackTimer_, &QTimer::timeout, this, [this] {
+    if (!playing_ || !animated() || busy_)
+      return;
+    if (frame_ + 1 >= frameCount_) {
+      const bool repeat = loopOverride_
+                              ? loop_
+                              : sourceLoopCount_ < 0 ||
+                                    playbackWraps_ < sourceLoopCount_;
+      if (!repeat) {
+        playing_ = false;
+        emit animationChanged();
+        return;
+      }
+      ++playbackWraps_;
+      seekFrame(0);
+    } else {
+      seekFrame(frame_ + 1);
+    }
+  });
 }
 ImageSession::~ImageSession() { scheduler_.shutdown(); }
 void ImageSession::open(const QString &path, int index) {
+  cancelExport();
+  playing_ = false;
+  playbackTimer_.stop();
+  playbackWraps_ = 0;
+  loopOverride_ = false;
+  emit animationChanged();
   load(path, index, {});
 }
 void ImageSession::selectSubresource(int index) {
@@ -285,6 +402,26 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       const ImageReadLease lease(path);
 #endif
       const auto stamp = fileStamp(path);
+      if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
+        const auto key = path + '\n' + stamp;
+        if (!cache_->gifReader || cache_->gifKey != key || index < cache_->gifNext) {
+          cache_->gifReader = std::make_unique<formaview::host::GifDecoder>(path, stop);
+          cache_->gifKey = key;
+          cache_->gifNext = 0;
+        }
+        try {
+          *result = gifPixels(*cache_->gifReader, cache_->gifNext, path, index, generation, stop);
+        } catch (...) {
+          cache_->gifReader.reset();
+          throw;
+        }
+        if (fileStamp(path) != stamp)
+          throw skeletal::Failure(ErrorCode::Io,
+                                  "Image changed while being decoded; reopen it");
+        return TaskResult{};
+      }
+      cache_->gifReader.reset();
+      cache_->gifKey.clear();
       const auto key =
           path + '\n' + stamp + '\n' + QString::number(index) + '\n' +
           QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(mapping))
@@ -474,7 +611,10 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
   job->result = result;
   job->generation = generation;
   job->index = index;
-  job->preserveDisplay = pixels_ && pixels_->path == path && selected_ == index;
+  job->preserveDisplay =
+      pixels_ && pixels_->path == path &&
+      (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0 ||
+       selected_ == index);
   pending_.push_back(std::move(job));
   timer_.start();
 }
@@ -488,10 +628,20 @@ void ImageSession::poll() {
     if ((*it)->generation == generation_) {
       busy_ = false;
       if (state.result->error)
+      {
         error_ = text(state.result->error->message);
+        playing_ = false;
+        playbackTimer_.stop();
+        emit animationChanged();
+      }
       else if (*(*it)->result) {
         pixels_ = *(*it)->result;
-        selected_ = (*it)->index;
+        const bool gif = pixels_->info.value("format") == "GIF";
+        selected_ = gif ? 0 : (*it)->index;
+        frame_ = gif ? pixels_->info.value("frame").toInt() : 0;
+        frameCount_ = gif ? pixels_->info.value("frameCount").toInt() : 1;
+        frameDelay_ = gif ? pixels_->info.value("frameDelay").toInt() : 100;
+        sourceLoopCount_ = gif ? pixels_->info.value("loopCount").toInt() : 1;
         resourceOffset_ = (selected_ / 100) * 100;
         const auto &m = pixels_->mapping;
         const auto oldChannel = display_["channel"].toInt();
@@ -518,15 +668,43 @@ void ImageSession::poll() {
           display_["exposure"] = 0.;
         }
         emit displayChanged();
+        emit animationChanged();
+        if (playing_ && animated())
+          playbackTimer_.start(std::max(10, frameDelay_));
       }
       emit changed();
     }
     it = pending_.erase(it);
   }
-  if (pending_.empty())
+  if (exportTask_) {
+    const int progress = exportProgressShared_
+                             ? exportProgressShared_->load(std::memory_order_relaxed)
+                             : exportProgress_;
+    if (progress != exportProgress_) {
+      exportProgress_ = progress;
+      emit exportChanged();
+    }
+    const auto state = exportTask_->snapshot();
+    if (state.result) {
+      // The worker may finish after the earlier progress sample (including
+      // while exportChanged consumers run). Its terminal snapshot synchronizes
+      // completion; publish the final count before releasing the shared state.
+      if (exportProgressShared_)
+        exportProgress_ = exportProgressShared_->load(std::memory_order_relaxed);
+      exporting_ = false;
+      exportError_ = state.result->error
+                         ? text(state.result->error->message)
+                         : QString{};
+      exportTask_.reset();
+      exportProgressShared_.reset();
+      emit exportChanged();
+    }
+  }
+  if (pending_.empty() && !exportTask_)
     timer_.stop();
 }
 void ImageSession::clear() {
+  cancelExport();
   ++generation_;
   for (const auto &job : pending_)
     job->task.cancel();
@@ -536,11 +714,21 @@ void ImageSession::clear() {
   requested_.clear();
   pixel_.clear();
   samplePinned_ = false;
+  playing_ = false;
+  playbackTimer_.stop();
+  frame_ = 0;
+  frameCount_ = 1;
+  frameDelay_ = 100;
+  sourceLoopCount_ = 1;
+  playbackWraps_ = 0;
+  loopOverride_ = false;
   // FIFO worker cleanup releases cached CPU storage without blocking the UI.
   TaskRequest r;
   r.priority = Priority::Foreground;
   r.work = [this](std::stop_token) {
     cache_->entries.clear();
+    cache_->gifReader.reset();
+    cache_->gifKey.clear();
     return TaskResult{};
   };
   if (cleanup_)
@@ -548,6 +736,7 @@ void ImageSession::clear() {
   cleanup_ = scheduler_.submit(std::move(r)).task;
   emit changed();
   emit pixelChanged();
+  emit animationChanged();
 }
 void ImageSession::setting(const QString &name, const QVariant &v) {
   if (!display_.contains(name))
@@ -647,4 +836,149 @@ QString ImageSession::pixelReport() const {
   report["displayOptions"] = display_;
   return QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(report))
                                .toJson(QJsonDocument::Indented));
+}
+
+void ImageSession::seekFrame(int frame) {
+  if (!animated() || path().isEmpty() || requested_ != path())
+    return;
+  load(path(), std::clamp(frame, 0, frameCount_ - 1), {});
+}
+
+void ImageSession::stepFrame(int frames) {
+  if (!animated() || frames == 0)
+    return;
+  playing_ = false;
+  playbackTimer_.stop();
+  emit animationChanged();
+  seekFrame(std::clamp(frame_ + frames, 0, frameCount_ - 1));
+}
+
+void ImageSession::togglePlay() {
+  if (!animated())
+    return;
+  playing_ = !playing_;
+  if (playing_) {
+    if (frame_ + 1 >= frameCount_) {
+      playbackWraps_ = 0;
+      seekFrame(0);
+    } else {
+      playbackTimer_.start(std::max(10, frameDelay_));
+    }
+  } else {
+    playbackTimer_.stop();
+  }
+  emit animationChanged();
+}
+
+void ImageSession::setLoop(bool loop) {
+  if (loopOverride_ && loop_ == loop)
+    return;
+  loopOverride_ = true;
+  loop_ = loop;
+  playbackWraps_ = 0;
+  emit animationChanged();
+}
+
+void ImageSession::exportFrames(const QString &directory,
+                                const QString &prefix,
+                                const QString &conflict) {
+  if (!animated() || exporting_ ||
+      !QStringList{"skip", "rename", "overwrite"}.contains(conflict))
+    return;
+  const auto cleanPrefix = prefix.trimmed();
+  if (cleanPrefix.isEmpty() || cleanPrefix.contains('/') ||
+      cleanPrefix.contains('\\') || cleanPrefix.contains(':') || directory.trimmed().isEmpty()) {
+    exportError_ = "Enter a file-name prefix without path separators";
+    emit exportChanged();
+    return;
+  }
+  const auto source = path();
+  const auto count = frameCount_;
+  const auto output = QDir::cleanPath(directory);
+  exportProgress_ = 0;
+  exportError_.clear();
+  exporting_ = true;
+  exportProgressShared_ = std::make_shared<std::atomic_int>(0);
+  const auto progress = exportProgressShared_;
+  TaskRequest request;
+  request.priority = Priority::Foreground;
+  request.resources = {1, 1, 128ULL * 1024 * 1024, 0};
+  request.work = [source, output, cleanPrefix, conflict, count,
+                  progress](std::stop_token stop) {
+    try {
+      QDir folder(output);
+      if (!folder.exists() && !QDir().mkpath(output))
+        throw skeletal::Failure(ErrorCode::Io,
+                                "Cannot create the GIF frame output folder");
+      AccessScope scope;
+      scope.input_roots = {std::filesystem::path(QFileInfo(source).absolutePath().toStdWString())};
+      scope.output_roots = {std::filesystem::path(folder.absolutePath().toStdWString())};
+      scope.allow_overwrite = conflict == "overwrite";
+      const auto input = InputLease::open(scope, std::filesystem::path(source.toStdWString()),
+                                          512ULL * 1024 * 1024, stop);
+      const auto policy = conflict == "overwrite" ? ConflictPolicy::Overwrite
+                          : conflict == "rename" ? ConflictPolicy::Rename
+                                                   : ConflictPolicy::Skip;
+      formaview::host::GifDecoder reader(source, stop);
+      const auto size = reader.size();
+      if (!size.isValid() || reader.imageCount() != count || count > maxGifFrames ||
+          size.width() > 16384 || size.height() > 16384 ||
+          static_cast<quint64>(size.width()) * size.height() > maxGifCanvasPixels ||
+          static_cast<quint64>(size.width()) * size.height() * count > maxGifDecodedPixels)
+        throw skeletal::Failure(ErrorCode::ResourceLimit, "GIF changed or exceeds the animation safety budget; reopen it");
+      const int digits =
+          std::max(4, static_cast<int>(QString::number(count - 1).size()));
+      for (int i = 0; i < count; ++i) {
+        if (stop.stop_requested())
+          throw skeletal::Failure(ErrorCode::Cancelled,
+                                  "GIF frame export cancelled");
+        const auto image = reader.read(stop);
+        const QString destination = folder.filePath(
+            cleanPrefix + QString::number(i).rightJustified(digits, '0') +
+            ".png");
+        const auto allocated = allocate_output(scope, std::filesystem::path(destination.toStdWString()),
+                                                input.snapshot(), policy, {}, stop);
+        if (allocated.exists && policy == ConflictPolicy::Skip) {
+          progress->store(i + 1, std::memory_order_relaxed);
+          continue;
+        }
+        QByteArray encoded;
+        QBuffer buffer(&encoded);
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+          throw skeletal::Failure(ErrorCode::Io,
+                                  "Cannot encode GIF frame PNG: " +
+                                      destination.toStdString());
+        OutputTransaction transaction(scope, allocated.path, input.snapshot(), policy);
+        transaction.write(std::span(reinterpret_cast<const std::byte *>(encoded.constData()),
+                                    static_cast<std::size_t>(encoded.size())), stop);
+        (void)transaction.commit(stop);
+        progress->store(i + 1, std::memory_order_relaxed);
+      }
+      return TaskResult{};
+    } catch (const skeletal::Failure &e) {
+      TaskResult result;
+      result.error = e.error;
+      return result;
+    } catch (const std::exception &e) {
+      TaskResult result;
+      result.error = Error{ErrorCode::Io, e.what(), {}, true};
+      return result;
+    }
+  };
+  auto submitted = scheduler_.submit(std::move(request));
+  if (!submitted.task) {
+    exporting_ = false;
+    exportError_ = text(submitted.error->message);
+    exportProgressShared_.reset();
+    emit exportChanged();
+    return;
+  }
+  exportTask_ = *submitted.task;
+  timer_.start();
+  emit exportChanged();
+}
+
+void ImageSession::cancelExport() {
+  if (exportTask_)
+    exportTask_->cancel();
 }
