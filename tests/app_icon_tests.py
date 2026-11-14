@@ -13,21 +13,28 @@ import generate_app_icon as gen  # noqa: E402
 
 
 class BrandMark(unittest.TestCase):
-    def test_svg_is_the_generated_cube_viewfinder_timeline_tile(self):
+    def test_svg_is_the_generated_mannequin_threaded_by_a_mobius_loop(self):
         text = (ROOT / 'formaview.svg').read_text(encoding='utf-8')
         self.assertEqual(text, gen.make_svg())
         svg = ET.fromstring(text)
         self.assertEqual(svg.attrib['viewBox'], '0 0 1024 1024')
-        self.assertEqual(len(svg.findall(NS + 'rect')), 1)
-        fills = [node.attrib.get('fill') for node in svg.findall(NS + 'path')]
-        for colour in (gen.TOP, gen.LEFT, gen.RIGHT):
-            self.assertEqual(fills.count(colour), 1)
-        self.assertEqual(fills.count(gen.CREAM), 2)  # texture checker
-        strokes = [node.attrib.get('stroke') for node in svg.findall(NS + 'path')]
-        self.assertEqual(strokes.count(gen.GUIDE), 4)  # viewfinder corners
-        self.assertEqual(len(svg.findall(NS + 'circle')), 1)  # timeline playhead
+        self.assertEqual(svg.findall('.//' + NS + 'rect'), [])  # transparent, no tile
+        groups = [g.attrib['id'] for g in svg.findall(NS + 'g')]
+        self.assertEqual(groups, ['mobius-back', 't-pose-mannequin', 'mobius-front'])
+        figure = svg.find(NS + "g[@id='t-pose-mannequin']")
+        self.assertEqual({n.attrib.get('fill') for n in figure.iter(NS + 'circle')}, {gen.OUTLINE, gen.FIGURE})
+        for strand in ('mobius-back', 'mobius-front'):
+            self.assertTrue(svg.find(f"{NS}g[@id='{strand}']"))
 
-    def test_every_windows_size_has_its_own_centered_tile(self):
+    def test_band_is_one_sided_and_shows_both_tones(self):
+        quads = gen.band_quads(395, 95, 68, n=360)
+        colours = {c for _, _, c in quads}
+        front = {gen._mix(gen.FRONT_LO, gen.FRONT_HI, t / 100) for t in range(101)}
+        self.assertTrue(colours & front)
+        self.assertTrue(colours - front)  # the twist turns the far side toward the viewer
+        self.assertTrue(any(z < 0 for z, _, _ in quads) and any(z > 0 for z, _, _ in quads))
+
+    def test_every_windows_size_is_transparent_and_centered(self):
         icon = Image.open(ROOT / 'formaview.ico')
         self.addCleanup(icon.close)
         self.assertEqual(icon.ico.sizes(), {(n, n) for n in gen.ICO_SIZES})
@@ -39,13 +46,11 @@ class BrandMark(unittest.TestCase):
                 for corner in ((0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)):
                     self.assertEqual(alpha.getpixel(corner), 0)
                 bbox = alpha.getbbox()
-                self.assertLessEqual(abs((bbox[0] + bbox[2] - 1) / 2 - (n - 1) / 2), 0.5)
-                self.assertLessEqual(abs((bbox[1] + bbox[3] - 1) / 2 - (n - 1) / 2), 0.5)
-                self.assertEqual(alpha.getpixel((n // 2, n // 2)), 255)
+                self.assertLessEqual(abs((bbox[0] + bbox[2]) / 2 - n / 2), max(1, n * 0.012))
+                self.assertLessEqual(abs((bbox[1] + bbox[3]) / 2 - n / 2), max(1, n * 0.012))
 
-    def test_small_sizes_use_simplified_layouts(self):
-        self.assertEqual({gen.layout(n) for n in (16, 20)}, {'tiny'})
-        self.assertEqual({gen.layout(n) for n in (24, 32)}, {'small'})
+    def test_small_sizes_use_the_bolder_layout(self):
+        self.assertEqual({gen.layout(n) for n in (16, 20, 24, 32)}, {'small'})
         self.assertEqual({gen.layout(n) for n in (40, 48, 64, 128, 256)}, {'full'})
 
 
