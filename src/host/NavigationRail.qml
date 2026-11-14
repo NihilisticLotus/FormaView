@@ -36,7 +36,7 @@ Rectangle {
         anchors.fill: parent; anchors.margins: 8; spacing: 6
         RowLayout {
             Layout.preferredHeight: 44; Layout.leftMargin: root.collapsed ? 0 : 12; Layout.alignment: root.collapsed ? Qt.AlignHCenter : Qt.AlignLeft; spacing: 10
-            Image { objectName: "navigationBrand"; source: "qrc:/formaview/icons/formaview.svg"; Layout.preferredWidth: 28; Layout.preferredHeight: 28; sourceSize: Qt.size(28 * Screen.devicePixelRatio, 28 * Screen.devicePixelRatio); Accessible.ignored: true }
+            Image { objectName: "navigationBrand"; source: "qrc:/formaview/icons/formaview.png"; Layout.preferredWidth: 28; Layout.preferredHeight: 28; sourceSize: Qt.size(28 * Screen.devicePixelRatio, 28 * Screen.devicePixelRatio); Accessible.ignored: true }
             Label { visible: !root.collapsed; text: "FormaView"; font.pixelSize: 18; font.bold: true; color: Theme.text }
         }
         Item { Layout.preferredHeight: 10 }

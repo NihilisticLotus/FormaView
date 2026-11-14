@@ -101,6 +101,7 @@ if(TARGET formaview_modelsplugin)
     target_link_libraries(formaview PRIVATE formaview_modelsplugin)
 endif()
 file(GLOB_RECURSE desktop_icons CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/*.svg")
+list(APPEND desktop_icons "${CMAKE_CURRENT_SOURCE_DIR}/icons/formaview.png")
 qt_add_resources(formaview ui_icons PREFIX "/formaview" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${desktop_icons})
 add_custom_command(TARGET formaview POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

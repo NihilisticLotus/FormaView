@@ -1,41 +1,51 @@
-"""Brand asset geometry regression. Run with the icon generator's Pillow environment."""
+"""Transparent app-icon asset regression tests."""
 from pathlib import Path
-import re
 import unittest
-import xml.etree.ElementTree as ET
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1] / 'src/host/icons'
+SIZES = {16, 20, 24, 32, 40, 48, 64, 128, 256}
 
 
-class BrandAlignment(unittest.TestCase):
-    def test_svg_mark_centred_in_frame(self):
-        svg = ET.parse(ROOT / 'formaview.svg').getroot()
-        group = svg.find('{http://www.w3.org/2000/svg}g')
-        self.assertIsNotNone(group)
-        dx, dy = map(float, re.findall(r'-?\d+(?:\.\d+)?', group.attrib['transform']))
-        points = []
-        for path in group:
-            values = list(map(float, re.findall(r'-?\d+(?:\.\d+)?', path.attrib['d'])))
-            points.extend(zip(values[::2], values[1::2]))
-        xs, ys = zip(*points)
-        self.assertAlmostEqual((min(xs)+max(xs))/2+dx, 128)
-        self.assertAlmostEqual((min(ys)+max(ys))/2+dy, 128)
+class AppIconTests(unittest.TestCase):
+    def test_master_png_is_rgba_with_transparent_background_and_both_brand_colors(self):
+        with Image.open(ROOT / 'formaview.png') as source:
+            self.assertEqual(source.mode, 'RGBA')
+            alpha = source.getchannel('A')
+            self.assertEqual(alpha.getextrema()[0], 0)
+            self.assertGreater(alpha.getextrema()[1], 240)
+            for corner in ((0, 0), (source.width - 1, 0),
+                           (0, source.height - 1), (source.width - 1, source.height - 1)):
+                self.assertEqual(alpha.getpixel(corner), 0)
+            bbox = alpha.getbbox()
+            self.assertIsNotNone(bbox)
+            self.assertLessEqual(abs((bbox[0] + bbox[2] - 1) / 2 - (source.width - 1) / 2), 4)
+            # The approved perspective mark intentionally carries a little
+            # more visual mass above its lower front edge.
+            self.assertLessEqual(abs((bbox[1] + bbox[3] - 1) / 2 - (source.height - 1) / 2), 16)
+            pixels = source.convert('RGB').load()
+            has_orange = has_blue = False
+            for y in range(0, source.height, 4):
+                for x in range(0, source.width, 4):
+                    r, g, b = pixels[x, y]
+                    has_orange |= r > 170 and g < 150 and b < 150
+                    has_blue |= b > 70 and r < 70 and g < 120
+            self.assertTrue(has_orange)
+            self.assertTrue(has_blue)
 
-    def test_all_windows_sizes_keep_mark_centred(self):
+    def test_ico_contains_alpha_preserving_windows_sizes(self):
         icon = Image.open(ROOT / 'formaview.ico')
         self.addCleanup(icon.close)
-        sizes = {16, 20, 24, 32, 40, 48, 64, 128, 256}
-        self.assertEqual(icon.ico.sizes(), {(n, n) for n in sizes})
-        for n in sorted(sizes):
+        self.assertEqual(icon.ico.sizes(), {(n, n) for n in SIZES})
+        for n in sorted(SIZES):
             with self.subTest(size=n):
                 image = icon.ico.getimage((n, n)).convert('RGBA')
-                pixels = [(x,y) for y in range(n) for x in range(n)
-                          if (lambda c: c[0] > c[1]*1.2 and c[1] > c[2]*1.3 and c[3] > 200)(image.getpixel((x,y)))]
-                self.assertTrue(pixels)
-                for axis in (0, 1):
-                    middle = (min(p[axis] for p in pixels)+max(p[axis] for p in pixels))/2
-                    self.assertLessEqual(abs(middle-(n-1)/2), .5)
+                alpha = image.getchannel('A')
+                self.assertEqual(alpha.getextrema()[0], 0)
+                self.assertGreater(alpha.getextrema()[1], 240)
+                for corner in ((0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)):
+                    self.assertEqual(alpha.getpixel(corner), 0)
+                self.assertGreater(alpha.getpixel((n // 2, n // 2)), 0)
 
 
 if __name__ == '__main__':

@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
   app.setFont(font);
   QCoreApplication::setOrganizationName("FormaView");
   QCoreApplication::setApplicationName("FormaView");
-  QGuiApplication::setWindowIcon(QIcon(":/formaview/icons/formaview.svg"));
+  QGuiApplication::setWindowIcon(QIcon(":/formaview/icons/formaview.png"));
 #ifdef QT_QML_DEBUG
   // Development preview sessions must not overwrite the user's settings or
   // jobs.

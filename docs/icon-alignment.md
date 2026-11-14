@@ -1,7 +1,17 @@
-# 应用图标对齐
+# FormaView 应用图标
 
-品牌图形在保留折面与取景框造型的前提下，居中放置橙色主体。应用内SVG、窗口图标及Windows可执行文件的9层ICO由 `tools/generate_app_icon.py` 同源生成。折叠导航中的品牌图标居中；展开导航保留品牌与名称组成的左对齐标题。
+## 设计稿与主资源
 
-文件列表的类型图标以整行及文件名/类型双行文字组为中心。原截图与Qt离屏几何均未发现偏移，因此没有为文件类型图标添加补偿量。
+应用图标采用用户最终确认的蓝橙立体标志，不添加四角边框或不透明底色。透明 PNG 保留原稿的透视、圆角、渐变高光和阴影；主图为 RGBA，四角 Alpha 为 0。主图文件为 `src/host/icons/formaview.png`，尺寸为 1254 × 1254。
 
-开发验证：使用Pillow环境运行 `python tests/app_icon_tests.py`；Qt几何覆盖标准/紧凑密度与100%、125%、150%、200%离屏缩放。离屏测量不代表原生多屏DPI验收。Windows资源管理器、任务栏和固定快捷方式可能继续显示旧缓存，需由新版可执行文件及系统缓存刷新后人工确认；本修复不清理系统图标缓存或重建用户快捷方式。
+## 应用接入与生成
+
+- 标题栏/系统窗口图标由 `src/host/main.cpp` 从 Qt 资源 `:/formaview/icons/formaview.png` 加载。
+- 左侧导航品牌图标由 `src/host/NavigationRail.qml` 加载同一 PNG 资源，避免窗口图标与应用内品牌标志分叉。
+- `src/host/CMakeLists.txt` 将 PNG 纳入 Qt 资源；Windows 可执行文件和安装器使用多尺寸 ICO。
+- `src/host/icons/formaview.ico` 是 Windows 图标资源，包含 16、20、24、32、40、48、64、128 和 256px 九种尺寸，每层保留 Alpha。
+- `tools/generate_app_icon.py` 以透明 PNG 为唯一主图生成 ICO，不再绘制或维护第二份独立图形。重新生成命令：`py -3 tools/generate_app_icon.py`。
+
+## 回归检查
+
+运行 `py -3 -B tests/app_icon_tests.py`。测试检查主 PNG 为 RGBA、存在透明背景、主体在画布内居中且包含蓝橙颜色；并检查 ICO 含有规定的九种尺寸、透明角点和可见主体。2026-11-15 的本地验收还用 Windows 资源只读方式核对了应用与安装包内的九层 `RT_ICON` 图像哈希；该检查只读取 PE 资源，没有执行安装器入口。系统任务栏、资源管理器、快捷方式缓存，以及多屏 DPI 下的实际显示仍需在用户环境人工确认。
