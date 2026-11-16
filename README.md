@@ -3,11 +3,11 @@
   <h1>FormaView</h1>
   <p><strong>面向素材检查与导出的本地桌面工作区</strong></p>
   <p>浏览图片、模型和动画；检查细节；预检并安全地导出转换结果。</p>
-  <p><strong>正式版 0.1.0</strong> · Windows x64 · 简体中文 / 繁體中文 / English</p>
+  <p><strong>正式版 0.1.1</strong> · Windows x64 · 简体中文 / 繁體中文 / English</p>
 </div>
 
 > [!NOTE]
-> FormaView v0.1.0 已确认为正式版本。Windows x64 安装包和功能验证运行包已发布在 [GitHub Release](https://github.com/NihilisticLotus/FormaView/releases/tag/v0.1.0)。当前构建仍待用户完成人工功能验证；源码 Git 树不包含这些二进制资产。正式版本状态不代表所有格式、设备和性能场景均已验证。
+> FormaView v0.1.1 的 Windows x64 安装包和二进制运行包已发布在 [GitHub Release](https://github.com/NihilisticLotus/FormaView/releases/tag/v0.1.1)。生产安装覆盖及完整人工功能验证仍待完成；源码 Git 树不包含这些二进制资产，正式版本状态不代表所有格式、设备和性能场景均已验证。
 
 ## 目录
 
@@ -217,7 +217,7 @@ FormaView 不会自动修改 MCP 客户端配置，也不会在未启用端点�
 | MCP 集成 | 在上述基础上，另需 Python 3.12、运行目录中的锁定 MCP 依赖和支持 stdio MCP 的客户端；Python 环境不随桌面运行目录提供 |
 | 硬件 | 尚未公布统一的最低 CPU、内存、显存或显卡型号要求。复杂模型、大尺寸贴图和大量动画会使用更多系统与图形资源 |
 
-v0.1.0 正式版的 Windows x64 安装包和功能验证运行包可在 [GitHub Release](https://github.com/NihilisticLotus/FormaView/releases/tag/v0.1.0) 获取。当前安装包尚未执行安装，且仍待用户完成人工功能验证；显卡、驱动和 DPI 兼容矩阵也不完整。遇到设备、格式或素材问题时以软件显示的诊断为准。验收范围、哈希和未验证项目见 [`docs/release-validation.md`](docs/release-validation.md)。
+v0.1.1 正式版的 Windows x64 安装包和二进制运行包可在 [GitHub Release](https://github.com/NihilisticLotus/FormaView/releases/tag/v0.1.1) 获取。隔离安装覆盖与真实版本数据样本已验证；生产安装覆盖、完整人工功能验证及显卡、驱动和 DPI 兼容矩阵仍未完成。遇到设备、格式或素材问题时以软件显示的诊断为准；本版哈希和验证限制见 Release 说明。
 
 ## 版本规则与路线图
 
@@ -231,6 +231,7 @@ FormaView 使用 `a.b.c` 表示产品阶段与迭代：
 
 | 版本 | 目标内容 | 状态 |
 |---|---|---|
+| **0.1.1** | 大图预览和导航优化、模型显示模式及关联图标修补 | 正式版；Windows x64 安装包与二进制运行包已发布 |
 | **0.1.0** | 图片、模型和动画浏览/预览；转换预检与任务；可选 MCP 集成 | 正式版；Windows x64 安装包与功能验证运行包已发布；人工验证待完成 |
 | **0.2.0** | 常规视频解码与播放 | 规划中 |
 | **0.3.0** | Unity `.unitypackage` 预览；筛选并整合 UE Viewer 中选定的功能 | 规划中，功能范围待细化 |
