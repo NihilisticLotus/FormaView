@@ -2,6 +2,7 @@
 // timings.
 #include "image_session.hpp"
 #include <QCoreApplication>
+#include <QImageReader>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -501,6 +502,29 @@ QJsonObject benchmark(const QString &directory) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 4 && app.arguments()[1] == "--preview-samples") {
+      QImageReader::setAllocationLimit(512);
+      QJsonArray results;
+      const QDir directory(app.arguments()[2]);
+      for (const auto &file : directory.entryInfoList(QDir::Files, QDir::Name)) {
+        ImageSession session;
+        session.open(file.absoluteFilePath());
+        waitFor(session);
+        if (!session.error().isEmpty())
+          throw std::runtime_error(session.error().toStdString());
+        const auto pixels = session.pixels();
+        require(bool(pixels), "Preview must produce pixels");
+        results.append(QJsonObject{{"file", file.fileName()},
+            {"sha256", pixels->info.value("sha256").toString()},
+            {"upload_sha256", QString::fromLatin1(normalizedHash(*pixels))},
+            {"retained_bytes", static_cast<qint64>(pixels->bytes)}});
+        session.clear();
+      }
+      require(results.size() > 0, "No preview samples");
+      save(app.arguments()[3], QJsonObject{{"samples", results}});
+      std::cout << "Passed preview samples" << std::endl;
+      return 0;
+    }
     require(argc == 4 && (app.arguments()[1] == "--benchmark" ||
                           app.arguments()[1] == "--regression"),
             "Usage: --benchmark INPUT_DIRECTORY OUTPUT_JSON or --regression "

@@ -139,7 +139,9 @@ int main(int argc, char *argv[]) {
   const auto started = std::chrono::steady_clock::now();
   QQuickStyle::setStyle("Basic");
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
-  QImageReader::setAllocationLimit(32);
+  // Full-resolution preview shares Qt's reader with thumbnails. Individual
+  // preview dimensions and working/retained memory remain bounded separately.
+  QImageReader::setAllocationLimit(512);
   auto app = DesktopApplication{argc, argv};
   app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #ifdef FORMAVIEW_IMAGE_UI

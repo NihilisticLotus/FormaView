@@ -435,7 +435,9 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       const auto admission = ImageAdmission(true, stop);
       auto document = ImageDocument::open(
           std::filesystem::path(path.toStdWString()),
-          {512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256},
+          // Codec scratch (including float intermediates) is distinct from
+          // the retained source/upload budget enforced by ImagePixels.
+          {512ULL * 1024 * 1024, 2ULL * 1024 * 1024 * 1024, 16384, 65536, 256},
           stop);
       if (index < 0 || static_cast<std::size_t>(index) >=
                            document.description().subresources.size())
