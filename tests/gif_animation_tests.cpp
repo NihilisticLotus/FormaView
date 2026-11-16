@@ -366,8 +366,14 @@ private slots:
     QVERIFY(session.pixels()->source.data_window.width <= 2048);
     QVERIFY(session.pixels()->bytes <= 80ULL * 1024 * 1024);
     session.viewport(QRect(0, 0, 4, 3), QSize(4, 3));
-    QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+    // Background refinement must leave the page interactive, but the region
+    // pixels are only available after that separate operation completes.
+    QVERIFY(!session.busy());
+    QVERIFY(session.refining());
+    QTRY_VERIFY_WITH_TIMEOUT(!session.refining(), 5000);
+    QVERIFY2(session.error().isEmpty(), qPrintable(session.error()));
     QCOMPARE(session.pixels()->source.data_window.width, quint64(4));
+    QCOMPARE(session.pixels()->source.data_window.height, quint64(3));
     QCOMPARE(pixel(session.pixels(), 0, 0), QColor(Qt::red));
   }
 
