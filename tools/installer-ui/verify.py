@@ -260,6 +260,9 @@ def make_fixture(fixture, app_id, profile, namespace):
     source = source.replace("OutputBaseFilename=FormaView-{#PackageVersion}-Windows-x64-Setup", "OutputBaseFilename=wizard-fixture")
     assoc = read(engine / "associations.iss").replace(r"Software\FormaView", "Software\\" + namespace)
     assoc = assoc.replace("FormaView.Local", namespace)
+    icon_match = re.search(r"formaview-file-icon-[0-9a-f]{64}\.ico", assoc)
+    assert icon_match, "generated association source must reference the content-addressed file icon"
+    file_icon_name = icon_match.group(0)
     data = read(engine / "uninstall-data.iss")
     data = data.replace(r"Software\FormaView\Installer", profile)
     data = data.replace(r"Software\FormaView\FormaView", "Software\\" + namespace + r"\Settings")
@@ -268,12 +271,15 @@ def make_fixture(fixture, app_id, profile, namespace):
         (fixture / name).write_bytes((engine / name).read_bytes())
     (fixture / "upgrade-policy.iss").write_bytes((engine / "upgrade-policy.iss").read_bytes())
     (fixture / "formaview.ico").write_bytes((meta / "formaview.ico").read_bytes())
+    (fixture / file_icon_name).write_bytes((meta / file_icon_name).read_bytes())
     (fixture / "installation.ini").write_bytes(f"[Install]\r\nAppId={app_id}\r\nVersion=0.1.0\r\n".encode())
-    (fixture / "owned-files.txt").write_bytes(b"\xef\xbb\xbfinstallation.ini\r\nowned-files.txt\r\n")
+    fixture_files = ("installation.ini", file_icon_name, "owned-files.txt")
+    (fixture / "owned-files.txt").write_bytes(
+        ("\ufeff" + "\r\n".join(fixture_files) + "\r\n").encode("utf-8"))
     write(fixture / "associations.iss", assoc)
     write(fixture / "uninstall-data.iss", data)
     write(fixture / "files.generated.iss", "\n".join(f'Source: "{fixture/n}"; DestDir: "{{app}}"; Flags: ignoreversion'
-                                                   for n in ("installation.ini", "owned-files.txt")))
+                                                   for n in fixture_files))
     current = fixture / "current.iss"
     write(current, source)
     old = re.sub(r"(?ms)^\[Registry\].*?(?=^\[Code\])", "", source)
@@ -379,6 +385,10 @@ def main():
         assert Path(registry(lm, key, "InstallLocation")).resolve() == app.resolve()
         assert registry(cu, key, "InstallLocation") is None and registry(cu, profile, "TaskHistoryLayout") is None
         assert registry(lm, r"Software\Classes\\" + namespace + r".fbx\shell\open\command", "") == f'"{app}\\formaview.exe" --open "%1"'
+        installed_icons = list(app.glob("formaview-file-icon-*.ico"))
+        assert len(installed_icons) == 1 and installed_icons[0].read_bytes() == (fixture / installed_icons[0].name).read_bytes()
+        assert registry(cu, r"Software\Classes\\" + namespace + r".fbx\DefaultIcon", "") == \
+            f'"{installed_icons[0]}",0'
         originals = app / "original-source.txt"
         exports = app / "export-output.txt"
         for p in (originals, exports):

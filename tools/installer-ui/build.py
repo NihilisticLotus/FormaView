@@ -230,7 +230,7 @@ function InitialTaskHistoryLayout(""")
     return source
 
 
-def association_source():
+def association_source(file_icon_name):
     previous = read(BASE / "associations.iss")
     # Preserve the existing extension/ProgID inventory, registration protocol,
     # and ownership ledger. Presentation is defined independently.
@@ -242,6 +242,7 @@ def association_source():
     Result := '需在 Windows 中按账户确认'; exit;
   end;
   Id := QueryAssociation(Extensions[I], 20);""")
+    prefix = replace(prefix, "@@FILE_ICON_FILENAME@@", file_icon_name)
     ext = previous[previous.index("function ExtensionList:"):previous.index("procedure InitializeWizard;")]
     return prefix + ext + read(HERE / "wizard-code.iss")
 
@@ -286,9 +287,11 @@ def build(dest, evidence, compile_setup, runtime_delivery=None):
             raise ValueError("A newer runtime needs recorded bidirectional data compatibility with 0.1.0")
     icon = REPO / "src/host/icons/formaview.ico"
     (metadata / "formaview.ico").write_bytes(icon.read_bytes())
+    file_icon_name = f"formaview-file-icon-{sha(icon)}.ico"
+    (metadata / file_icon_name).write_bytes(icon.read_bytes())
     (metadata / "installation.ini").write_bytes(f"[Install]\r\nAppId={IDENTITY}\r\nVersion={version}\r\n".encode())
     write(metadata / "安装使用说明.txt", GUIDE.replace("FormaView 0.1.0", f"FormaView {version}", 1))
-    for name in ("runtime-manifest.json", "formaview.ico", "installation.ini", "安装使用说明.txt"):
+    for name in ("runtime-manifest.json", "formaview.ico", file_icon_name, "installation.ini", "安装使用说明.txt"):
         sources[name] = metadata / name
     names = sorted(set(sources) | {"owned-files.txt", "sha256.json"})
     assert not any("image-journal" in n or n.endswith("desktop-history.json") for n in names)
@@ -307,7 +310,7 @@ def build(dest, evidence, compile_setup, runtime_delivery=None):
     write(engine / "FormaView.iss", setup_source())
     write(engine / "upgrade-policy.iss", read(HERE / "upgrade-policy.iss"))
     write(engine / "uninstall-data.iss", read(HERE / "uninstall-data.iss"))
-    assoc = association_source()
+    assoc = association_source(file_icon_name)
     exts = re.search(r"Text := '([^']+)'", assoc)[1].rstrip(",").split(",")
     assert len(exts) == len(set(exts)) == 25 and not {".pmx", ".vrm"}.intersection(exts)
     assert "UserChoice" not in assoc and '--open "%1"' in assoc
@@ -333,6 +336,7 @@ def build(dest, evidence, compile_setup, runtime_delivery=None):
                 machineDefaultDirectory=r"%ProgramFiles%\FormaView", sameScopeUpgrade=True, previewExtensions=exts,
                 shipsTaskHistory=False, mcpAdapterIncluded=True, stagesDuplicateRuntime=False,
                 optionalUninstallSettingsAndHistory=True, uninstallDefaultKeepsBoth=True,
+                fileIconFilename=file_icon_name, fileIconSha256=sha(icon),
                 productVersion=version, versionSource="verified runtime PE resources",
                 supportsInPlaceVersionChanges=True, profileContract="formaview-user-state-v1",
                 retainsRetiredPayloadFilesOutsideLoadPaths=True)

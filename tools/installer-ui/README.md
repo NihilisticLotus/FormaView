@@ -27,6 +27,8 @@ python tools/installer-ui/verify_versions.py
 
 These helpers exercise disposable installer payloads; simulated version strings are not evidence that real binaries can launch or read each other's data. Follow [`../../docs/release-validation.md`](../../docs/release-validation.md) for the mandatory actual-binary, bidirectional version and user-data checks. Finalize only the exact reviewed candidate, passing its staging root explicitly:
 
+File-type icons are installed as an ICO named from its SHA-256 content rather than pointing `DefaultIcon` at the stable `formaview.exe` path. On upgrades, the ownership ledger permits changing an icon value only while the current registry value still matches the last value FormaView recorded. If it differs, preserve the external change. Keep the unique ICO in the generated payload/owned-file manifest and keep `SHChangeNotify(SHCNE_ASSOCCHANGED)` after association updates. The published v0.1.0 installer predates this fix; rebuild a patch candidate and check an existing development install before claiming the installer is fixed.
+
 ```powershell
 pwsh -File tools/installer-ui/finalize.ps1 -StagingRoot 'E:/CodexProject/asset-preview-planning/development'
 ```

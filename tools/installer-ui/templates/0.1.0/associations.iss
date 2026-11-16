@@ -97,7 +97,7 @@ begin
 end;
 
 function PutOwned(Id, Key, Name, Data: string): Boolean;
-var RecordKey, Ancestor, Parent: string;
+var RecordKey, Ancestor, Parent, PreviousData: string;
 begin
   Result := False;
   if not AllowedOwnedValue(Key, Name) then exit;
@@ -105,7 +105,15 @@ begin
   if RegKeyExists(HKCU64, RecordKey) then begin
     if not SameValue(RecordKey, 'Owner', CurrentOwner) or
        not SameValue(RecordKey, 'Key', Key) or not SameValue(RecordKey, 'Name', Name) then exit;
-    if not SameValue(Key, Name, Data) then exit;
+    if SameValue(Key, Name, Data) then begin Result := True; exit; end;
+    { Upgrade an owned value only if it still matches the value recorded by
+      FormaView. If another program/user changed it, preserve that change. }
+    if not RegQueryStringValue(HKCU64, RecordKey, 'Data', PreviousData) or
+       not SameValue(Key, Name, PreviousData) then exit;
+    if not RegWriteStringValue(HKCU64, Key, Name, Data) then exit;
+    if not RegWriteStringValue(HKCU64, RecordKey, 'Data', Data) then begin
+      RegWriteStringValue(HKCU64, Key, Name, PreviousData); exit;
+    end;
     Result := True; exit;
   end;
   { A pre-existing value is not ours even if its text happens to match. }
@@ -181,13 +189,15 @@ begin
 end;
 
 function RegisterExtension(I: Integer): Boolean;
-var Id, ClassKey, Command: string;
+var Id, ClassKey, Command, IconKey, NewIcon: string;
 begin
   Id := Copy(Extensions[I], 2, 20) + '_';
   ClassKey := 'Software\Classes\' + ProgId(I);
   Command := '"' + ExpandConstant('{app}\formaview.exe') + '" --open "%1"';
+  IconKey := ClassKey + '\DefaultIcon';
+  NewIcon := '"' + ExpandConstant('{app}\@@FILE_ICON_FILENAME@@') + '",0';
   Result := PutOwned(Id + 'description', ClassKey, '', 'FormaView ' + Extensions[I]) and
-    PutOwned(Id + 'icon', ClassKey + '\DefaultIcon', '', '"' + ExpandConstant('{app}\formaview.exe') + '",0') and
+    PutOwned(Id + 'icon', IconKey, '', NewIcon) and
     PutOwned(Id + 'command', ClassKey + '\shell\open\command', '', Command) and
     PutOwned(Id + 'openwith', 'Software\Classes\' + Extensions[I] + '\OpenWithProgids', ProgId(I), '') and
     PutOwned(Id + 'capability', Caps + '\FileAssociations', Extensions[I], ProgId(I));
