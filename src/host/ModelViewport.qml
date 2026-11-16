@@ -9,6 +9,7 @@ FocusScope {
     property bool showGrid: true
     property bool showAxes: true
     property bool wireframe: false
+    property int shadingMode: 0
     property var initialCamera: ({})
     property bool ready: false
     signal cameraSaved(var state)
@@ -23,6 +24,7 @@ FocusScope {
         showGrid: !root.uv && root.showGrid
         showAxes: !root.uv && root.showAxes
         wireframe: !root.uv && root.wireframe
+        shadingMode: root.uv ? 0 : root.shadingMode
         onCameraChanged: state => { if (root.ready) root.cameraSaved(state) }
         activeFocusOnTab: true
         Accessible.role: Accessible.Pane

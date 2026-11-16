@@ -454,6 +454,8 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
                      : collision ? QVector3D(1.F, .3F, .05F)
                                  : m.colours.at(corner);
       float weight = std::numeric_limits<float>::quiet_NaN();
+      const auto rawColour = m.vertexColours.empty() ? QVector3D(.7F, .7F, .7F)
+                                                     : m.vertexColours.at(corner);
       if (skin) {
         const auto &values = skin->weights.at(point);
         if (!values.empty()) {
@@ -489,7 +491,9 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
           : m.alphaModes.empty()
               ? 0.F
               : static_cast<float>(m.alphaModes.at(material)),
-          m.alphaCutoffs.empty() ? .5F : m.alphaCutoffs.at(material)};
+          m.alphaCutoffs.empty() ? .5F : m.alphaCutoffs.at(material),
+          rawColour.x(), rawColour.y(), rawColour.z(),
+          m.uvs.empty() ? 0.F : 1.F};
     };
     for (std::size_t t = 0; t < m.triangles.size(); t += 3) {
       if ((t & 4095) == 0 && stop.stop_requested())

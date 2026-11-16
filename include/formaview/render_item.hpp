@@ -30,11 +30,14 @@ struct Vertex {
   float x{}, y{}, z{}, u{}, v{}, weight{};
   float nx{}, ny{}, nz{1}, r{1}, g{1}, b{1};
   float alpha{1}, alphaMode{}, alphaCutoff{.5F};
+  // Independent source RGB; .w indicates usable UVs for the checker preview.
+  float cr{.7F}, cg{.7F}, cb{.7F}, hasUV{};
 };
 // ABC positions and normals change independently of the shading attributes.
 struct DeformedVertex { float x{}, y{}, z{}, nx{}, ny{}, nz{}; };
 struct StaticVertex {
   float u{}, v{}, weight{}, r{}, g{}, b{}, alpha{}, alphaMode{}, alphaCutoff{};
+  float cr{.7F}, cg{.7F}, cb{.7F}, hasUV{};
 };
 struct SkinData {
   // Source-point ranges are integer attributes; influences retain every slot.
@@ -118,6 +121,7 @@ public:
   QMatrix4x4 viewMatrix;
   bool useViewMatrix{};
   bool showGrid{}, showAxes{}, wireframe{};
+  int shadingMode{}; // 0 source material, 1 checker, 2 source vertex RGB.
   int skinProbe{}; // Diagnostics only: 1 position, 2 normal, same vertex shader.
   // Callbacks run on the render thread. Do not touch GUI objects directly.
   std::function<void(Observation)> observe;

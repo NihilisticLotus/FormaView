@@ -379,6 +379,15 @@ int main(int argc, char **argv) {
     const auto original = session.frame()->textures.at(0);
     const auto sourceDocument =
         readModelDocument(fixtures.filePath("external.gltf"), {});
+    {
+      const auto coloured=readModelDocument(fixtures.filePath("coverage-mask.gltf"),{});
+      const auto &mesh=coloured->meshes.front();
+      test(!mesh.vertexColours.empty() &&
+           std::abs(mesh.vertexColours.front().x()-128.F/255.F)<1e-6F &&
+           mesh.vertexColours.front().y()==1.F && mesh.vertexColours.front().z()==0.F &&
+           mesh.colours.front()!=mesh.vertexColours.front(),
+           "source vertex RGB remains independent of material tint");
+    }
     const auto origin = -sourceDocument->center / sourceDocument->radius;
     const auto &axisStart =
         session.frame()->guides.at(session.frame()->gridVertices);

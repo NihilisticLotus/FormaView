@@ -26,7 +26,7 @@ void quad(Frame &f, float z, QVector3D colour, float alpha, int mode,
 struct Result {
   std::array<float, 4> rgba;
   std::uint64_t owned{};
-  int gridPixels{}, axisPixels{};
+  int gridPixels{}, axisPixels{}, wirePixels{};
 };
 void rejectedFrame(const std::shared_ptr<Frame> &frame, std::shared_ptr<Frame> recovery = {}) {
   QQuickWindow window;
@@ -68,7 +68,7 @@ void rejectedFrame(const std::shared_ptr<Frame> &frame, std::shared_ptr<Frame> r
   item.reset(); window.hide(); window.releaseResources();
 }
 Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
-              bool axes = false) {
+              bool axes = false, int shading = 0, bool wire = false) {
   auto window = std::make_unique<QQuickWindow>();
   window->setFlags(window->flags() | Qt::WindowDoesNotAcceptFocus |
                    Qt::WindowTransparentForInput);
@@ -82,6 +82,8 @@ Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
   item->setFixedColorBufferHeight(128);
   item->showGrid = grid;
   item->showAxes = axes;
+  item->shadingMode = shading;
+  item->wireframe = wire;
   struct ReadbackState {
     Result result{};
     std::atomic<bool> done = false;
@@ -108,6 +110,9 @@ Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
             std::abs(value[1] - .5F) < 1e-4F &&
             std::abs(value[2] - .25F) < 1e-4F)
           ++state->result.axisPixels;
+        if (std::abs(value[0]-.85F)<1e-4F &&
+            std::abs(value[1]-.88F)<1e-4F && std::abs(value[2]-.92F)<1e-4F)
+          ++state->result.wirePixels;
       }
     } else
       state->result.rgba.fill(-999);
@@ -124,7 +129,8 @@ Result render(const std::shared_ptr<Frame> &frame, bool grid = false,
   if (!state->done.load())
     throw std::runtime_error("GPU readback timeout");
   const Result result{state->result.rgba, state->owned.load(),
-                      state->result.gridPixels, state->result.axisPixels};
+                      state->result.gridPixels, state->result.axisPixels,
+                      state->result.wirePixels};
   item.reset();
   window->hide();
   window->releaseResources();
@@ -311,6 +317,47 @@ int main(int argc, char **argv) {
   };
   constexpr float background = 24.F / 255;
   try {
+    {
+      auto f = base();
+      f->rgba = {0, 0, 0, 0};
+      quad(*f, 0, {0, 0, 0}, 0, 1);
+      f->draws = {{0, 6, -1, true, {}}};
+      for (auto &v : f->vertices) { v.cr=.1F; v.cg=.3F; v.cb=.9F; }
+      const auto vertex = render(f, false, false, 2);
+      for (int c=0;c<4;++c) {
+        const float expected=std::array<float,4>{.1F,.3F,.9F,1.F}[c];
+        if(std::abs(vertex.rgba[c]-expected)>3e-4F)
+          throw std::runtime_error("Vertex RGB inherited source material/alpha");
+        ++assertions;
+      }
+      for (int uv=0;uv<2;++uv) {
+        for(auto &v:f->vertices) v.hasUV=static_cast<float>(uv);
+        const auto checker=render(f,false,false,1);
+        if(checker.rgba[0]<.05F || checker.rgba[0]>.9F ||
+           std::abs(checker.rgba[0]-checker.rgba[1])>3e-4F || checker.rgba[3]!=1.F)
+          throw std::runtime_error("Checker inherited black/transparent material");
+        ++assertions;
+      }
+      auto uvFrame=std::make_shared<Frame>(*f); uvFrame->uv=true;
+      const auto uv=render(uvFrame,false,false,2);
+      if(uv.rgba[0]!=0 || uv.rgba[1]!=0 || uv.rgba[2]!=0)
+        throw std::runtime_error("Model display override leaked into UV view");
+      ++assertions;
+      const auto wire=render(f,false,false,0,true);
+      if(wire.wirePixels<20) throw std::runtime_error("Black material hid wireframe");
+      ++assertions;
+      auto streamed=std::make_shared<Frame>();
+      streamed->streamGeometry=f;
+      streamed->streamSignature="preview-colour-layout";
+      for(const auto &v:f->vertices)
+        streamed->deformation.push_back({v.x,v.y,v.z,v.nx,v.ny,v.nz});
+      const auto streamColour=render(streamed,false,false,2);
+      if(std::abs(streamColour.rgba[0]-.1F)>3e-4F ||
+         std::abs(streamColour.rgba[2]-.9F)>3e-4F)
+        throw std::runtime_error("Streaming vertex RGB layout mismatch");
+      ++assertions;
+      records.append(QJsonObject{{"case","independent vertex RGB, UV/spatial checker, opaque override and UV isolation"}});
+    }
     for (int kind = 0; kind < 4; ++kind) {
       auto invalid = std::make_shared<Frame>();
       invalid->rgba = {1, 1, 1, 1};

@@ -804,7 +804,10 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
           fail("glTF vertex colour shape mismatch");
         const auto &values = access.read(colours);
         const std::size_t stride = colours->type == cgltf_type_vec4 ? 4 : 3;
+        m.vertexColours.resize(count);
         for (std::size_t i = 0; i < count; ++i) {
+          m.vertexColours[i] = QVector3D(values[i * stride], values[i * stride + 1],
+                                         values[i * stride + 2]);
           m.colours[i] *= QVector3D(values[i * stride], values[i * stride + 1],
                                     values[i * stride + 2]);
           if (stride == 4)

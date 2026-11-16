@@ -836,6 +836,13 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
                      normalMatrix(2, 2) * v.z()};
           }
           m.normals.push_back(n.normalized());
+          if (const auto colour = g.corner_attributes.find("colour/0");
+              colour != g.corner_attributes.end()) {
+            const auto &b = colour->second;
+            m.vertexColours.emplace_back(static_cast<float>(scalar(b, i * 4)),
+                                         static_cast<float>(scalar(b, i * 4 + 1)),
+                                         static_cast<float>(scalar(b, i * 4 + 2)));
+          }
           const auto face = m.faces[i];
           const auto material =
               src.face_materials.at(static_cast<std::size_t>(face));
@@ -1230,6 +1237,8 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
     m.texturePaths = QStringList(m.materials.size(), QString{});
     m.normals.resize(m.corners.size());
     m.colours.resize(m.corners.size(), QVector3D(.72F, .72F, .75F));
+    for (const auto &c : src.colours)
+      m.vertexColours.emplace_back(c[0] / 255.F, c[1] / 255.F, c[2] / 255.F);
     Skin skin;
     skin.name = "ActorX source binding";
     skin.id = d->hash + ":actor:source-binding";

@@ -17,7 +17,8 @@ Rectangle {
     property bool showCompare: false
     property bool showGrid: true
     property bool showAxes: true
-    property bool wireframe: false
+    property int previewMode: 0
+    readonly property bool wireframe: previewMode === 3
     property var uvCamera: ({})
     Connections {
         target: root.session
@@ -28,7 +29,7 @@ Rectangle {
             root.showCompare = false
             root.showGrid = true
             root.showAxes = true
-            root.wireframe = false
+            root.previewMode = 0
             root.uvCamera = ({})
             externalDialog.close()
             compareDialog.close()
@@ -74,7 +75,16 @@ Rectangle {
                 onClicked: root.addExternalAnimation()
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0 }
-            Tool { objectName: "modelWireframe"; Layout.preferredWidth: 32; iconName: "wireframe"; hint: Theme.t("线框模式", "Wireframe", "線框模式"); checkable: true; checked: root.wireframe; enabled: root.session.available; onToggled: root.wireframe=checked }
+            Choice {
+                objectName: "modelPreviewMode"
+                Layout.preferredWidth: root.narrow ? 120 : 160
+                labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
+                notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
+                currentIndex: root.previewMode
+                enabled: root.session.available && !root.session.info.cameraOnly
+                onActivated: root.previewMode = currentIndex
+                Accessible.name: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式")
+            }
             Tool { objectName: "modelGroundGrid"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
             Tool { objectName: "modelOriginAxes"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "origin-axes"; hint: Theme.t("原点坐标轴 · X 红 / Y 绿 / Z 蓝", "Origin axes · X red / Y green / Z blue", "原點座標軸 · X 紅 / Y 綠 / Z 藍"); checkable: true; checked: root.showAxes; enabled: root.session.available; onToggled: root.showAxes=checked }
             Tool { objectName: "modelFocus"; Layout.preferredWidth: 32; iconName: "focus"; hint: Theme.t("聚焦所选对象（F）", "Focus selection (F)", "聚焦所選物件（F）"); enabled: root.session.available; onClicked: root.fit(true) }
@@ -138,6 +148,7 @@ Rectangle {
                     session: root.session
                     showGrid: root.showGrid; showAxes: root.showAxes
                     wireframe: root.wireframe
+                    shadingMode: root.previewMode === 1 || root.previewMode === 2 ? root.previewMode : 0
                     visible: root.session.mode!==1 || !root.narrow || !root.showUV
                 }
                 Rectangle { Layout.fillHeight: true; Layout.preferredWidth: 1; visible: root.session.mode===1&&!root.narrow; color: Theme.line }

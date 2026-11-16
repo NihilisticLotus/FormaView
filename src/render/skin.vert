@@ -7,12 +7,14 @@ layout(location=4) in vec3 tint;
 layout(location=5) in vec3 coverage;
 layout(location=6) in uvec2 skinRange;
 layout(location=7) in uvec2 morphRange;
+layout(location=8) in vec4 sourceColour;
 layout(location=0) out vec2 texcoord;
 layout(location=1) out float influence;
 layout(location=2) out vec3 worldNormal;
 layout(location=3) out vec3 surfaceTint;
 layout(location=4) out vec3 surfaceCoverage;
 layout(location=5) out vec3 deformedPosition;
+layout(location=6) out vec4 vertexColour;
 layout(std140,binding=0) uniform Params { mat4 matrix; vec4 options; mat4 display; vec4 skinOptions; vec4 skinMode; };
 layout(binding=3) uniform sampler2D influenceTexture;
 layout(binding=4) uniform sampler2D paletteTexture;
@@ -51,7 +53,7 @@ void main() {
     // skinMode.x: ActorX reference normals rotate by the weighted bone matrices.
     vec3 n=skinMode.x>0.5 ? mat3(display)*(linear*morphedNormal) : abs(det)>1e-20 ? mat3(display)*(cofactor*morphedNormal/det) : vec3(0);
     worldNormal=length(n)>1e-12?normalize(n):vec3(0);
-    texcoord=uv; influence=weight; surfaceTint=tint; surfaceCoverage=coverage;
+    texcoord=uv; influence=weight; surfaceTint=tint; surfaceCoverage=coverage; vertexColour=sourceColour;
     gl_Position=matrix*p;
     // Diagnostic rasterization uses this SAME skin shader and math. Each
     // selected source corner writes one exact position/normal float pixel.

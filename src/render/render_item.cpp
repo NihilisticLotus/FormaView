@@ -87,6 +87,7 @@ public:
     showGrid = source->showGrid;
     showAxes = source->showAxes;
     requestedWireframe = source->wireframe;
+    requestedShading = source->shadingMode;
     skinProbe=source->skinProbe;
     observe = source->observe;
     if (!requested && source->readback) {
@@ -246,7 +247,7 @@ public:
         std::vector<StaticVertex> attributes;
         attributes.reserve(data->vertices.size());
         for (const auto &v:data->vertices)
-          attributes.push_back({v.u,v.v,v.weight,v.r,v.g,v.b,v.alpha,v.alphaMode,v.alphaCutoff});
+          attributes.push_back({v.u,v.v,v.weight,v.r,v.g,v.b,v.alpha,v.alphaMode,v.alphaCutoff,v.cr,v.cg,v.cb,v.hasUV});
         updates->updateDynamicBuffer(vertices.get(),0,static_cast<quint32>(bytes),attributes.data());
       }
       else if(skinSource)updates->uploadStaticBuffer(vertices.get(),data->vertices.data());
@@ -437,14 +438,16 @@ public:
            QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float3, 24),
            QRhiVertexInputAttribute(0, 4, QRhiVertexInputAttribute::Float3, 36),
            QRhiVertexInputAttribute(0, 5, QRhiVertexInputAttribute::Float3,
-                                    48)});
+                                    48),
+           QRhiVertexInputAttribute(0, 8, QRhiVertexInputAttribute::Float4, 60)});
       guideLayout=layout;
       if (streaming) {
         layout.setBindings({QRhiVertexInputBinding(sizeof(StaticVertex)),QRhiVertexInputBinding(sizeof(DeformedVertex))});
         layout.setAttributes({
             {1,0,QRhiVertexInputAttribute::Float3,0}, {0,1,QRhiVertexInputAttribute::Float2,0},
             {0,2,QRhiVertexInputAttribute::Float,8}, {1,3,QRhiVertexInputAttribute::Float3,12},
-            {0,4,QRhiVertexInputAttribute::Float3,12}, {0,5,QRhiVertexInputAttribute::Float3,24}});
+            {0,4,QRhiVertexInputAttribute::Float3,12}, {0,5,QRhiVertexInputAttribute::Float3,24},
+            {0,8,QRhiVertexInputAttribute::Float4,36}});
       }
       if (skinSource) {
         layout.setBindings({QRhiVertexInputBinding(sizeof(Vertex)), QRhiVertexInputBinding(8), QRhiVertexInputBinding(8)});
@@ -452,7 +455,8 @@ public:
           {0,0,QRhiVertexInputAttribute::Float3,0}, {0,1,QRhiVertexInputAttribute::Float2,12},
           {0,2,QRhiVertexInputAttribute::Float,20}, {0,3,QRhiVertexInputAttribute::Float3,24},
           {0,4,QRhiVertexInputAttribute::Float3,36}, {0,5,QRhiVertexInputAttribute::Float3,48},
-          {1,6,QRhiVertexInputAttribute::UInt2,0}, {2,7,QRhiVertexInputAttribute::UInt2,0}});
+          {1,6,QRhiVertexInputAttribute::UInt2,0}, {2,7,QRhiVertexInputAttribute::UInt2,0},
+          {0,8,QRhiVertexInputAttribute::Float4,60}});
       }
       pipeline->setVertexInputLayout(layout);
       pipeline->setShaderResourceBindings(bindings.get());
@@ -554,6 +558,10 @@ public:
     u[17] = data->lit ? 1.F : 0.F;
     u[18] = data->linearColour ? 1.F : 0.F;
     u[19] = data->uv ? 1.F : 0.F;
+    const bool overrideMaterial = !data->uv && !data->lines &&
+        (wire || (!data->heat && requestedShading > 0));
+    if (overrideMaterial)
+      u[19] = wire ? 4.F : static_cast<float>(requestedShading + 1);
     if(skinSource) {
       std::memcpy(u.data()+20,skinSource->display.constData(),64);
       u[36]=static_cast<float>(influenceWidth); u[37]=static_cast<float>(paletteWidth);
@@ -633,10 +641,10 @@ public:
         cb->draw(draw.count, 1, draw.first);
       };
       for (const auto &draw : draws())
-        if (!draw.blend)
+        if (!draw.blend || overrideMaterial)
           drawRange(draw);
       drawGuides();
-      if (blendedPipeline) {
+      if (blendedPipeline && !overrideMaterial) {
         std::vector<const DrawRange *> transparent;
         for (const auto &draw : draws())
           if (draw.blend)
@@ -892,6 +900,7 @@ private:
   std::unique_ptr<QRhiGraphicsPipeline> uvBackgroundPipeline;
   std::unique_ptr<QRhiGraphicsPipeline> guidePipeline, selectionPipeline;
   bool showGrid{}, showAxes{}, requestedWireframe{}, wireMode{};
+  int requestedShading{};
   std::function<void(Observation)> observe;
   std::function<void(QByteArray, QSize)> readback;
   QRhiReadbackResult result;

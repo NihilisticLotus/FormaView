@@ -22,6 +22,7 @@ class ModelView : public formaview::render::Item {
   Q_PROPERTY(
       bool showAxes READ axesVisible WRITE setAxesVisible NOTIFY guidesChanged)
   Q_PROPERTY(bool wireframe READ wireframeVisible WRITE setWireframe NOTIFY wireframeChanged)
+  Q_PROPERTY(int shadingMode READ shading WRITE setShading NOTIFY shadingChanged)
 public:
   explicit ModelView(QQuickItem *parent = nullptr);
   ModelSession *session() const { return session_; }
@@ -29,6 +30,13 @@ public:
   bool gridVisible() const { return showGrid; }
   bool axesVisible() const { return showAxes; }
   bool wireframeVisible() const { return wireframe; }
+  int shading() const { return shadingMode; }
+  void setShading(int value) {
+    if (value < 0 || value > 2 || value == shadingMode) return;
+    shadingMode = value;
+    update();
+    emit shadingChanged();
+  }
   void setWireframe(bool value) {
     if (wireframe == value)
       return;
@@ -79,6 +87,7 @@ signals:
   void representationChanged();
   void guidesChanged();
   void wireframeChanged();
+  void shadingChanged();
   void cameraChanged(QVariantMap state);
 
 protected:

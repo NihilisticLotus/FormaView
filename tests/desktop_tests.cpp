@@ -2756,6 +2756,42 @@ private slots:
     QCOMPARE(session->pixel(), sample);
     save("pinned-pane-recreated");
   }
+  void modelPreviewDisplayModes() {
+    const auto path=qEnvironmentVariable("FORMAVIEW_MODEL_PREVIEW_SAMPLE");
+    QVERIFY2(!path.isEmpty(),"Set FORMAVIEW_MODEL_PREVIEW_SAMPLE to a read-only model");
+    auto *session=qobject_cast<ModelSession *>(desktop_->model());
+    desktop_->openPath(path);
+    QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() && !session->preparing(),30000);
+    QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+    QTRY_VERIFY(item("modelPreviewMode"));
+    auto *choice=item("modelPreviewMode");
+    QTRY_COMPARE(choice->property("count").toInt(),4);
+    ModelView *view{};
+    QTRY_VERIFY((view=window_->findChild<ModelView *>("modelViewport")));
+    QVERIFY(!item("modelWireframe"));
+    const auto original=session->frameFor(false);
+    QTRY_VERIFY(view->frame == original);
+    QTest::qWait(100);
+    const auto camera=view->cameraState();
+    for(int mode: {0,1,2,3,0}) {
+      choice->setProperty("currentIndex",mode);
+      QVERIFY(QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,mode)));
+      QTRY_COMPARE(view->wireframeVisible(),mode==3);
+      QTRY_COMPARE(view->shading(),mode==1 || mode==2 ? mode : 0);
+      QCOMPARE(session->frameFor(false),original);
+      QCOMPARE(view->cameraState(),camera);
+      QTest::qWait(250);
+      save("model-preview-mode-"+QString::number(mode));
+    }
+    // Render-only state resets with a new document; source data are untouched.
+    item("modelPane")->setProperty("previewMode",2);
+    desktop_->clearAsset();
+    QTRY_VERIFY(!item("modelPane"));
+    desktop_->openPath(path);
+    QTRY_VERIFY(item("modelPreviewMode"));
+    QTRY_COMPARE(item("modelPreviewMode")->property("count").toInt(),4);
+    QCOMPARE(item("modelPane")->property("previewMode").toInt(),0);
+  }
   void boundedLargeImagePreview() {
     const auto directory=qEnvironmentVariable("FORMAVIEW_LARGE_IMAGE_SAMPLES");
     QVERIFY2(!directory.isEmpty(),"Pass a read-only directory of supported large image samples");
@@ -6906,7 +6942,7 @@ private slots:
     QVERIFY(view);
     for (int i = 0; i < 10; ++i) {
       const auto path = fixture_ + QString("/asset%1.obj").arg(i % 2);
-      pane->setProperty("wireframe", true);
+      pane->setProperty("previewMode", 3);
       pane->setProperty("showGrid", false);
       pane->setProperty("showAxes", false);
       pane->setProperty("showUV", false);
@@ -10083,12 +10119,12 @@ private slots:
                         qRound(view->width()*scale),qRound(view->height()*scale));
     };
     const auto solid=pixels();
-    clickControl("modelWireframe");
+    item("modelPane")->setProperty("previewMode", 3);
     QTRY_VERIFY(view->wireframeVisible());
     const auto wire=pixels();
     QVERIFY(!wire.isNull() && wire!=solid);
     save(actor ? "psk-animation-wireframe" : "fbx-animation-wireframe");
-    clickControl("modelWireframe");
+    item("modelPane")->setProperty("previewMode", 0);
     QTRY_VERIFY(!view->wireframeVisible());
     QCOMPARE(pixels(),solid);
     // A burst of view/pose changes while a worker is active lands on the
@@ -10104,10 +10140,10 @@ private slots:
     view = qobject_cast<ModelView *>(item("modelViewport"));
     QVERIFY(view);
     const auto staticSolid=pixels();
-    clickControl("modelWireframe");
+    item("modelPane")->setProperty("previewMode", 3);
     QTRY_VERIFY(view->wireframeVisible());
     QVERIFY(pixels()!=staticSolid);
-    clickControl("modelWireframe");
+    item("modelPane")->setProperty("previewMode", 0);
     QTRY_VERIFY(!view->wireframeVisible());
     QCOMPARE(pixels(),staticSolid);
     } catch (const MissingFixture &error) {

@@ -81,6 +81,7 @@ struct ModelMesh {
   std::vector<std::array<double, 4>> uvBounds;
   std::vector<bool> invalidUVs;
   std::vector<QVector3D> normals, colours;
+  std::vector<QVector3D> vertexColours; // First source colour set, independent of material.
   std::vector<float> alphas;
   std::vector<int> alphaModes;
   std::vector<float> alphaCutoffs;
