@@ -42,14 +42,14 @@ public:
     const QSize dimensions(
         static_cast<int>(pixels_->source.data_window.width),
         static_cast<int>(pixels_->source.data_window.height));
-    const auto format = pixels_->byteUpload() ? QRhiTexture::RGBA8
-                                             : QRhiTexture::RGBA32F;
+    const auto format =
+        pixels_->byteUpload() ? QRhiTexture::RGBA8 : QRhiTexture::RGBA32F;
     if (!texture_ || texture_->pixelSize() != dimensions ||
         texture_->format() != format) {
       release();
       texture_.reset(rhi()->newTexture(format, dimensions));
       uniform_.reset(rhi()->newBuffer(QRhiBuffer::Dynamic,
-                                      QRhiBuffer::UniformBuffer, 128));
+                                      QRhiBuffer::UniformBuffer, 144));
       sampler_.reset(rhi()->newSampler(
           QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
           QRhiSampler::Repeat, QRhiSampler::Repeat));
@@ -75,11 +75,12 @@ public:
     }
     if (uploaded_ != pixels_) {
       updates->uploadTexture(
-          texture_.get(), QRhiTextureUploadDescription({QRhiTextureUploadEntry(
-                              0, 0,
-                              QRhiTextureSubresourceUploadDescription(
-                                  pixels_->uploadData(),
-                                  static_cast<quint32>(pixels_->uploadBytes())))}));
+          texture_.get(),
+          QRhiTextureUploadDescription({QRhiTextureUploadEntry(
+              0, 0,
+              QRhiTextureSubresourceUploadDescription(
+                  pixels_->uploadData(),
+                  static_cast<quint32>(pixels_->uploadBytes())))}));
       uploaded_ = pixels_;
     }
     if (!pipeline_) {
@@ -97,7 +98,7 @@ public:
         return;
       }
     }
-    std::array<float, 32> data{};
+    std::array<float, 36> data{};
     const auto matrix = rhi()->clipSpaceCorrMatrix();
     std::memcpy(data.data(), matrix.constData(), 64);
     data[16] = static_cast<float>(rectangle_.x());
@@ -115,7 +116,15 @@ public:
     data[28] =
         display_["composite"].toBool() && pixels_->mapping[3] >= 0 ? 1.F : 0.F;
     data[29] = static_cast<float>(display_["background"].toInt());
-    updates->updateDynamicBuffer(uniform_.get(), 0, 128, data.data());
+    data[34] = data[35] = 1.F;
+    if (!pixels_->previewFull.isEmpty()) {
+      const auto &r = pixels_->previewRegion;
+      data[32] = float(r.x()) / pixels_->previewFull.width();
+      data[33] = float(r.y()) / pixels_->previewFull.height();
+      data[34] = float(r.width()) / pixels_->previewFull.width();
+      data[35] = float(r.height()) / pixels_->previewFull.height();
+    }
+    updates->updateDynamicBuffer(uniform_.get(), 0, 144, data.data());
     cb->beginPass(renderTarget(), QColor(34, 35, 38), {1, 0}, updates);
     cb->setGraphicsPipeline(pipeline_.get());
     cb->setViewport({0, 0,
@@ -173,6 +182,35 @@ private:
 } // namespace
 ImageView::ImageView(QQuickItem *parent) : QQuickRhiItem(parent) {
   setAlphaBlending(false);
+  previewTimer_.setSingleShot(true);
+  previewTimer_.setInterval(100);
+  connect(&previewTimer_, &QTimer::timeout, this, &ImageView::requestPreview);
+  connect(this, &ImageView::viewChanged, this,
+          [this] { previewTimer_.start(); });
+}
+void ImageView::requestPreview() {
+  if (!previous_ || previous_->previewFull.isEmpty() || !session_)
+    return;
+  const auto r = imageRect();
+  QRect region;
+  if (session_->display().value("tiled").toBool())
+    region = QRect(QPoint(), previous_->previewFull);
+  else {
+    const auto full = previous_->previewFull;
+    const auto left =
+        std::clamp(std::floor(-r.x() / zoom_), 0., double(full.width()));
+    const auto top =
+        std::clamp(std::floor(-r.y() / zoom_), 0., double(full.height()));
+    const auto right = std::clamp(std::ceil((width() - r.x()) / zoom_) + 1, 0.,
+                                  double(full.width()));
+    const auto bottom = std::clamp(std::ceil((height() - r.y()) / zoom_) + 1,
+                                   0., double(full.height()));
+    if (right <= left || bottom <= top)
+      return;
+    region = QRect(int(left), int(top), int(right - left), int(bottom - top));
+  }
+  const auto dpr = window() ? window()->effectiveDevicePixelRatio() : 1.;
+  session_->viewport(region, QSize(int(width() * dpr), int(height() * dpr)));
 }
 void ImageView::setSession(ImageSession *s) {
   if (session_ == s)
@@ -195,6 +233,7 @@ void ImageView::refresh() {
     emit renderErrorChanged();
   }
   previous_ = next;
+  previewTimer_.start();
   if (different) {
     fit_ = true;
     actual_ = false;
@@ -209,8 +248,10 @@ void ImageView::fit() {
   pan_ = {};
   if (previous_) {
     const auto display = session_->display()["displayWindow"].toBool();
-    const auto &w = display ? previous_->source.display_window
-                            : previous_->source.data_window;
+    const auto w = !previous_->previewFull.isEmpty()
+                       ? previous_->logicalWindow()
+                   : display ? previous_->source.display_window
+                             : previous_->source.data_window;
     zoom_ = std::max(.0001, std::min(width() / static_cast<double>(w.width),
                                      height() / static_cast<double>(w.height)) *
                                 .92);
@@ -256,10 +297,11 @@ void ImageView::zoomAt(double factor, double x, double y) {
 QRectF ImageView::imageRect() const {
   if (!previous_)
     return {};
-  const auto &data = previous_->source.data_window;
-  const auto &w = session_->display()["displayWindow"].toBool()
-                      ? previous_->source.display_window
-                      : data;
+  const auto data = previous_->logicalWindow();
+  const auto w = !previous_->previewFull.isEmpty() ? data
+                 : session_->display()["displayWindow"].toBool()
+                     ? previous_->source.display_window
+                     : data;
   const auto x = (static_cast<double>(data.x) - static_cast<double>(w.x) -
                   static_cast<double>(w.width) / 2) *
                  zoom_;
@@ -284,7 +326,7 @@ bool ImageView::pickAt(double x, double y, bool pin) {
       x < 0 || y < 0 || x >= width() || y >= height())
     return false;
   const auto r = imageRect();
-  const auto &w = previous_->source.data_window;
+  const auto w = previous_->logicalWindow();
   auto px = (x - r.x()) / zoom_, py = (y - r.y()) / zoom_;
   int tx = 0, ty = 0;
   if (session_->display()["tiled"].toBool()) {

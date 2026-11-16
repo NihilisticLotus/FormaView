@@ -2,6 +2,7 @@
 #include "formaview/image_conversion.hpp"
 #include "formaview/scheduler.hpp"
 #include <QObject>
+#include <QRect>
 #include <QTimer>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -19,6 +20,14 @@ struct ImagePixels {
   QVariantList subresources, channels;
   QString path;
   quint64 revision{};
+  QSize previewFull;
+  QRect previewRegion;
+  formaview::ImageWindow logicalWindow() const {
+    return previewFull.isEmpty()
+               ? source.data_window
+               : formaview::ImageWindow{0, 0, quint64(previewFull.width()),
+                                        quint64(previewFull.height())};
+  }
   std::size_t bytes{};
   // Called once after accounting for the retained source and metadata.
   void prepareUpload(std::stop_token stop);
@@ -86,9 +95,7 @@ public:
   QVariantMap dimensions() const;
   bool animated() const { return frameCount_ > 1; }
   bool playing() const { return playing_; }
-  bool loop() const {
-    return loopOverride_ ? loop_ : sourceLoopCount_ != 0;
-  }
+  bool loop() const { return loopOverride_ ? loop_ : sourceLoopCount_ != 0; }
   int frame() const { return frame_; }
   int frameCount() const { return frameCount_; }
   int frameDelay() const { return frameDelay_; }
@@ -105,14 +112,14 @@ public:
   Q_INVOKABLE void selectDimension(const QString &name, int value);
   Q_INVOKABLE void setting(const QString &name, const QVariant &value);
   Q_INVOKABLE void sample(double x, double y, int tileX = 0, int tileY = 0);
+  void viewport(QRect region, QSize target);
   Q_INVOKABLE void setSamplePinned(bool pinned);
   Q_INVOKABLE QString pixelReport() const;
   Q_INVOKABLE void seekFrame(int frame);
   Q_INVOKABLE void stepFrame(int frames);
   Q_INVOKABLE void togglePlay();
   Q_INVOKABLE void setLoop(bool loop);
-  Q_INVOKABLE void exportFrames(const QString &directory,
-                                const QString &prefix,
+  Q_INVOKABLE void exportFrames(const QString &directory, const QString &prefix,
                                 const QString &conflict);
   Q_INVOKABLE void cancelExport();
 signals:
@@ -125,10 +132,19 @@ signals:
 private:
   struct Pending;
   struct Cache;
-  void load(const QString &, int, QStringList);
+  void load(const QString &, int, QStringList, bool preserveSample = false);
   void poll();
   formaview::Scheduler scheduler_;
   std::unique_ptr<Cache> cache_;
+  QRect previewRegion_;
+  QSize previewTarget_{2048, 2048};
+  std::optional<formaview::TaskHandle> sampleTask_;
+  std::shared_ptr<std::shared_ptr<ImagePixels>> sampleResult_;
+  std::shared_ptr<ImagePixels> sampleSource_;
+  quint64 sampleGeneration_{};
+  double sampleX_{}, sampleY_{};
+  int sampleTileX_{}, sampleTileY_{};
+  bool samplePinRequested_{};
   std::vector<std::unique_ptr<Pending>> pending_;
   std::optional<formaview::TaskHandle> cleanup_;
   std::shared_ptr<const ImagePixels> pixels_;

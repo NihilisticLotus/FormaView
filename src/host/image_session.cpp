@@ -1,5 +1,6 @@
 #include "image_session.hpp"
 #include "gif_decoder.hpp"
+#include "large_image_preview.hpp"
 #include "formaview/image_batch.hpp"
 #include "formaview/file_access.hpp"
 #include <QBuffer>
@@ -267,6 +268,8 @@ ImageSession::ImageSession(QObject *parent)
 }
 ImageSession::~ImageSession() { scheduler_.shutdown(); }
 void ImageSession::open(const QString &path, int index) {
+  previewRegion_ = {};
+  previewTarget_ = QSize(2048, 2048);
   cancelExport();
   playing_ = false;
   playbackTimer_.stop();
@@ -274,6 +277,21 @@ void ImageSession::open(const QString &path, int index) {
   loopOverride_ = false;
   emit animationChanged();
   load(path, index, {});
+}
+void ImageSession::viewport(QRect region, QSize target) {
+  if (!pixels_ || pixels_->previewFull.isEmpty() || busy_)
+    return;
+  region = region.intersected(QRect(QPoint(), pixels_->previewFull));
+  target = target.boundedTo(QSize(2048, 2048)).expandedTo(QSize(1, 1));
+  if (region.isEmpty() ||
+      (region == previewRegion_ && target == previewTarget_))
+    return;
+  previewRegion_ = region;
+  previewTarget_ = target;
+  QStringList mapping;
+  for (const auto &v : pixels_->info.value("mapping").toList())
+    mapping.append(v.toString());
+  load(pixels_->path, 0, mapping, true);
 }
 void ImageSession::selectSubresource(int index) {
   if (pixels_ && index >= 0 && index < pixels_->subresources.size())
@@ -377,23 +395,29 @@ void ImageSession::selectDimension(const QString &name, int value) {
   if (indices.contains(QString::number(value)))
     selectSubresource(indices.value(QString::number(value)).toInt());
 }
-void ImageSession::load(const QString &path, int index, QStringList mapping) {
+void ImageSession::load(const QString &path, int index, QStringList mapping,
+                        bool preserveSample) {
+  if (sampleTask_)
+    sampleTask_->cancel();
+  samplePinRequested_ = false;
   for (const auto &job : pending_)
     job->task.cancel();
   const auto generation = ++generation_;
   requested_ = path;
   busy_ = true;
   error_.clear();
-  pixel_.clear();
-  samplePinned_ = false;
+  if (!preserveSample) {
+    pixel_.clear();
+    samplePinned_ = false;
+  }
   emit changed();
   emit pixelChanged();
   auto result = std::make_shared<std::shared_ptr<ImagePixels>>();
   auto request = TaskRequest{};
   request.priority = Priority::Foreground;
   request.resources = {1, 1, 1024ULL * 1024 * 1024, 0};
-  request.work = [this, path, index, mapping, result,
-                  generation](std::stop_token stop) {
+  request.work = [this, path, index, mapping, result, region = previewRegion_,
+                  target = previewTarget_, generation](std::stop_token stop) {
     try {
       const auto file = QFileInfo(path);
       if (!file.exists() || !file.isFile())
@@ -404,7 +428,8 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       const auto stamp = fileStamp(path);
       if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
         const auto key = path + '\n' + stamp;
-        if (!cache_->gifReader || cache_->gifKey != key || index < cache_->gifNext) {
+        if (!cache_->gifReader || cache_->gifKey != key ||
+            index < cache_->gifNext) {
           cache_->gifReader = std::make_unique<formaview::host::GifDecoder>(path, stop);
           cache_->gifKey = key;
           cache_->gifNext = 0;
@@ -424,6 +449,13 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
       cache_->gifKey.clear();
       const auto key =
           path + '\n' + stamp + '\n' + QString::number(index) + '\n' +
+          QString("%1,%2,%3,%4,%5,%6\n")
+              .arg(region.x())
+              .arg(region.y())
+              .arg(region.width())
+              .arg(region.height())
+              .arg(target.width())
+              .arg(target.height()) +
           QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(mapping))
                                 .toJson(QJsonDocument::Compact));
       for (auto it = cache_->entries.begin(); it != cache_->entries.end(); ++it)
@@ -433,11 +465,31 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
           return TaskResult{};
         }
       const auto admission = ImageAdmission(true, stop);
+      const auto full = large_preview::size(path);
+      if (!full.isEmpty() &&
+          quint64(full.width()) * full.height() > 4ULL * 1024 * 1024) {
+        if (index != 0)
+          throw std::runtime_error("Subresource index out of range");
+        QString identity;
+        for (const auto &entry : cache_->entries)
+          if (entry.pixels->path == path &&
+              entry.pixels->info.value("sourceStamp") == stamp) {
+            identity = entry.pixels->info.value("sha256").toString();
+            break;
+          }
+        *result = large_preview::read(path, full, region, target, mapping,
+                                      generation, stop, identity.isEmpty());
+        if (!identity.isEmpty())
+          (*result)->info["sha256"] = identity;
+        (*result)->info["sourceStamp"] = stamp;
+        if (fileStamp(path) != stamp)
+          throw std::runtime_error("Image changed during preview");
+        cache_->insert(key, *result);
+        return TaskResult{};
+      }
       auto document = ImageDocument::open(
           std::filesystem::path(path.toStdWString()),
-          // Codec scratch (including float intermediates) is distinct from
-          // the retained source/upload budget enforced by ImagePixels.
-          {512ULL * 1024 * 1024, 2ULL * 1024 * 1024 * 1024, 16384, 65536, 256},
+          {512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256},
           stop);
       if (index < 0 || static_cast<std::size_t>(index) >=
                            document.description().subresources.size())
@@ -598,6 +650,19 @@ void ImageSession::load(const QString &path, int index, QStringList mapping) {
   timer_.start();
 }
 void ImageSession::poll() {
+  if (sampleTask_ && sampleTask_->snapshot().result) {
+    const auto state = sampleTask_->snapshot();
+    sampleTask_.reset();
+    if (sampleGeneration_ == generation_ && !state.result->error &&
+        *sampleResult_) {
+      sampleSource_ = *sampleResult_;
+      sample(sampleX_, sampleY_, sampleTileX_, sampleTileY_);
+      sampleSource_.reset();
+      if (samplePinRequested_)
+        setSamplePinned(true);
+    }
+    sampleResult_.reset();
+  }
   for (auto it = pending_.begin(); it != pending_.end();) {
     const auto state = (*it)->task.snapshot();
     if (!state.result) {
@@ -679,10 +744,13 @@ void ImageSession::poll() {
       emit exportChanged();
     }
   }
-  if (pending_.empty() && !exportTask_)
+  if (pending_.empty() && !exportTask_ && !sampleTask_)
     timer_.stop();
 }
 void ImageSession::clear() {
+  if (sampleTask_)
+    sampleTask_->cancel();
+  samplePinRequested_ = false;
   cancelExport();
   ++generation_;
   for (const auto &job : pending_)
@@ -744,6 +812,11 @@ void ImageSession::setting(const QString &name, const QVariant &v) {
            pixel_["tileX"].toInt(), pixel_["tileY"].toInt());
 }
 void ImageSession::setSamplePinned(bool pinned) {
+  if (sampleTask_ && pinned) {
+    samplePinRequested_ = true;
+    return;
+  }
+  samplePinRequested_ = false;
   pinned = pinned && pixel_.value("valid").toBool() && !busy_;
   if (samplePinned_ == pinned)
     return;
@@ -759,7 +832,51 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
     emit pixelChanged();
     return;
   }
-  const auto &s = pixels_->source;
+  if (!pixels_->previewFull.isEmpty() && !sampleSource_) {
+    if (x < 0 || y < 0 || x >= pixels_->previewFull.width() ||
+        y >= pixels_->previewFull.height()) {
+      emit pixelChanged();
+      return;
+    }
+    if (sampleTask_)
+      sampleTask_->cancel();
+    sampleGeneration_ = generation_;
+    sampleX_ = x;
+    sampleY_ = y;
+    sampleTileX_ = tileX;
+    sampleTileY_ = tileY;
+    sampleResult_ = std::make_shared<std::shared_ptr<ImagePixels>>();
+    TaskRequest request;
+    request.priority = Priority::Foreground;
+    request.work = [path = pixels_->path, full = pixels_->previewFull,
+                    expected = pixels_->info.value("sourceStamp").toString(), x,
+                    y, result = sampleResult_](std::stop_token stop) {
+      TaskResult r;
+      try {
+#ifdef Q_OS_WIN
+        const ImageReadLease lease(path);
+#endif
+        if (fileStamp(path) != expected)
+          throw std::runtime_error("Image changed; reopen it before sampling");
+        auto p = large_preview::read(
+            path, full, QRect(int(std::floor(x)), int(std::floor(y)), 1, 1),
+            QSize(1, 1), {}, 0, stop, false);
+        p->source.data_window.x = int(std::floor(x));
+        p->source.data_window.y = int(std::floor(y));
+        if (fileStamp(path) != expected)
+          throw std::runtime_error("Image changed during sampling");
+        *result = std::move(p);
+      } catch (const std::exception &e) {
+        r.error = Error{ErrorCode::Io, e.what(), {}, true};
+      }
+      return r;
+    };
+    sampleTask_ = scheduler_.submit(std::move(request)).task;
+    timer_.start();
+    emit pixelChanged();
+    return;
+  }
+  const auto &s = sampleSource_ ? sampleSource_->source : pixels_->source;
   const auto px = std::floor(x) - static_cast<double>(s.data_window.x),
              py = std::floor(y) - static_cast<double>(s.data_window.y);
   if (px < 0 || py < 0 || px >= s.data_window.width ||

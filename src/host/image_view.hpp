@@ -53,4 +53,6 @@ private:
   bool fit_{true};
   bool actual_{};
   QString renderError_;
+  QTimer previewTimer_;
+  void requestPreview();
 };

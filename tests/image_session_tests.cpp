@@ -369,6 +369,14 @@ QJsonObject regression(const QString &directory) {
     waitFor(session);
     require(session.error().isEmpty(), "Mapped preview completes");
   }
+  // Smaller previews correctly retain more entries within the same byte
+  // budget. Exercise the entry bound as well instead of assuming 4K buffers.
+  for (const auto &r : QStringList{"R","G","B"})
+    for (const auto &g : QStringList{"R","G","B"}) {
+      session.mapChannels({r,g,"B","A"});
+      waitFor(session);
+      require(session.error().isEmpty(), "Bounded mapped preview completes");
+    }
   require(first.expired(),
           "LRU evicts old 4K buffers at the unchanged 256 MiB limit");
   ++cases;
@@ -503,7 +511,7 @@ int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
     if (argc == 4 && app.arguments()[1] == "--preview-samples") {
-      QImageReader::setAllocationLimit(512);
+      QImageReader::setAllocationLimit(32);
       QJsonArray results;
       const QDir directory(app.arguments()[2]);
       for (const auto &file : directory.entryInfoList(QDir::Files, QDir::Name)) {
@@ -514,9 +522,32 @@ int main(int argc, char **argv) {
           throw std::runtime_error(session.error().toStdString());
         const auto pixels = session.pixels();
         require(bool(pixels), "Preview must produce pixels");
+        require(pixels->uploadBytes() <= 2048ULL*2048*4, "Bounded preview texture");
+        QJsonArray probes;
+        QString regionHash;
+        if (!pixels->previewFull.isEmpty()) {
+          const auto full=pixels->previewFull;
+          for (const auto point : {QPoint(0,0),QPoint(full.width()/2,full.height()/2),QPoint(full.width()-1,full.height()-1),QPoint(full.width()/3,full.height()/3),QPoint(full.width()*2/3,full.height()*2/3)}) {
+            session.sample(point.x(),point.y());
+            QElapsedTimer elapsed; elapsed.start();
+            while(!session.pixel().value("valid").toBool() && elapsed.elapsed()<10000) {
+              QCoreApplication::processEvents(QEventLoop::AllEvents,5); QThread::msleep(1);
+            }
+            require(session.pixel().value("valid").toBool(), "Exact asynchronous pixel sample");
+            probes.append(QJsonObject::fromVariantMap(session.pixel()));
+          }
+          session.viewport(QRect(full.width()/2,full.height()/2,256,192),QSize(256,192));
+          waitFor(session);
+          require(session.error().isEmpty(), "Native-resolution visible region");
+          require(session.pixels()->source.data_window.width<=256, "Region allocation is bounded");
+          regionHash=QString::fromLatin1(digest(session.pixels()->uploadData(),qsizetype(session.pixels()->uploadBytes())));
+        }
         results.append(QJsonObject{{"file", file.fileName()},
             {"sha256", pixels->info.value("sha256").toString()},
             {"upload_sha256", QString::fromLatin1(normalizedHash(*pixels))},
+            {"probes",probes},
+            {"region_rgba8_sha256",regionHash},
+            {"memory",memory()},
             {"retained_bytes", static_cast<qint64>(pixels->bytes)}});
         session.clear();
       }

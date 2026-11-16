@@ -2751,6 +2751,40 @@ private slots:
     QCOMPARE(session->pixel(), sample);
     save("pinned-pane-recreated");
   }
+  void boundedLargeImagePreview() {
+    const auto directory=qEnvironmentVariable("FORMAVIEW_LARGE_IMAGE_SAMPLES");
+    QVERIFY2(!directory.isEmpty(),"Pass a read-only directory of JPEG/TGA samples");
+    auto *session=qobject_cast<ImageSession *>(desktop_->image());
+    for(const auto &file:QDir(directory).entryInfoList(QDir::Files,QDir::Name)) {
+      desktop_->openPath(file.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy(),20000);
+      QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+      auto *view=qobject_cast<ImageView *>(item("imageViewport"));
+      QVERIFY(view);
+      QTRY_VERIFY(!session->pixels()->previewFull.isEmpty());
+      QTest::qWait(500);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
+      save("bounded-fit-"+file.baseName());
+      view->actual();
+      QTest::qWait(500);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QVERIFY(session->pixels()->previewRegion.width()<session->pixels()->previewFull.width());
+      QVERIFY(session->pixels()->source.data_window.width<=2048);
+      QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
+      save("bounded-actual-"+file.baseName());
+      view->pinAt(view->width()/2,view->height()/2);
+      QTRY_VERIFY_WITH_TIMEOUT(session->samplePinned(),20000);
+      const auto sample=session->pixel();
+      view->setPan(QPointF(200,100));
+      QTest::qWait(500);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QCOMPARE(session->pixel(),sample);
+      QVERIFY(session->samplePinned());
+      QVERIFY(view->renderError().isEmpty());
+      save("bounded-pan-"+file.baseName());
+    }
+  }
   void pinnedSampleRepickAndWindowStates() {
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
     desktop_->openPath(small_ + "/唯一图片.png");
