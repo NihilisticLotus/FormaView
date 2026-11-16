@@ -9,6 +9,12 @@ scanline PNG thumbnails. It uses the existing pinned Qt installation;
 no separate libpng runtime DLL is required. The unmodified library's
 copyright and license accompany this file in libpng-LICENSE.txt.
 
+The raster preview worker also statically links Qt 6.12.0's unmodified bundled
+libjpeg-turbo 3.2.0 (Qt6::BundledLibjpeg) for scaled scanline JPEG previews.
+No additional runtime DLL is required. Its notices accompany this file in
+libjpeg-turbo-LICENSE.txt and libjpeg-IJG-LICENSE.txt. This software is based
+in part on the work of the Independent JPEG Group.
+
 Static TIFF codecs deployed here: none, LZW, PackBits, CCITT and Deflate.
 JPEG-in-TIFF, LERC, LZMA, ZSTD, JBIG and WebP-in-TIFF are not deployed.
 The application separately validates sample types and photometric layouts;

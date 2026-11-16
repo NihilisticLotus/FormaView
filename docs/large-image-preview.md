@@ -15,11 +15,11 @@ flowchart LR
   File --> Export[原始转换和导出路径]
 ```
 
-首屏显示全图低分辨率画面，停止缩放/平移 100ms 后更新可见区域；100% 使用原图尺寸计算。每边最多 2048 物理像素，并按通道数量及标量字节数进一步缩小；多通道 EXR 不会被转换成 8 位 RGB。平铺模式使用完整图的有界预览。
+首屏显示全图低分辨率画面，并在当前文件、子资源、通道映射的预览期间保留为完整底图。停止缩放/平移 100ms 后后台更新可见区域；旧细节区域外立即显示底图，缩小到概览分辨率时统一使用底图。细节更新不阻塞视口，也不显示整页加载提示；更新期间发生的操作在任务结束后重新读取最新视口，不丢失最终请求。100% 使用原图尺寸计算。每边最多 2048 物理像素，并按通道数量及标量字节数进一步缩小；多通道 EXR 不会被转换成 8 位 RGB。平铺模式使用完整图的有界预览。GIF 切换帧时先读取当前帧的完整有界画布，暂停后再补充区域细节，避免不同帧的区域与底图混用。
 
 | 格式 | 实际读取单位与语义 |
 | --- | --- |
-| JPEG（jpg/jpeg/jpe/jfif） | Qt 原生裁剪及缩小解码，不自动应用 EXIF 旋转；保留灰度布局。 |
+| JPEG（jpg/jpeg/jpe/jfif） | 使用 Qt 同版本的 libjpeg，选择不低于目标分辨率的 DCT 缩放，逐行读取并仅保留目标采样点；不分配完整裁剪区域。不自动应用 EXIF 旋转；保留灰度布局和原生尺寸采样。 |
 | PNG | Qt 同版本的 libpng 逐行读取；支持 Adam7 隔行、调色板/tRNS、灰度/灰度 alpha、8/16 位；不保留整图解码缓冲。 |
 | BMP/DIB | 未压缩行直接寻址；1/4/8 位调色板、16/32 位位域、24 位、上下原点和 OS/2 core BMP；RLE4/RLE8 顺序解释命令，仅写目标采样点。位域扩展与原 Qt 解码语义保持一致。 |
 | ICO | 使用目录定位指定 entry。格式限制每个 entry 最多 256×256，验证目录与 payload 尺寸后由 Qt 解码该 entry，保留 PNG/DIB AND-mask 行为。 |
@@ -39,9 +39,14 @@ flowchart LR
 
 预览使用只读文件映射而非全文件堆复制；映射页由操作系统管理，其工作集不等于应用私有解码缓冲。源身份 SHA-256 逐块扫描，后续区域请求按文件身份复用。Qt 分配限制仍为 32 MiB，常规完整解码预算仍为 512 MiB；没有通过提高它们接入新格式。
 
-保留资源保护：单条扫描线/瓦片/EXR 压缩块有工作单元限制（64 MiB），libtiff 仍有库分配限制；JPEG 渐进系数、WebP（尤其 lossless）的内部缓冲由编解码库决定，不承诺任意编码都具有严格固定的进程峰值内存。大尺寸不再单凭整图展开体积拒绝，但格式自身尺寸、损坏数据、过大的单个编码单元仍可能拒绝。顺序编码的 PNG/HDR/RLE TGA/GIF 请求可能需要扫描到目标行或重放前序帧；取消在行/包/块之间生效。尚未构建磁盘金字塔。区域替换期间旧区域外暂显示背景。
+完整底图额外保留一份有界 CPU 预览和 GPU 纹理，区域缓存仍遵守原有上限；不会因原图放大而扩大底图。更换文件、子资源或通道映射时建立新底图；检测到文件身份变化时重新读取全图概览，避免新旧内容混合。
+
+保留资源保护：单条扫描线/瓦片/EXR 压缩块有工作单元限制（64 MiB），libtiff 仍有库分配限制；JPEG 渐进系数、WebP（尤其 lossless）的内部缓冲由编解码库决定，不承诺任意编码都具有严格固定的进程峰值内存。大尺寸不再单凭整图展开体积拒绝，但格式自身尺寸、损坏数据、过大的单个编码单元仍可能拒绝。顺序编码的 JPEG/PNG/HDR/RLE TGA/GIF 请求可能需要扫描到目标行或重放前序帧；取消在行/包/块之间生效。尚未构建磁盘金字塔。
 
 ## 验证入口
+
+- `formaview_image_session_tests --preview-navigation ORIGINAL_JPEG OUTPUT_JSON`：32 MiB Qt 限制下验证未对齐 5001×5001 → 1536×1536 解码及 15 次区域/概览往返、底图身份和内存边界。原始故障图为 8868×8232 JPEG。
+- `formaview_desktop_tests largePreviewKeepsWholeImageDuringNavigation`：8192×8192 JPEG 的原生 GPU 窗口中，在区域请求触发前和连续缩放/平移期间检查四角像素，确保旧细节范围之外仍显示底图。
 
 - `formaview_image_session_tests --preview-samples INPUT_DIRECTORY OUTPUT_JSON`：只读样本、32 MiB Qt 限制、初始有界显示、精确坐标采样和 256×192 原生区域读取。
 - `py -3 tests/large_preview_reference_tests.py INPUT_DIRECTORY OUTPUT_JSON`：Pillow 独立对比原始采样值与区域 RGBA 哈希。
@@ -51,3 +56,11 @@ flowchart LR
 - `formaview_image_session_tests --make-preview-fixtures NEW_DIRECTORY`：生成 4096×2304 的 PNG8/16、BMP、TIFF8/float、WebP、DDS、扫描线/瓦片 EXR 和 HDR，需约 500 MiB 磁盘及完整参考解码内存。
 - `python tests/make_preview_matrix_fixtures.py NEW_DIRECTORY [--large]`：Pillow/struct 独立生成 Adam7、灰度 alpha、位域/RLE/OS2 BMP、DIB、ICO、RLE TGA、GIF；`--large` 生成 4096×2304 GIF 和 RLE TGA。
 - `formaview_image_session_tests --gif-preview-samples DIRECTORY OUTPUT_JSON` 后运行 `python tests/gif_preview_reference_tests.py OUTPUT_JSON`：Pillow 独立逐帧、逐区域比对 GIF，包括大画布、字典增长、disposal 和区域重放。
+
+## 2026-11-16 缩放与平移回归
+
+此前只验证能打开、100% 和一次平移，漏掉了未对齐的大范围缩小以及旧区域之外的 GPU 画面覆盖。原图 `{113,227,5001,5001} → 1536×1536` 在修改前稳定出现 `Unable to read image data`，修改后通过，未提高任何分配上限。
+
+本地证据位于 `development/navigation-final*.json`、`development/navigation-complete*.json`、`development/navigation-complete-ui-tests.txt` 和 `development/navigation-ui-regression/`：原始 JPEG/TGA 三图的原生像素及 ROI 哈希通过 Pillow 独立比对；JPEG 15 次区域/全图往返和细化期间精确取样通过；4823 个格式样本、45 个特殊编码样本、10 个大图样本共 20012 个区域检查无失败；34 项 CPU 回归通过。ASan 与 UBSan 均重建并通过 JPEG 导航、34 项 CPU 回归及 GIF 当前帧底图/区域检查。取样使用独立的内容代次，区域更新不取消同一图片的有效取样请求。
+
+原生 Windows D3D11（RTX 5090 D）桌面用例通过：三张原图共 180 次锚点缩放和平移、100%/适合窗口往返、像素锁定；8192×8192 JPEG 在请求防抖期间及连续操作中的四角像素均有完整底图。切图几何、悬停、精度、缓存失效、子资源/图层、再次固定取样的回归也通过，共 10 passed（含初始化和清理）、0 failed、0 skipped。此次结果不扩展为所有 GPU、DPI 或任意超大编码的保证。没有制作安装器或提升版本号。

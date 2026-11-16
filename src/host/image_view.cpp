@@ -21,6 +21,9 @@ public:
     auto *v = static_cast<ImageView *>(item);
     view_ = v;
     pixels_ = v->session() ? v->session()->pixels() : nullptr;
+    overview_ = v->session() ? v->session()->overview() : nullptr;
+    if (!overview_)
+      overview_ = pixels_;
     display_ = v->session() ? v->session()->display() : QVariantMap{};
     rectangle_ = v->imageRect();
     size_ = v->size();
@@ -44,16 +47,21 @@ public:
         static_cast<int>(pixels_->source.data_window.height));
     const auto format =
         pixels_->byteUpload() ? QRhiTexture::RGBA8 : QRhiTexture::RGBA32F;
+    const QSize baseDimensions(int(overview_->source.data_window.width),
+                               int(overview_->source.data_window.height));
+    const auto baseFormat = overview_->byteUpload() ? QRhiTexture::RGBA8 : QRhiTexture::RGBA32F;
     if (!texture_ || texture_->pixelSize() != dimensions ||
-        texture_->format() != format) {
+        texture_->format() != format || !baseTexture_ ||
+        baseTexture_->pixelSize() != baseDimensions || baseTexture_->format() != baseFormat) {
       release();
       texture_.reset(rhi()->newTexture(format, dimensions));
+      baseTexture_.reset(rhi()->newTexture(baseFormat, baseDimensions));
       uniform_.reset(rhi()->newBuffer(QRhiBuffer::Dynamic,
                                       QRhiBuffer::UniformBuffer, 144));
       sampler_.reset(rhi()->newSampler(
           QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
           QRhiSampler::Repeat, QRhiSampler::Repeat));
-      if (!texture_->create() || !uniform_->create() || !sampler_->create()) {
+      if (!texture_->create() || !baseTexture_->create() || !uniform_->create() || !sampler_->create()) {
         updates->release();
         failed(cb, "gpu_resource_allocation_failed");
         return;
@@ -66,7 +74,10 @@ public:
                                   uniform_.get()),
                               QRhiShaderResourceBinding::sampledTexture(
                                   1, QRhiShaderResourceBinding::FragmentStage,
-                                  texture_.get(), sampler_.get())});
+                                  texture_.get(), sampler_.get()),
+                              QRhiShaderResourceBinding::sampledTexture(
+                                  2, QRhiShaderResourceBinding::FragmentStage,
+                                  baseTexture_.get(), sampler_.get())});
       if (!bindings_->create()) {
         updates->release();
         failed(cb, "gpu_shader_binding_failed");
@@ -82,6 +93,13 @@ public:
                   pixels_->uploadData(),
                   static_cast<quint32>(pixels_->uploadBytes())))}));
       uploaded_ = pixels_;
+    }
+    if (baseUploaded_ != overview_) {
+      updates->uploadTexture(baseTexture_.get(),
+          QRhiTextureUploadDescription({QRhiTextureUploadEntry(0, 0,
+              QRhiTextureSubresourceUploadDescription(overview_->uploadData(),
+                  static_cast<quint32>(overview_->uploadBytes())))}));
+      baseUploaded_ = overview_;
     }
     if (!pipeline_) {
       pipeline_.reset(rhi()->newGraphicsPipeline());
@@ -116,6 +134,9 @@ public:
     data[28] =
         display_["composite"].toBool() && pixels_->mapping[3] >= 0 ? 1.F : 0.F;
     data[29] = static_cast<float>(display_["background"].toInt());
+    data[30] = rectangle_.width() * renderTarget()->pixelSize().width() /
+                       std::max(1., size_.width()) > baseDimensions.width()
+                   ? 1.F : 0.F;
     data[34] = data[35] = 1.F;
     if (!pixels_->previewFull.isEmpty()) {
       const auto &r = pixels_->previewRegion;
@@ -141,9 +162,11 @@ private:
     pipeline_.reset();
     bindings_.reset();
     texture_.reset();
+    baseTexture_.reset();
     sampler_.reset();
     uniform_.reset();
     uploaded_.reset();
+    baseUploaded_.reset();
   }
   void report(const QString &message) {
     if (status_ == message && reportedPixels_.lock() == pixels_)
@@ -170,10 +193,12 @@ private:
   std::weak_ptr<const ImagePixels> reportedPixels_;
   QRhi *owner_{};
   std::shared_ptr<const ImagePixels> pixels_, uploaded_;
+  std::shared_ptr<const ImagePixels> overview_, baseUploaded_;
   QVariantMap display_;
   QRectF rectangle_;
   QSizeF size_;
   std::unique_ptr<QRhiTexture> texture_;
+  std::unique_ptr<QRhiTexture> baseTexture_;
   std::unique_ptr<QRhiBuffer> uniform_;
   std::unique_ptr<QRhiSampler> sampler_;
   std::unique_ptr<QRhiShaderResourceBindings> bindings_;
@@ -191,6 +216,10 @@ ImageView::ImageView(QQuickItem *parent) : QQuickRhiItem(parent) {
 void ImageView::requestPreview() {
   if (!previous_ || previous_->previewFull.isEmpty() || !session_)
     return;
+  if (session_->busy() || session_->refining()) {
+    previewTimer_.start();
+    return;
+  }
   const auto r = imageRect();
   QRect region;
   if (session_->display().value("tiled").toBool())

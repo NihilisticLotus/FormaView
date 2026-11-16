@@ -295,11 +295,11 @@ void writeTga(const QString &path, unsigned char red) {
 void waitFor(ImageSession &session) {
   QElapsedTimer timer;
   timer.start();
-  while (session.busy() && timer.elapsed() < 60000) {
+  while ((session.busy() || session.refining()) && timer.elapsed() < 60000) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
     QThread::msleep(1);
   }
-  require(!session.busy(), "Session timed out");
+  require(!session.busy() && !session.refining(), "Session timed out");
 }
 QJsonObject regression(const QString &directory) {
   int cases = 0;
@@ -671,6 +671,9 @@ int main(int argc, char **argv) {
             }
             require(session.error().isEmpty(), qPrintable(session.error()));
             const auto p = session.pixels();
+            require(session.overview() && session.overview()->info["frame"] == p->info["frame"],
+                    "GIF overview must belong to the current frame");
+            require(session.overview()->previewRegion == QRect(QPoint(),full), "GIF full overview");
             const auto w = p->source.data_window.width,
                        h = p->source.data_window.height;
             QByteArray rgba(qsizetype(w * h * 4), Qt::Uninitialized);
@@ -801,6 +804,50 @@ int main(int argc, char **argv) {
       std::cout << "Created large preview fixtures\n";
       return 0;
     }
+    if (argc == 4 && app.arguments()[1] == "--preview-navigation") {
+      QImageReader::setAllocationLimit(32);
+      auto document = ImageDocument::open(std::filesystem::path(app.arguments()[2].toStdWString()),
+                                        {512ULL*1024*1024, 512ULL*1024*1024, INT_MAX, 65536, 256, true});
+      const auto patch = document.decode_preview(0, {113, 227, 5001, 5001, 1536, 1536});
+      require(patch.data_window.width == 1536, "Unaligned reduced JPEG region");
+      ImageSession session;
+      session.open(app.arguments()[2]);
+      waitFor(session);
+      require(session.error().isEmpty() && session.overview(), "Full overview available");
+      QJsonArray steps;
+      const auto full = session.pixels()->previewFull;
+      for (int repeat = 0; repeat < 3; ++repeat)
+        for (const auto region : {QRect(113,227,5001,5001), QRect(2331,1317,3301,2903),
+                                  QRect(6001,6003,1001,1003), QRect(0,0,2001,1003),
+                                  QRect(QPoint(),full)}) {
+          const auto base = session.overview();
+          session.viewport(region,QSize(1536,1536));
+          require(!session.busy(), "Refinement must not block the viewer");
+          require(session.overview() == base, "Keep overview while refining");
+          if (repeat == 0 && region.x() == 113) {
+            session.sample(full.width()/2,full.height()/2);
+            session.setSamplePinned(true);
+          }
+          waitFor(session);
+          QElapsedTimer sampleWait;
+          sampleWait.start();
+          while (!session.samplePinned() && sampleWait.elapsed()<10000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents,5);
+            QThread::msleep(1);
+          }
+          require(session.samplePinned(), "Exact pixel picking remains usable while refining");
+          require(session.error().isEmpty(), "Navigation decode failed");
+          require(session.pixels()->previewRegion == region, "Publish requested region");
+          require(session.overview()->previewRegion == QRect(QPoint(),full), "Full overview coverage");
+          require(session.overview()->info["sha256"] == session.pixels()->info["sha256"], "Overview identity");
+          require(session.overview()->uploadBytes() <= 2048ULL*2048*4, "Bounded overview");
+          require(session.pixels()->uploadBytes() <= 2048ULL*2048*4, "Bounded detail");
+          steps.append(QJsonObject{{"x",region.x()},{"y",region.y()}, {"width",region.width()},
+                                   {"height",region.height()},{"memory",memory()}});
+        }
+      save(app.arguments()[3], QJsonObject{{"unaligned_region", true}, {"navigation",steps}});
+      return 0;
+    }
     if (argc == 4 && app.arguments()[1] == "--preview-matrix")
       return previewMatrix(app.arguments()[2], app.arguments()[3]);
     if (argc == 4 && app.arguments()[1] == "--preview-samples") {
@@ -808,6 +855,8 @@ int main(int argc, char **argv) {
       QJsonArray results;
       const QDir directory(app.arguments()[2]);
       for (const auto &file : directory.entryInfoList(QDir::Files, QDir::Name)) {
+        if (!QStringList{"jpg","jpeg","tga","png","bmp","tif","tiff","webp","dds","exr","hdr","ico","gif"}.contains(file.suffix().toLower()))
+          continue;
         ImageSession session;
         session.open(file.absoluteFilePath());
         waitFor(session);

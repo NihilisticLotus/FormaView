@@ -1,5 +1,6 @@
 #include "formaview/raster_image.hpp"
 #include "raster_preview.hpp"
+#include "raster_jpeg_preview.hpp"
 #include "raster_profile.hpp"
 #include <QBuffer>
 #include <QColorSpace>
@@ -653,21 +654,9 @@ ImageSubresource RasterFile::decode_preview(std::size_t entry,
     image = preview_png(impl_->bytes, r, stop);
   else if (impl_->format == "bmp" || impl_->format == "dib")
     image = preview_bmp(impl_->bytes, impl_->format == "dib", r, stop);
-  else if (impl_->format == "jpeg") {
-    auto bytes = impl_->bytes;
-    QBuffer input(&bytes);
-    input.open(QIODevice::ReadOnly);
-    QImageReader reader(&input, "jpeg");
-    reader.setAutoTransform(false);
-    reader.setClipRect(QRect(static_cast<int>(r.x), static_cast<int>(r.y),
-                             static_cast<int>(r.width),
-                             static_cast<int>(r.height)));
-    reader.setScaledSize(QSize(static_cast<int>(r.output_width),
-                               static_cast<int>(r.output_height)));
-    image = reader.read();
-    if (image.isNull())
-      unsupported(reader.errorString().toStdString());
-  } else {
+  else if (impl_->format == "jpeg")
+    image = preview_jpeg(impl_->bytes, r, stop);
+  else {
     // ICO entries are format-limited to 256 x 256. Keep Qt's PNG/DIB AND-mask
     // semantics, validate the payload dimensions before any pixel allocation.
     if (impl_->format != "ico")

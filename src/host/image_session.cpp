@@ -281,7 +281,7 @@ void ImageSession::open(const QString &path, int index) {
   load(path, index, {});
 }
 void ImageSession::viewport(QRect region, QSize target) {
-  if (!pixels_ || pixels_->previewFull.isEmpty() || busy_)
+  if (!pixels_ || pixels_->previewFull.isEmpty() || busy_ || (animated() && playing_))
     return;
   region = region.intersected(QRect(QPoint(), pixels_->previewFull));
   target = target.boundedTo(QSize(2048, 2048)).expandedTo(QSize(1, 1));
@@ -309,8 +309,10 @@ void ImageSession::resourcePage(int offset) {
   emit changed();
 }
 void ImageSession::mapChannels(const QStringList &names) {
-  if (pixels_ && names.size() == 4)
+  if (pixels_ && names.size() == 4) {
+    previewRegion_ = {};
     load(pixels_->path, selected_, names);
+  }
 }
 void ImageSession::selectLayer(const QString &name) {
   if (!pixels_ || !pixels_->info.value("layers").toStringList().contains(name))
@@ -402,14 +404,18 @@ void ImageSession::selectDimension(const QString &name, int value) {
 }
 void ImageSession::load(const QString &path, int index, QStringList mapping,
                         bool preserveSample) {
-  if (sampleTask_)
-    sampleTask_->cancel();
-  samplePinRequested_ = false;
+  if (!preserveSample) {
+    if (sampleTask_)
+      sampleTask_->cancel();
+    samplePinRequested_ = false;
+    ++contentGeneration_;
+  }
   for (const auto &job : pending_)
     job->task.cancel();
   const auto generation = ++generation_;
   requested_ = path;
   busy_ = true;
+  refining_ = preserveSample;
   error_.clear();
   if (!preserveSample) {
     pixel_.clear();
@@ -422,7 +428,8 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
   request.priority = Priority::Foreground;
   request.resources = {1, 1, 1024ULL * 1024 * 1024, 0};
   request.work = [this, path, index, mapping, result, region = previewRegion_,
-                  target = previewTarget_, generation](std::stop_token stop) {
+                  target = previewTarget_, generation,
+                  baseStamp = overview_ ? overview_->info.value("sourceStamp").toString() : QString{}](std::stop_token stop) mutable {
     try {
       const auto file = QFileInfo(path);
       if (!file.exists() || !file.isFile())
@@ -431,6 +438,9 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
       const ImageReadLease lease(path);
 #endif
       const auto stamp = fileStamp(path);
+      // A replaced file needs a fresh overview, never old overview + new detail.
+      if (!region.isEmpty() && stamp != baseStamp)
+        region = {};
       const auto admission = ImageAdmission(true, stop);
       if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
         const auto key = path + '\n' + stamp +
@@ -707,7 +717,7 @@ void ImageSession::poll() {
   if (sampleTask_ && sampleTask_->snapshot().result) {
     const auto state = sampleTask_->snapshot();
     sampleTask_.reset();
-    if (sampleGeneration_ == generation_ && !state.result->error &&
+    if (sampleGeneration_ == contentGeneration_ && !state.result->error &&
         *sampleResult_) {
       sampleSource_ = *sampleResult_;
       sample(sampleX_, sampleY_, sampleTileX_, sampleTileY_);
@@ -734,6 +744,12 @@ void ImageSession::poll() {
       }
       else if (*(*it)->result) {
         pixels_ = *(*it)->result;
+        if ((pixels_->previewFull.isEmpty() ||
+             pixels_->previewRegion == QRect(QPoint(), pixels_->previewFull)) &&
+            (!refining_ || !overview_ ||
+             pixels_->info.value("sourceStamp") != overview_->info.value("sourceStamp") ||
+             pixels_->source.data_window.width > overview_->source.data_window.width))
+          overview_ = pixels_;
         const bool gif = pixels_->info.value("format") == "GIF";
         selected_ = gif ? 0 : (*it)->index;
         frame_ = gif ? pixels_->info.value("frame").toInt() : 0;
@@ -807,9 +823,11 @@ void ImageSession::clear() {
   samplePinRequested_ = false;
   cancelExport();
   ++generation_;
+  ++contentGeneration_;
   for (const auto &job : pending_)
     job->task.cancel();
   pixels_.reset();
+  overview_.reset();
   busy_ = false;
   error_.clear();
   requested_.clear();
@@ -871,7 +889,7 @@ void ImageSession::setSamplePinned(bool pinned) {
     return;
   }
   samplePinRequested_ = false;
-  pinned = pinned && pixel_.value("valid").toBool() && !busy_;
+  pinned = pinned && pixel_.value("valid").toBool() && !busy();
   if (samplePinned_ == pinned)
     return;
   samplePinned_ = pinned;
@@ -880,7 +898,7 @@ void ImageSession::setSamplePinned(bool pinned) {
 void ImageSession::sample(double x, double y, int tileX, int tileY) {
   pixel_ = {
       {"valid", false}, {"x", x}, {"y", y}, {"tileX", tileX}, {"tileY", tileY}};
-  if (!pixels_ || busy_ || !error_.isEmpty() || !std::isfinite(x) ||
+  if (!pixels_ || busy() || !error_.isEmpty() || !std::isfinite(x) ||
       !std::isfinite(y)) {
     samplePinned_ = false;
     emit pixelChanged();
@@ -901,7 +919,7 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
     }
     if (sampleTask_)
       sampleTask_->cancel();
-    sampleGeneration_ = generation_;
+    sampleGeneration_ = contentGeneration_;
     sampleX_ = x;
     sampleY_ = y;
     sampleTileX_ = tileX;
@@ -1019,6 +1037,10 @@ QString ImageSession::pixelReport() const {
 void ImageSession::seekFrame(int frame) {
   if (!animated() || path().isEmpty() || requested_ != path())
     return;
+  // Every frame starts with its own complete canvas; paused frames may then
+  // refine a region without mixing in an overview from another frame.
+  previewRegion_ = {};
+  previewTarget_ = QSize(2048, 2048);
   load(path(), std::clamp(frame, 0, frameCount_ - 1), {});
 }
 

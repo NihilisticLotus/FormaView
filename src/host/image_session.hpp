@@ -71,7 +71,8 @@ public:
   explicit ImageSession(QObject *parent = nullptr);
   ~ImageSession() override;
   bool available() const { return !!pixels_; }
-  bool busy() const { return busy_; }
+  bool busy() const { return busy_ && !refining_; }
+  bool refining() const { return busy_ && refining_; }
   QString error() const { return error_; }
   QString requested() const { return requested_; }
   QString path() const { return pixels_ ? pixels_->path : QString{}; }
@@ -102,6 +103,7 @@ public:
   int exportProgress() const { return exportProgress_; }
   QString exportError() const { return exportError_; }
   std::shared_ptr<const ImagePixels> pixels() const { return pixels_; }
+  std::shared_ptr<const ImagePixels> overview() const { return overview_; }
   Q_INVOKABLE void open(const QString &path, int index = 0);
   Q_INVOKABLE void clear();
   Q_INVOKABLE void selectSubresource(int index);
@@ -147,16 +149,19 @@ private:
   std::vector<std::unique_ptr<Pending>> pending_;
   std::optional<formaview::TaskHandle> cleanup_;
   std::shared_ptr<const ImagePixels> pixels_;
+  std::shared_ptr<const ImagePixels> overview_;
   QTimer timer_;
   QTimer playbackTimer_;
   QVariantMap display_, pixel_;
   QString error_, requested_;
   quint64 generation_{};
+  quint64 contentGeneration_{};
   int selected_{}, resourceOffset_{};
   int frame_{}, frameCount_{1}, frameDelay_{100}, sourceLoopCount_{1};
   int playbackWraps_{};
   int exportProgress_{};
   bool busy_{};
+  bool refining_{};
   bool samplePinned_{};
   bool playing_{}, loop_{true}, loopOverride_{}, exporting_{};
   QString exportError_;

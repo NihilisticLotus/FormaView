@@ -2797,19 +2797,21 @@ private slots:
     QVERIFY2(!directory.isEmpty(),"Pass a read-only directory of supported large image samples");
     auto *session=qobject_cast<ImageSession *>(desktop_->image());
     for(const auto &file:QDir(directory).entryInfoList(QDir::Files,QDir::Name)) {
+      if (!QStringList{"jpg","jpeg","tga","png","bmp","tif","tiff","webp","dds","exr","hdr","ico"}.contains(file.suffix().toLower()))
+        continue;
       desktop_->openPath(file.absoluteFilePath());
-      QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy(),20000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->path() == file.absoluteFilePath() && !session->busy(),20000);
       QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
       auto *view=qobject_cast<ImageView *>(item("imageViewport"));
       QVERIFY(view);
       QTRY_VERIFY(!session->pixels()->previewFull.isEmpty());
       QTest::qWait(500);
-      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->refining(),20000);
       QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
       save("bounded-fit-"+file.fileName());
       view->actual();
       QTest::qWait(500);
-      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->refining(),20000);
       QVERIFY(session->pixels()->previewRegion.width()<session->pixels()->previewFull.width());
       QVERIFY(session->pixels()->source.data_window.width<=2048);
       QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
@@ -2819,12 +2821,77 @@ private slots:
       const auto sample=session->pixel();
       view->setPan(QPointF(200,100));
       QTest::qWait(500);
-      QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->refining(),20000);
       QCOMPARE(session->pixel(),sample);
       QVERIFY(session->samplePinned());
       QVERIFY(view->renderError().isEmpty());
       save("bounded-pan-"+file.fileName());
+      for (const auto zoom : {.15,.31,.08,.75,.11}) {
+        view->setZoom(zoom);
+        for (int i=0;i<12;++i) {
+          view->zoomAt(i%2 ? 1./1.08 : 1.08,view->width()*.37,view->height()*.61);
+          view->setPan(QPointF(i*23-127,i*13-73));
+          QTest::qWait(25);
+          QVERIFY(session->overview());
+          QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+        }
+        QTest::qWait(250);
+        QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+        QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+        QVERIFY(view->renderError().isEmpty());
+        QCOMPARE(session->pixel(),sample);
+      }
+      view->fit();
+      QTest::qWait(250);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+      QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+      save("bounded-navigation-fit-"+file.fileName());
     }
+  }
+  void largePreviewKeepsWholeImageDuringNavigation() {
+    const auto path=root_+"/navigation-red.jpg";
+    {
+      QImage image(8192,8192,QImage::Format_RGB888);
+      image.fill(QColor(230,20,30));
+      QVERIFY(image.save(path,"JPEG",90));
+    }
+    auto *session=qobject_cast<ImageSession *>(desktop_->image());
+    desktop_->openPath(path);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && !session->busy(),20000);
+    auto *view=qobject_cast<ImageView *>(item("imageViewport"));
+    QVERIFY(view);
+    view->actual();
+    QTest::qWait(250);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->pixels()->previewRegion.width()<8192 && !session->refining(),20000);
+    // Stop before the 100 ms request debounce: the old detail cannot cover
+    // these corners. They must already show the full overview on the GPU.
+    view->setZoom(.045);
+    QTest::qWait(50);
+    auto checkCoverage=[&] {
+      const auto image=captureWindow(window_);
+      const auto rect=view->imageRect();
+      const auto scale=double(image.width())/window_->width();
+      for (const auto u : {.1,.9}) for (const auto v : {.1,.9}) {
+        const auto p=view->mapToScene(rect.topLeft()+QPointF(rect.width()*u,rect.height()*v))*scale;
+        const auto c=image.pixelColor(p.toPoint());
+        QVERIFY2(c.red()>180 && c.green()<80 && c.blue()<80,"Overview must cover corners outside the old detail region");
+      }
+    };
+    checkCoverage();
+    save("navigation-overview-during-zoom");
+    for (int i=0;i<20;++i) {
+      view->zoomAt(i%2 ? 1./1.12 : 1.12,view->width()*.4,view->height()*.6);
+      view->setPan(QPointF(i%2 ? 35 : -35,i%2 ? 25 : -25));
+      QTest::qWait(25);
+      checkCoverage();
+    }
+    QTest::qWait(250);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+    QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+    QVERIFY(view->renderError().isEmpty());
+    checkCoverage();
+    save("navigation-overview-after-zoom");
   }
   void pinnedSampleRepickAndWindowStates() {
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
