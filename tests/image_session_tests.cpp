@@ -1,13 +1,15 @@
 // QCoreApplication only: CPU/session measurements are not GPU or UI paint
 // timings.
+#include "formaview/image_preview.hpp"
 #include "image_session.hpp"
 #include <QCoreApplication>
-#include <QImageReader>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -124,6 +126,140 @@ void checkValues(ImagePixels &p, bool byteUpload) {
                    std::signbit(actual) == std::signbit(expected)),
               "Upload values differ from source");
     }
+}
+int previewMatrix(const QString &root, const QString &output) {
+  QJsonArray cases;
+  QDirIterator files(root, QDir::Files, QDirIterator::Subdirectories);
+  while (files.hasNext()) {
+    const auto path = files.next();
+    const auto suffix = QFileInfo(path).suffix().toLower();
+    if (!QStringList{"png", "jpg", "jpeg", "jpe", "jfif", "bmp", "dib", "ico",
+                     "tga", "hdr", "rgbe", "tif", "tiff", "webp", "dds", "exr"}
+             .contains(suffix))
+      continue;
+    QJsonObject result{{"file", path}};
+    try {
+      auto reference =
+          ImageDocument::open(std::filesystem::path(path.toStdWString()));
+      auto preview =
+          ImageDocument::open(std::filesystem::path(path.toStdWString()),
+                              {512ULL * 1024 * 1024, 512ULL * 1024 * 1024,
+                               INT_MAX, 65536, 256, true});
+      require(reference.description().subresources.size() ==
+                  preview.description().subresources.size(),
+              "Preview catalog size");
+      int regions = 0;
+      for (std::size_t entry = 0;
+           entry < reference.description().subresources.size(); ++entry) {
+        const auto aSemantics = reference.semantics(entry),
+                   bSemantics = preview.semantics(entry);
+        require(aSemantics.alpha == bSemantics.alpha &&
+                    aSemantics.meaning == bSemantics.meaning &&
+                    aSemantics.colour_space == bSemantics.colour_space &&
+                    aSemantics.icc_profile_sha256 ==
+                        bSemantics.icc_profile_sha256,
+                "Preview source semantics");
+        const auto full = reference.decode(entry);
+        const auto w = full.data_window.width, h = full.data_window.height;
+        const std::vector<PreviewRequest> requests{
+            {0, 0, 1, 1, 1, 1},
+            {w - 1, h - 1, 1, 1, 1, 1},
+            {w / 3, h / 3, std::min<std::uint64_t>(w - w / 3, 17),
+             std::min<std::uint64_t>(h - h / 3, 11),
+             std::min<std::uint64_t>(w - w / 3, 17),
+             std::min<std::uint64_t>(h - h / 3, 11)},
+            {0, 0, w, h, std::min<std::uint64_t>(w, 9),
+             std::min<std::uint64_t>(h, 7)}};
+        for (const auto &request : requests) {
+          const auto patch = preview.decode_preview(entry, request);
+          require(patch.channels.size() == full.channels.size(),
+                  "Preview channel count");
+          require(patch.mip == full.mip && patch.part == full.part &&
+                      patch.array_layer == full.array_layer &&
+                      patch.cube_face == full.cube_face &&
+                      patch.depth_slice == full.depth_slice,
+                  "Preview resource identity");
+          for (std::size_t c = 0; c < full.channels.size(); ++c) {
+            const auto &a = full.channels[c], &b = patch.channels[c];
+            require(a.name == b.name && a.encoding == b.encoding &&
+                        a.samples.scalar == b.samples.scalar,
+                    "Preview native channel schema");
+            // JPEG/WebP use codec reconstruction filters for reduced
+            // previews; exact comparisons apply to native-sized regions.
+            if ((QStringList{"jpg", "jpeg", "jpe", "jfif", "webp"}.contains(
+                    suffix)) &&
+                (request.width != request.output_width ||
+                 request.height != request.output_height))
+              continue;
+            const auto component = preview_component(a.samples.scalar);
+            for (std::uint64_t y = 0; y < request.output_height; ++y)
+              for (std::uint64_t x = 0; x < request.output_width; ++x)
+                if (std::memcmp(a.samples.bytes.data() +
+                                    (request.sy(y) * w + request.sx(x)) *
+                                        component,
+                                b.samples.bytes.data() +
+                                    (y * request.output_width + x) * component,
+                                component))
+                  throw std::runtime_error(
+                      "Sample mismatch entry=" + std::to_string(entry) +
+                      " channel=" + a.name +
+                      " x=" + std::to_string(request.sx(x)) +
+                      " y=" + std::to_string(request.sy(y)));
+          }
+          ++regions;
+        }
+      }
+      std::stop_source cancel;
+      cancel.request_stop();
+      bool cancelled = false;
+      try {
+        static_cast<void>(
+            preview.decode_preview(0, {0, 0, 1, 1, 1, 1}, cancel.get_token()));
+      } catch (const skeletal::Failure &e) {
+        cancelled = e.error.code == ErrorCode::Cancelled;
+      }
+      require(cancelled, "Preview cancellation");
+      result["regions"] = regions;
+      result["passed"] = true;
+    } catch (const std::exception &e) {
+      // A malformed/unsupported full decode must also be rejected by
+      // preview open/decode; never count it as a successful image case.
+      bool referenceRejected = false, previewRejected = false;
+      try {
+        auto d =
+            ImageDocument::open(std::filesystem::path(path.toStdWString()));
+        for (std::size_t n = 0; n < d.description().subresources.size(); ++n)
+          static_cast<void>(d.decode(n));
+      } catch (...) {
+        referenceRejected = true;
+      }
+      if (referenceRejected) {
+        try {
+          auto d =
+              ImageDocument::open(std::filesystem::path(path.toStdWString()),
+                                  {512ULL * 1024 * 1024, 512ULL * 1024 * 1024,
+                                   INT_MAX, 65536, 256, true});
+          static_cast<void>(d.decode_preview(0, {0, 0, 1, 1, 1, 1}));
+        } catch (...) {
+          previewRejected = true;
+        }
+      }
+      result["passed"] = referenceRejected && previewRejected;
+      result["expectedRejection"] = referenceRejected;
+      result["error"] = e.what();
+    }
+    cases.append(result);
+  }
+  save(output, QJsonObject{{"cases", cases}});
+  int failures = 0;
+  for (const auto &c : cases)
+    if (!c.toObject()["passed"].toBool()) {
+      ++failures;
+      std::cerr << c.toObject()["file"].toString().toStdString() << ": "
+                << c.toObject()["error"].toString().toStdString() << '\n';
+    }
+  std::cout << cases.size() << " files, " << failures << " failures\n";
+  return failures ? 1 : 0;
 }
 void expectFailure(ImagePixels &p, ErrorCode code, std::stop_token stop = {}) {
   try {
@@ -510,6 +646,163 @@ QJsonObject benchmark(const QString &directory) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   try {
+    if (argc == 4 && app.arguments()[1] == "--gif-preview-samples") {
+      QJsonArray frames;
+      for (const auto &file :
+           QDir(app.arguments()[2]).entryInfoList({"*.gif"}, QDir::Files)) {
+        ImageSession session;
+        session.open(file.absoluteFilePath());
+        waitFor(session);
+        require(session.error().isEmpty(), qPrintable(session.error()));
+        const int count = session.frameCount();
+        for (int frame = 0; frame < count; ++frame) {
+          session.seekFrame(frame);
+          waitFor(session);
+          for (int view = 0; view < 2; ++view) {
+            const auto before = session.pixels();
+            const auto full = before->previewFull;
+            if (view) {
+              session.viewport(
+                  QRect(full.width() / 3, full.height() / 3,
+                        std::min(47, full.width() - full.width() / 3),
+                        std::min(31, full.height() - full.height() / 3)),
+                  QSize(47, 31));
+              waitFor(session);
+            }
+            require(session.error().isEmpty(), qPrintable(session.error()));
+            const auto p = session.pixels();
+            const auto w = p->source.data_window.width,
+                       h = p->source.data_window.height;
+            QByteArray rgba(qsizetype(w * h * 4), Qt::Uninitialized);
+            for (std::uint64_t n = 0; n < w * h; ++n)
+              for (std::size_t c = 0; c < 4; ++c)
+                rgba[qsizetype(n * 4 + c)] =
+                    char(std::to_integer<unsigned char>(
+                        p->source.channels[c].samples.bytes[n]));
+            const auto r = p->previewRegion;
+            frames.append(QJsonObject{
+                {"file", file.absoluteFilePath()},
+                {"frame", frame},
+                {"x", r.x()},
+                {"y", r.y()},
+                {"width", r.width()},
+                {"height", r.height()},
+                {"outputWidth", int(w)},
+                {"outputHeight", int(h)},
+                {"sha256",
+                 QString::fromLatin1(digest(rgba.constData(), rgba.size()))},
+                {"retainedBytes", qint64(p->bytes)},
+                {"memory", memory()}});
+          }
+          // Reset the whole-canvas request before the next frame.
+          session.viewport(QRect(QPoint(), session.pixels()->previewFull),
+                           QSize(2048, 2048));
+          waitFor(session);
+        }
+      }
+      require(!frames.isEmpty(), "No GIF fixtures");
+      save(app.arguments()[3], QJsonObject{{"frames", frames}});
+      return 0;
+    }
+    if (argc == 3 && app.arguments()[1] == "--make-preview-fixtures") {
+      const QDir root(app.arguments()[2]);
+      require(!root.exists(), "Use a fresh preview fixture directory");
+      require(QDir().mkpath(root.absolutePath()), "Cannot create fixtures");
+      ImageSubresource source;
+      source.data_window = source.display_window = {0, 0, 4096, 2304};
+      for (int c = 0; c < 4; ++c) {
+        Buffer b;
+        b.scalar = ScalarType::UInt8;
+        b.element_count = 4096ULL * 2304;
+        b.bytes.resize(b.element_count);
+        for (std::size_t y = 0; y < 2304; ++y)
+          for (std::size_t x = 0; x < 4096; ++x)
+            b.bytes[y * 4096 + x] =
+                std::byte((x * (c + 1) + y * (c + 3) + c * 41) % 256);
+        source.channels.push_back({std::array{"R", "G", "B", "A"}[c],
+                                   std::move(b), SampleEncoding::UNorm});
+      }
+      const auto write = [&](const QString &name,
+                             const std::vector<std::byte> &bytes) {
+        QFile file(root.filePath(name));
+        require(file.open(QIODevice::WriteOnly | QIODevice::NewOnly),
+                "Cannot write fixture");
+        require(file.write(reinterpret_cast<const char *>(bytes.data()),
+                           qsizetype(bytes.size())) == qsizetype(bytes.size()),
+                "Short fixture write");
+      };
+      RasterEncodeOptions raster;
+      raster.target = RasterTarget::Png;
+      raster.alpha = AlphaMode::Straight;
+      write("large-rgba.png", encode_raster(source, raster));
+      auto rgb8 = source;
+      rgb8.channels.pop_back();
+      raster.target = RasterTarget::Bmp;
+      raster.alpha = AlphaMode::Absent;
+      write("large-rgb.bmp", encode_raster(rgb8, raster));
+      ExtendedEncodeOptions extended;
+      extended.target = ExtendedRasterTarget::Tiff;
+      extended.alpha = AlphaMode::Straight;
+      write("large-rgba.tiff", encode_extended(source, extended));
+      extended.target = ExtendedRasterTarget::Webp;
+      write("large-rgba.webp", encode_extended(source, extended));
+      ProfessionalEncodeOptions pro;
+      pro.target = ProfessionalTarget::Dds;
+      pro.alpha = AlphaMode::Straight;
+      write("large-rgba.dds", encode_professional(source, pro));
+      for (auto &c : source.channels) {
+        std::vector<std::byte> wide(c.samples.bytes.size() * 2);
+        for (std::size_t n = 0; n < c.samples.bytes.size(); ++n) {
+          const std::uint16_t v = std::uint16_t(
+              std::to_integer<unsigned char>(c.samples.bytes[n]) * 257U +
+              (n % 3));
+          std::memcpy(wide.data() + n * 2, &v, 2);
+        }
+        c.samples.scalar = ScalarType::UInt16;
+        c.samples.bytes = std::move(wide);
+      }
+      raster.target = RasterTarget::Png;
+      raster.alpha = AlphaMode::Straight;
+      write("large-rgba16.png", encode_raster(source, raster));
+      for (auto &c : source.channels) {
+        std::vector<std::byte> numeric(c.samples.element_count * 4);
+        for (std::size_t n = 0; n < c.samples.element_count; ++n) {
+          std::uint16_t v;
+          std::memcpy(&v, c.samples.bytes.data() + n * 2, 2);
+          const float f = float(v) / 16384.F - 1.F;
+          std::memcpy(numeric.data() + n * 4, &f, 4);
+        }
+        c.samples.scalar = ScalarType::Float32;
+        c.samples.bytes = std::move(numeric);
+        c.encoding = SampleEncoding::Numeric;
+      }
+      extended.target = ExtendedRasterTarget::Tiff;
+      write("large-float.tiff", encode_extended(source, extended));
+      source.data_window.x = -17;
+      source.data_window.y = 23;
+      source.display_window = {-31, -7, 4200, 2400};
+      pro.target = ProfessionalTarget::Exr;
+      write("large-scanline.exr", encode_professional(source, pro));
+      pro.exr_tiled = true;
+      write("large-tiled.exr", encode_professional(source, pro));
+      source.data_window = source.display_window = {0, 0, 4096, 2304};
+      source.channels.pop_back();
+      // RGBE does not encode negative values.
+      for (auto &c : source.channels)
+        for (std::size_t n = 0; n < c.samples.element_count; ++n) {
+          float f;
+          std::memcpy(&f, c.samples.bytes.data() + n * 4, 4);
+          f = std::max(f, 0.F);
+          std::memcpy(c.samples.bytes.data() + n * 4, &f, 4);
+        }
+      pro.target = ProfessionalTarget::Hdr;
+      pro.allow_lossy = true;
+      write("large.hdr", encode_professional(source, pro));
+      std::cout << "Created large preview fixtures\n";
+      return 0;
+    }
+    if (argc == 4 && app.arguments()[1] == "--preview-matrix")
+      return previewMatrix(app.arguments()[2], app.arguments()[3]);
     if (argc == 4 && app.arguments()[1] == "--preview-samples") {
       QImageReader::setAllocationLimit(32);
       QJsonArray results;

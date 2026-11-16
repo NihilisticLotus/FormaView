@@ -21,12 +21,11 @@ struct ImagePixels {
   QString path;
   quint64 revision{};
   QSize previewFull;
+  formaview::ImageWindow previewWindow;
+  formaview::ImageWindow previewDisplayWindow;
   QRect previewRegion;
   formaview::ImageWindow logicalWindow() const {
-    return previewFull.isEmpty()
-               ? source.data_window
-               : formaview::ImageWindow{0, 0, quint64(previewFull.width()),
-                                        quint64(previewFull.height())};
+    return previewFull.isEmpty() ? source.data_window : previewWindow;
   }
   std::size_t bytes{};
   // Called once after accounting for the retained source and metadata.

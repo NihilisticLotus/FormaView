@@ -1,4 +1,6 @@
 #include "formaview/extended_raster.hpp"
+#include "formaview/image_preview.hpp"
+#include "image_input.hpp"
 #include "raster_profile.hpp"
 #include <algorithm>
 #include <cmath>
@@ -214,8 +216,8 @@ TiffInfo tiff_info(TIFF *t, Limits limits) {
     fail("TIFF sample format/bit depth is not implemented");
   const auto pixel_bytes =
       static_cast<std::uint64_t>(i.count) * bytes_per(i.scalar);
-  budget(static_cast<std::uint64_t>(i.w) * i.h <=
-         limits.decoded_bytes / (pixel_bytes * 2));
+  budget(limits.preview || static_cast<std::uint64_t>(i.w) * i.h <=
+                               limits.decoded_bytes / (pixel_bytes * 2));
   if (!TIFFIsCODECConfigured(i.compression))
     fail("TIFF compression codec is not deployed");
   return i;
@@ -267,7 +269,7 @@ int webp_progress(int, const WebPPicture *p) {
 
 struct ExtendedRasterFile::Impl {
   Limits limits;
-  std::vector<std::byte> bytes;
+  ImageInput bytes;
   ImageData desc;
   bool webp{};
 };
@@ -280,7 +282,7 @@ ExtendedRasterFile::operator=(ExtendedRasterFile &&) noexcept = default;
 ExtendedRasterFile::~ExtendedRasterFile() = default;
 const ImageData &ExtendedRasterFile::description() const { return impl_->desc; }
 std::size_t ExtendedRasterFile::resident_bytes() const {
-  return impl_->bytes.size();
+  return impl_->bytes.resident_bytes();
 }
 ExtendedRasterFile ExtendedRasterFile::open(const std::filesystem::path &path,
                                             Limits limits,
@@ -288,24 +290,28 @@ ExtendedRasterFile ExtendedRasterFile::open(const std::filesystem::path &path,
   cancel(stop);
   auto p = std::make_unique<Impl>();
   p->limits = limits;
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file)
-    fail("Cannot open image", ErrorCode::Io);
-  const auto length = file.tellg();
-  budget(length >= 0 &&
-         static_cast<std::uint64_t>(length) <= limits.input_bytes &&
-         static_cast<std::uint64_t>(length) <= SIZE_MAX);
-  p->bytes.resize(static_cast<std::size_t>(length));
-  file.seekg(0);
-  for (std::size_t offset = 0; offset < p->bytes.size();) {
-    cancel(stop);
-    auto n = std::min<std::size_t>(1024 * 1024, p->bytes.size() - offset);
-    if (!file.read(reinterpret_cast<char *>(p->bytes.data() + offset),
-                   static_cast<std::streamsize>(n)))
-      fail("Short image read", ErrorCode::Io);
-    offset += n;
+  if (limits.preview) {
+    p->bytes.map(path);
+  } else {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+      fail("Cannot open image", ErrorCode::Io);
+    const auto length = file.tellg();
+    budget(length >= 0 &&
+           static_cast<std::uint64_t>(length) <= limits.input_bytes &&
+           static_cast<std::uint64_t>(length) <= SIZE_MAX);
+    p->bytes.resize(static_cast<std::size_t>(length));
+    file.seekg(0);
+    for (std::size_t offset = 0; offset < p->bytes.size();) {
+      cancel(stop);
+      auto n = std::min<std::size_t>(1024 * 1024, p->bytes.size() - offset);
+      if (!file.read(reinterpret_cast<char *>(p->bytes.data() + offset),
+                     static_cast<std::streamsize>(n)))
+        fail("Short image read", ErrorCode::Io);
+      offset += n;
+    }
+    p->desc.source.identity.sha256 = skeletal::sha256(p->bytes, stop);
   }
-  p->desc.source.identity.sha256 = skeletal::sha256(p->bytes, stop);
   p->webp = p->bytes.size() >= 12 &&
             std::memcmp(p->bytes.data(), "RIFF", 4) == 0 &&
             std::memcmp(p->bytes.data() + 8, "WEBP", 4) == 0;
@@ -317,7 +323,8 @@ ExtendedRasterFile ExtendedRasterFile::open(const std::filesystem::path &path,
     const auto w = WebPDemuxGetI(demux.get(), WEBP_FF_CANVAS_WIDTH),
                h = WebPDemuxGetI(demux.get(), WEBP_FF_CANVAS_HEIGHT);
     budget(w && h && w <= limits.dimension && h <= limits.dimension &&
-           static_cast<std::uint64_t>(w) * h <= limits.decoded_bytes / 16);
+           (limits.preview ||
+            static_cast<std::uint64_t>(w) * h <= limits.decoded_bytes / 16));
     p->desc.alpha =
         flags & ALPHA_FLAG ? AlphaMode::Straight : AlphaMode::Absent;
     ImageSubresource s;
@@ -387,6 +394,8 @@ ExtendedRasterFile ExtendedRasterFile::open(const std::filesystem::path &path,
 }
 ImageSubresource ExtendedRasterFile::decode(std::size_t entry,
                                             std::stop_token stop) const {
+  if (impl_->limits.preview)
+    fail("Preview documents require decode_preview");
   cancel(stop);
   valid(entry < impl_->desc.subresources.size(), "Image entry out of range");
   auto s = impl_->desc.subresources[entry];
@@ -478,6 +487,164 @@ ImageSubresource ExtendedRasterFile::decode(std::size_t entry,
           }
           copy(row.data(), y, 0, w, plane);
         }
+    }
+  }
+  cancel(stop);
+  return s;
+}
+
+ImageSubresource
+ExtendedRasterFile::decode_preview(std::size_t entry, const PreviewRequest &r,
+                                   std::stop_token stop) const {
+  cancel(stop);
+  valid(entry < impl_->desc.subresources.size(), "Preview entry out of range");
+  auto s = preview_output(impl_->desc.subresources[entry], r);
+  const auto ow = r.output_width, oh = r.output_height;
+  if (impl_->webp) {
+    // libwebp crops at even origins. Expand the crop by at most one pixel;
+    // retain exact coordinates for raw sampling and odd-origin native views.
+    const bool native = r.width == ow && r.height == oh;
+    // VP8 fancy chroma upsampling needs neighbouring samples on all four
+    // edges, otherwise a crop changes original pixel values at its border.
+    const auto left = (native && r.x >= 2 ? r.x - 2 : r.x) & ~1ULL;
+    const auto top = (native && r.y >= 2 ? r.y - 2 : r.y) & ~1ULL;
+    const auto &full = impl_->desc.subresources[entry].data_window;
+    const auto cw =
+        std::min(full.width, r.x + r.width + (native ? 2 : 0)) - left;
+    const auto ch =
+        std::min(full.height, r.y + r.height + (native ? 2 : 0)) - top;
+    const bool aligned = left == r.x && top == r.y;
+    WebPDecoderConfig config{};
+    valid(WebPInitDecoderConfig(&config) != 0, "WebP ABI mismatch");
+    config.output.colorspace = MODE_RGBA;
+    config.options.use_cropping = 1;
+    config.options.crop_left = static_cast<int>(left);
+    config.options.crop_top = static_cast<int>(top);
+    config.options.crop_width = static_cast<int>(cw);
+    config.options.crop_height = static_cast<int>(ch);
+    // Scaling an expanded crop moves samples. For odd origins decode a
+    // bounded crop at native resolution; large overviews use the even origin.
+    valid(aligned || native, "WebP scaled crop must have an even origin");
+    config.options.use_scaling = !native;
+    config.options.scaled_width = static_cast<int>(ow);
+    config.options.scaled_height = static_cast<int>(oh);
+    const auto dw = native ? cw : ow, dh = native ? ch : oh;
+    budget(dw * dh <= 32ULL * 1024 * 1024 / 4);
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(dw * dh * 4));
+    config.output.is_external_memory = 1;
+    config.output.u.RGBA.rgba = rgba.data();
+    config.output.u.RGBA.stride = static_cast<int>(dw * 4);
+    config.output.u.RGBA.size = rgba.size();
+    const auto status =
+        WebPDecode(reinterpret_cast<const std::uint8_t *>(impl_->bytes.data()),
+                   impl_->bytes.size(), &config);
+    WebPFreeDecBuffer(&config.output);
+    cancel(stop);
+    valid(status == VP8_STATUS_OK, "WebP preview decode failed");
+    for (std::uint64_t y = 0; y < oh; ++y)
+      for (std::uint64_t x = 0; x < ow; ++x)
+        for (std::size_t c = 0; c < s.channels.size(); ++c)
+          s.channels[c].samples.bytes[y * ow + x] =
+              std::byte(rgba[((y + (native ? r.y - top : 0)) * dw + x +
+                              (native ? r.x - left : 0)) *
+                                 4 +
+                             c]);
+    return s;
+  }
+  Memory memory;
+  memory.input = impl_->bytes;
+  memory.stop = stop;
+  auto t = open_tiff(memory, impl_->limits);
+  valid(TIFFSetDirectory(t.get(), static_cast<tdir_t>(entry)) != 0,
+        "Missing TIFF page");
+  const auto i = tiff_info(t.get(), impl_->limits);
+  const auto component = bytes_per(i.scalar), count = s.channels.size();
+  const auto samples = i.planar == PLANARCONFIG_CONTIG ? count : 1;
+  const auto planes = i.planar == PLANARCONFIG_CONTIG ? 1 : count;
+  const auto copy = [&](const std::byte *row, std::uint64_t sy,
+                        std::uint64_t left, std::uint64_t width,
+                        std::size_t plane) {
+    for (auto y = r.first_y(sy); y < r.first_y(sy + 1); ++y) {
+      for (auto x = r.first_x(left); x < r.first_x(left + width); ++x) {
+        const auto sx = r.sx(x);
+        if (sx < left || sx - left >= width)
+          continue;
+        for (std::size_t c = 0; c < samples; ++c)
+          std::memcpy(s.channels[i.planar == PLANARCONFIG_CONTIG ? c : plane]
+                              .samples.bytes.data() +
+                          (y * ow + x) * component,
+                      row + ((sx - left) * samples + c) * component, component);
+      }
+    }
+  };
+  if (TIFFIsTiled(t.get())) {
+    std::uint32_t tw{}, th{};
+    TIFFGetField(t.get(), TIFFTAG_TILEWIDTH, &tw);
+    TIFFGetField(t.get(), TIFFTAG_TILELENGTH, &th);
+    const auto bytes = TIFFTileSize64(t.get());
+    budget(tw && th && bytes <= 64ULL * 1024 * 1024);
+    valid(bytes == std::uint64_t(tw) * th * samples * component,
+          "Unsupported TIFF tile layout");
+    std::vector<std::byte> tile(static_cast<std::size_t>(bytes));
+    for (std::size_t plane = 0; plane < planes; ++plane) {
+      std::uint64_t previousY = UINT64_MAX;
+      for (std::uint64_t y = 0; y < oh; ++y) {
+        const auto ty = r.sy(y) / th * th;
+        if (ty == previousY)
+          continue;
+        previousY = ty;
+        std::uint64_t previousX = UINT64_MAX;
+        for (std::uint64_t x = 0; x < ow; ++x) {
+          const auto tx = r.sx(x) / tw * tw;
+          if (tx == previousX)
+            continue;
+          previousX = tx;
+          cancel(stop);
+          valid(TIFFReadTile(t.get(), tile.data(),
+                             static_cast<std::uint32_t>(tx),
+                             static_cast<std::uint32_t>(ty), 0,
+                             static_cast<std::uint16_t>(plane)) ==
+                    static_cast<tmsize_t>(bytes),
+                "Truncated TIFF tile");
+          for (std::uint64_t row = 0;
+               row < std::min<std::uint64_t>(th, i.h - ty); ++row)
+            copy(tile.data() + row * tw * samples * component, ty + row, tx, tw,
+                 plane);
+        }
+      }
+    }
+  } else {
+    const auto bytes = TIFFScanlineSize64(t.get());
+    valid(bytes == std::uint64_t(i.w) * samples * component,
+          "Unsupported TIFF row layout");
+    budget(bytes <= 64ULL * 1024 * 1024);
+    std::vector<std::byte> row(static_cast<std::size_t>(bytes));
+    // Compressed strips require sequential scanline reads within each strip.
+    // Skip entire strips that contain no requested sample, but never seek
+    // backwards inside a codec's current strip.
+    std::uint32_t rowsPerStrip{};
+    TIFFGetFieldDefaulted(t.get(), TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
+    valid(rowsPerStrip != 0, "Invalid TIFF strip height");
+    for (std::size_t plane = 0; plane < planes; ++plane) {
+      std::uint64_t next = 0;
+      for (std::uint64_t y = 0; y <= r.sy(oh - 1); ++y) {
+        cancel(stop);
+        const auto sy = r.sy(next);
+        if (y / rowsPerStrip != sy / rowsPerStrip) {
+          y = sy / rowsPerStrip * rowsPerStrip;
+        }
+        valid(TIFFReadScanline(t.get(), row.data(),
+                               static_cast<std::uint32_t>(y),
+                               static_cast<std::uint16_t>(plane)) >= 0,
+              "Truncated TIFF scanline");
+        if (y == sy) {
+          copy(row.data(), y, 0, i.w, plane);
+          while (next + 1 < oh && r.sy(next + 1) == y)
+            ++next;
+          if (next + 1 < oh)
+            ++next;
+        }
+      }
     }
   }
   cancel(stop);

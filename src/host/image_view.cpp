@@ -249,7 +249,8 @@ void ImageView::fit() {
   if (previous_) {
     const auto display = session_->display()["displayWindow"].toBool();
     const auto w = !previous_->previewFull.isEmpty()
-                       ? previous_->logicalWindow()
+                       ? (display ? previous_->previewDisplayWindow
+                                  : previous_->logicalWindow())
                    : display ? previous_->source.display_window
                              : previous_->source.data_window;
     zoom_ = std::max(.0001, std::min(width() / static_cast<double>(w.width),
@@ -298,7 +299,10 @@ QRectF ImageView::imageRect() const {
   if (!previous_)
     return {};
   const auto data = previous_->logicalWindow();
-  const auto w = !previous_->previewFull.isEmpty() ? data
+  const auto w = !previous_->previewFull.isEmpty()
+                     ? (session_->display()["displayWindow"].toBool()
+                            ? previous_->previewDisplayWindow
+                            : data)
                  : session_->display()["displayWindow"].toBool()
                      ? previous_->source.display_window
                      : data;

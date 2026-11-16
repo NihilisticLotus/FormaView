@@ -2726,14 +2726,19 @@ private slots:
   void pinnedSampleSurvivesPaneRecreation() {
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
     desktop_->openPath(small_ + "/唯一图片.png");
-    QTRY_VERIFY(session->available() && !session->busy());
+    QTRY_VERIFY(session->available() && !session->busy() &&
+                session->path() == small_ + "/唯一图片.png");
     auto *view = qobject_cast<ImageView *>(item("imageViewport"));
     QVERIFY(view);
+    // Earlier viewport/subresource cases may leave zoom and pan off-screen.
+    session->setSamplePinned(false);
+    view->fit();
     QTest::qWait(100);
+    QTRY_VERIFY(!session->busy());
     QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
                      view->mapToScene(view->imageRect().center()).toPoint());
     auto *pane = view->parentItem()->parentItem();
-    QVERIFY(pane->property("fixedSample").toBool());
+    QTRY_VERIFY(pane->property("fixedSample").toBool());
     const auto sample = session->pixel();
     auto *loader = pane->parentItem();
     QVERIFY(loader->metaObject()->indexOfProperty("active") >= 0);
@@ -2753,7 +2758,7 @@ private slots:
   }
   void boundedLargeImagePreview() {
     const auto directory=qEnvironmentVariable("FORMAVIEW_LARGE_IMAGE_SAMPLES");
-    QVERIFY2(!directory.isEmpty(),"Pass a read-only directory of JPEG/TGA samples");
+    QVERIFY2(!directory.isEmpty(),"Pass a read-only directory of supported large image samples");
     auto *session=qobject_cast<ImageSession *>(desktop_->image());
     for(const auto &file:QDir(directory).entryInfoList(QDir::Files,QDir::Name)) {
       desktop_->openPath(file.absoluteFilePath());
@@ -2765,14 +2770,14 @@ private slots:
       QTest::qWait(500);
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
       QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
-      save("bounded-fit-"+file.baseName());
+      save("bounded-fit-"+file.fileName());
       view->actual();
       QTest::qWait(500);
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy(),20000);
       QVERIFY(session->pixels()->previewRegion.width()<session->pixels()->previewFull.width());
       QVERIFY(session->pixels()->source.data_window.width<=2048);
       QVERIFY2(view->renderError().isEmpty(),qPrintable(view->renderError()));
-      save("bounded-actual-"+file.baseName());
+      save("bounded-actual-"+file.fileName());
       view->pinAt(view->width()/2,view->height()/2);
       QTRY_VERIFY_WITH_TIMEOUT(session->samplePinned(),20000);
       const auto sample=session->pixel();
@@ -2782,7 +2787,7 @@ private slots:
       QCOMPARE(session->pixel(),sample);
       QVERIFY(session->samplePinned());
       QVERIFY(view->renderError().isEmpty());
-      save("bounded-pan-"+file.baseName());
+      save("bounded-pan-"+file.fileName());
     }
   }
   void pinnedSampleRepickAndWindowStates() {

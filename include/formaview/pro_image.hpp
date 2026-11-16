@@ -3,10 +3,13 @@
 #include <memory>
 
 namespace formaview::imaging {
+struct PreviewRequest;
 struct Limits {
   std::uint64_t input_bytes{512ULL * 1024 * 1024},
       decoded_bytes{1024ULL * 1024 * 1024};
   std::uint32_t dimension{32768}, subresources{65536}, channels{256};
+  // Preview open reads descriptors without allocating full pixel surfaces.
+  bool preview{};
 };
 // Open/decode are blocking worker APIs. Call via the bounded scheduler, never
 // on the GUI or render thread. Cancellation is checked between codec
@@ -21,6 +24,9 @@ public:
   [[nodiscard]] const ImageData &description() const;
   [[nodiscard]] ImageSubresource decode(std::size_t index,
                                         std::stop_token = {}) const;
+  [[nodiscard]] ImageSubresource decode_preview(std::size_t,
+                                                const PreviewRequest &,
+                                                std::stop_token = {}) const;
   [[nodiscard]] std::size_t resident_bytes() const;
 
 private:

@@ -1,7 +1,9 @@
 #include "formaview/raster_image.hpp"
+#include "raster_preview.hpp"
 #include "raster_profile.hpp"
 #include <QBuffer>
 #include <QColorSpace>
+#include <QFile>
 #include <QImageReader>
 #include <QImageWriter>
 #include <QtEndian>
@@ -65,8 +67,9 @@ void size_budget(QSize size, Limits limits) {
          static_cast<std::uint32_t>(size.height()) <= limits.dimension);
   // Source QImage + straight converted QImage + planar result; worst case
   // 64-bit.
-  budget(static_cast<std::uint64_t>(size.width()) * size.height() <=
-         limits.decoded_bytes / 24);
+  budget(limits.preview ||
+         static_cast<std::uint64_t>(size.width()) * size.height() <=
+             limits.decoded_bytes / 24);
 }
 QByteArray detect(const QByteArray &bytes, const std::filesystem::path &path) {
   if (bytes.startsWith("\x89PNG\r\n\x1a\n"))
@@ -132,6 +135,7 @@ QByteArray embedded_icc(const QByteArray &bytes, const QByteArray &format,
         invalid("Truncated PNG metadata chunk");
       const auto type = bytes.mid(at + 4, 4);
       if (type == "iCCP") {
+        budget(length <= 1024 * 1024);
         if (!profile.isEmpty())
           invalid("Duplicate PNG ICC profile");
         const auto data = bytes.mid(at + 8, length);
@@ -258,6 +262,8 @@ QImage decode_image(const QByteArray &bytes, QByteArray format,
   reader.setAutoTransform(false);
   reader.setDecideFormatFromContent(false);
   const auto size = format == "gif" ? entry.dimensions : reader.size();
+  if (format == "ico" && size != entry.dimensions)
+    invalid("ICO payload dimensions disagree with directory");
   size_budget(size, limits);
   auto image = reader.read();
   if (image.isNull())
@@ -368,6 +374,7 @@ std::vector<std::byte> encode_gray_alpha_png(const ImageSubresource &s,
 }
 } // namespace
 struct RasterFile::Impl {
+  std::unique_ptr<QFile> mapped;
   QByteArray bytes, format;
   std::vector<Entry> entries;
   ImageData desc;
@@ -379,19 +386,32 @@ RasterFile &RasterFile::operator=(RasterFile &&) noexcept = default;
 RasterFile::~RasterFile() = default;
 const ImageData &RasterFile::description() const { return impl_->desc; }
 std::size_t RasterFile::resident_bytes() const {
-  return static_cast<std::size_t>(impl_->bytes.size());
+  return impl_->mapped ? 0 : static_cast<std::size_t>(impl_->bytes.size());
 }
 RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
                             std::stop_token stop) {
   cancel(stop);
   auto p = std::make_unique<Impl>();
   p->limits = limits;
-  p->bytes = read(path, limits, stop);
+  if (limits.preview) {
+    p->mapped =
+        std::make_unique<QFile>(QString::fromStdWString(path.wstring()));
+    if (!p->mapped->open(QIODevice::ReadOnly) || p->mapped->size() <= 0)
+      invalid("Cannot map raster image");
+    auto *data = p->mapped->map(0, p->mapped->size());
+    if (!data)
+      invalid("Cannot map raster image");
+    p->bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(data),
+                                       p->mapped->size());
+  } else {
+    p->bytes = read(path, limits, stop);
+  }
   p->format = detect(p->bytes, path);
-  p->desc.source.identity.sha256 = skeletal::sha256(
-      std::as_bytes(std::span(p->bytes.constData(),
-                              static_cast<std::size_t>(p->bytes.size()))),
-      stop);
+  if (!limits.preview)
+    p->desc.source.identity.sha256 = skeletal::sha256(
+        std::as_bytes(std::span(p->bytes.constData(),
+                                static_cast<std::size_t>(p->bytes.size()))),
+        stop);
   p->desc.source.identity.adapter = "QtCpuRaster";
   p->desc.source.identity.adapter_version = QT_VERSION_STR;
   p->desc.source.properties["container"] = p->format.toStdString();
@@ -413,8 +433,9 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
               static_cast<std::uint64_t>(p->bytes.size()) ||
           !length)
         invalid("ICO entry out of bounds");
-      const auto w = static_cast<unsigned char>(p->bytes[at]),
-                 h = static_cast<unsigned char>(p->bytes[at + 1]);
+      const auto w = static_cast<unsigned char>(std::as_const(p->bytes)[at]),
+                 h = static_cast<unsigned char>(
+                     std::as_const(p->bytes)[at + 1]);
       p->entries.push_back({at, length, QSize(w ? w : 256, h ? h : 256)});
       p->desc.source.properties["entry." + std::to_string(i) +
                                 ".directory_bits_per_pixel"] =
@@ -425,15 +446,33 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
               : "DIB/AND mask";
     }
   } else {
-    auto data = p->format == "dib" ? wrap_dib(p->bytes) : p->bytes;
+    auto data =
+        p->format == "dib" && !limits.preview ? wrap_dib(p->bytes) : p->bytes;
     QBuffer buffer(&data);
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer,
                         p->format == "dib" ? QByteArray("bmp") : p->format);
     reader.setAutoTransform(false);
-    const auto size = p->format == "gif"
-                          ? QSize(u16(p->bytes, 6), u16(p->bytes, 8))
-                          : reader.size();
+    QSize size;
+    if (limits.preview && (p->format == "bmp" || p->format == "dib")) {
+      const qsizetype base = p->format == "dib" ? 0 : 14;
+      const bool core = u32(data, base) == 12;
+      const auto w = core ? std::uint64_t(u16(data, base + 4))
+                          : std::uint64_t(u32(data, base + 4));
+      const auto h =
+          core ? std::int64_t(u16(data, base + 6))
+               : std::int64_t(static_cast<std::int32_t>(u32(data, base + 8)));
+      budget(w && w <= INT_MAX && h && std::abs(h) <= INT_MAX);
+      size = QSize(static_cast<int>(w), static_cast<int>(std::abs(h)));
+    } else if (limits.preview && p->format == "png") {
+      budget(data.size() >= 33);
+      const auto w = qFromBigEndian<quint32>(data.constData() + 16),
+                 h = qFromBigEndian<quint32>(data.constData() + 20);
+      budget(w && h && w <= INT_MAX && h <= INT_MAX);
+      size = QSize(static_cast<int>(w), static_cast<int>(h));
+    } else
+      size = p->format == "gif" ? QSize(u16(p->bytes, 6), u16(p->bytes, 8))
+                                : reader.size();
     size_budget(size, limits);
     p->entries.push_back({0, data.size(), size});
   }
@@ -446,14 +485,55 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
     s.data_window =
         s.display_window = {0, 0, static_cast<std::uint64_t>(size.width()),
                             static_cast<std::uint64_t>(size.height())};
-    const auto image =
-        decode_image(p->bytes, p->format, p->entries[i], limits, stop);
-    if (image.size() != size)
+    QImage image;
+    bool gray{}, wide{}, alpha{};
+    if (limits.preview && p->format != "ico" && p->format != "gif") {
+      // Descriptor-only open. Pixel reads happen exclusively in decode_preview.
+      if (p->format == "png") {
+        const auto colour =
+            static_cast<unsigned char>(std::as_const(p->bytes)[25]);
+        gray = colour == 0 || colour == 4;
+        wide = std::as_const(p->bytes)[24] == 16;
+        alpha = (colour & 4) != 0;
+        for (qsizetype at = 8; at + 12 <= p->bytes.size();) {
+          const auto n = qFromBigEndian<quint32>(p->bytes.constData() + at);
+          if (std::uint64_t(n) + 12 > std::uint64_t(p->bytes.size() - at))
+            invalid("Truncated PNG chunk");
+          if (p->bytes.mid(at + 4, 4) == "tRNS")
+            alpha = true;
+          at += qsizetype(n) + 12;
+        }
+      } else if (p->format == "bmp" || p->format == "dib") {
+        const qsizetype base = p->format == "dib" ? 0 : 14;
+        const auto header = u32(p->bytes, base);
+        const auto compression = header == 12 ? 0U : u32(p->bytes, base + 16);
+        const auto bits = u16(p->bytes, base + (header == 12 ? 10 : 14));
+        alpha = header >= 108 &&
+                ((compression == 3 && u32(p->bytes, base + 52) != 0) ||
+                 (compression == 0 && bits == 32 &&
+                  u32(p->bytes, base + 52) == 0xff000000));
+      } else {
+        QBuffer input(&p->bytes);
+        input.open(QIODevice::ReadOnly);
+        QImageReader reader(&input, p->format);
+        reader.setScaledSize(QSize(1, 1));
+        image = reader.read();
+        if (image.isNull())
+          unsupported(reader.errorString().toStdString());
+        if (image.format() == QImage::Format_CMYK8888)
+          unsupported("CMYK JPEG requires a separate colour policy");
+        gray = source_gray(image, p->format, p->bytes);
+        alpha = image.hasAlphaChannel();
+      }
+    } else {
+      image = decode_image(p->bytes, p->format, p->entries[i], limits, stop);
+      gray = source_gray(image, p->format, p->bytes);
+      wide =
+          image.depth() == 64 || image.format() == QImage::Format_Grayscale16;
+      alpha = image.hasAlphaChannel();
+    }
+    if (!limits.preview && image.size() != size)
       invalid("Raster directory dimensions mismatch");
-    const bool gray = source_gray(image, p->format, p->bytes);
-    const bool wide =
-        image.depth() == 64 || image.format() == QImage::Format_Grayscale16;
-    const bool alpha = image.hasAlphaChannel();
     auto names = gray ? std::vector<std::string>{"Y"}
                       : std::vector<std::string>{"R", "G", "B"};
     if (alpha)
@@ -481,8 +561,11 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
       if (payload.startsWith("\x89PNG\r\n\x1a\n"))
         icc = embedded_icc(payload, "png", stop);
     }
+    const auto colourSpace = limits.preview && p->format == "png"
+                                 ? preview_png_space(p->bytes, stop)
+                                 : image.colorSpace();
     if (icc.isEmpty())
-      icc = image.colorSpace().iccProfile();
+      icc = colourSpace.iccProfile();
     budget(icc.size() <= 1024 * 1024);
     if (!icc.isEmpty()) {
       p->desc.source.properties[prefix + "icc_base64"] =
@@ -493,9 +576,8 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
               : "unrecognized raw profile retained";
     }
     p->desc.source.properties[prefix + "colour_space"] =
-        image.colorSpace().isValid()
-            ? image.colorSpace().description().toStdString()
-            : "unspecified";
+        colourSpace.isValid() ? colourSpace.description().toStdString()
+                              : "unspecified";
     p->desc.subresources.push_back(std::move(s));
   }
   cancel(stop);
@@ -503,6 +585,8 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
 }
 ImageSubresource RasterFile::decode(std::size_t entry,
                                     std::stop_token stop) const {
+  if (impl_->limits.preview)
+    unsupported("Preview documents require decode_preview");
   if (entry >= impl_->entries.size())
     invalid("Raster entry out of range");
   auto image = decode_image(impl_->bytes, impl_->format, impl_->entries[entry],
@@ -557,6 +641,77 @@ ImageSubresource RasterFile::decode(std::size_t entry,
   cancel(stop);
   return s;
 }
+ImageSubresource RasterFile::decode_preview(std::size_t entry,
+                                            const PreviewRequest &r,
+                                            std::stop_token stop) const {
+  cancel(stop);
+  if (entry >= impl_->entries.size())
+    invalid("Preview entry out of range");
+  auto s = preview_output(impl_->desc.subresources[entry], r);
+  QImage image;
+  if (impl_->format == "png")
+    image = preview_png(impl_->bytes, r, stop);
+  else if (impl_->format == "bmp" || impl_->format == "dib")
+    image = preview_bmp(impl_->bytes, impl_->format == "dib", r, stop);
+  else if (impl_->format == "jpeg") {
+    auto bytes = impl_->bytes;
+    QBuffer input(&bytes);
+    input.open(QIODevice::ReadOnly);
+    QImageReader reader(&input, "jpeg");
+    reader.setAutoTransform(false);
+    reader.setClipRect(QRect(static_cast<int>(r.x), static_cast<int>(r.y),
+                             static_cast<int>(r.width),
+                             static_cast<int>(r.height)));
+    reader.setScaledSize(QSize(static_cast<int>(r.output_width),
+                               static_cast<int>(r.output_height)));
+    image = reader.read();
+    if (image.isNull())
+      unsupported(reader.errorString().toStdString());
+  } else {
+    // ICO entries are format-limited to 256 x 256. Keep Qt's PNG/DIB AND-mask
+    // semantics, validate the payload dimensions before any pixel allocation.
+    if (impl_->format != "ico")
+      unsupported("GIF preview uses the animation compositor");
+    image = decode_image(impl_->bytes, impl_->format, impl_->entries[entry],
+                         impl_->limits, stop);
+    image = image.convertToFormat(QImage::Format_RGBA8888);
+    QImage sampled(static_cast<int>(r.output_width),
+                   static_cast<int>(r.output_height), QImage::Format_RGBA8888);
+    if (sampled.isNull())
+      throw std::bad_alloc();
+    for (std::uint64_t y = 0; y < r.output_height; ++y)
+      for (std::uint64_t x = 0; x < r.output_width; ++x)
+        std::memcpy(
+            sampled.scanLine(static_cast<int>(y)) + x * 4,
+            image.constScanLine(static_cast<int>(r.sy(y))) + r.sx(x) * 4, 4);
+    image = std::move(sampled);
+  }
+  if (image.size() != QSize(static_cast<int>(r.output_width),
+                            static_cast<int>(r.output_height)))
+    invalid("Preview dimensions mismatch");
+  const bool wide =
+      !s.channels.empty() && s.channels[0].samples.scalar == ScalarType::UInt16;
+  image = image.convertToFormat(wide ? QImage::Format_RGBA64
+                                     : QImage::Format_RGBA8888);
+  if (image.isNull())
+    throw std::bad_alloc();
+  const auto component = wide ? 2U : 1U;
+  for (std::size_t c = 0; c < s.channels.size(); ++c) {
+    const auto &name = s.channels[c].name;
+    const auto slot = name == "A" ? 3 : name == "G" ? 1 : name == "B" ? 2 : 0;
+    for (std::uint64_t y = 0; y < r.output_height; ++y) {
+      cancel(stop);
+      for (std::uint64_t x = 0; x < r.output_width; ++x)
+        std::memcpy(s.channels[c].samples.bytes.data() +
+                        (y * r.output_width + x) * component,
+                    image.constScanLine(static_cast<int>(y)) +
+                        (x * 4 + slot) * component,
+                    component);
+    }
+  }
+  return s;
+}
+
 std::vector<std::byte> encode_raster(const ImageSubresource &s,
                                      const RasterEncodeOptions &options,
                                      Limits limits, std::stop_token stop) {

@@ -338,7 +338,7 @@ private slots:
     for (int y = 0; y < 4; ++y) QCOMPARE(pixel(session.pixels(), 0, y), colors[y]);
   }
 
-  void malformedDisposalAndBudgetRejected() {
+  void malformedDisposalRejectedAndLargeCanvasBounded() {
     QTemporaryDir root;
     auto bytes = QByteArray::fromBase64(disposalFrames);
     const auto marker = QByteArray::fromHex("21f904");
@@ -353,12 +353,22 @@ private slots:
     bytes.chop(2);
     const auto truncated = fixture(root, "truncated.gif", bytes.toBase64());
     ImageSession session;
-    for (const auto &source : {badDisposal, overBudget, truncated}) {
+    for (const auto &source : {badDisposal, truncated}) {
       session.open(source);
       QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
       QVERIFY(!session.error().isEmpty());
       QVERIFY(!session.playing());
     }
+    session.open(overBudget);
+    QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+    QVERIFY2(session.error().isEmpty(), qPrintable(session.error()));
+    QCOMPARE(session.pixels()->previewFull, QSize(4097, 4097));
+    QVERIFY(session.pixels()->source.data_window.width <= 2048);
+    QVERIFY(session.pixels()->bytes <= 80ULL * 1024 * 1024);
+    session.viewport(QRect(0, 0, 4, 3), QSize(4, 3));
+    QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+    QCOMPARE(session.pixels()->source.data_window.width, quint64(4));
+    QCOMPARE(pixel(session.pixels(), 0, 0), QColor(Qt::red));
   }
 
   void cancelActiveStreamingExport() {

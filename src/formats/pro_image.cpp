@@ -1,7 +1,10 @@
 #include "formaview/pro_image.hpp"
+#include "formaview/image_preview.hpp"
+#include "image_input.hpp"
 #include <DirectXTex.h>
 #include <Imath/half.h>
 #include <OpenEXR/ImfChannelList.h>
+#include <OpenEXR/ImfCompression.h>
 #include <OpenEXR/ImfFrameBuffer.h>
 #include <OpenEXR/ImfHeader.h>
 #include <OpenEXR/ImfIO.h>
@@ -12,6 +15,7 @@
 #include <OpenEXR/ImfTiledInputPart.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cwctype>
 #include <fstream>
@@ -152,11 +156,16 @@ Layout layout(DXGI_FORMAT f) {
 } // namespace
 struct ImageFile::Impl {
   Limits limits;
-  std::vector<std::byte> bytes;
+  ImageInput bytes;
   ImageData desc;
   bool is_exr{}, hdr{}, tga{};
   std::uint32_t tga_channels{};
+  bool legacy_expanded{};
+  std::uint32_t legacy_bits{};
+  std::size_t legacy_palette{};
   DirectX::ScratchImage dds;
+  DirectX::TexMetadata native_metadata{};
+  std::vector<DirectX::Image> surfaces;
   std::vector<std::array<std::size_t, 3>> indices;
 };
 ImageFile::ImageFile(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
@@ -165,7 +174,7 @@ ImageFile &ImageFile::operator=(ImageFile &&) noexcept = default;
 ImageFile::~ImageFile() = default;
 const ImageData &ImageFile::description() const { return impl_->desc; }
 std::size_t ImageFile::resident_bytes() const {
-  return impl_->bytes.size() + impl_->dds.GetPixelsSize();
+  return impl_->bytes.resident_bytes() + impl_->dds.GetPixelsSize();
 }
 ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
                           std::stop_token stop) {
@@ -173,23 +182,27 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
   cancel(stop);
   auto p = std::make_unique<Impl>();
   p->limits = limits;
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file)
-    throw skeletal::Failure(ErrorCode::Io, "Cannot open image");
-  const auto size = file.tellg();
-  budget(size >= 0 && static_cast<std::uint64_t>(size) <= limits.input_bytes);
-  p->bytes.resize(static_cast<std::size_t>(size));
-  file.seekg(0);
-  for (std::size_t offset = 0; offset < p->bytes.size();) {
-    cancel(stop);
-    const auto count =
-        std::min<std::size_t>(1024 * 1024, p->bytes.size() - offset);
-    if (!file.read(reinterpret_cast<char *>(p->bytes.data() + offset),
-                   static_cast<std::streamsize>(count)))
-      throw skeletal::Failure(ErrorCode::Io, "Short image read");
-    offset += count;
+  if (limits.preview) {
+    p->bytes.map(path);
+  } else {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+      throw skeletal::Failure(ErrorCode::Io, "Cannot open image");
+    const auto size = file.tellg();
+    budget(size >= 0 && static_cast<std::uint64_t>(size) <= limits.input_bytes);
+    p->bytes.resize(static_cast<std::size_t>(size));
+    file.seekg(0);
+    for (std::size_t offset = 0; offset < p->bytes.size();) {
+      cancel(stop);
+      const auto count =
+          std::min<std::size_t>(1024 * 1024, p->bytes.size() - offset);
+      if (!file.read(reinterpret_cast<char *>(p->bytes.data() + offset),
+                     static_cast<std::streamsize>(count)))
+        throw skeletal::Failure(ErrorCode::Io, "Short image read");
+      offset += count;
+    }
+    p->desc.source.identity.sha256 = skeletal::sha256(p->bytes, stop);
   }
-  p->desc.source.identity.sha256 = skeletal::sha256(p->bytes, stop);
   p->is_exr = p->bytes.size() >= 4 &&
               std::memcmp(p->bytes.data(), "\x76\x2f\x31\x01", 4) == 0;
   if (p->is_exr) {
@@ -272,12 +285,54 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
             meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
           fail("Unsupported expanded TGA palette format");
         p->tga_channels = 3;
-      } else p->tga_channels = bits == 8                  ? 1U
-                        : (bits == 24 || attributes == 0) ? 3U
-                                                          : 4U;
+      } else
+        p->tga_channels = bits == 8                         ? 1U
+                          : (bits == 24 || attributes == 0) ? 3U
+                                                            : 4U;
       p->desc.source.properties["tga_pixel_bits"] = std::to_string(bits);
       p->desc.source.properties["tga_descriptor"] =
           std::to_string(std::to_integer<unsigned>(p->bytes.at(17)));
+      if (limits.preview && p->tga_channels == 4 &&
+          (meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_STRAIGHT ||
+           meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_PREMULTIPLIED)) {
+        // DirectXTex reports a fully opaque TGA as opaque even when its
+        // footer declares straight/premultiplied alpha. Preserve that policy
+        // without allocating the decoded surface.
+        const auto stride = bits / 8;
+        auto cursor =
+            std::size_t(18 + std::to_integer<unsigned>(p->bytes.at(0)));
+        const auto pixels = std::uint64_t(meta.width) * meta.height;
+        std::uint64_t done = 0;
+        bool opaque = true;
+        const auto alpha = [&](std::size_t at) {
+          const auto v =
+              std::to_integer<unsigned>(p->bytes.at(at + stride - 1));
+          return stride == 2 ? (v & 128) != 0 : v == 255;
+        };
+        while (done < pixels && opaque) {
+          cancel(stop);
+          unsigned n = 1;
+          bool repeat = false;
+          if (type >= 9) {
+            const auto packet =
+                std::to_integer<unsigned>(p->bytes.at(cursor++));
+            n = (packet & 127) + 1;
+            repeat = (packet & 128) != 0;
+          }
+          if (n > pixels - done || cursor > p->bytes.size() ||
+              std::uint64_t(repeat ? 1 : n) * stride > p->bytes.size() - cursor)
+            fail("Truncated TGA alpha stream");
+          for (unsigned k = 0; k < (repeat ? 1 : n); ++k)
+            if (!alpha(cursor + std::size_t(k) * stride)) {
+              opaque = false;
+              break;
+            }
+          cursor += std::size_t(repeat ? 1 : n) * stride;
+          done += n;
+        }
+        if (opaque)
+          meta.SetAlphaMode(DirectX::TEX_ALPHA_MODE_OPAQUE);
+      }
     }
     budget(meta.width <= limits.dimension && meta.height <= limits.dimension &&
            meta.depth <= limits.dimension);
@@ -291,21 +346,25 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
       const auto planes =
           meta.arraySize * std::max<std::size_t>(1, meta.depth >> m);
       budget(planes <= limits.subresources &&
-             slice <= limits.decoded_bytes / planes);
+             (limits.preview || slice <= limits.decoded_bytes / planes));
       resident += slice * planes;
       count += planes;
-      budget(resident <= limits.decoded_bytes && count <= limits.subresources);
+      budget((limits.preview || resident <= limits.decoded_bytes) &&
+             count <= limits.subresources);
     }
-    if (p->tga)
-      hr(DirectX::LoadFromTGAMemory(p->bytes.data(), p->bytes.size(),
-                                    DirectX::TGA_FLAGS_ALLOW_ALL_ZERO_ALPHA,
-                                    &meta, p->dds));
-    else if (p->hdr)
-      hr(DirectX::LoadFromHDRMemory(p->bytes.data(), p->bytes.size(), &meta,
-                                    p->dds));
-    else
-      hr(DirectX::LoadFromDDSMemory(p->bytes.data(), p->bytes.size(),
-                                    DirectX::DDS_FLAGS_NONE, &meta, p->dds));
+    if (!limits.preview) {
+      if (p->tga)
+        hr(DirectX::LoadFromTGAMemory(p->bytes.data(), p->bytes.size(),
+                                      DirectX::TGA_FLAGS_ALLOW_ALL_ZERO_ALPHA,
+                                      &meta, p->dds));
+      else if (p->hdr)
+        hr(DirectX::LoadFromHDRMemory(p->bytes.data(), p->bytes.size(), &meta,
+                                      p->dds));
+      else
+        hr(DirectX::LoadFromDDSMemory(p->bytes.data(), p->bytes.size(),
+                                      DirectX::DDS_FLAGS_NONE, &meta, p->dds));
+    }
+    p->native_metadata = meta;
     p->desc.source.identity.adapter = "DirectXTex";
     p->desc.source.identity.adapter_version = "2.1.1-may2026";
     if (p->hdr)
@@ -331,11 +390,50 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
         : meta.GetAlphaMode() == DirectX::TEX_ALPHA_MODE_OPAQUE && !p->tga
             ? AlphaMode::Absent
             : AlphaMode::Unknown;
+    std::size_t offset = 0;
+    if (limits.preview && !p->tga && !p->hdr) {
+      std::uint32_t fourcc{};
+      if (p->bytes.size() < 128)
+        fail("Truncated DDS header");
+      std::memcpy(&fourcc, p->bytes.data() + 84, 4);
+      offset = fourcc == 0x30315844 ? 148 : 128;
+      std::uint32_t flags{}, bits{};
+      std::memcpy(&flags, p->bytes.data() + 80, 4);
+      std::memcpy(&bits, p->bytes.data() + 88, 4);
+      p->legacy_expanded = fourcc != 0x30315844 && !DirectX::IsCompressed(meta.format) && bits &&
+          (bits < DirectX::BitsPerPixel(meta.format) || ((flags&0x40) && !(flags&1) && DirectX::HasAlpha(meta.format) && bits==32));
+      if(p->legacy_expanded) {
+        if(bits!=8 && bits!=16 && bits!=24 && bits!=32) fail("Unsupported expanded DDS source depth");
+        p->legacy_bits=bits;p->legacy_palette=(flags&0x20)?1024:0;
+        offset+=p->legacy_palette;
+      }
+    }
     for (std::size_t a = 0; a < meta.arraySize; ++a)
       for (std::size_t m = 0; m < meta.mipLevels; ++m)
         for (std::size_t z = 0; z < std::max<std::size_t>(1, meta.depth >> m);
              ++z) {
-          const auto *image = p->dds.GetImage(m, a, z);
+          DirectX::Image view{};
+          if (limits.preview) {
+            view.width = std::max<std::size_t>(1, meta.width >> m);
+            view.height = std::max<std::size_t>(1, meta.height >> m);
+            view.format = meta.format;
+            hr(DirectX::ComputePitch(meta.format, view.width, view.height,
+                                     view.rowPitch, view.slicePitch));
+            if (p->legacy_expanded) {
+              view.rowPitch = view.width * (p->legacy_bits/8);
+              view.slicePitch = view.rowPitch * view.height;
+            }
+            if (!p->tga && !p->hdr) {
+              if (offset > p->bytes.size() ||
+                  view.slicePitch > p->bytes.size() - offset)
+                fail("Truncated DDS surface");
+              view.pixels =
+                  reinterpret_cast<std::uint8_t *>(p->bytes.data() + offset);
+              offset += view.slicePitch;
+            }
+            p->surfaces.push_back(view);
+          }
+          const auto *image = limits.preview ? &view : p->dds.GetImage(m, a, z);
           if (!image)
             fail("Missing DDS subresource");
           ImageSubresource s;
@@ -359,6 +457,8 @@ ImageFile ImageFile::open(const std::filesystem::path &path, Limits limits,
 }
 ImageSubresource ImageFile::decode(std::size_t index,
                                    std::stop_token stop) const {
+  if (impl_->limits.preview)
+    fail("Preview documents require decode_preview");
   return library([&]() -> ImageSubresource {
   cancel(stop);
   if (index >= impl_->desc.subresources.size())
@@ -502,6 +602,507 @@ ImageSubresource ImageFile::decode(std::size_t index,
   return s;
   });
 }
+ImageSubresource ImageFile::decode_preview(std::size_t index,
+                                           const PreviewRequest &r,
+                                           std::stop_token stop) const {
+  return library([&]() -> ImageSubresource {
+    cancel(stop);
+    if (index >= impl_->desc.subresources.size())
+      fail("Preview entry out of range");
+    auto descriptor = impl_->desc.subresources[index];
+    r.validate(descriptor);
+    const auto ow = r.output_width, oh = r.output_height;
+    const auto add = [&](ImageSubresource &s, const std::string &name,
+                         ScalarType type, SampleEncoding encoding) {
+      Buffer b;
+      b.scalar = type;
+      s.channels.push_back({name, std::move(b), encoding});
+    };
+    const auto copyPatch = [&](ImageSubresource &out,
+                               const ImageSubresource &patch,
+                               std::uint64_t left, std::uint64_t top) {
+      const auto pw = patch.data_window.width, ph = patch.data_window.height;
+      for (auto y = r.first_y(top); y < r.first_y(top + ph); ++y) {
+        const auto sy = r.sy(y);
+        if (sy < top || sy - top >= ph)
+          continue;
+        cancel(stop);
+        for (auto x = r.first_x(left); x < r.first_x(left + pw); ++x) {
+          const auto sx = r.sx(x);
+          if (sx < left || sx - left >= pw)
+            continue;
+          for (std::size_t c = 0; c < out.channels.size(); ++c) {
+            const auto bytes = scalar_size(out.channels[c].samples.scalar);
+            std::memcpy(out.channels[c].samples.bytes.data() +
+                            (y * ow + x) * bytes,
+                        patch.channels[c].samples.bytes.data() +
+                            ((sy - top) * pw + sx - left) * bytes,
+                        bytes);
+          }
+        }
+      }
+    };
+    if (impl_->is_exr) {
+      auto out = preview_output(descriptor, r);
+      MemoryStream stream(impl_->bytes);
+      exr::MultiPartInputFile input(stream, 1);
+      const auto &h = input.header(static_cast<int>(descriptor.part));
+      std::uint64_t pixelBytes = 0;
+      for (const auto &c : descriptor.channels)
+        pixelBytes += scalar_size(c.samples.scalar);
+      if (h.type() == exr::SCANLINEIMAGE) {
+        const auto lines = exr::getCompressionNumScanlines(h.compression());
+        budget(lines > 0 && pixelBytes &&
+               descriptor.data_window.width <=
+                   64ULL * 1024 * 1024 / pixelBytes / std::uint64_t(lines));
+      }
+      const auto readPatch = [&](IMATH_NAMESPACE::Box2i box, auto &part,
+                                 auto read) {
+        auto patch = descriptor;
+        patch.data_window = window(box);
+        const auto n = patch.data_window.width * patch.data_window.height;
+        std::uint64_t bytes = 0;
+        exr::FrameBuffer frame;
+        for (auto &c : patch.channels) {
+          bytes += n * scalar_size(c.samples.scalar);
+          budget(bytes <= 64ULL * 1024 * 1024);
+          c.samples.bytes.resize(static_cast<std::size_t>(n) *
+                                 scalar_size(c.samples.scalar));
+          const auto type = c.samples.scalar == ScalarType::Half ? exr::HALF
+                            : c.samples.scalar == ScalarType::Float32
+                                ? exr::FLOAT
+                                : exr::UINT;
+          frame.insert(c.name,
+                       exr::Slice::Make(type, c.samples.bytes.data(), box));
+        }
+        part.setFrameBuffer(frame);
+        cancel(stop);
+        read();
+        copyPatch(out, patch,
+                  static_cast<std::uint64_t>(std::int64_t(box.min.x) -
+                                             h.dataWindow().min.x),
+                  static_cast<std::uint64_t>(std::int64_t(box.min.y) -
+                                             h.dataWindow().min.y));
+      };
+      if (h.type() == exr::TILEDIMAGE) {
+        exr::TiledInputPart part(input, static_cast<int>(descriptor.part));
+        const auto tw = part.tileXSize(), th = part.tileYSize();
+        budget(std::uint64_t(tw) * th <= 64ULL * 1024 * 1024 / pixelBytes);
+        std::uint64_t previousY = UINT64_MAX;
+        for (std::uint64_t y = 0; y < oh; ++y) {
+          const auto ty = r.sy(y) / th;
+          if (ty == previousY)
+            continue;
+          previousY = ty;
+          std::uint64_t previousX = UINT64_MAX;
+          for (std::uint64_t x = 0; x < ow; ++x) {
+            const auto tx = r.sx(x) / tw;
+            if (tx == previousX)
+              continue;
+            previousX = tx;
+            readPatch(part.dataWindowForTile(static_cast<int>(tx),
+                                             static_cast<int>(ty)),
+                      part, [&] {
+                        part.readTile(static_cast<int>(tx),
+                                      static_cast<int>(ty));
+                      });
+          }
+        }
+      } else {
+        exr::InputPart part(input, static_cast<int>(descriptor.part));
+        std::uint64_t previous = UINT64_MAX;
+        for (std::uint64_t y = 0; y < oh; ++y) {
+          const auto sy = r.sy(y);
+          if (sy == previous)
+            continue;
+          previous = sy;
+          const auto row = static_cast<int>(std::int64_t(h.dataWindow().min.y) +
+                                            static_cast<std::int64_t>(sy));
+          readPatch({{h.dataWindow().min.x, row}, {h.dataWindow().max.x, row}},
+                    part, [&] { part.readPixels(row); });
+        }
+      }
+      return out;
+    }
+    const auto *data =
+        reinterpret_cast<const std::uint8_t *>(impl_->bytes.data());
+    const auto length = impl_->bytes.size();
+    std::size_t cursor = 0;
+    const auto byte = [&]() {
+      if (cursor >= length)
+        fail("Truncated preview stream");
+      return data[cursor++];
+    };
+    if (impl_->tga || impl_->hdr) {
+      const bool hdr = impl_->hdr;
+      const auto scalar =
+          hdr ? ScalarType::Float32
+          : impl_->native_metadata.format == DXGI_FORMAT_B5G5R5A1_UNORM
+              ? ScalarType::Float32
+              : ScalarType::UInt8;
+      const auto count = hdr ? 3U : impl_->tga_channels;
+      for (std::uint32_t c = 0; c < count; ++c)
+        add(descriptor,
+            count == 1 ? "Y"
+                       : std::array<std::string, 4>{"R", "G", "B", "A"}[c],
+            scalar,
+            scalar == ScalarType::UInt8 ? SampleEncoding::UNorm
+                                        : SampleEncoding::Numeric);
+      auto out = preview_output(descriptor, r);
+      const auto w = descriptor.data_window.width,
+                 height = descriptor.data_window.height;
+      budget(w <= 64ULL * 1024 * 1024 / 16);
+      ImageSubresource row = descriptor;
+      row.data_window = {0, 0, w, 1};
+      for (auto &c : row.channels)
+        c.samples.bytes.resize(static_cast<std::size_t>(w) *
+                               scalar_size(scalar));
+      float exposure = 1;
+      bool top = true, right = false;
+      int bits = 0, type = 0;
+      std::vector<std::array<std::uint8_t, 4>> palette;
+      unsigned paletteFirst = 0;
+      if (!hdr) {
+        if (length < 18)
+          fail("Truncated TGA header");
+        type = data[2];
+        bits = data[16];
+        top = (data[17] & 32) != 0;
+        right = (data[17] & 16) != 0;
+        if (data[17] & 0xc0)
+          fail("Interleaved TGA is unsupported");
+        cursor = 18 + data[0];
+        if (data[1]) {
+          const auto first = unsigned(data[3]) | (unsigned(data[4]) << 8),
+                     n = unsigned(data[5]) | (unsigned(data[6]) << 8);
+          if (data[7] != 24 || first + n > 65536)
+            fail("Unsupported TGA palette");
+          palette.resize(first + n);
+          paletteFirst = first;
+          for (unsigned i = first; i < first + n; ++i) {
+            const auto b = byte(), g = byte(), red = byte();
+            palette[i] = {red, g, b, 255};
+          }
+        }
+      } else {
+        const auto line = [&]() {
+          std::string result;
+          for (;;) {
+            const auto b = byte();
+            if (b == '\n')
+              break;
+            if (b != '\r')
+              result += char(b);
+            if (result.size() > 65536)
+              fail("HDR header line too long");
+          }
+          return result;
+        };
+        for (;;) {
+          const auto text = line();
+          if (text.empty())
+            break;
+          if (text.starts_with("EXPOSURE=")) {
+            const auto value = static_cast<float>(std::atof(text.c_str() + 9));
+            if (value >= 1e-12F && value <= 1e12F)
+              exposure *= value;
+          }
+        }
+        const auto resolution = line();
+        std::istringstream parser(resolution);
+        std::string ya, xa;
+        std::uint64_t rh{}, rw{};
+        parser >> ya >> rh >> xa >> rw;
+        if (!parser || (ya != "-Y" && ya != "+Y") ||
+            (xa != "+X" && xa != "-X") || rw != w || rh != height)
+          fail("Unsupported HDR axis order");
+        top = ya == "-Y";
+        right = xa == "-X";
+      }
+      std::vector<std::array<std::uint8_t, 4>> encoded(
+          static_cast<std::size_t>(w));
+      unsigned remaining = 0;
+      bool repeat = false;
+      std::array<std::uint8_t, 4> held{};
+      const auto tgaPixel = [&]() {
+        std::array<std::uint8_t, 4> v{0, 0, 0, 255};
+        const auto b = byte();
+        if (type == 1 || type == 9) {
+          const auto idx =
+              bits == 16 ? unsigned(b) | (unsigned(byte()) << 8) : unsigned(b);
+          if (idx < paletteFirst || idx >= palette.size())
+            fail("Invalid TGA palette index");
+          return palette[idx];
+        }
+        if (bits == 8)
+          v = {b, b, b, 255};
+        else if (bits == 16) {
+          const auto word = unsigned(b) | (unsigned(byte()) << 8);
+          v = {std::uint8_t((word >> 10) & 31), std::uint8_t((word >> 5) & 31),
+               std::uint8_t(word & 31), std::uint8_t(word >> 15)};
+        } else if (bits == 24 || bits == 32) {
+          const auto g = byte(), red = byte();
+          v = {red, g, b, bits == 32 ? byte() : std::uint8_t(255)};
+        } else
+          fail("Unsupported TGA pixel depth");
+        return v;
+      };
+      for (std::uint64_t y = 0; y < height; ++y) {
+        cancel(stop);
+        const auto sy = top ? y : height - 1 - y;
+        bool wanted = false;
+        for (std::uint64_t py = 0; py < oh; ++py)
+          if (r.sy(py) == sy) {
+            wanted = true;
+            break;
+          }
+        if (!hdr && type < 9 && !wanted) {
+          const auto bytes = w * unsigned(bits / 8);
+          if (cursor > length || bytes > length - cursor)
+            fail("Truncated TGA row");
+          cursor += static_cast<std::size_t>(bytes);
+          continue;
+        }
+        if (hdr) {
+          std::array<std::uint8_t, 4> first{byte(), byte(), byte(), byte()};
+          if (w >= 8 && w <= 32767 && first[0] == 2 && first[1] == 2 &&
+              !(first[2] & 128)) {
+            if ((unsigned(first[2]) << 8 | first[3]) != w)
+              fail("Invalid HDR RLE width");
+            for (int c = 0; c < 4; ++c)
+              for (std::uint64_t x = 0; x < w;) {
+                const auto code = byte();
+                const auto n = code > 128 ? code - 128 : code;
+                if (!n || unsigned(n) > w - x)
+                  fail("Invalid HDR RLE packet");
+                const auto v = code > 128 ? byte() : 0;
+                for (int i = 0; i < n; ++i)
+                  encoded[x++][c] = code > 128 ? std::uint8_t(v) : byte();
+              }
+          } else {
+            encoded[0] = first;
+            unsigned shift = 0;
+            for (std::uint64_t x = 1; x < w;) {
+              const std::array<std::uint8_t, 4> v{byte(), byte(), byte(),
+                                                  byte()};
+              if (v[0] == 1 && v[1] == 1 && v[2] == 1) {
+                if (shift > 24)
+                  fail("Invalid HDR legacy run");
+                const auto n = std::uint64_t(v[3]) << shift;
+                if (!n || n > w - x)
+                  fail("Invalid HDR legacy run length");
+                const auto previous = encoded[x - 1];
+                for (std::uint64_t i = 0; i < n; ++i)
+                  encoded[x++] = previous;
+                shift += 8;
+              } else {
+                encoded[x++] = v;
+                shift = 0;
+              }
+            }
+          }
+        } else {
+          for (std::uint64_t x = 0; x < w; ++x) {
+            if (!remaining) {
+              if (type >= 9) {
+                const auto packet = byte();
+                repeat = (packet & 128) != 0;
+                remaining = (packet & 127) + 1;
+              } else {
+                repeat = false;
+                remaining = 1;
+              }
+              if (repeat)
+                held = tgaPixel();
+            }
+            encoded[x] = repeat ? held : tgaPixel();
+            --remaining;
+          }
+        }
+        if (!wanted)
+          continue;
+        for (std::uint64_t x = 0; x < w; ++x)
+          for (std::uint32_t c = 0; c < count; ++c) {
+            const auto &v = encoded[right ? w - 1 - x : x];
+            auto *dst =
+                row.channels[c].samples.bytes.data() + x * scalar_size(scalar);
+            if (hdr) {
+              const float f = (1.F / exposure) *
+                              std::ldexp(float(v[c]) + 0.5F, int(v[3]) - 136);
+              std::memcpy(dst, &f, 4);
+            } else if (scalar == ScalarType::Float32) {
+              const float f = float(v[c]) / (c == 3 ? 1.F : 31.F);
+              std::memcpy(dst, &f, 4);
+            } else
+              *dst = std::byte(v[c]);
+          }
+        copyPatch(out, row, 0, sy);
+      }
+      if (!hdr && remaining)
+        fail("TGA RLE packet exceeds the image");
+      return out;
+    }
+    const auto &native = impl_->surfaces.at(index);
+    auto format = native.format;
+    const bool compressed = DirectX::IsCompressed(format);
+    auto l = compressed || format == DXGI_FORMAT_R10G10B10A2_UNORM
+                 ? Layout{ScalarType::Float32, 4, false}
+                 : layout(format);
+    const auto storedCount = l.count;
+    if (format == DXGI_FORMAT_BC4_UNORM || format == DXGI_FORMAT_BC4_SNORM)
+      l.count = 1;
+    if (format == DXGI_FORMAT_BC5_UNORM || format == DXGI_FORMAT_BC5_SNORM)
+      l.count = 2;
+    if (format == DXGI_FORMAT_BC6H_UF16 || format == DXGI_FORMAT_BC6H_SF16)
+      l.count = 3;
+    if (l.count == 4 && impl_->desc.alpha == AlphaMode::Absent)
+      l.count = 3;
+    if (storedCount == 4 && l.count == 3 && DirectX::HasAlpha(format) && !impl_->legacy_expanded) {
+      // Keep the existing contradiction check even when the offending alpha
+      // lies outside the visible region. Validate with one block at a time.
+      const auto opaque = [&](const std::uint8_t *p) {
+        if (l.type == ScalarType::UInt8)
+          return *p == 255;
+        if (l.type == ScalarType::Half || l.type == ScalarType::UInt16) {
+          std::uint16_t v;
+          std::memcpy(&v, p, 2);
+          return v == (l.type == ScalarType::Half ? 0x3c00 : 65535);
+        }
+        if (l.type == ScalarType::Float32) {
+          float v;
+          std::memcpy(&v, p, 4);
+          return v == 1.F;
+        }
+        if (l.type == ScalarType::UInt32) {
+          std::uint32_t v;
+          std::memcpy(&v, p, 4);
+          return v == 1;
+        }
+        return false;
+      };
+      for (std::size_t y = 0; y < native.height; y += compressed ? 4 : 1) {
+        cancel(stop);
+        for (std::size_t x = 0; x < native.width; x += compressed ? 4 : 1) {
+          if (compressed) {
+            const auto bytes = DirectX::BytesPerBlock(format);
+            DirectX::Image block{
+                4,
+                4,
+                DirectX::MakeLinear(format),
+                bytes,
+                bytes,
+                native.pixels + (y / 4) * native.rowPitch + (x / 4) * bytes};
+            DirectX::ScratchImage decoded;
+            hr(DirectX::Decompress(block, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                                   decoded));
+            const auto *pixels = decoded.GetImage(0, 0, 0);
+            for (std::size_t by = 0;
+                 by < std::min<std::size_t>(4, native.height - y); ++by)
+              for (std::size_t bx = 0;
+                   bx < std::min<std::size_t>(4, native.width - x); ++bx)
+                if (!opaque(pixels->pixels + by * pixels->rowPitch + bx * 16 +
+                            12))
+                  fail("DDS opaque alpha declaration conflicts with stored "
+                       "values");
+          } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+            std::uint32_t word;
+            std::memcpy(&word, native.pixels + y * native.rowPitch + x * 4, 4);
+            if ((word >> 30) != 3)
+              fail("DDS opaque alpha declaration conflicts with stored values");
+          } else if (!opaque(native.pixels + y * native.rowPitch +
+                             (x * 4 + 3) * scalar_size(l.type)))
+            fail("DDS opaque alpha declaration conflicts with stored values");
+        }
+      }
+    }
+    const auto names = l.bgra ? std::array<std::string, 4>{"B", "G", "R", "A"}
+                              : std::array<std::string, 4>{"R", "G", "B", "A"};
+    for (std::uint32_t c = 0; c < l.count; ++c)
+      add(descriptor, names[c], l.type,
+          l.normalized ? SampleEncoding::UNorm : SampleEncoding::Numeric);
+    auto out = preview_output(descriptor, r);
+    const auto component = scalar_size(l.type);
+    for (std::uint64_t y = 0; y < oh; ++y) {
+      cancel(stop);
+      std::uint64_t previousBlock = UINT64_MAX;
+      DirectX::ScratchImage decoded;
+      const DirectX::Image *patch = nullptr;
+      std::vector<std::uint8_t> legacyRow;
+      if (impl_->legacy_expanded) {
+        // Feed a single cropped raw row to the existing legacy DDS expander.
+        // This retains palette/A8P8/A4L4/RGB24 rules without loading all mips.
+        budget(r.width * std::max<std::uint64_t>(impl_->legacy_bits / 8,
+                                                 storedCount * component) <=
+               64ULL * 1024 * 1024);
+        const auto prefix = 128 + impl_->legacy_palette;
+        const auto bytes = std::size_t(r.width) * (impl_->legacy_bits / 8);
+        legacyRow.resize(prefix + bytes);
+        std::memcpy(legacyRow.data(), impl_->bytes.data(), prefix);
+        const auto field = [&](std::size_t at, std::uint32_t v) {
+          std::memcpy(legacyRow.data() + at, &v, 4);
+        };
+        field(8, 0x100f);
+        field(12, 1);
+        field(16, static_cast<std::uint32_t>(r.width));
+        field(20, static_cast<std::uint32_t>(bytes));
+        field(24, 0);
+        field(28, 1);
+        field(108, 0x1000);
+        field(112, 0);
+        std::memcpy(legacyRow.data() + prefix,
+                    native.pixels + r.sy(y) * native.rowPitch +
+                        r.x * (impl_->legacy_bits / 8),
+                    bytes);
+        hr(DirectX::LoadFromDDSMemory(legacyRow.data(), legacyRow.size(),
+                                      DirectX::DDS_FLAGS_NONE, nullptr,
+                                      decoded));
+        patch = decoded.GetImage(0, 0, 0);
+        if (!patch || patch->format != format || patch->height != 1 ||
+            patch->width != r.width)
+          fail("DDS legacy row expansion mismatch");
+      }
+      for (std::uint64_t x = 0; x < ow; ++x) {
+        const auto sx = r.sx(x), sy = r.sy(y);
+        const std::uint8_t *pixel{};
+        if (impl_->legacy_expanded) {
+          pixel = patch->pixels + (sx - r.x) * storedCount * component;
+        } else if (compressed) {
+          const auto block = sx / 4;
+          if (block != previousBlock) {
+            previousBlock = block;
+            const auto blockBytes = DirectX::BytesPerBlock(format);
+            DirectX::Image encoded{4,
+                                   4,
+                                   DirectX::MakeLinear(format),
+                                   blockBytes,
+                                   blockBytes,
+                                   native.pixels + (sy / 4) * native.rowPitch +
+                                       block * blockBytes};
+            hr(DirectX::Decompress(encoded, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                                   decoded));
+            patch = decoded.GetImage(0, 0, 0);
+          }
+          pixel = patch->pixels + (sy % 4) * patch->rowPitch + (sx % 4) * 16;
+        } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+          DirectX::Image encoded{
+              1, 1, format,
+              4, 4, native.pixels + sy * native.rowPitch + sx * 4};
+          hr(DirectX::Convert(encoded, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                              DirectX::TEX_FILTER_DEFAULT, 0, decoded));
+          pixel = decoded.GetPixels();
+        } else
+          pixel = native.pixels + sy * native.rowPitch +
+                  sx * storedCount * component;
+        for (std::uint32_t c = 0; c < l.count; ++c)
+          std::memcpy(out.channels[c].samples.bytes.data() +
+                          (y * ow + x) * component,
+                      pixel + c * component, component);
+      }
+    }
+    return out;
+  });
+}
+
 double value(const ImageChannel &c, std::size_t pixel) {
   const auto bytes = scalar_size(c.samples.scalar);
   if (pixel >= c.samples.element_count ||
@@ -576,8 +1177,8 @@ double interpreted_value(const ImageChannel &c, std::size_t pixel) {
 std::vector<float> display_rgba(const ImageSubresource &source,
                                 const DisplayOptions &options) {
   if (source.data_window.height &&
-      source.data_window.width > SIZE_MAX / (4 * sizeof(float)) /
-                                     source.data_window.height)
+      source.data_window.width >
+          SIZE_MAX / (4 * sizeof(float)) / source.data_window.height)
     throw skeletal::Failure(ErrorCode::ResourceLimit, "Display size overflow");
   const auto pixels = source.data_window.width * source.data_window.height;
   std::array<const ImageChannel *, 4> channels{};

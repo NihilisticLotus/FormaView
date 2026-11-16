@@ -1,12 +1,13 @@
 #include "image_session.hpp"
-#include "gif_decoder.hpp"
-#include "large_image_preview.hpp"
-#include "formaview/image_batch.hpp"
 #include "formaview/file_access.hpp"
+#include "formaview/image_batch.hpp"
+#include "formaview/image_preview.hpp"
+#include "gif_decoder.hpp"
 #include <QBuffer>
+#include <QCryptographicHash>
 #include <QDateTime>
-#include <QFileInfo>
 #include <QDir>
+#include <QFileInfo>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -125,7 +126,7 @@ SchedulerLimits limits() {
 }
 
 constexpr int maxGifFrames = 10000;
-// RGBA float upload + planar source + decoder/compositor working images.
+// Full-resolution export retains its independent admission policy.
 constexpr quint64 maxGifCanvasPixels = 16ULL * 1024 * 1024;
 constexpr quint64 maxGifDecodedPixels = 4ULL * 1024 * 1024 * 1024;
 
@@ -138,10 +139,7 @@ std::shared_ptr<ImagePixels> gifPixels(formaview::host::GifDecoder &reader, int 
     throw skeletal::Failure(ErrorCode::ResourceLimit,
                             "GIF frame count is invalid or exceeds 10,000");
   const auto size = reader.size();
-  const quint64 canvas = static_cast<quint64>(size.width()) * size.height();
-  if (!size.isValid() || size.width() > 16384 || size.height() > 16384 ||
-      canvas > maxGifCanvasPixels || canvas * static_cast<quint64>(count) >
-                                        maxGifDecodedPixels)
+  if (!size.isValid())
     throw skeletal::Failure(
         ErrorCode::ResourceLimit,
         "GIF dimensions or total decoded animation exceed the safety budget");
@@ -158,6 +156,10 @@ std::shared_ptr<ImagePixels> gifPixels(formaview::host::GifDecoder &reader, int 
   auto p = std::make_shared<ImagePixels>();
   p->path = path;
   p->revision = revision;
+  p->previewFull = size;
+  p->previewWindow = {0, 0, quint64(size.width()), quint64(size.height())};
+  p->previewDisplayWindow = p->previewWindow;
+  p->previewRegion = reader.region();
   p->source.data_window = {0, 0, static_cast<std::uint64_t>(image.width()),
                            static_cast<std::uint64_t>(image.height())};
   p->source.display_window = p->source.data_window;
@@ -198,11 +200,11 @@ std::shared_ptr<ImagePixels> gifPixels(formaview::host::GifDecoder &reader, int 
              {"frameCount", count},
              {"frameDelay", delay},
              {"loopCount", reader.loopCount()},
-             {"dataWindow", window(p->source.data_window)},
-             {"displayWindow", window(p->source.display_window)}};
-  p->subresources.push_back(QVariantMap{{"index", 0},
-                                        {"width", image.width()},
-                                        {"height", image.height()}});
+             {"boundedPreview", true},
+             {"dataWindow", window(p->previewWindow)},
+             {"displayWindow", window(p->previewWindow)}};
+  p->subresources.push_back(QVariantMap{
+      {"index", 0}, {"width", size.width()}, {"height", size.height()}});
   p->bytes = p->rgba.size() * sizeof(float) + pixels * 4;
   return p;
 }
@@ -291,11 +293,14 @@ void ImageSession::viewport(QRect region, QSize target) {
   QStringList mapping;
   for (const auto &v : pixels_->info.value("mapping").toList())
     mapping.append(v.toString());
-  load(pixels_->path, 0, mapping, true);
+  load(pixels_->path, animated() ? frame_ : selected_, mapping, true);
 }
 void ImageSession::selectSubresource(int index) {
-  if (pixels_ && index >= 0 && index < pixels_->subresources.size())
+  if (pixels_ && index >= 0 && index < pixels_->subresources.size()) {
+    previewRegion_ = {};
+    previewTarget_ = QSize(2048, 2048);
     load(pixels_->path, index, {});
+  }
 }
 void ImageSession::resourcePage(int offset) {
   if (!pixels_ || offset < 0 || offset >= subresourceCount())
@@ -426,11 +431,20 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
       const ImageReadLease lease(path);
 #endif
       const auto stamp = fileStamp(path);
+      const auto admission = ImageAdmission(true, stop);
       if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
-        const auto key = path + '\n' + stamp;
+        const auto key = path + '\n' + stamp +
+                         QString("/%1,%2,%3,%4/%5,%6")
+                             .arg(region.x())
+                             .arg(region.y())
+                             .arg(region.width())
+                             .arg(region.height())
+                             .arg(target.width())
+                             .arg(target.height());
         if (!cache_->gifReader || cache_->gifKey != key ||
             index < cache_->gifNext) {
-          cache_->gifReader = std::make_unique<formaview::host::GifDecoder>(path, stop);
+          cache_->gifReader = std::make_unique<formaview::host::GifDecoder>(
+              path, stop, region, target);
           cache_->gifKey = key;
           cache_->gifNext = 0;
         }
@@ -443,6 +457,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
         if (fileStamp(path) != stamp)
           throw skeletal::Failure(ErrorCode::Io,
                                   "Image changed while being decoded; reopen it");
+        (*result)->info["sourceStamp"] = stamp;
         return TaskResult{};
       }
       cache_->gifReader.reset();
@@ -464,39 +479,54 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
           std::rotate(cache_->entries.begin(), it, std::next(it));
           return TaskResult{};
         }
-      const auto admission = ImageAdmission(true, stop);
-      const auto full = large_preview::size(path);
-      if (!full.isEmpty() &&
-          quint64(full.width()) * full.height() > 4ULL * 1024 * 1024) {
-        if (index != 0)
-          throw std::runtime_error("Subresource index out of range");
-        QString identity;
-        for (const auto &entry : cache_->entries)
-          if (entry.pixels->path == path &&
-              entry.pixels->info.value("sourceStamp") == stamp) {
-            identity = entry.pixels->info.value("sha256").toString();
-            break;
-          }
-        *result = large_preview::read(path, full, region, target, mapping,
-                                      generation, stop, identity.isEmpty());
-        if (!identity.isEmpty())
-          (*result)->info["sha256"] = identity;
-        (*result)->info["sourceStamp"] = stamp;
-        if (fileStamp(path) != stamp)
-          throw std::runtime_error("Image changed during preview");
-        cache_->insert(key, *result);
-        return TaskResult{};
-      }
-      auto document = ImageDocument::open(
-          std::filesystem::path(path.toStdWString()),
-          {512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256},
-          stop);
+      auto document =
+          ImageDocument::open(std::filesystem::path(path.toStdWString()),
+                              {512ULL * 1024 * 1024, 512ULL * 1024 * 1024,
+                               INT_MAX, 65536, 256, true},
+                              stop);
       if (index < 0 || static_cast<std::size_t>(index) >=
                            document.description().subresources.size())
         throw skeletal::Failure(ErrorCode::InvalidArgument,
                                 "Subresource index out of range");
       auto p = std::make_shared<ImagePixels>();
-      p->source = document.decode(static_cast<std::size_t>(index), stop);
+      const auto &original =
+          document.description().subresources[static_cast<std::size_t>(index)];
+      const QSize full(static_cast<int>(original.data_window.width),
+                       static_cast<int>(original.data_window.height));
+      auto roi = region.isEmpty() ? QRect(QPoint(), full)
+                                  : region.intersected(QRect(QPoint(), full));
+      if (document.description().source.identity.adapter == "libwebp") {
+        roi.setLeft(roi.left() & ~1);
+        roi.setTop(roi.top() & ~1);
+      }
+      auto physical =
+          roi.size()
+              .scaled(target.boundedTo(QSize(2048, 2048)), Qt::KeepAspectRatio)
+              .boundedTo(roi.size())
+              .expandedTo(QSize(1, 1));
+      std::uint64_t channelBytes = 0;
+      for (const auto &channel : original.channels)
+        channelBytes += preview_component(channel.samples.scalar);
+      // Preserve every native channel; many-channel/64-bit sources reduce the
+      // preview resolution rather than failing based on full-image size.
+      const auto maxPixels =
+          32ULL * 1024 * 1024 / std::max<std::uint64_t>(channelBytes, 16);
+      if (quint64(physical.width()) * physical.height() > maxPixels) {
+        const auto scale = std::sqrt(
+            double(maxPixels) / (double(physical.width()) * physical.height()));
+        physical = QSize(std::max(1, int(physical.width() * scale)),
+                         std::max(1, int(physical.height() * scale)));
+      }
+      p->source = document.decode_preview(
+          static_cast<std::size_t>(index),
+          {quint64(roi.x()), quint64(roi.y()), quint64(roi.width()),
+           quint64(roi.height()), quint64(physical.width()),
+           quint64(physical.height())},
+          stop);
+      p->previewFull = full;
+      p->previewRegion = roi;
+      p->previewWindow = original.data_window;
+      p->previewDisplayWindow = original.display_window;
       p->path = path;
       p->revision = generation;
       const auto &d = document.description();
@@ -507,8 +537,10 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
       const auto semantics = document.semantics(index);
       p->info = {
           {"sha256", text(d.source.identity.sha256)},
-          {"dataWindow", window(p->source.data_window)},
-          {"displayWindow", window(p->source.display_window)},
+          {"dataWindow", window(original.data_window)},
+          {"displayWindow", window(original.display_window)},
+          {"boundedPreview", true},
+          {"sourceStamp", stamp},
           {"alpha", static_cast<int>(semantics.alpha)},
           {"containerAlpha", static_cast<int>(d.alpha)},
           {"meaning", static_cast<int>(semantics.meaning)},
@@ -519,6 +551,28 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
           {"block", p->source.block_encoding ? text(*p->source.block_encoding)
                                              : QString{}},
           {"format", file.suffix().toUpper()}};
+      QString identity;
+      for (const auto &entry : cache_->entries)
+        if (entry.pixels->path == path &&
+            entry.pixels->info.value("sourceStamp") == stamp) {
+          identity = entry.pixels->info.value("sha256").toString();
+          break;
+        }
+      if (identity.isEmpty()) {
+        QFile input(path);
+        if (!input.open(QIODevice::ReadOnly))
+          throw std::runtime_error("Cannot hash preview source");
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        while (!input.atEnd()) {
+          preview_cancel(stop);
+          const auto chunk = input.read(1024 * 1024);
+          if (chunk.isEmpty())
+            throw std::runtime_error("Short preview identity read");
+          hash.addData(chunk);
+        }
+        identity = QString::fromLatin1(hash.result().toHex());
+      }
+      p->info["sha256"] = identity;
       bool mips = false, arrays = false, faces = false, slices = false;
       for (std::size_t i = 0; i < d.subresources.size(); ++i) {
         const auto &s = d.subresources[i];
@@ -832,9 +886,16 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
     emit pixelChanged();
     return;
   }
-  if (!pixels_->previewFull.isEmpty() && !sampleSource_) {
-    if (x < 0 || y < 0 || x >= pixels_->previewFull.width() ||
-        y >= pixels_->previewFull.height()) {
+  if (!pixels_->previewFull.isEmpty() && !sampleSource_ &&
+      (pixels_->previewRegion != QRect(QPoint(), pixels_->previewFull) ||
+       pixels_->source.data_window.width !=
+           quint64(pixels_->previewFull.width()) ||
+       pixels_->source.data_window.height !=
+           quint64(pixels_->previewFull.height()))) {
+    const auto logical = pixels_->logicalWindow();
+    const auto localX = x - logical.x, localY = y - logical.y;
+    if (localX < 0 || localY < 0 || localX >= pixels_->previewFull.width() ||
+        localY >= pixels_->previewFull.height()) {
       emit pixelChanged();
       return;
     }
@@ -848,7 +909,8 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
     sampleResult_ = std::make_shared<std::shared_ptr<ImagePixels>>();
     TaskRequest request;
     request.priority = Priority::Foreground;
-    request.work = [path = pixels_->path, full = pixels_->previewFull,
+    request.work = [path = pixels_->path,
+                    index = animated() ? frame_ : selected_, localX, localY,
                     expected = pixels_->info.value("sourceStamp").toString(), x,
                     y, result = sampleResult_](std::stop_token stop) {
       TaskResult r;
@@ -858,9 +920,28 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
 #endif
         if (fileStamp(path) != expected)
           throw std::runtime_error("Image changed; reopen it before sampling");
-        auto p = large_preview::read(
-            path, full, QRect(int(std::floor(x)), int(std::floor(y)), 1, 1),
-            QSize(1, 1), {}, 0, stop, false);
+        const auto admission = ImageAdmission(true, stop);
+        std::shared_ptr<ImagePixels> p;
+        if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
+          formaview::host::GifDecoder reader(
+              path, stop,
+              QRect(int(std::floor(localX)), int(std::floor(localY)), 1, 1),
+              QSize(1, 1));
+          int next = 0;
+          p = gifPixels(reader, next, path, index, 0, stop);
+        } else {
+          auto document =
+              ImageDocument::open(std::filesystem::path(path.toStdWString()),
+                                  {512ULL * 1024 * 1024, 512ULL * 1024 * 1024,
+                                   INT_MAX, 65536, 256, true},
+                                  stop);
+          p = std::make_shared<ImagePixels>();
+          p->source =
+              document.decode_preview(static_cast<std::size_t>(index),
+                                      {quint64(std::floor(localX)),
+                                       quint64(std::floor(localY)), 1, 1, 1, 1},
+                                      stop);
+        }
         p->source.data_window.x = int(std::floor(x));
         p->source.data_window.y = int(std::floor(y));
         if (fileStamp(path) != expected)
@@ -877,8 +958,9 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
     return;
   }
   const auto &s = sampleSource_ ? sampleSource_->source : pixels_->source;
-  const auto px = std::floor(x) - static_cast<double>(s.data_window.x),
-             py = std::floor(y) - static_cast<double>(s.data_window.y);
+  const auto logical = sampleSource_ ? s.data_window : pixels_->logicalWindow();
+  const auto px = std::floor(x) - static_cast<double>(logical.x),
+             py = std::floor(y) - static_cast<double>(logical.y);
   if (px < 0 || py < 0 || px >= s.data_window.width ||
       py >= s.data_window.height) {
     samplePinned_ = false;
@@ -1015,7 +1097,7 @@ void ImageSession::exportFrames(const QString &directory,
       const auto policy = conflict == "overwrite" ? ConflictPolicy::Overwrite
                           : conflict == "rename" ? ConflictPolicy::Rename
                                                    : ConflictPolicy::Skip;
-      formaview::host::GifDecoder reader(source, stop);
+      formaview::host::GifDecoder reader(source, stop, {}, {}, false);
       const auto size = reader.size();
       if (!size.isValid() || reader.imageCount() != count || count > maxGifFrames ||
           size.width() > 16384 || size.height() > 16384 ||

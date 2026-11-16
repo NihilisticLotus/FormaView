@@ -15,6 +15,9 @@ public:
   [[nodiscard]] ImageSubresource decode(std::size_t entry,
                                         std::stop_token = {}) const;
   [[nodiscard]] std::size_t resident_bytes() const;
+  [[nodiscard]] ImageSubresource decode_preview(std::size_t,
+                                                const PreviewRequest &,
+                                                std::stop_token = {}) const;
 
 private:
   struct Impl;

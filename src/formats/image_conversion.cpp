@@ -106,6 +106,13 @@ std::size_t ImageDocument::resident_bytes() const {
   return std::visit([](const auto &file) { return file.resident_bytes(); },
                     file_);
 }
+ImageSubresource ImageDocument::decode_preview(std::size_t entry,
+                                               const PreviewRequest &r,
+                                               std::stop_token stop) const {
+  return std::visit(
+      [&](const auto &file) { return file.decode_preview(entry, r, stop); },
+      file_);
+}
 std::string_view image_target_name(ImageTarget target) {
   switch (target) {
   case ImageTarget::Png:
