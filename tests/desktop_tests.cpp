@@ -2848,6 +2848,63 @@ private slots:
       save("bounded-navigation-fit-"+file.fileName());
     }
   }
+  void largeImageNavigationBenchmark() {
+    const auto directory=qEnvironmentVariable("FORMAVIEW_LARGE_IMAGE_SAMPLES");
+    QVERIFY(!directory.isEmpty());
+    auto *session=qobject_cast<ImageSession *>(desktop_->image());
+    QJsonArray results;
+    for (const auto &file : QDir(directory).entryInfoList({"*.jpg","*.tga"},QDir::Files,QDir::Name)) {
+      desktop_->openPath(file.absoluteFilePath());
+      QTRY_VERIFY_WITH_TIMEOUT(session->path()==file.absoluteFilePath() && !session->busy(),20000);
+      auto *view=qobject_cast<ImageView *>(item("imageViewport"));
+      QVERIFY(view);
+      view->setZoom(.55);
+      QTest::qWait(400);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+      struct Timings {
+        std::atomic<qint64> input{},renderedInput{};
+        std::mutex mutex;
+        std::vector<double> latency,intervals;
+        qint64 previous{};
+        QElapsedTimer elapsed;
+      };
+      auto timings=std::make_shared<Timings>();
+      timings->elapsed.start();
+      const auto sync=connect(window_,&QQuickWindow::afterSynchronizing,window_,[timings] { timings->renderedInput.store(timings->input.load()); },Qt::DirectConnection);
+      const auto swap=connect(window_,&QQuickWindow::frameSwapped,window_,[timings] {
+        const auto now=timings->elapsed.nsecsElapsed();
+        const auto start=timings->renderedInput.load();
+        std::lock_guard lock(timings->mutex);
+        if (start) timings->latency.push_back(double(now-start)/1e6);
+        if (timings->previous) timings->intervals.push_back(double(now-timings->previous)/1e6);
+        timings->previous=now;
+      },Qt::DirectConnection);
+      for (int phase=0;phase<5;++phase) {
+        session->viewport(QRect(401+phase*113,303+phase*47,1201+phase*29,901+phase*31),QSize(1500,1200));
+        for (int i=0;i<40;++i) {
+          timings->input.store(timings->elapsed.nsecsElapsed());
+          view->zoomAt(i%2 ? 1./1.018 : 1.018,view->width()*.4,view->height()*.6);
+          view->setPan(QPointF(std::sin((phase*40+i)*.09)*350,std::cos((phase*40+i)*.09)*200));
+          QTest::qWait(8);
+        }
+      }
+      disconnect(sync);
+      disconnect(swap);
+      const auto stats=[](std::vector<double> values) {
+        std::sort(values.begin(),values.end());
+        const auto p=[&](double rank) { return values.empty()?0.:values[std::min(values.size()-1,std::size_t(std::ceil(rank*values.size())-1))]; };
+        return QJsonObject{{"samples",int(values.size())},{"p50_ms",p(.5)},{"p95_ms",p(.95)},{"p99_ms",p(.99)},{"max_ms",p(1.)}};
+      };
+      {
+        std::lock_guard lock(timings->mutex);
+        results.append(QJsonObject{{"file",file.fileName()},{"input_to_present",stats(timings->latency)},{"present_intervals",stats(timings->intervals)}});
+      }
+      QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+    }
+    QFile output(root_+"/navigation-benchmark.json");
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    output.write(QJsonDocument(QJsonObject{{"files",results}}).toJson());
+  }
   void largePreviewKeepsWholeImageDuringNavigation() {
     const auto path=root_+"/navigation-red.jpg";
     {
@@ -2864,6 +2921,12 @@ private slots:
     QTest::qWait(250);
     QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
     QTRY_VERIFY_WITH_TIMEOUT(session->pixels()->previewRegion.width()<8192 && !session->refining(),20000);
+    const auto detail=session->pixels();
+    view->setPan(QPointF(15,10));
+    QTest::qWait(250);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->refining(),20000);
+    QCOMPARE(session->pixels(),detail);
+    view->setPan(QPointF());
     // Stop before the 100 ms request debounce: the old detail cannot cover
     // these corners. They must already show the full overview on the GPU.
     view->setZoom(.045);

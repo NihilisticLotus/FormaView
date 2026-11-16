@@ -15,6 +15,9 @@ public:
   [[nodiscard]] ImageSubresource decode(std::size_t entry,
                                         std::stop_token = {}) const;
   [[nodiscard]] std::size_t resident_bytes() const;
+  // Detach a bounded encoded snapshot so caching never holds a file mapping
+  // open across requests. Does not allocate full decoded image pixels.
+  bool cache_preview_input(std::size_t maximum_bytes, std::stop_token = {});
   [[nodiscard]] ImageSubresource decode_preview(std::size_t,
                                                 const PreviewRequest &,
                                                 std::stop_token = {}) const;

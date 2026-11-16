@@ -1,4 +1,5 @@
 #include "image_view.hpp"
+#include "image_preview_geometry.hpp"
 #include <QCoreApplication>
 #include <QFile>
 #include <QQuickWindow>
@@ -50,23 +51,45 @@ public:
     const QSize baseDimensions(int(overview_->source.data_window.width),
                                int(overview_->source.data_window.height));
     const auto baseFormat = overview_->byteUpload() ? QRhiTexture::RGBA8 : QRhiTexture::RGBA32F;
-    if (!texture_ || texture_->pixelSize() != dimensions ||
-        texture_->format() != format || !baseTexture_ ||
-        baseTexture_->pixelSize() != baseDimensions || baseTexture_->format() != baseFormat) {
-      release();
-      texture_.reset(rhi()->newTexture(format, dimensions));
-      baseTexture_.reset(rhi()->newTexture(baseFormat, baseDimensions));
+    bool resourcesChanged = false;
+    if (!uniform_) {
       uniform_.reset(rhi()->newBuffer(QRhiBuffer::Dynamic,
                                       QRhiBuffer::UniformBuffer, 144));
       sampler_.reset(rhi()->newSampler(
           QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
           QRhiSampler::Repeat, QRhiSampler::Repeat));
-      if (!texture_->create() || !baseTexture_->create() || !uniform_->create() || !sampler_->create()) {
+      if (!uniform_->create() || !sampler_->create()) {
         updates->release();
         failed(cb, "gpu_resource_allocation_failed");
         return;
       }
       bindings_.reset(rhi()->newShaderResourceBindings());
+      resourcesChanged = true;
+    }
+    // Region dimensions change during navigation. Resize only that texture;
+    // keep the overview, uniform buffer, sampler and compatible pipeline.
+    const auto resizeTexture = [&](std::unique_ptr<QRhiTexture> &texture,
+                                   QRhiTexture::Format f, QSize size,
+                                   std::shared_ptr<const ImagePixels> &uploaded) {
+      if (texture && texture->pixelSize() == size && texture->format() == f)
+        return true;
+      if (!texture)
+        texture.reset(rhi()->newTexture(f, size));
+      else {
+        texture->setPixelSize(size);
+        texture->setFormat(f);
+      }
+      uploaded.reset();
+      resourcesChanged = true;
+      return texture->create();
+    };
+    if (!resizeTexture(texture_, format, dimensions, uploaded_) ||
+        !resizeTexture(baseTexture_, baseFormat, baseDimensions, baseUploaded_)) {
+      updates->release();
+      failed(cb, "gpu_resource_allocation_failed");
+      return;
+    }
+    if (resourcesChanged) {
       bindings_->setBindings({QRhiShaderResourceBinding::uniformBuffer(
                                   0,
                                   QRhiShaderResourceBinding::VertexStage |
@@ -239,7 +262,31 @@ void ImageView::requestPreview() {
     region = QRect(int(left), int(top), int(right - left), int(bottom - top));
   }
   const auto dpr = window() ? window()->effectiveDevicePixelRatio() : 1.;
-  session_->viewport(region, QSize(int(width() * dpr), int(height() * dpr)));
+  auto target = QSize(int(width()*dpr),int(height()*dpr));
+  // Spend spare preview pixels on a small surrounding border. Nearby pans
+  // then move the existing GPU texture instead of starting another decode.
+  const bool detail=region != QRect(QPoint(),previous_->previewFull);
+  const auto physical=imagePreviewSize(previous_->source,region,target,detail);
+  if (imagePreviewCovers(previous_->previewRegion,
+                        QSize(int(previous_->source.data_window.width),int(previous_->source.data_window.height)),
+                        region,physical))
+    return;
+  std::uint64_t bytesPerPixel=0;
+  for (const auto &c:previous_->source.channels)
+    bytesPerPixel+=formaview::imaging::preview_component(c.samples.scalar);
+  const auto maxPixels=(detail ? 64ULL : 32ULL)*1024*1024/std::max<std::uint64_t>(bytesPerPixel,16);
+  const auto factor=std::min({1.25,2048./physical.width(),2048./physical.height(),
+      std::sqrt(double(maxPixels)/(double(physical.width())*physical.height()))});
+  if (factor>1.02 && !session_->display().value("tiled").toBool()) {
+    const auto extraX=int(region.width()*(factor-1)/2);
+    const auto extraY=int(region.height()*(factor-1)/2);
+    const auto padded=region.adjusted(-extraX,-extraY,extraX,extraY)
+                          .intersected(QRect(QPoint(),previous_->previewFull));
+    target=QSize(int(std::ceil(double(physical.width())*padded.width()/region.width())),
+                 int(std::ceil(double(physical.height())*padded.height()/region.height())));
+    region=padded;
+  }
+  session_->viewport(region,target);
 }
 void ImageView::setSession(ImageSession *s) {
   if (session_ == s)

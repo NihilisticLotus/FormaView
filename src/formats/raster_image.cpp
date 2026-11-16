@@ -389,6 +389,18 @@ const ImageData &RasterFile::description() const { return impl_->desc; }
 std::size_t RasterFile::resident_bytes() const {
   return impl_->mapped ? 0 : static_cast<std::size_t>(impl_->bytes.size());
 }
+bool RasterFile::cache_preview_input(std::size_t maximum, std::stop_token stop) {
+  cancel(stop);
+  if (static_cast<std::size_t>(impl_->bytes.size()) > maximum)
+    return false;
+  if (impl_->mapped) {
+    auto snapshot = QByteArray(impl_->bytes.constData(), impl_->bytes.size());
+    cancel(stop);
+    impl_->bytes = std::move(snapshot);
+    impl_->mapped.reset();
+  }
+  return true;
+}
 RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
                             std::stop_token stop) {
   cancel(stop);

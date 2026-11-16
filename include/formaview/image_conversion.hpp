@@ -22,6 +22,7 @@ public:
   [[nodiscard]] ImageSubresource decode(std::size_t,
                                         std::stop_token = {}) const;
   [[nodiscard]] std::size_t resident_bytes() const;
+  bool cache_preview_input(std::size_t maximum_bytes, std::stop_token = {});
   [[nodiscard]] ImageSubresource decode_preview(std::size_t,
                                                 const PreviewRequest &,
                                                 std::stop_token = {}) const;

@@ -1,4 +1,5 @@
 #include "image_session.hpp"
+#include "image_preview_geometry.hpp"
 #include "formaview/file_access.hpp"
 #include "formaview/image_batch.hpp"
 #include "formaview/image_preview.hpp"
@@ -217,6 +218,8 @@ struct ImageSession::Pending {
   bool preserveDisplay{};
 };
 struct ImageSession::Cache {
+  QString documentKey;
+  std::shared_ptr<formaview::imaging::ImageDocument> document;
   QString gifKey;
   std::unique_ptr<formaview::host::GifDecoder> gifReader;
   int gifNext{};
@@ -225,14 +228,27 @@ struct ImageSession::Cache {
     std::shared_ptr<ImagePixels> pixels;
   };
   std::deque<Entry> entries;
+  static std::size_t budget() {
+    // Demand-filled cache, not a reservation. Limit smaller-memory machines
+    // to 1/16 of physical RAM and cap the normal desktop budget at 512 MiB.
+#ifdef Q_OS_WIN
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory))
+      return std::clamp<std::size_t>(memory.ullTotalPhys / 16,
+                                    128ULL * 1024 * 1024,
+                                    512ULL * 1024 * 1024);
+#endif
+    return 256ULL * 1024 * 1024;
+  }
   // Only the image worker accesses this cache.
   void insert(QString key, std::shared_ptr<ImagePixels> p) {
     entries.push_front({std::move(key), std::move(p)});
-    std::size_t bytes{};
+    std::size_t bytes = document ? document->resident_bytes() : 0;
     for (const auto &e : entries)
       bytes += e.pixels->bytes;
     while (entries.size() > 1 &&
-           (entries.size() > 8 || bytes > 256ULL * 1024 * 1024)) {
+           (entries.size() > 32 || bytes > budget())) {
       bytes -= entries.back().pixels->bytes;
       entries.pop_back();
     }
@@ -287,6 +303,11 @@ void ImageSession::viewport(QRect region, QSize target) {
   target = target.boundedTo(QSize(2048, 2048)).expandedTo(QSize(1, 1));
   if (region.isEmpty() ||
       (region == previewRegion_ && target == previewTarget_))
+    return;
+  if (imagePreviewCovers(pixels_->previewRegion,
+                        QSize(int(pixels_->source.data_window.width), int(pixels_->source.data_window.height)),
+                        region, imagePreviewSize(pixels_->source,region,target,
+                            region != QRect(QPoint(),pixels_->previewFull))))
     return;
   previewRegion_ = region;
   previewTarget_ = target;
@@ -443,6 +464,8 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
         region = {};
       const auto admission = ImageAdmission(true, stop);
       if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
+        cache_->document.reset();
+        cache_->documentKey.clear();
         const auto key = path + '\n' + stamp +
                          QString("/%1,%2,%3,%4/%5,%6")
                              .arg(region.x())
@@ -489,11 +512,23 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
           std::rotate(cache_->entries.begin(), it, std::next(it));
           return TaskResult{};
         }
-      auto document =
+      const auto documentKey = path + '\n' + stamp;
+      auto opened = cache_->documentKey == documentKey ? cache_->document : nullptr;
+      if (!opened) {
+        opened = std::make_shared<ImageDocument>(
           ImageDocument::open(std::filesystem::path(path.toStdWString()),
                               {512ULL * 1024 * 1024, 512ULL * 1024 * 1024,
                                INT_MAX, 65536, 256, true},
-                              stop);
+                              stop));
+        cache_->document.reset();
+        cache_->documentKey.clear();
+        if (opened->resident_bytes() <= Cache::budget()/4 &&
+            opened->cache_preview_input(Cache::budget()/4,stop)) {
+          cache_->document = opened;
+          cache_->documentKey = documentKey;
+        }
+      }
+      const auto &document = *opened;
       if (index < 0 || static_cast<std::size_t>(index) >=
                            document.description().subresources.size())
         throw skeletal::Failure(ErrorCode::InvalidArgument,
@@ -509,24 +544,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
         roi.setLeft(roi.left() & ~1);
         roi.setTop(roi.top() & ~1);
       }
-      auto physical =
-          roi.size()
-              .scaled(target.boundedTo(QSize(2048, 2048)), Qt::KeepAspectRatio)
-              .boundedTo(roi.size())
-              .expandedTo(QSize(1, 1));
-      std::uint64_t channelBytes = 0;
-      for (const auto &channel : original.channels)
-        channelBytes += preview_component(channel.samples.scalar);
-      // Preserve every native channel; many-channel/64-bit sources reduce the
-      // preview resolution rather than failing based on full-image size.
-      const auto maxPixels =
-          32ULL * 1024 * 1024 / std::max<std::uint64_t>(channelBytes, 16);
-      if (quint64(physical.width()) * physical.height() > maxPixels) {
-        const auto scale = std::sqrt(
-            double(maxPixels) / (double(physical.width()) * physical.height()));
-        physical = QSize(std::max(1, int(physical.width() * scale)),
-                         std::max(1, int(physical.height() * scale)));
-      }
+      const auto physical = imagePreviewSize(original,roi,target,roi != QRect(QPoint(),full));
       p->source = document.decode_preview(
           static_cast<std::size_t>(index),
           {quint64(roi.x()), quint64(roi.y()), quint64(roi.width()),
@@ -846,6 +864,8 @@ void ImageSession::clear() {
   r.priority = Priority::Foreground;
   r.work = [this](std::stop_token) {
     cache_->entries.clear();
+    cache_->document.reset();
+    cache_->documentKey.clear();
     cache_->gifReader.reset();
     cache_->gifKey.clear();
     return TaskResult{};

@@ -106,6 +106,13 @@ std::size_t ImageDocument::resident_bytes() const {
   return std::visit([](const auto &file) { return file.resident_bytes(); },
                     file_);
 }
+bool ImageDocument::cache_preview_input(std::size_t maximum, std::stop_token stop) {
+  if (auto *raster = std::get_if<RasterFile>(&file_))
+    return raster->cache_preview_input(maximum,stop);
+  // Other adapters retain mapped storage or native codec views. Reopen those
+  // inputs per request instead of holding an asset locked between requests.
+  return false;
+}
 ImageSubresource ImageDocument::decode_preview(std::size_t entry,
                                                const PreviewRequest &r,
                                                std::stop_token stop) const {

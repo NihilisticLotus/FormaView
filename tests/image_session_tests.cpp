@@ -505,16 +505,16 @@ QJsonObject regression(const QString &directory) {
     waitFor(session);
     require(session.error().isEmpty(), "Mapped preview completes");
   }
-  // Smaller previews correctly retain more entries within the same byte
-  // budget. Exercise the entry bound as well instead of assuming 4K buffers.
-  for (const auto &r : QStringList{"R","G","B"})
-    for (const auto &g : QStringList{"R","G","B"}) {
-      session.mapChannels({r,g,"B","A"});
+  // Exercise the 32-entry bound even when the byte budget can retain all of
+  // these small previews. Empty components are valid channel mappings.
+  const QStringList names{"R","G","B",""};
+  for (int i=0;i<40;++i) {
+      session.mapChannels({names[i/16],names[(i/4)%4],names[i%4],""});
       waitFor(session);
       require(session.error().isEmpty(), "Bounded mapped preview completes");
-    }
+  }
   require(first.expired(),
-          "LRU evicts old 4K buffers at the unchanged 256 MiB limit");
+          "LRU evicts old previews within the byte/32-entry cache limits");
   ++cases;
   std::weak_ptr<const ImagePixels> last = session.pixels();
   session.clear();
@@ -802,6 +802,40 @@ int main(int argc, char **argv) {
       pro.allow_lossy = true;
       write("large.hdr", encode_professional(source, pro));
       std::cout << "Created large preview fixtures\n";
+      return 0;
+    }
+    if (argc == 4 && app.arguments()[1] == "--navigation-benchmark") {
+      QJsonArray files;
+      for (const auto &file : QDir(app.arguments()[2]).entryInfoList({"*.jpg","*.tga"},QDir::Files,QDir::Name)) {
+        ImageSession session;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        session.open(file.absoluteFilePath());
+        waitFor(session);
+        require(session.error().isEmpty(), "Benchmark initial preview");
+        const auto initial=ms(elapsed);
+        std::vector<std::weak_ptr<const ImagePixels>> cold;
+        QJsonArray passes;
+        for (int pass=0;pass<2;++pass) {
+          QJsonArray timings;
+          int hits=0;
+          for (int i=0;i<12;++i) {
+            elapsed.restart();
+            session.viewport(QRect(101+(i%4)*227,203+(i/4)*193,1101,901),QSize(1101,901));
+            waitFor(session);
+            require(session.error().isEmpty(), "Benchmark region preview");
+            timings.append(ms(elapsed));
+            if (!pass) cold.push_back(session.pixels());
+            else if (cold[std::size_t(i)].lock()==session.pixels()) ++hits;
+          }
+          if (pass)
+            require(hits==12,"All twelve previously visited regions must remain cached");
+          passes.append(QJsonObject{{"region_ms",timings},{"hits",hits},{"memory",memory()}});
+        }
+        files.append(QJsonObject{{"file",file.fileName()},{"initial_ms",initial},{"passes",passes}});
+      }
+      require(files.size()==3,"Benchmark requires the three original image samples");
+      save(app.arguments()[3],QJsonObject{{"files",files}});
       return 0;
     }
     if (argc == 4 && app.arguments()[1] == "--preview-navigation") {
