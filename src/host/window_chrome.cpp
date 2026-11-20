@@ -5,6 +5,7 @@
 #include <QQmlContext>
 #include <QQmlProperty>
 #include <QPointer>
+#include <QLoggingCategory>
 #include <cmath>
 #include <memory>
 #include <utility>
@@ -16,6 +17,7 @@
 #include <dwmapi.h>
 
 namespace {
+Q_LOGGING_CATEGORY(lcWindowChrome, "formaview.windowchrome", QtWarningMsg)
 class WindowChrome final : public QObject, public QAbstractNativeEventFilter {
 public:
   explicit WindowChrome(QQuickWindow *window) : QObject(window), window_(window) {
@@ -44,6 +46,25 @@ public:
         msg->hwnd != reinterpret_cast<HWND>(window_->winId()) ||
         !window_->flags().testFlag(Qt::ExpandedClientAreaHint))
       return false;
+    if (msg->message == WM_NCCALCSIZE && msg->wParam) {
+      // Qt 6.12 leaves a resize-frame inset on the left/right/bottom even
+      // with ExpandedClientAreaHint. On Windows 11 23H2 that exposes a white
+      // non-client pixel INSIDE the DWM border; DWMWA_COLOR_NONE cannot hide
+      // it. Let our content cover the whole restored window. Native styles
+      // and the resize hit tests below still provide the normal resize frame.
+      auto &client = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam)->rgrc[0];
+      if (IsZoomed(msg->hwnd) && window_->visibility() != QWindow::FullScreen) {
+        // Maximized window rectangles extend beyond the monitor work area.
+        const auto dpi = GetDpiForWindow(msg->hwnd);
+        const auto x = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+                       GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        const auto y = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+                       GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        InflateRect(&client, -x, -y);
+      }
+      if (result) *result = 0;
+      return true;
+    }
     const auto captionButton = [](WPARAM hit) {
       return hit == HTCLOSE || hit == HTMINBUTTON || hit == HTMAXBUTTON;
     };
@@ -197,12 +218,23 @@ public:
   }
 private:
   void applyFrameAppearance() {
-    if (!window_ || !window_->handle()) return;
+    if (!window_ || !window_->handle() ||
+        !window_->flags().testFlag(Qt::ExpandedClientAreaHint)) return;
     const auto hwnd = reinterpret_cast<HWND>(window_->winId());
     const BOOL dark = TRUE;
-    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    const auto darkResult = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     const COLORREF border = DWMWA_COLOR_NONE;
-    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    const auto borderResult = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    qCInfo(lcWindowChrome) << "HWND" << hwnd << "dark HRESULT" << Qt::hex << darkResult
+                         << "border HRESULT" << borderResult;
+    if (FAILED(darkResult) || FAILED(borderResult))
+      qCWarning(lcWindowChrome) << "DWM appearance failed for HWND" << hwnd
+                              << Qt::hex << darkResult << borderResult;
+    // Installation can follow native creation/show. Recalculate the current
+    // HWND, including after a platform-window recreation, without activating
+    // it or changing the user's restored size/position.
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   }
   void updateCaptionInset() {
     if (!window_ || !window_->handle() ||
