@@ -2003,6 +2003,93 @@ private slots:
     QTRY_VERIFY(swaps.count()>before);
     QVERIFY(!captureExposedWindow(&probe).isNull());
   }
+  void explorerAssociationReuse() {
+#ifdef Q_OS_WIN
+    QTemporaryDir run(root_ + "/explorer-XXXXXX");
+    QVERIFY(run.isValid());
+    QSettings profile(run.filePath("settings/FormaView/FormaView.ini"), QSettings::IniFormat);
+    const auto exe = QCoreApplication::applicationDirPath() + "/formaview.exe";
+    std::vector<std::unique_ptr<QProcess>> launched;
+    const auto cleanup = qScopeGuard([&] {
+      for (const auto &p : launched) if (p->state() != QProcess::NotRunning) {
+        p->terminate();
+        if (!p->waitForFinished(3000)) { p->kill(); p->waitForFinished(); }
+      }
+    });
+    const auto launch = [&](const QString &path) -> QProcess * {
+      auto &p = launched.emplace_back(std::make_unique<QProcess>());
+      p->start(exe, {"--trace", run.filePath(QString::number(launched.size()) + ".json"), "--open", path});
+      return p.get();
+    };
+    const auto hwndFor = [](QProcess *p) {
+      struct Find { DWORD pid; HWND window{}; } find{static_cast<DWORD>(p->processId())};
+      EnumWindows([](HWND w, LPARAM data) -> BOOL {
+        auto &f = *reinterpret_cast<Find *>(data);
+        DWORD id{}; GetWindowThreadProcessId(w, &id);
+        if (f.pid == id && IsWindowVisible(w) && !GetWindow(w, GW_OWNER)) { f.window = w; return FALSE; }
+        return TRUE;
+      }, reinterpret_cast<LPARAM>(&find));
+      return find.window;
+    };
+    const auto opened = [&](const QString &path) {
+      profile.sync();
+      return profile.value("recent").toStringList().value(0) == QFileInfo(path).absolutePath();
+    };
+    QStringList images;
+    for (int i = 0; i < 5; ++i) {
+      const auto dir = run.filePath("中文 素材 " + QString::number(i));
+      QVERIFY(QDir().mkpath(dir));
+      images << dir + "/色 卡.png";
+      QVERIFY(QFile::copy(small_ + "/唯一图片.png", images.last()));
+    }
+    auto *first = launch(images[0]);
+    QVERIFY(first->waitForStarted());
+    auto *second = launch(images[1]);
+    QVERIFY(second->waitForStarted());
+    QTRY_VERIFY_WITH_TIMEOUT((first->state() == QProcess::NotRunning) != (second->state() == QProcess::NotRunning), 20000);
+    auto *owner = first->state() != QProcess::NotRunning ? first : second;
+    QTRY_VERIFY(hwndFor(owner));
+    const auto mainWindow = hwndFor(owner);
+    ShowWindow(mainWindow, SW_MINIMIZE);
+    auto *reuse = launch(images[2]);
+    QVERIFY(reuse->waitForFinished(15000));
+    QCOMPARE(reuse->exitCode(), 0);
+    QTRY_VERIFY(opened(images[2]));
+    QTRY_VERIFY(!IsIconic(mainWindow));
+    const auto model = run.filePath("独立 模型.obj");
+    QFile obj(model); QVERIFY(obj.open(QIODevice::WriteOnly));
+    obj.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"); obj.close();
+    auto *modelOwner = launch(model);
+    QTRY_VERIFY_WITH_TIMEOUT(hwndFor(modelOwner), 15000);
+    profile.setValue("explorer/reuseImageWindow", false);
+    profile.setValue("explorer/reuseModelWindow", true);
+    profile.sync();
+    ShowWindow(mainWindow, SW_MINIMIZE);
+    auto *extra = launch(images[3]);
+    QTRY_VERIFY_WITH_TIMEOUT(hwndFor(extra), 15000);
+    auto *sameModel = launch(model);
+    QVERIFY(sameModel->waitForFinished(15000));
+    QCOMPARE(sameModel->exitCode(), 0);
+    profile.setValue("explorer/reuseImageWindow", true);
+    profile.setValue("explorer/reuseModelWindow", false);
+    profile.sync();
+    auto *extraModel = launch(model);
+    QTRY_VERIFY_WITH_TIMEOUT(hwndFor(extraModel), 15000);
+    // The older image window stayed minimized while the newer image and model opened.
+    // Minimize the newer image too, then observe which one Explorer restores.
+    QVERIFY(IsIconic(mainWindow));
+    ShowWindow(hwndFor(extra), SW_MINIMIZE);
+    QTRY_VERIFY(IsIconic(hwndFor(extra)));
+    auto *last = launch(images[4]);
+    QVERIFY(last->waitForFinished(15000));
+    QTRY_VERIFY(opened(images[4]));
+    QTRY_VERIFY(!IsIconic(hwndFor(extra)));
+    QVERIFY(IsIconic(mainWindow));
+#else
+    QSKIP("Windows Explorer association");
+#endif
+  }
+
   void nativeFrameAppearance() {
 #if defined(Q_OS_WIN) && defined(FORMAVIEW_IMAGE_UI)
     auto *shortcut = window_->findChild<QObject *>("quickTextureExport");

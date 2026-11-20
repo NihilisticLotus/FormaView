@@ -11,12 +11,15 @@ Item {
     property string savedSnapshot: ""
     readonly property bool dirty: JSON.stringify(draft) !== savedSnapshot
     function reset(): void {
-        draft = {language: controller.language, density: controller.preferences.density || "standard", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
+        controller.refreshExplorerPreferences()
+        draft = {reuseImageWindow: controller.preferences.reuseImageWindow !== false, reuseModelWindow: controller.preferences.reuseModelWindow !== false, language: controller.language, density: controller.preferences.density || "standard", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
         savedSnapshot = JSON.stringify(draft)
     }
     function change(key, value): void { const next = Object.assign({}, draft); next[key] = value; draft = next }
     function save(): void {
-        for (const key of ["density", "restoreLayout", "defaultFilesVisible", "inspectorMode"]) controller.preference(key, draft[key])
+        const saved = JSON.parse(savedSnapshot)
+        for (const key of ["reuseImageWindow", "reuseModelWindow", "density", "restoreLayout", "defaultFilesVisible", "inspectorMode"])
+            if (saved[key] !== draft[key]) controller.preference(key, draft[key])
         controller.language = draft.language
         savedSnapshot = JSON.stringify(draft)
     }
@@ -50,6 +53,14 @@ Item {
                 }
                 SettingsGroup {
                     visible: root.section === "general" || root.section === "preview"; title: Theme.t("启动与布局", "Startup and layout", "啟動與配置")
+                    SettingsRow {
+                        label: Theme.t("双击图片时复用窗口", "Reuse window for images", "雙擊圖片時重用視窗")
+                        Toggle { checked: root.draft.reuseImageWindow === true; onToggled: root.change("reuseImageWindow", checked); Accessible.name: parent.label }
+                    }
+                    SettingsRow {
+                        label: Theme.t("双击模型时复用窗口", "Reuse window for models", "雙擊模型時重用視窗")
+                        Toggle { checked: root.draft.reuseModelWindow === true; onToggled: root.change("reuseModelWindow", checked); Accessible.name: parent.label }
+                    }
                     SettingsRow {
                         label: Theme.t("恢复上次布局", "Restore previous layout", "還原上次配置")
                         description: Theme.t("下次启动时保留文件面板宽度与展开状态", "Retain file pane width and visibility on next startup", "下次啟動時保留檔案面板寬度與展開狀態")

@@ -112,6 +112,7 @@ public:
   int activeTasks() const;
   QString language() const { return language_; }
   void setLanguage(const QString &);
+  static QString reuseKeyForFile(const QString &path);
   QVariantMap preferences() const { return preferences_; }
   QStringList recent() const { return recent_; }
   QVariantList resourceIssues() const { return resourceIssues_; }
@@ -144,12 +145,14 @@ public:
   Q_INVOKABLE void copy(const QString &text);
   Q_INVOKABLE void reveal(const QString &path);
   Q_INVOKABLE void saveView(double position);
+  Q_INVOKABLE void refreshExplorerPreferences();
   Q_INVOKABLE void preference(const QString &key, const QVariant &value);
   Q_INVOKABLE void clearAsset();
   Q_INVOKABLE void dismissError();
   Q_INVOKABLE QString report() const;
 signals:
   void changed();
+  void explorerFileOpened();
   void tasksChanged();
   void languageChanged();
   void preferencesChanged();

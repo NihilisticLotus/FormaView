@@ -84,6 +84,10 @@ Item {
     Shortcut { sequence: "Alt+Left"; enabled: !root.editing(); onActivated: root.controller.history(-1) }
     Shortcut { sequence: "Alt+Right"; enabled: !root.editing(); onActivated: root.controller.history(1) }
     Shortcut { sequence: "Alt+Up"; enabled: !root.editing(); onActivated: root.controller.parentDirectory() }
+    Connections {
+        target: root.controller
+        function onExplorerFileOpened() { root.navigate("assets") }
+    }
     function navigate(destination): void {
         if (settingsVisible && ["conversion", "tasks"].includes(destination)) { settingsDialog.leave(() => root.navigate(destination)); return }
         if (settingsVisible && destination === "assets") { settingsDialog.close(); return }

@@ -11,3 +11,5 @@
 Release主程序及桌面测试构建成功；`desktopQuickNavigation`、原目录导航隔离、文件视图和图标回归合计6通过、0失败/跳过（含初始化/清理），见`desktop-cancel-1/tests.txt`。包含扫描10024项时桌面位置突然为空：旧任务收到取消并结束，旧结果不覆盖目录或错误。离屏截图确认按钮与收起入口无重叠；软件渲染出现的No QRhi警告不构成原生GPU验收。
 
 参考：[Qt QStandardPaths](https://doc.qt.io/qt-6/qstandardpaths.html)、[Qt Windows实现](https://github.com/qt/qtbase/blob/dev/src/corelib/io/qstandardpaths_win.cpp)。
+
+从资源管理器打开图片或模型时，默认复用最近活动的同类窗口。可在设置的「启动与布局」分别关闭图片或模型的复用。已最小化的目标窗口会恢复。
