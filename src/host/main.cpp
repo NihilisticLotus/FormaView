@@ -125,7 +125,12 @@ int main(int argc, char *argv[]) {
   qputenv("QT_PLUGIN_PATH", QByteArray(FORMAVIEW_PREVIEW_PLUGIN_DIR) + ';' +
                                 qgetenv("QT_PLUGIN_PATH"));
 #endif
+  QCoreApplication::setApplicationVersion(QStringLiteral(FORMAVIEW_PRODUCT_VERSION));
   for (auto i = 1; i < argc; ++i) {
+    if (std::string_view{argv[i]} == "--version") {
+      std::cout << QCoreApplication::applicationVersion().toStdString() << '\n';
+      return 0;
+    }
     if (std::string_view{argv[i]} == "--capabilities") {
       QCoreApplication app(argc, argv);
 #ifdef FORMAVIEW_IMAGE_UI

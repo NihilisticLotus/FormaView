@@ -93,7 +93,7 @@ Item {
                 }
                 SettingsGroup {
                     visible: root.section === "about"; title: Theme.t("关于 FormaView", "About FormaView", "關於 FormaView")
-                    SettingsRow { label: "FormaView · Qt 6.12"; description: Theme.t("只读资产预览、图片检查与独立转换导出。预览调整不修改原文件。", "Read-only asset preview, image inspection and separate conversion exports. Preview adjustments leave source files unchanged.", "唯讀資產預覽、影像檢查與獨立轉換匯出。預覽調整不修改原始檔案。") }
+                    SettingsRow { label: "FormaView " + Qt.application.version + " · Qt 6.12"; description: Theme.t("只读资产预览、图片检查与独立转换导出。预览调整不修改原文件。", "Read-only asset preview, image inspection and separate conversion exports. Preview adjustments leave source files unchanged.", "唯讀資產預覽、影像檢查與獨立轉換匯出。預覽調整不修改原始檔案。") }
                 }
             }
         }

@@ -4,13 +4,13 @@ This directory is the version-controlled source for FormaView's Inno Setup insta
 
 ## Inputs and build
 
-The tracked sources include the 0.1.0 installer templates, the policy and wizard code, the Inno Setup compiler lock, runtime packaging, and verification scripts. A build still requires a prepared runtime delivery and the pinned compiler in an external staging root. Set or pass that root explicitly; do not use a destination that already contains files.
+The tracked sources include the 0.1.0 installer templates, the policy and wizard code, the Inno Setup compiler lock, runtime packaging, and verification scripts. Supply the delivery manifest for the current CMake project version and the pinned compiler in an external staging root. The installer reads its version from the three delivered executables. Set or pass that root explicitly; do not use a destination that already contains files.
 
 ```powershell
 $stage = 'E:/CodexProject/asset-preview-planning/development'
 python tools/installer-ui/build.py `
   --staging-root $stage `
-  --runtime-delivery "$stage/verification/M13-task-history-20261110/delivery.json" `
+  --runtime-delivery "$stage/verification/<runtime-candidate>/delivery.json" `
   --destination "$stage/deploy/<new-candidate>" `
   --evidence "$stage/verification/<new-candidate>"
 ```

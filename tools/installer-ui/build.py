@@ -16,18 +16,17 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 BASE = HERE / "templates/0.1.0"
 LOCK = HERE / "compiler-lock.json"
-DEV = HISTORY = ISCC = DEST = EVIDENCE = None
+DEV = ISCC = DEST = EVIDENCE = None
 IDENTITY = "{618397E7-C70C-4D14-B601-D6FB2F562BA1}"
 
 
 def configure_staging_root(root=None):
     """Bind release inputs/outputs to an explicit external staging directory."""
-    global DEV, HISTORY, ISCC, DEST, EVIDENCE
+    global DEV, ISCC, DEST, EVIDENCE
     value = root or os.environ.get("FORMAVIEW_RELEASE_STAGING_ROOT")
     if not value:
         raise ValueError("Pass --staging-root or set FORMAVIEW_RELEASE_STAGING_ROOT")
     DEV = Path(value).resolve()
-    HISTORY = DEV / "verification/M13-task-history-20261110"
     ISCC = DEV / "toolchain/M13/InnoSetup-6.7.3/ISCC.exe"
     DEST = DEV / "deploy/FormaView-0.1.0-Windows-x64-upgrade-policy-20261111"
     EVIDENCE = DEV / "verification/M13-upgrade-policy-20261111"
@@ -124,7 +123,7 @@ NOTICE = """安装说明
 第三方许可文本和声明随程序安装，可在安装目录中查阅。此安装包尚未签名，未授予公开再分发权限。
 """
 
-GUIDE = r"""FormaView 0.1.0 · Windows x64
+GUIDE = r"""FormaView {version} · Windows x64
 
 为本机所有用户安装：%ProgramFiles%\FormaView。
 仅为当前账户安装：默认 %LOCALAPPDATA%\Programs\FormaView，可选择其他本机目录。
@@ -247,11 +246,9 @@ def association_source(file_icon_name):
     return prefix + ext + read(HERE / "wizard-code.iss")
 
 
-def build(dest, evidence, compile_setup, runtime_delivery=None):
+def build(dest, evidence, compile_setup, runtime_delivery):
     if DEV is None:
         configure_staging_root()
-    if runtime_delivery is None:
-        runtime_delivery = HISTORY / "delivery.json"
     for path in (dest, evidence):
         if path.exists() and any(path.iterdir()):
             raise FileExistsError(f"Refusing to overwrite non-empty staging path: {path}")
@@ -276,6 +273,9 @@ def build(dest, evidence, compile_setup, runtime_delivery=None):
     assert len(sources) + 1 == d["runtimeFiles"]
     assert all(f"mcp/{name}" in sources for name in ("image_stdio.py", "requirements.txt", "requirements.lock"))
     version = product_version(sources["formaview.exe"])
+    project = re.search(r"(?im)^project\(FormaView\s+VERSION\s+([\d.]+)\b", read(REPO / "CMakeLists.txt"))
+    if not project or version != project[1]:
+        raise ValueError(f"Runtime {version} does not match the FormaView source version")
     if any(product_version(sources[name]) != version for name in ("formaview_image_cli.exe", "formaview_image_service.exe")):
         raise ValueError("Runtime executable versions do not match")
     if version != "0.1.0" and (dest == DEST or evidence == EVIDENCE):
@@ -290,7 +290,7 @@ def build(dest, evidence, compile_setup, runtime_delivery=None):
     file_icon_name = f"formaview-file-icon-{sha(icon)}.ico"
     (metadata / file_icon_name).write_bytes(icon.read_bytes())
     (metadata / "installation.ini").write_bytes(f"[Install]\r\nAppId={IDENTITY}\r\nVersion={version}\r\n".encode())
-    write(metadata / "安装使用说明.txt", GUIDE.replace("FormaView 0.1.0", f"FormaView {version}", 1))
+    write(metadata / "安装使用说明.txt", GUIDE.format(version=version))
     for name in ("runtime-manifest.json", "formaview.ico", file_icon_name, "installation.ini", "安装使用说明.txt"):
         sources[name] = metadata / name
     names = sorted(set(sources) | {"owned-files.txt", "sha256.json"})
@@ -350,10 +350,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--staging-root", type=Path)
-    parser.add_argument("--runtime-delivery", type=Path)
+    parser.add_argument("--runtime-delivery", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
     configure_staging_root(args.staging_root)
-    delivery = args.runtime_delivery.resolve() if args.runtime_delivery else None
-    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, delivery)
+    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, args.runtime_delivery.resolve())

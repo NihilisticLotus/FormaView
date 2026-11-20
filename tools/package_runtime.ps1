@@ -90,6 +90,16 @@ if ($unresolved.Count) {
     throw ("Unresolved runtime imports: " + (($unresolved | Sort-Object) -join '; '))
 }
 
+$projectVersion = [regex]::Match((Get-Content -LiteralPath (Join-Path $repo 'CMakeLists.txt') -Raw),
+    '(?im)^project\(FormaView\s+VERSION\s+([\d.]+)\b').Groups[1].Value
+if (-not $projectVersion) { throw 'Cannot determine the FormaView project version.' }
+foreach ($name in $required) {
+    $info = (Get-Item -LiteralPath (Join-Path $OutDir $name)).VersionInfo
+    if ($info.FileVersion -ne "$projectVersion.0" -or $info.ProductVersion -ne "$projectVersion.0") {
+        throw "$name version does not match the source version $projectVersion.0"
+    }
+}
+
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'mcp'), (Join-Path $OutDir 'licenses') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repo 'tools\mcp\image_stdio.py'), (Join-Path $repo 'tools\mcp\requirements.lock'), (Join-Path $repo 'tools\mcp\requirements.txt') -Destination (Join-Path $OutDir 'mcp')
 Copy-Item -Path (Join-Path $repo 'third_party\*') -Destination (Join-Path $OutDir 'licenses') -Include *.txt
