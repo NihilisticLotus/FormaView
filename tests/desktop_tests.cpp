@@ -3366,7 +3366,10 @@ private slots:
       const auto controls = visualItems(window_->contentItem(), name);
       QVERIFY2(controls.size() == 1, name);
       QVERIFY(!controls.front()->isEnabled());
+      QVERIFY(!controls.front()->property("primary").toBool());
     }
+    const auto redButton = visualItems(window_->contentItem(), "imageChannel1").value(0);
+    QVERIFY(redButton && redButton->property("primary").toBool());
     session->sample(0, 0);
     QCOMPARE(session->pixel()["display"].toList()[3].toString(), QString("1"));
     save("image-bc5");
@@ -3374,6 +3377,28 @@ private slots:
     QTRY_VERIFY(!item("imageViewport"));
     QVERIFY(!session->available());
   }
+  void channelSelectionHighlight() {
+    auto *session = qobject_cast<ImageSession *>(desktop_->image());
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_VERIFY(item("imageViewport") && session->available());
+    const auto button = [&](int i) {
+      return visualItems(window_->contentItem(), "imageChannel" + QByteArray::number(i)).value(0);
+    };
+    QTRY_VERIFY(button(0) && button(0)->property("primary").toBool());
+    QVERIFY(button(2) && button(3));
+    QTest::mouseClick(window_, Qt::LeftButton, {}, button(2)->mapToScene(button(2)->boundingRect().center()).toPoint());
+    QTRY_COMPARE(session->display().value("channel").toInt(), 1);
+    QTest::mouseMove(window_, button(3)->mapToScene(button(3)->boundingRect().center()).toPoint());
+    QVERIFY(button(2)->property("primary").toBool());
+    QVERIFY(!button(3)->property("primary").toBool());
+    QTest::keyClick(window_, Qt::Key_B);
+    QTRY_VERIFY(button(3)->property("primary").toBool());
+    QVERIFY(!button(2)->property("primary").toBool());
+    desktop_->openPath(fixture_ + "/图片0.png");
+    QTRY_COMPARE(session->path(), fixture_ + "/图片0.png");
+    QTRY_VERIFY(button(session->display().value("channel").toInt() + 1)->property("primary").toBool());
+  }
+
   void imageCacheInvalidation() {
     auto *session = qobject_cast<ImageSession *>(desktop_->image());
     QVERIFY(session);
