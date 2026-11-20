@@ -4,6 +4,7 @@
 
 ModelRenderState ModelSession::renderState() const {
   ModelRenderState state;
+  state.directionMask = directionMask_;
   state.mode = mode_;
   state.mesh = mesh_;
   state.bone = bone_;
@@ -25,7 +26,7 @@ ModelRenderState ModelSession::renderState() const {
 QByteArray ModelSession::stateKey(const ModelRenderState &state) const {
   QByteArray bytes;
   QDataStream stream(&bytes, QIODevice::WriteOnly);
-  stream << state.mode << state.mesh << state.bone << state.material
+  stream << state.directionMask << state.mode << state.mesh << state.bone << state.material
          << state.materialOnly << state.isolated << state.collisionMode << state.highlightedNode;
   // Geometry-cache documents differ per timeline sample.
   if (document_ && document_->geometryCache)

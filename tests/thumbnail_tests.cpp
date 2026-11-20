@@ -257,7 +257,14 @@ private slots:
     QVERIFY(!error.isEmpty());
     const auto huge = temp.path() + "/input-budget.png";
     QFile file(huge);
-    QVERIFY(file.open(QIODevice::WriteOnly));
+    QImage boundary(3, 2, QImage::Format_RGB32);
+    boundary.fill(Qt::red);
+    QVERIFY(boundary.save(huge));
+    QVERIFY(file.open(QIODevice::ReadWrite));
+    QVERIFY(file.resize(128LL * 1024 * 1024));
+    file.close();
+    QCOMPARE(load(provider, huge, &error).pixelColor(0, 0), QColor(Qt::red));
+    QVERIFY(file.open(QIODevice::ReadWrite));
     QVERIFY(file.resize(128LL * 1024 * 1024 + 1));
     file.close();
     QVERIFY(load(provider, huge, &error).isNull());
@@ -283,6 +290,49 @@ private slots:
       QVERIFY(!responses[i]->errorString().isEmpty());
     }
     QCOMPARE(QImageReader::allocationLimit(), 32);
+  }
+  void externalLargeTga() {
+#ifdef FORMAVIEW_IMAGE_UI
+    const auto path = qEnvironmentVariable("FORMAVIEW_THUMBNAIL_FIXTURE");
+    if (path.isEmpty()) QSKIP("Set FORMAVIEW_THUMBNAIL_FIXTURE for the 4096-square TGA regression");
+    const auto filename = std::filesystem::path(path.toStdWString());
+    bool fullDecodeExceeded = false;
+    try {
+      const auto full = formaview::imaging::ImageDocument::open(filename,
+          {128ULL << 20, 512ULL << 20, 16384, 65536, 256});
+      (void)full.decode(0);
+    } catch (const formaview::skeletal::Failure &e) {
+      qInfo("Full decode: %s", e.what());
+      fullDecodeExceeded = e.error.code == formaview::ErrorCode::ResourceLimit;
+    }
+    QVERIFY(fullDecodeExceeded);
+    ThumbnailProvider provider;
+    QString error;
+    const auto thumbnail = load(provider, path, &error);
+    QVERIFY2(!thumbnail.isNull(), qPrintable(error));
+    QCOMPARE(thumbnail.size(), QSize(120, 120));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto header = file.read(18);
+    QCOMPARE(header.size(), 18);
+    QCOMPARE(static_cast<unsigned char>(header[2]), 2);
+    QCOMPARE(static_cast<unsigned char>(header[16]), 32);
+    const auto desc = static_cast<unsigned char>(header[17]);
+    for (int y : {0, 32, 70, 119}) for (int x : {0, 24, 74, 119}) {
+      const int sy = y * 4096 / 120, sx = x * 4096 / 120;
+      const int row = (desc & 32) ? sy : 4095 - sy;
+      const int col = (desc & 16) ? 4095 - sx : sx;
+      QVERIFY(file.seek(18 + static_cast<unsigned char>(header[0]) + 4LL * (4096 * row + col)));
+      const auto bytes = file.read(4);
+      QCOMPARE(bytes.size(), 4);
+      const auto *b = reinterpret_cast<const uchar *>(bytes.constData());
+      // Texture factory may premultiply the image. Compare the displayed RGBA8
+      // values in that domain, including fully transparent texels.
+      const auto actual = qPremultiply(thumbnail.pixelColor(x, y).rgba());
+      const auto expected = qPremultiply(qRgba(b[2], b[1], b[0], b[3]));
+      QCOMPARE(actual, expected);
+    }
+#endif
   }
   void rasterAndProfessionalFormats() {
     QTemporaryDir temp;

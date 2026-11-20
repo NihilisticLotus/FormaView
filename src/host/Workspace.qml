@@ -84,6 +84,10 @@ Item {
     Shortcut { sequence: "Alt+Left"; enabled: !root.editing(); onActivated: root.controller.history(-1) }
     Shortcut { sequence: "Alt+Right"; enabled: !root.editing(); onActivated: root.controller.history(1) }
     Shortcut { sequence: "Alt+Up"; enabled: !root.editing(); onActivated: root.controller.parentDirectory() }
+    Connections {
+        target: root.controller
+        function onExplorerFileOpened() { root.navigate("assets") }
+    }
     function navigate(destination): void {
         if (settingsVisible && ["conversion", "tasks"].includes(destination)) { settingsDialog.leave(() => root.navigate(destination)); return }
         if (settingsVisible && destination === "assets") { settingsDialog.close(); return }
@@ -177,12 +181,14 @@ Item {
                     Layout.fillHeight: true; Layout.preferredWidth: splitterMouse.pressed ? splitterMouse.dragWidth : Math.max(220,Math.min(400, root.controller.preferences.fileWidth || Theme.filesWidth))
                     visible: !root.narrow && !root.focusMode && root.filesVisible
                     controller: root.controller; onCollapse: root.toggleFiles(); onEditAddress: folderNavigation.addressFocus()
+                }
                 Rectangle {
                     objectName: "filesPaneSplitterHitArea"
-                    anchors.right: parent.right; height: parent.height; width: 14; z: 2; color: "transparent"
+                    visible: files.visible; Layout.fillHeight: true; Layout.preferredWidth: 14
+                    Layout.leftMargin: -4; Layout.rightMargin: -4; color: "transparent"
                     Rectangle {
                         objectName: "filesPaneSplitterVisual"
-                        anchors.right: parent.right; width: 4; height: parent.height
+                        anchors.horizontalCenter: parent.horizontalCenter; width: 4; height: parent.height
                         color: splitterMouse.containsMouse ? Theme.accent : Theme.base
                     }
                     MouseArea { id: splitterMouse; objectName: "filesPaneSplitterMouseArea"; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor; property real start: 0; property real old: 0; property real dragWidth: 300
@@ -190,7 +196,6 @@ Item {
                         onPositionChanged: event => { if(splitterMouse.pressed) splitterMouse.dragWidth = Math.max(220, Math.min(400,splitterMouse.old+splitterMouse.mapToItem(root,event.x,0).x-splitterMouse.start)) }
                         onReleased: event => { root.controller.preference("fileWidth", splitterMouse.dragWidth) }
                     }
-                }
                 }
                 PreviewPane {
                     id: preview; Layout.fillWidth: true; Layout.fillHeight: true; controller: root.controller; focused: root.focusMode

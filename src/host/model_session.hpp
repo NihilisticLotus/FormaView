@@ -53,6 +53,9 @@ class ModelSession : public QObject {
   Q_PROPERTY(int bindingIndex READ bindingIndex NOTIFY changed)
   Q_PROPERTY(int boneIndex READ boneIndex NOTIFY changed)
   Q_PROPERTY(int uvIndex READ uvIndex NOTIFY changed)
+  Q_PROPERTY(int directionMask READ directionMask WRITE setDirectionMask NOTIFY changed)
+  Q_PROPERTY(QString tangentSource READ tangentSource NOTIFY frameChanged)
+  Q_PROPERTY(bool normalDirectionsAvailable READ normalDirectionsAvailable NOTIFY frameChanged)
   Q_PROPERTY(int mode READ mode NOTIFY changed)
   Q_PROPERTY(bool isolated READ isolated NOTIFY changed)
   Q_PROPERTY(QVariantMap picked READ picked NOTIFY selectionChanged)
@@ -233,6 +236,15 @@ public:
   Q_INVOKABLE void selectBinding(int);
   Q_INVOKABLE void selectBone(int);
   Q_INVOKABLE void selectUV(int);
+  std::uint64_t framingRevision() const { return framingRevision_; }
+  int directionMask() const { return directionMask_; }
+  QString tangentSource() const {
+    const auto f = frames_.model;
+    if (!f) return {};
+    return f->sourceTangents ? (f->uvTangents ? "mixed" : "source") : (f->uvTangents ? "uv" : "");
+  }
+  bool normalDirectionsAvailable() const { return frames_.model && frames_.model->normalDirections; }
+  void setDirectionMask(int);
   Q_INVOKABLE void setMode(int);
   Q_INVOKABLE void setIsolated(bool);
   void enableGpuSkinning(bool enabled);
@@ -306,7 +318,7 @@ private:
   QByteArray stateKey(const ModelRenderState &) const;
   void cacheFrame();
   void poll();
-  void rebuild();
+  void rebuild(bool framingChanged = true);
   void clearSelection();
   void updateSkeleton(bool resetHighlight = true,ModelSkeleton::Prepared *prepared = nullptr);
   const ModelMesh *selectedMesh() const;
@@ -390,6 +402,8 @@ private:
   bool textureBusy_{};
   QString textureError_;
   quint64 textureRequest_{};
+  std::uint64_t framingRevision_{};
+  int directionMask_{};
   int mesh_{}, bone_{}, mode_{}, material_{};
   int clipIndex_{};
   int cameraIndex_{};

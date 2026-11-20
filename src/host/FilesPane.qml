@@ -9,7 +9,7 @@ Rectangle {
     readonly property bool thumbnails: viewMode === "thumbnails"
     readonly property bool tiles: viewMode === "tiles"
     readonly property bool gridMode: thumbnails || tiles
-    readonly property int columns: gridMode ? Math.max(1, Math.floor(grid.width / (tiles ? 190 : 128))) : 1
+    readonly property int columns: gridMode ? Math.max(1, Math.floor(fileArea.width / (tiles ? 190 : 128))) : 1
     readonly property var activeView: gridMode ? grid : list
     function sizeText(bytes) {
         if (bytes < 1024) return bytes + " B"
@@ -134,7 +134,15 @@ Rectangle {
             onActivated: index => { root.remember(); root.controller.preference("fileViewMode", modes[index]) }
         }
         Item {
+            id: fileArea
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.leftMargin: 6; Layout.rightMargin: 6
+            component FileScrollBar: ScrollBar {
+                parent: fileArea
+                anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.right: parent.right
+                width: 14; interactive: true
+                minimumSize: Math.min(1, 24 / Math.max(1, height))
+                policy: size < 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
             Component {
                 id: entryDelegate
                 ItemDelegate {
@@ -164,14 +172,7 @@ Rectangle {
                             width: root.tiles ? 48 : parent.width; height: root.tiles ? 48 : 84; visible: root.gridMode
                             source: root.gridMode && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
                             sourceSize: root.tiles ? Qt.size(64,64) : Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
-                            Label {
-                                objectName: "thumbnailFailure"
-                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
-                                visible: thumbnail.status === Image.Error
-                                text: Theme.t("缩略图不可用", "Thumbnail unavailable", "縮圖無法使用")
-                                color: Theme.muted; font.pixelSize: 10
-                            }
+                            AppIcon { objectName: "thumbnailFallback"; anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: "muted" }
                         }
                         RowLayout {
                             anchors.left: parent.left; anchors.leftMargin: root.tiles ? 60 : 0; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
@@ -194,11 +195,11 @@ Rectangle {
             ListView {
                 id: list
                 objectName: "fileList"
-                anchors.fill: parent; visible: !root.gridMode; clip: true
+                anchors.fill: parent; anchors.rightMargin: 16; visible: !root.gridMode; clip: true
                 model: root.visible && visible && !root.modelResetting ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
                 focus: true; activeFocusOnTab: true
                 keyNavigationEnabled: false
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FileScrollBar { objectName: "fileListScroll"; visible: list.visible && size < 1 }
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
                 onContentHeightChanged: if (!root.gridMode) root.restoreGeometryChanged()
@@ -208,12 +209,12 @@ Rectangle {
             GridView {
                 id: grid
                 objectName: "fileGrid"
-                anchors.fill: parent; visible: root.gridMode; clip: true
+                anchors.fill: parent; anchors.rightMargin: 16; visible: root.gridMode; clip: true
                 model: root.visible && visible && !root.modelResetting ? root.controller.files : null
                 cellWidth: width / root.columns; cellHeight: root.tiles ? 80 : 116
                 delegate: entryDelegate; cacheBuffer: 116; activeFocusOnTab: visible
                 keyNavigationEnabled: false
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FileScrollBar { objectName: "fileGridScroll"; visible: grid.visible && size < 1 }
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
                 onContentHeightChanged: if (root.gridMode) root.restoreGeometryChanged()

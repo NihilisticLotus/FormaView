@@ -1,5 +1,8 @@
 #include "window_capture.hpp"
 #include "desktop.hpp"
+#ifdef Q_OS_WIN
+#include "explorer_open.hpp"
+#endif
 #include "desktop_trace.hpp"
 #include "window_chrome.hpp"
 #include <QFileInfo>
@@ -122,7 +125,12 @@ int main(int argc, char *argv[]) {
   qputenv("QT_PLUGIN_PATH", QByteArray(FORMAVIEW_PREVIEW_PLUGIN_DIR) + ';' +
                                 qgetenv("QT_PLUGIN_PATH"));
 #endif
+  QCoreApplication::setApplicationVersion(QStringLiteral(FORMAVIEW_PRODUCT_VERSION));
   for (auto i = 1; i < argc; ++i) {
+    if (std::string_view{argv[i]} == "--version") {
+      std::cout << QCoreApplication::applicationVersion().toStdString() << '\n';
+      return 0;
+    }
     if (std::string_view{argv[i]} == "--capabilities") {
       QCoreApplication app(argc, argv);
 #ifdef FORMAVIEW_IMAGE_UI
@@ -181,6 +189,15 @@ int main(int argc, char *argv[]) {
     qputenv("FORMAVIEW_IMAGE_STATE_ROOT",
             (traceRoot + "/image-journal").toUtf8());
   }
+  const auto arguments = app.arguments();
+  const auto openIndex = arguments.indexOf("--open");
+  const auto requested = openIndex >= 0 ? arguments.value(openIndex + 1)
+      : arguments.size() == 2 && !arguments[1].startsWith('-') ? arguments[1] : QString{};
+  const auto openPath = requested.isEmpty() ? QString{} : QFileInfo(requested).absoluteFilePath();
+#ifdef Q_OS_WIN
+  ExplorerOpen explorer;
+  if (!openPath.isEmpty() && explorer.forward(openPath)) return 0;
+#endif
   auto desktop = Desktop{};
 #ifdef QT_QML_DEBUG
   // The MCP launcher has no --resource argument. Serve a development-only
@@ -484,9 +501,10 @@ int main(int argc, char *argv[]) {
     });
   window->show(); // Install frame observation before visibility starts the
                   // render thread.
-  const auto openIndex = app.arguments().indexOf("--open");
-  if (openIndex >= 0 && openIndex + 1 < app.arguments().size())
-    desktop.openPath(app.arguments()[openIndex + 1]);
+  if (!openPath.isEmpty()) desktop.openPath(openPath);
+#ifdef Q_OS_WIN
+  explorer.publish(window, &desktop, openPath);
+#endif
   auto exit_code = app.exec();
   app.trace=nullptr;
   if (nativeTrace && !nativeTrace->flush(true) && exit_code == 0)

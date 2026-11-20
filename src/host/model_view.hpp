@@ -106,6 +106,7 @@ private:
   bool uvMode_{};
   bool automatic_{true}, fitSelected_{};
   int representation_{-1};
+  std::uint64_t framingRevision_{};
   struct CameraState {
     QVector3D target;
     double yaw{25}, pitch{12}, distance{3.2};

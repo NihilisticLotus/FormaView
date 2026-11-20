@@ -431,6 +431,32 @@ void run(const std::filesystem::path &root) {
   options.transform.alpha_channel = "A";
   options.transform.source_alpha = AlphaMode::Straight;
   {
+    auto pixels = source;
+    for (std::size_t i = 0; i < 64; ++i) {
+      pixels.channels[0].samples.bytes[i] = static_cast<std::byte>(i);
+      pixels.channels[3].samples.bytes[i] = i % 8 < 4 ? std::byte{0} : std::byte{255};
+    }
+    const auto path = root / "transparent-edge.png";
+    write(path, encode_raster(pixels, png));
+    const auto original = ImageDocument::open(path);
+    const auto digest = original.description().source.identity.sha256;
+    auto small = options;
+    small.scale_divisor = 2;
+    const auto product = prepare_image_conversion(original, small);
+    require(loss(product, "resolution_reduced"), "Missing resolution loss");
+    const auto output = root / "scaled-edge.png";
+    write(output, product.encoded);
+    const auto actual = ImageDocument::open(output).decode(0);
+    require(actual.data_window.width == 4 && actual.data_window.height == 4 &&
+            actual.channels.size() == 4, "Scaled PNG layout");
+    for (std::size_t y = 0; y < 4; ++y)
+      for (std::size_t x = 0; x < 4; ++x)
+        for (std::size_t c = 0; c < 4; ++c)
+          require(actual.channels[c].samples.bytes[y * 4 + x] ==
+                  pixels.channels[c].samples.bytes[(2 * y + 1) * 8 + 2 * x + 1], "Scaled edge sample");
+    require(ImageDocument::open(path).description().source.identity.sha256 == digest, "Resize changed source");
+  }
+  {
     auto unknown = options;
     unknown.target = ImageTarget::Tga;
     unknown.transform.source_alpha = AlphaMode::Unknown;

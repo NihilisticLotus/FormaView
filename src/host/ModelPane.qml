@@ -75,17 +75,63 @@ Rectangle {
                 onClicked: root.addExternalAnimation()
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0 }
-            Choice {
+            Tool {
+                id: modeButton
                 objectName: "modelPreviewMode"
-                Layout.preferredWidth: root.narrow ? 120 : 160
-                labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
-                notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
-                currentIndex: root.previewMode
+                Layout.preferredWidth: Theme.controlHeight
+                readonly property var icons: ["display-shaded", "display-checker", "display-vertices", "display-wire"]
+                readonly property var labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
+                readonly property var notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
+                iconName: icons[root.previewMode]
+                hint: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式") + " · " + labels[root.previewMode]
+                Accessible.name: hint
                 enabled: root.session.available && !root.session.info.cameraOnly
-                onActivated: root.previewMode = currentIndex
-                Accessible.name: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式")
+                onClicked: modes.open()
+                Keys.onDownPressed: modes.open()
+                Keys.onReturnPressed: modes.open()
+                Keys.onEnterPressed: modes.open()
+                AppPopupMenu {
+                    id: modes
+                    objectName: "modelDisplayMenu"
+                    y: modeButton.height + 2
+                    width: 206
+                    onOpened: itemAt(root.previewMode).forceActiveFocus(Qt.PopupFocusReason)
+                    onClosed: modeButton.forceActiveFocus(Qt.PopupFocusReason)
+                    component DisplayOption: AppMenuItem {
+                        id: option
+                        required property int mode
+                        objectName: "modelDisplayOption" + mode
+                        text: modeButton.labels[mode]
+                        leftPadding: 54
+                        checkable: true
+                        autoExclusive: true
+                        checked: root.previewMode === mode
+                        Accessible.description: modeButton.notes[mode]
+                        ToolTip.visible: hovered && modeButton.notes[mode].length > 0
+                        ToolTip.text: modeButton.notes[mode]
+                        ToolTip.delay: 350
+                        AppIcon { x: 28; anchors.verticalCenter: parent.verticalCenter; name: modeButton.icons[option.mode]; size: 18 }
+                        onTriggered: root.previewMode = mode
+                    }
+                    DisplayOption { mode: 0 }
+                    DisplayOption { mode: 1 }
+                    DisplayOption { mode: 2 }
+                    DisplayOption { mode: 3 }
+                }
             }
             Tool { objectName: "modelGroundGrid"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
+            Tool {
+                objectName: "modelNormals"; text: "N"; checked: !!(root.session.directionMask & 1); primary: checked
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("法线方向（蓝色）", "Normal directions (blue)", "法線方向（藍色）")
+                onClicked: root.session.directionMask ^= 1
+            }
+            Tool {
+                objectName: "modelTangents"; text: "T"; checked: !!(root.session.directionMask & 2); primary: checked
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("切线方向（红色）", "Tangent directions (red)", "切線方向（紅色）")
+                onClicked: root.session.directionMask ^= 2
+            }
             Tool { objectName: "modelOriginAxes"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "origin-axes"; hint: Theme.t("原点坐标轴 · X 红 / Y 绿 / Z 蓝", "Origin axes · X red / Y green / Z blue", "原點座標軸 · X 紅 / Y 綠 / Z 藍"); checkable: true; checked: root.showAxes; enabled: root.session.available; onToggled: root.showAxes=checked }
             Tool { objectName: "modelFocus"; Layout.preferredWidth: 32; iconName: "focus"; hint: Theme.t("聚焦所选对象（F）", "Focus selection (F)", "聚焦所選物件（F）"); enabled: root.session.available; onClicked: root.fit(true) }
             Tool { objectName: "modelFrameAll"; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
@@ -165,6 +211,21 @@ Rectangle {
                         }
                     }
                 }
+            }
+            Label {
+                anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 8
+                visible: text.length > 0 && !root.session.busy
+                color: Theme.text
+                padding: 4
+                background: Rectangle { color: Theme.panel; radius: Theme.radius }
+                text: [
+                    (root.session.directionMask & 1) && !root.session.normalDirectionsAvailable ? Theme.t("无可用法线", "No normal data", "無可用法線") : "",
+                    !(root.session.directionMask & 2) ? "" :
+                    root.session.tangentSource === "source" ? Theme.t("切线 · 源数据", "Tangents · source", "切線 · 來源資料") :
+                    root.session.tangentSource === "uv" ? Theme.t("切线 · 由 UV 计算", "Tangents · from UVs", "切線 · 由 UV 計算") :
+                    root.session.tangentSource === "mixed" ? Theme.t("切线 · 源数据及 UV 推算", "Tangents · source and UVs", "切線 · 來源資料及 UV 推算") :
+                    Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
+                ].filter(Boolean).join(" · ")
             }
             SkeletonComparePane {
                 id: skeletonCompareHost

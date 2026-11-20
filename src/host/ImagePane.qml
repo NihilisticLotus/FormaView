@@ -30,10 +30,11 @@ ColumnLayout {
                 required property string modelData
                 required property int index
                 objectName: "imageChannel" + index
-                text: modelData; checked: root.session.display.channel === index - 1
+                text: modelData; checked: enabled && root.session.display.channel === index - 1
+                primary: checked
                 enabled: index === 0 ? !!root.mapping[0] && !!root.mapping[1] && !!root.mapping[2] : !!root.mapping[index - 1]
                 hint: enabled ? modelData : Theme.t("缺少源通道；可在检查区映射", "Source channel absent; map in Inspect", "缺少來源通道；可在檢查區映射")
-                onClicked: root.session.setting("channel", index - 1)
+                onClicked: { root.session.setting("channel", index - 1); view.forceActiveFocus() }
             }
         }
         Tool {

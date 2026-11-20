@@ -652,9 +652,71 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
         pixelBytes += scalar_size(c.samples.scalar);
       if (h.type() == exr::SCANLINEIMAGE) {
         const auto lines = exr::getCompressionNumScanlines(h.compression());
+        const auto &bounds = h.dataWindow();
+        const auto width = descriptor.data_window.width;
         budget(lines > 0 && pixelBytes &&
-               descriptor.data_window.width <=
-                   64ULL * 1024 * 1024 / pixelBytes / std::uint64_t(lines));
+               width <= 64ULL * 1024 * 1024 / pixelBytes /
+                            static_cast<std::uint64_t>(lines));
+        const auto chunkHeight = static_cast<std::uint64_t>(lines);
+        auto scratch = descriptor.channels;
+        for (auto &c : scratch)
+          c.samples.bytes.resize(
+              width * chunkHeight * scalar_size(c.samples.scalar));
+        const bool contiguousX = r.width == ow;
+        std::vector<std::uint64_t> sampleX;
+        if (!contiguousX) {
+          sampleX.reserve(static_cast<std::size_t>(ow));
+          for (std::uint64_t x = 0; x < ow; ++x)
+            sampleX.push_back(r.sx(x));
+        }
+
+        exr::InputPart part(input, static_cast<int>(descriptor.part));
+        // A scanline request decompresses its containing chunk. Read all
+        // needed rows of that chunk at once and skip unsampled chunks.
+        for (std::uint64_t y = 0; y < oh;) {
+          cancel(stop);
+          const auto first = r.sy(y);
+          const auto next = r.first_y((first / chunkHeight + 1) * chunkHeight);
+          const auto sourceRow = [&](std::uint64_t row) {
+            return static_cast<int>(std::int64_t(bounds.min.y) +
+                                    static_cast<std::int64_t>(row));
+          };
+          const auto firstRow = sourceRow(first);
+          const auto lastRow = sourceRow(r.sy(next - 1));
+          const IMATH_NAMESPACE::Box2i box{{bounds.min.x, firstRow},
+                                           {bounds.max.x, lastRow}};
+          exr::FrameBuffer frame;
+          for (auto &c : scratch) {
+            const auto type = c.samples.scalar == ScalarType::Half ? exr::HALF
+                              : c.samples.scalar == ScalarType::Float32
+                                  ? exr::FLOAT
+                                  : exr::UINT;
+            frame.insert(c.name,
+                         exr::Slice::Make(type, c.samples.bytes.data(), box));
+          }
+          part.setFrameBuffer(frame);
+          part.readPixels(firstRow, lastRow);
+          for (auto row = y; row < next; ++row) {
+            cancel(stop);
+            const auto rowOffset = (r.sy(row) - first) * width;
+            for (std::size_t c = 0; c < scratch.size(); ++c) {
+              const auto bytes = scalar_size(scratch[c].samples.scalar);
+              const auto *source = scratch[c].samples.bytes.data() +
+                                   rowOffset * bytes;
+              auto *dest =
+                  out.channels[c].samples.bytes.data() + row * ow * bytes;
+              if (contiguousX) {
+                std::memcpy(dest, source + r.x * bytes, ow * bytes);
+              } else {
+                for (std::uint64_t x = 0; x < ow; ++x)
+                  std::memcpy(dest + x * bytes, source + sampleX[x] * bytes,
+                              bytes);
+              }
+            }
+          }
+          y = next;
+        }
+        return out;
       }
       const auto readPatch = [&](IMATH_NAMESPACE::Box2i box, auto &part,
                                  auto read) {
@@ -707,19 +769,6 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
                                       static_cast<int>(ty));
                       });
           }
-        }
-      } else {
-        exr::InputPart part(input, static_cast<int>(descriptor.part));
-        std::uint64_t previous = UINT64_MAX;
-        for (std::uint64_t y = 0; y < oh; ++y) {
-          const auto sy = r.sy(y);
-          if (sy == previous)
-            continue;
-          previous = sy;
-          const auto row = static_cast<int>(std::int64_t(h.dataWindow().min.y) +
-                                            static_cast<std::int64_t>(sy));
-          readPatch({{h.dataWindow().min.x, row}, {h.dataWindow().max.x, row}},
-                    part, [&] { part.readPixels(row); });
         }
       }
       return out;

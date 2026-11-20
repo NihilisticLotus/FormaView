@@ -454,6 +454,13 @@ int main(int argc, char **argv) {
         throw std::runtime_error(
             "Ground grid and origin axes must switch independently without "
             "changing shaded source geometry");
+      // Reuse the colored segments as a direction-only guide range.
+      guideFrame->gridVertices = 0;
+      guideFrame->directionVertices = 4;
+      const auto directions = render(guideFrame, false, false);
+      ++assertions;
+      if (!directions.gridPixels || !directions.axisPixels)
+        throw std::runtime_error("Direction colors missing with grid and axes disabled");
     }
     {
       auto selected = base();

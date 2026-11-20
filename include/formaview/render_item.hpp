@@ -73,7 +73,8 @@ struct Frame {
   int clip{-1};
   std::vector<Vertex> guides;
   std::uint32_t gridVertices{};
-  std::uint32_t selectionVertices{};
+  std::uint32_t selectionVertices{}, directionVertices{};
+  bool sourceTangents{}, uvTangents{}, normalDirections{};
   std::vector<float>
       rgba; // Selected source subresource converted explicitly to RGBA32F.
   std::vector<std::shared_ptr<const Texture>> textures;

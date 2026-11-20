@@ -2,7 +2,7 @@
   #error Payload must be supplied by build.py
 #endif
 #ifndef PackageVersion
-  #define PackageVersion "0.1.0"
+  #error PackageVersion must be supplied by build.py
 #endif
 #ifndef CandidateId
   #error CandidateId must be supplied by build.py

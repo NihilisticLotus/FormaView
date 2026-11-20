@@ -197,6 +197,7 @@ Desktop::Desktop(QObject *parent, std::function<QString()> desktopLocation)
   auto settings = QSettings{};
   language_ = settings.value("language", "zh-CN").toString();
   preferences_ = settings.value("preferences").toMap();
+  refreshExplorerPreferences();
   const auto savedView = preferences_.value("fileViewMode").toString();
   preferences_["fileViewMode"] = QStringList{"list", "thumbnails", "tiles"}.contains(savedView)
       ? savedView : preferences_.value("thumbnails").toBool() ? "thumbnails" : "list";
@@ -226,7 +227,33 @@ void Desktop::setLanguage(const QString &value) {
     emit languageChanged();
   }
 }
+void Desktop::refreshExplorerPreferences() {
+  QSettings settings;
+  settings.sync();
+  bool changed = false;
+  for (const auto *key : {"reuseImageWindow", "reuseModelWindow"}) {
+    const auto current = settings.value(QStringLiteral("explorer/") + key, true).toBool();
+    if (preferences_.value(key) == current) continue;
+    preferences_[key] = current;
+    changed = true;
+  }
+  if (changed) emit preferencesChanged();
+}
+QString Desktop::reuseKeyForFile(const QString &path) {
+  const auto type = kind(path);
+  if (type == "image") return "reuseImageWindow";
+  if (type == "model" || type == "animation" || type == "cache") return "reuseModelWindow";
+  return {};
+}
 void Desktop::preference(const QString &key, const QVariant &value) {
+  if (key == "reuseImageWindow" || key == "reuseModelWindow") {
+    QSettings{}.setValue("explorer/" + key, value.toBool());
+    if (preferences_.value(key) != value.toBool()) {
+      preferences_[key] = value.toBool();
+      emit preferencesChanged();
+    }
+    return;
+  }
   if (!QStringList{"fileWidth", "thumbnails", "fileViewMode", "filesVisible", "mcpInputRoot",
                    "mcpOutputRoot", "mcpPython", "mcpAdapter", "density",
                    "restoreLayout", "defaultFilesVisible", "inspectorMode"}
@@ -249,7 +276,14 @@ void Desktop::preference(const QString &key, const QVariant &value) {
   } else updated[key] = value;
   if (preferences_ == updated) return;
   preferences_ = std::move(updated);
-  QSettings{}.setValue("preferences", preferences_);
+  QSettings settings;
+  auto stored = settings.value("preferences").toMap();
+  stored[key] = preferences_.value(key);
+  if (key == "thumbnails" || key == "fileViewMode") {
+    stored["fileViewMode"] = preferences_.value("fileViewMode");
+    stored["thumbnails"] = preferences_.value("thumbnails");
+  }
+  settings.setValue("preferences", stored);
   emit preferencesChanged();
 }
 void Desktop::saveView(double position) { scroll_ = std::max(0.0, position); }

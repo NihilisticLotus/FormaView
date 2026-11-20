@@ -7,6 +7,7 @@ import QtQuick
 QtObject {
     // {d} is replaced by the producer's detail (a name, key or count).
     readonly property var losses: ({
+        "resolution_reduced": ["输出分辨率降低为 {d}。", "Output resolution reduced: {d}.", "輸出解析度降低為 {d}。"],
         "selected_subresource": ["只写出所选的条目/部件/Mip/面/层/切片；其他子资源不会进入输出。", "Only the selected entry/part/mip/face/layer/slice is written; other sub-images are not in the output.", "只寫出所選的項目/部件/Mip/面/層/切片；其他子資源不會進入輸出。"],
         "omitted_channel": ["源通道 {d} 没有写入输出。", "Source channel {d} is not written to the output.", "來源通道 {d} 沒有寫入輸出。"],
         "alpha_removed": ["透明度（Alpha）已按所选策略移除或合成到背景，输出不再含透明信息。", "Alpha was removed or composited by the chosen policy; the output has no transparency.", "透明度（Alpha）已依所選策略移除或合成至背景，輸出不再含透明資訊。"],

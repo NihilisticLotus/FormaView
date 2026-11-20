@@ -11,12 +11,15 @@ Item {
     property string savedSnapshot: ""
     readonly property bool dirty: JSON.stringify(draft) !== savedSnapshot
     function reset(): void {
-        draft = {language: controller.language, density: controller.preferences.density || "standard", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
+        controller.refreshExplorerPreferences()
+        draft = {reuseImageWindow: controller.preferences.reuseImageWindow !== false, reuseModelWindow: controller.preferences.reuseModelWindow !== false, language: controller.language, density: controller.preferences.density || "standard", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
         savedSnapshot = JSON.stringify(draft)
     }
     function change(key, value): void { const next = Object.assign({}, draft); next[key] = value; draft = next }
     function save(): void {
-        for (const key of ["density", "restoreLayout", "defaultFilesVisible", "inspectorMode"]) controller.preference(key, draft[key])
+        const saved = JSON.parse(savedSnapshot)
+        for (const key of ["reuseImageWindow", "reuseModelWindow", "density", "restoreLayout", "defaultFilesVisible", "inspectorMode"])
+            if (saved[key] !== draft[key]) controller.preference(key, draft[key])
         controller.language = draft.language
         savedSnapshot = JSON.stringify(draft)
     }
@@ -51,6 +54,14 @@ Item {
                 SettingsGroup {
                     visible: root.section === "general" || root.section === "preview"; title: Theme.t("启动与布局", "Startup and layout", "啟動與配置")
                     SettingsRow {
+                        label: Theme.t("双击图片时复用窗口", "Reuse window for images", "雙擊圖片時重用視窗")
+                        Toggle { checked: root.draft.reuseImageWindow === true; onToggled: root.change("reuseImageWindow", checked); Accessible.name: parent.label }
+                    }
+                    SettingsRow {
+                        label: Theme.t("双击模型时复用窗口", "Reuse window for models", "雙擊模型時重用視窗")
+                        Toggle { checked: root.draft.reuseModelWindow === true; onToggled: root.change("reuseModelWindow", checked); Accessible.name: parent.label }
+                    }
+                    SettingsRow {
                         label: Theme.t("恢复上次布局", "Restore previous layout", "還原上次配置")
                         description: Theme.t("下次启动时保留文件面板宽度与展开状态", "Retain file pane width and visibility on next startup", "下次啟動時保留檔案面板寬度與展開狀態")
                         Toggle { objectName: "settingsRestoreLayout"; checked: root.draft.restoreLayout === true; onToggled: root.change("restoreLayout", checked); Accessible.name: parent.label }
@@ -82,7 +93,7 @@ Item {
                 }
                 SettingsGroup {
                     visible: root.section === "about"; title: Theme.t("关于 FormaView", "About FormaView", "關於 FormaView")
-                    SettingsRow { label: "FormaView · Qt 6.12"; description: Theme.t("只读资产预览、图片检查与独立转换导出。预览调整不修改原文件。", "Read-only asset preview, image inspection and separate conversion exports. Preview adjustments leave source files unchanged.", "唯讀資產預覽、影像檢查與獨立轉換匯出。預覽調整不修改原始檔案。") }
+                    SettingsRow { label: "FormaView " + Qt.application.version + " · Qt 6.12"; description: Theme.t("只读资产预览、图片检查与独立转换导出。预览调整不修改原文件。", "Read-only asset preview, image inspection and separate conversion exports. Preview adjustments leave source files unchanged.", "唯讀資產預覽、影像檢查與獨立轉換匯出。預覽調整不修改原始檔案。") }
                 }
             }
         }

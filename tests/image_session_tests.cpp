@@ -882,6 +882,72 @@ int main(int argc, char **argv) {
       save(app.arguments()[3], QJsonObject{{"unaligned_region", true}, {"navigation",steps}});
       return 0;
     }
+    if (argc == 4 && app.arguments()[1] == "--exr-preview-benchmark") {
+      QElapsedTimer clock;
+      clock.start();
+      const auto files = QDir(app.arguments()[2]).entryInfoList(
+          {"*.exr"}, QDir::Files, QDir::Name);
+      const auto enumerate = ms(clock);
+      require(files.size() >= 6, "EXR benchmark requires at least six files");
+      auto largest = files;
+      std::stable_sort(largest.begin(), largest.end(),
+                       [](const QFileInfo &a, const QFileInfo &b) {
+                         return a.size() > b.size();
+                       });
+      QJsonArray results;
+      for (const auto &file : {files[0], files[files.size() / 4],
+                               files[files.size() / 2], files.back(),
+                               largest[0], largest[1]}) {
+        auto document = ImageDocument::open(
+            std::filesystem::path(file.absoluteFilePath().toStdWString()),
+            {512ULL * 1024 * 1024, 512ULL * 1024 * 1024, 16384, 65536, 256,
+             true}, {});
+        const auto full = document.description().subresources.front().data_window;
+        require(full.width == 8192 && full.height == 2048, "Expected cloud EXR dimensions");
+        ImageSession session;
+        clock.restart();
+        session.open(file.absoluteFilePath());
+        waitFor(session);
+        const auto sessionMs = ms(clock);
+        require(session.error().isEmpty() && session.pixels(), "EXR preview session");
+        const auto pixels = session.pixels();
+        QJsonArray passes;
+        for (const auto request : {PreviewRequest{0, 0, full.width, full.height, 2048, 512},
+                                   PreviewRequest{0, 0, full.width, full.height, 160, 40},
+                                   PreviewRequest{153, 127, 257, 123, 257, 123}}) {
+          QJsonArray times;
+          QString checksum;
+          for (int attempt = 0; attempt != 3; ++attempt) {
+            clock.restart();
+            const auto image = document.decode_preview(0, request, {});
+            times.append(ms(clock));
+            const auto channels = [&] {
+              QCryptographicHash hash(QCryptographicHash::Sha256);
+              for (const auto &channel : image.channels) {
+                const auto &buffer = channel.samples.bytes;
+                hash.addData(QByteArrayView(reinterpret_cast<const char *>(buffer.data()),
+                                            static_cast<qsizetype>(buffer.size())));
+              }
+              return QString::fromLatin1(hash.result().toHex());
+            }();
+            require(checksum.isEmpty() || checksum == channels, "Repeatable preview pixels");
+            checksum = channels;
+          }
+          passes.append(QJsonObject{{"output_width", static_cast<int>(request.output_width)},
+                                    {"decode_ms", times}, {"sha256", checksum}});
+        }
+        results.append(QJsonObject{{"file", file.fileName()},
+                                   {"source_sha256", pixels->info.value("sha256").toString()},
+                                   {"session_ready_ms", sessionMs},
+                                   {"upload_sha256", QString::fromLatin1(normalizedHash(*pixels))},
+                                   {"decode", passes}});
+        std::cout << file.fileName().toStdString() << " ready_ms=" << sessionMs << std::endl;
+      }
+      save(app.arguments()[3], QJsonObject{{"directory_files", files.size()},
+                                          {"directory_enumerate_ms", enumerate},
+                                          {"samples", results}});
+      return 0;
+    }
     if (argc == 4 && app.arguments()[1] == "--preview-matrix")
       return previewMatrix(app.arguments()[2], app.arguments()[3]);
     if (argc == 4 && app.arguments()[1] == "--preview-samples") {

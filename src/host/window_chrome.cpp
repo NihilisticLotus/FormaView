@@ -13,6 +13,7 @@
 #include <QAbstractNativeEventFilter>
 #include <QtCore/qt_windows.h>
 #include <windowsx.h>
+#include <dwmapi.h>
 
 namespace {
 class WindowChrome final : public QObject, public QAbstractNativeEventFilter {
@@ -21,7 +22,11 @@ public:
     setObjectName(QStringLiteral("nativeWindowChrome"));
     overlay_ = QQmlProperty(window, QStringLiteral("Overlay.overlay"), qmlContext(window)).read().value<QQuickItem *>();
     qGuiApp->installNativeEventFilter(this);
+    applyFrameAppearance();
     updateCaptionInset();
+    connect(window, &QWindow::visibleChanged, this, [this](bool visible) {
+      if (visible) applyFrameAppearance();
+    });
     connect(window, &QWindow::screenChanged, this, [this] {
       QMetaObject::invokeMethod(this, [this] { updateCaptionInset(); }, Qt::QueuedConnection);
     });
@@ -80,6 +85,9 @@ public:
         return true;
       }
     }
+    if (msg->message == WM_THEMECHANGED || msg->message == WM_DWMCOMPOSITIONCHANGED ||
+        msg->message == WM_SHOWWINDOW || msg->message == WM_DPICHANGED)
+      QMetaObject::invokeMethod(this, [this] { applyFrameAppearance(); }, Qt::QueuedConnection);
     if (msg->message == WM_DPICHANGED || msg->message == WM_SIZE || msg->message == WM_SHOWWINDOW)
       QMetaObject::invokeMethod(this, [this] { updateCaptionInset(); }, Qt::QueuedConnection);
     if (msg->message != WM_NCHITTEST)
@@ -188,6 +196,14 @@ public:
     return true;
   }
 private:
+  void applyFrameAppearance() {
+    if (!window_ || !window_->handle()) return;
+    const auto hwnd = reinterpret_cast<HWND>(window_->winId());
+    const BOOL dark = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    const COLORREF border = DWMWA_COLOR_NONE;
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+  }
   void updateCaptionInset() {
     if (!window_ || !window_->handle() ||
         window_->metaObject()->indexOfProperty("nativeCaptionInset") < 0)

@@ -206,6 +206,7 @@ ImageConversionOptions parse_image_options(const QJsonObject &o) {
            "metadata",
            "allow_lossy",
            "quality",
+           "scale_divisor",
            "png_compression",
            "webp_lossless",
            "exr_tiled",
@@ -222,6 +223,7 @@ ImageConversionOptions parse_image_options(const QJsonObject &o) {
                                        {"dds", ImageTarget::Dds},
                                        {"hdr", ImageTarget::Hdr},
                                        {"exr", ImageTarget::Exr}});
+  result.scale_divisor = static_cast<unsigned>(integer(o, "scale_divisor", 1, 8));
   result.subresource = integer(o, "subresource", 0);
   auto &t = result.transform;
   const auto channels = array(o, "channels");
@@ -532,6 +534,8 @@ QJsonObject execute_image_request(
        QString::fromLatin1(
            image_target_name(options.target).data(),
            static_cast<qsizetype>(image_target_name(options.target).size()))},
+      {"width", static_cast<qint64>(product.width)},
+      {"height", static_cast<qint64>(product.height)},
       {"encoded_bytes", static_cast<qint64>(product.encoded.size())},
       {"losses", losses},
       {"approval_digest", approval_digest}};
