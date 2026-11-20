@@ -9,7 +9,7 @@ Rectangle {
     readonly property bool thumbnails: viewMode === "thumbnails"
     readonly property bool tiles: viewMode === "tiles"
     readonly property bool gridMode: thumbnails || tiles
-    readonly property int columns: gridMode ? Math.max(1, Math.floor(grid.width / (tiles ? 190 : 128))) : 1
+    readonly property int columns: gridMode ? Math.max(1, Math.floor(fileArea.width / (tiles ? 190 : 128))) : 1
     readonly property var activeView: gridMode ? grid : list
     function sizeText(bytes) {
         if (bytes < 1024) return bytes + " B"
@@ -134,7 +134,15 @@ Rectangle {
             onActivated: index => { root.remember(); root.controller.preference("fileViewMode", modes[index]) }
         }
         Item {
+            id: fileArea
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.leftMargin: 6; Layout.rightMargin: 6
+            component FileScrollBar: ScrollBar {
+                parent: fileArea
+                anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.right: parent.right
+                width: 14; interactive: true
+                minimumSize: Math.min(1, 24 / Math.max(1, height))
+                policy: size < 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
             Component {
                 id: entryDelegate
                 ItemDelegate {
@@ -187,11 +195,11 @@ Rectangle {
             ListView {
                 id: list
                 objectName: "fileList"
-                anchors.fill: parent; visible: !root.gridMode; clip: true
+                anchors.fill: parent; anchors.rightMargin: 16; visible: !root.gridMode; clip: true
                 model: root.visible && visible && !root.modelResetting ? root.controller.files : null; delegate: entryDelegate; reuseItems: true; cacheBuffer: Theme.fileRowHeight * 2
                 focus: true; activeFocusOnTab: true
                 keyNavigationEnabled: false
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FileScrollBar { objectName: "fileListScroll"; visible: list.visible && size < 1 }
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
                 onContentHeightChanged: if (!root.gridMode) root.restoreGeometryChanged()
@@ -201,12 +209,12 @@ Rectangle {
             GridView {
                 id: grid
                 objectName: "fileGrid"
-                anchors.fill: parent; visible: root.gridMode; clip: true
+                anchors.fill: parent; anchors.rightMargin: 16; visible: root.gridMode; clip: true
                 model: root.visible && visible && !root.modelResetting ? root.controller.files : null
                 cellWidth: width / root.columns; cellHeight: root.tiles ? 80 : 116
                 delegate: entryDelegate; cacheBuffer: 116; activeFocusOnTab: visible
                 keyNavigationEnabled: false
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FileScrollBar { objectName: "fileGridScroll"; visible: grid.visible && size < 1 }
                 Keys.onPressed: event => root.handleKey(event)
                 onMovementEnded: root.remember()
                 onContentHeightChanged: if (root.gridMode) root.restoreGeometryChanged()

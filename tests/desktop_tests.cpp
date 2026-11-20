@@ -7229,6 +7229,55 @@ private slots:
     }
   }
 
+  void fileScrollAndResize_data() {
+    QTest::addColumn<QString>("mode");
+    for (const char *mode : {"list", "tiles", "thumbnails"}) QTest::newRow(mode) << QString(mode);
+  }
+  void fileScrollAndResize() {
+    QFETCH(QString, mode);
+    window_->resize(1600, 900);
+    desktop_->preference("fileWidth", 220);
+    desktop_->navigate(fixture_);
+    QTRY_VERIFY(desktop_->count() > 1000 && idle());
+    desktop_->preference("fileViewMode", mode);
+    auto *files = item("filesPane");
+    auto *split = item("filesPaneSplitterMouseArea");
+    QVERIFY(files && split);
+    QTRY_COMPARE(qRound(files->width()), 220);
+    auto *view = item(mode == "list" ? "fileList" : "fileGrid");
+    QVERIFY(view);
+    QTRY_VERIFY(view->property("contentHeight").toDouble() > 2 * view->height());
+    QTRY_VERIFY(!files->property("restorePending").toBool());
+    QQuickItem *bar{};
+    for (auto *child : view->findChildren<QQuickItem *>())
+      if (child->inherits("QQuickScrollBar")) { bar = child; break; }
+    if (!bar) bar = item(mode == "list" ? "fileListScroll" : "fileGridScroll");
+    QVERIFY(bar);
+    auto *thumb = bar->property("contentItem").value<QQuickItem *>();
+    QVERIFY(thumb);
+    const auto start = thumb->mapToScene(thumb->boundingRect().center()).toPoint();
+    const double initialY = view->property("contentY").toDouble();
+    const auto width = files->width();
+    QTest::mouseMove(window_, start);
+    QTest::mousePress(window_, Qt::LeftButton, {}, start);
+    const auto end = start + QPoint(0, 65);
+    QTest::mouseMove(window_, end, 25);
+    QTest::mouseRelease(window_, Qt::LeftButton, {}, end);
+    QTRY_VERIFY(view->property("contentY").toDouble() > initialY + 20);
+    QCOMPARE(files->width(), width);
+    const double afterScroll = view->property("contentY").toDouble();
+    const auto handle = split->mapToScene(split->boundingRect().center()).toPoint();
+    QTest::mousePress(window_, Qt::LeftButton, {}, handle);
+    QTest::mouseMove(window_, handle + QPoint(24, 0), 25);
+    QTest::mouseRelease(window_, Qt::LeftButton, {}, handle + QPoint(24, 0));
+    QTRY_VERIFY(files->width() > width + 15);
+    // A relayout can align a fractional scroll position to the nearest pixel.
+    QVERIFY(std::abs(view->property("contentY").toDouble() - afterScroll) <= 0.5);
+    qInfo() << mode << "DPR" << window_->devicePixelRatio() << "scroll Y" << initialY << afterScroll
+            << "panel width" << width << files->width();
+    if (mode == "thumbnails") save("file-scroll-and-divider");
+  }
+
   void imageThumbnailsWorkflow() {
     const auto restoreList = qScopeGuard([&] { desktop_->preference("thumbnails", false); });
     const auto folder = root_ + "/thumbnail-ui";

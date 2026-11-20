@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/host/Workspace.qml'), 'utf8');
 const hitAreaStart = source.indexOf('objectName: "filesPaneSplitterHitArea"');
 const hitArea = source.slice(hitAreaStart, source.indexOf('PreviewPane {', hitAreaStart));
-assert.match(hitArea, /width: 14/, 'splitter keeps a usable pointer target around its visible divider');
+assert.match(hitArea, /Layout.preferredWidth: 14/, 'splitter keeps a usable pointer target around its visible divider');
 const area = source.slice(source.indexOf('MouseArea { id: splitterMouse;'));
 assert.ok(area.length > 0, 'splitter pointer handlers exist');
 let writes = [];
