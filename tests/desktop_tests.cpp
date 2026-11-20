@@ -2984,8 +2984,13 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() && !session->preparing(),30000);
     QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
     QTRY_VERIFY(item("modelPreviewMode"));
-    auto *choice=item("modelPreviewMode");
-    QTRY_COMPARE(choice->property("count").toInt(),4);
+    auto *button = item("modelPreviewMode");
+    auto *menu = button->findChild<QObject *>("modelDisplayMenu");
+    QVERIFY(menu);
+    QTRY_COMPARE(menu->property("count").toInt(), 4);
+    QCOMPARE(button->property("text").toString(), QString());
+    QVERIFY(!button->property("hint").toString().isEmpty());
+    QVERIFY(button->width() < 48);
     ModelView *view{};
     QTRY_VERIFY((view=window_->findChild<ModelView *>("modelViewport")));
     QVERIFY(!item("modelWireframe"));
@@ -2993,9 +2998,33 @@ private slots:
     QTRY_VERIFY(view->frame == original);
     QTest::qWait(100);
     const auto camera=view->cameraState();
-    for(int mode: {0,1,2,3,0}) {
-      choice->setProperty("currentIndex",mode);
-      QVERIFY(QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,mode)));
+    int previous = 0;
+    for(int mode: {1,2,3,0}) {
+      button->forceActiveFocus();
+      if (mode == 1) QTest::keyClick(window_, Qt::Key_Down);
+      else QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
+      QTRY_VERIFY(menu->property("opened").toBool());
+      QQuickItem *selected = nullptr;
+      qreal lastY = -1;
+      for (int index = 0; index < 4; ++index) {
+        const auto name = "modelDisplayOption" + QByteArray::number(index);
+        auto *option = item(name.constData());
+        QVERIFY(option && !option->property("text").toString().isEmpty());
+        const auto y = option->mapToScene({0,0}).y();
+        QVERIFY(y > lastY);
+        lastY = y;
+        QCOMPARE(option->property("checked").toBool(), previous == index);
+        if (index == mode) selected = option;
+      }
+      if (mode == 1) {
+        save("model-display-menu");
+        QTest::keyClick(window_, Qt::Key_Down);
+        QTest::keyClick(window_, Qt::Key_Return);
+      } else {
+        QTest::mouseClick(window_, Qt::LeftButton, {}, selected->mapToScene(selected->boundingRect().center()).toPoint());
+      }
+      QTRY_VERIFY(!menu->property("opened").toBool());
+      previous = mode;
       QTRY_COMPARE(view->wireframeVisible(),mode==3);
       QTRY_COMPARE(view->shading(),mode==1 || mode==2 ? mode : 0);
       QCOMPARE(session->frameFor(false),original);
@@ -3003,13 +3032,18 @@ private slots:
       QTest::qWait(250);
       save("model-preview-mode-"+QString::number(mode));
     }
+    button->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(menu->property("opened").toBool());
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(!menu->property("opened").toBool() && button->hasActiveFocus());
     // Render-only state resets with a new document; source data are untouched.
     item("modelPane")->setProperty("previewMode",2);
     desktop_->clearAsset();
     QTRY_VERIFY(!item("modelPane"));
     desktop_->openPath(path);
     QTRY_VERIFY(item("modelPreviewMode"));
-    QTRY_COMPARE(item("modelPreviewMode")->property("count").toInt(),4);
+    QTRY_COMPARE(item("modelPreviewMode")->property("iconName").toString(), QString("display-shaded"));
     QCOMPARE(item("modelPane")->property("previewMode").toInt(),0);
   }
   void boundedLargeImagePreview() {

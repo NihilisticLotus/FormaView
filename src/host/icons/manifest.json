@@ -1083,6 +1083,54 @@
         "success": "icons/success/frame-all.svg"
       },
       "originalSha256": "47b278112d9e40a4f0505ca0b11b85ad1c291a4159d6d833ade009e536c2f587"
+    },
+    {
+      "id": "display-shaded",
+      "author": "FormaView",
+      "labelZhCN": "默认显示",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/display-shaded.svg",
+        "disabled": "icons/disabled/display-shaded.svg"
+      }
+    },
+    {
+      "id": "display-checker",
+      "author": "FormaView",
+      "labelZhCN": "棋盘格材质",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/display-checker.svg",
+        "disabled": "icons/disabled/display-checker.svg"
+      }
+    },
+    {
+      "id": "display-vertices",
+      "author": "FormaView",
+      "labelZhCN": "顶点色显示",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/display-vertices.svg",
+        "disabled": "icons/disabled/display-vertices.svg"
+      }
+    },
+    {
+      "id": "display-wire",
+      "author": "FormaView",
+      "labelZhCN": "线框显示",
+      "page": "model",
+      "viewBox": "0 0 24 24",
+      "strokeWidth": 1.75,
+      "variants": {
+        "normal": "icons/normal/display-wire.svg",
+        "disabled": "icons/disabled/display-wire.svg"
+      }
     }
   ]
 }

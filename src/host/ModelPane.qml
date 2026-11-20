@@ -75,15 +75,49 @@ Rectangle {
                 onClicked: root.addExternalAnimation()
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0 }
-            Choice {
+            Tool {
+                id: modeButton
                 objectName: "modelPreviewMode"
-                Layout.preferredWidth: root.narrow ? 120 : 160
-                labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
-                notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
-                currentIndex: root.previewMode
+                Layout.preferredWidth: Theme.controlHeight
+                readonly property var icons: ["display-shaded", "display-checker", "display-vertices", "display-wire"]
+                readonly property var labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
+                readonly property var notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
+                iconName: icons[root.previewMode]
+                hint: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式") + " · " + labels[root.previewMode]
+                Accessible.name: hint
                 enabled: root.session.available && !root.session.info.cameraOnly
-                onActivated: root.previewMode = currentIndex
-                Accessible.name: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式")
+                onClicked: modes.open()
+                Keys.onDownPressed: modes.open()
+                Keys.onReturnPressed: modes.open()
+                Keys.onEnterPressed: modes.open()
+                AppPopupMenu {
+                    id: modes
+                    objectName: "modelDisplayMenu"
+                    y: modeButton.height + 2
+                    width: 206
+                    onOpened: itemAt(root.previewMode).forceActiveFocus(Qt.PopupFocusReason)
+                    onClosed: modeButton.forceActiveFocus(Qt.PopupFocusReason)
+                    component DisplayOption: AppMenuItem {
+                        id: option
+                        required property int mode
+                        objectName: "modelDisplayOption" + mode
+                        text: modeButton.labels[mode]
+                        leftPadding: 54
+                        checkable: true
+                        autoExclusive: true
+                        checked: root.previewMode === mode
+                        Accessible.description: modeButton.notes[mode]
+                        ToolTip.visible: hovered && modeButton.notes[mode].length > 0
+                        ToolTip.text: modeButton.notes[mode]
+                        ToolTip.delay: 350
+                        AppIcon { x: 28; anchors.verticalCenter: parent.verticalCenter; name: modeButton.icons[option.mode]; size: 18 }
+                        onTriggered: root.previewMode = mode
+                    }
+                    DisplayOption { mode: 0 }
+                    DisplayOption { mode: 1 }
+                    DisplayOption { mode: 2 }
+                    DisplayOption { mode: 3 }
+                }
             }
             Tool { objectName: "modelGroundGrid"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
             Tool {
