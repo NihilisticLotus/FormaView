@@ -2288,34 +2288,82 @@ private slots:
         if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
           IntersectRect(&frame, &frame, &monitor.rcWork);
       }
+      RECT client{};
+      POINT origin{};
+      if (!GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin)) return false;
+      OffsetRect(&client, origin.x, origin.y);
+      // The old check sampled only the outer DWM pixel. A dark DWM outline
+      // can hide a white non-client strip one pixel further in (Win11 23H2).
+      // Require content coverage as well as checking the complete edge band.
+      if (client.left > frame.left || client.top > frame.top ||
+          client.right < frame.right || client.bottom < frame.bottom) return false;
       const auto screen = GetDC(nullptr);
-      int visible = 0, bright = 0;
+      std::array<int, 4> visible{};
+      int bright = 0;
+      const int band = std::max(3, qRound(4 * w->devicePixelRatio()));
       for (int part = 1; part < 8; ++part) {
         const LONG x = frame.left + (frame.right - frame.left) * part / 8;
         const LONG y = frame.top + (frame.bottom - frame.top) * part / 8;
-        for (const POINT p : {POINT{x, frame.bottom - 1}, POINT{frame.left, y}, POINT{frame.right - 1, y}}) {
-          if (GetAncestor(WindowFromPoint(p), GA_ROOT) != hwnd) continue;
-          const auto rgb = GetPixel(screen, p.x, p.y);
-          if (rgb == CLR_INVALID) continue;
-          ++visible;
-          if (GetRValue(rgb) > 195 && GetGValue(rgb) > 195 && GetBValue(rgb) > 195) ++bright;
+        for (int inset = 0; inset < band; ++inset) {
+          const std::array<POINT, 4> points{{{x, frame.top + inset},
+              {x, frame.bottom - 1 - inset}, {frame.left + inset, y},
+              {frame.right - 1 - inset, y}}};
+          for (std::size_t side = 0; side < points.size(); ++side) {
+            const auto p = points[side];
+            if (GetAncestor(WindowFromPoint(p), GA_ROOT) != hwnd) continue;
+            const auto rgb = GetPixel(screen, p.x, p.y);
+            if (rgb == CLR_INVALID) continue;
+            ++visible[side];
+            if (GetRValue(rgb) > 195 && GetGValue(rgb) > 195 && GetBValue(rgb) > 195) ++bright;
+          }
         }
       }
       ReleaseDC(nullptr, screen);
-      return visible >= 3 && bright == 0;
+      return std::all_of(visible.begin(), visible.end(), [band](int n) { return n >= 3 * band; }) && bright == 0;
+    };
+    const auto saveNativeFrame = [this](QWindow *w, const QString &state) {
+      const auto hwnd = reinterpret_cast<HWND>(w->winId());
+      RECT frame{};
+      MONITORINFO monitor{};
+      monitor.cbSize = sizeof(monitor);
+      if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame))) ||
+          !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+      IntersectRect(&frame, &frame, &monitor.rcMonitor);
+      // grabWindow(hwnd)/QQuickWindow::grabWindow omit non-client pixels.
+      // Crop the actual desktop capture using physical DWM frame bounds.
+      const auto desktop = w->screen()->grabWindow(0).toImage();
+      const QRect crop(frame.left - monitor.rcMonitor.left, frame.top - monitor.rcMonitor.top,
+                       frame.right - frame.left, frame.bottom - frame.top);
+      const auto name = w == window_ ? QStringLiteral("main") : QStringLiteral("export");
+      return !desktop.isNull() && desktop.copy(crop).save(root_ + "/native-frame-" + name + "-" + state + ".png");
     };
     for (QQuickWindow *w : std::array<QQuickWindow *, 2>{window_, tool}) {
       w->requestActivate();
+      QTRY_VERIFY(w->isActive());
       w->resize(w->size() + QSize(16, 12));
       QTRY_VERIFY(darkEdge(w));
+      QVERIFY(saveNativeFrame(w, "focused"));
       w->showMaximized();
       QTRY_COMPARE(w->visibility(), QWindow::Maximized);
       QTRY_VERIFY(darkEdge(w));
+      QVERIFY(saveNativeFrame(w, "maximized"));
       w->showNormal();
       QTRY_COMPARE(w->visibility(), QWindow::Windowed);
       QTRY_VERIFY(darkEdge(w));
+      QVERIFY(saveNativeFrame(w, "restored"));
+      w->hide();
+      w->show();
+      QTRY_VERIFY(darkEdge(w));
+      QVERIFY(saveNativeFrame(w, "reshown"));
     }
+    tool->requestActivate();
+    QTRY_VERIFY(tool->isActive());
     QVERIFY(darkEdge(window_));
+    QVERIFY(saveNativeFrame(window_, "inactive"));
+    window_->requestActivate();
+    QTRY_VERIFY(window_->isActive());
+    QVERIFY(darkEdge(tool));
+    QVERIFY(saveNativeFrame(tool, "inactive"));
 #else
     QSKIP("Requires Windows and the image workspace");
 #endif
