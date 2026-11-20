@@ -2338,9 +2338,13 @@ private slots:
       return !desktop.isNull() && desktop.copy(crop).save(root_ + "/native-frame-" + name + "-" + state + ".png");
     };
     for (QQuickWindow *w : std::array<QQuickWindow *, 2>{window_, tool}) {
+      // Keep every sampled edge on screen at higher scale factors.
+      const auto area = w->screen()->availableGeometry().adjusted(12, 12, -12, -12);
+      w->resize((w->size() + QSize(16, 12)).boundedTo(area.size()));
+      w->setPosition(area.topLeft());
+      w->raise();
       w->requestActivate();
       QTRY_VERIFY(w->isActive());
-      w->resize(w->size() + QSize(16, 12));
       QTRY_VERIFY(darkEdge(w));
       QVERIFY(saveNativeFrame(w, "focused"));
       w->showMaximized();
@@ -2355,15 +2359,17 @@ private slots:
       w->show();
       QTRY_VERIFY(darkEdge(w));
       QVERIFY(saveNativeFrame(w, "reshown"));
+      // Focus a small window over the interior. Activating the other large
+      // window can cover the edge pixels this assertion needs to sample.
+      QWindow focusTarget;
+      focusTarget.setFlags(Qt::Window | Qt::FramelessWindowHint);
+      focusTarget.setGeometry(QRect(w->geometry().center(), QSize(48, 48)));
+      focusTarget.show();
+      focusTarget.requestActivate();
+      QTRY_VERIFY(focusTarget.isActive() && !w->isActive());
+      QTRY_VERIFY(darkEdge(w));
+      QVERIFY(saveNativeFrame(w, "inactive"));
     }
-    tool->requestActivate();
-    QTRY_VERIFY(tool->isActive());
-    QVERIFY(darkEdge(window_));
-    QVERIFY(saveNativeFrame(window_, "inactive"));
-    window_->requestActivate();
-    QTRY_VERIFY(window_->isActive());
-    QVERIFY(darkEdge(tool));
-    QVERIFY(saveNativeFrame(tool, "inactive"));
 #else
     QSKIP("Requires Windows and the image workspace");
 #endif
