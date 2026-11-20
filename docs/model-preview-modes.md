@@ -21,3 +21,5 @@ FBX 从 `colour/0` 读取第一组角点色，glTF 从 `COLOR_0` 读取，ActorX
 - `formaview_model_gpu_tests SAMPLE OUTPUT_JSON 1 numeric`：既有骨骼 GPU 与 CPU 数值对照，覆盖新增顶点布局。
 
 原始问题样本：`SK_Claymore_PhantomCicada.FBX`，27,733 点、31,715 三角形。样本及测试截图、日志仅保存在忽略的本地 `development/` 中。
+
+三维视口的 N 和 T 可独立开启。蓝线为法线，红线优先显示源切线，缺失时用当前 UV 集计算。状态行标明切线来源。网格按三角形角点取样，最多选取 512 个三角形；动画随当前姿态更新。

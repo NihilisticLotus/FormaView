@@ -80,7 +80,7 @@ struct ModelMesh {
   std::vector<std::vector<QPointF>> uvs;
   std::vector<std::array<double, 4>> uvBounds;
   std::vector<bool> invalidUVs;
-  std::vector<QVector3D> normals, colours;
+  std::vector<QVector3D> normals, tangents, colours;
   std::vector<QVector3D> vertexColours; // First source colour set, independent of material.
   std::vector<float> alphas;
   std::vector<int> alphaModes;
@@ -278,6 +278,7 @@ struct ModelTextureLink {
   int uv{-1};
 };
 struct ModelRenderState {
+  int directionMask{}; // 1 normal, 2 tangent
   QString highlightedNode;
   int mode{}, mesh{}, bone{}, material{};
   bool materialOnly{};
@@ -310,7 +311,7 @@ std::shared_ptr<const formaview::render::Frame>
 buildAnimationFrame(const ModelDocument &, std::size_t clip, double seconds,
                     std::uint64_t revision, bool pairMesh = false,
                     const std::vector<formaview::Matrix4> *overrideWorlds = nullptr,
-                    std::stop_token stop = {});
+                    std::stop_token stop = {}, int directionMask = 0);
 // Root-lock helpers (matrix domain): combine base translation/rotation with
 // source scale, and chain locals into worlds along boneParents.
 [[nodiscard]] formaview::Matrix4 lockRootLocal(const formaview::Matrix4 &source,

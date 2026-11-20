@@ -86,10 +86,35 @@ Rectangle {
                 Accessible.name: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式")
             }
             Tool { objectName: "modelGroundGrid"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
+            Tool {
+                objectName: "modelNormals"; text: "N"; checked: !!(root.session.directionMask & 1); primary: checked
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("法线方向（蓝色）", "Normal directions (blue)", "法線方向（藍色）")
+                onClicked: root.session.directionMask ^= 1
+            }
+            Tool {
+                objectName: "modelTangents"; text: "T"; checked: !!(root.session.directionMask & 2); primary: checked
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("切线方向（红色）", "Tangent directions (red)", "切線方向（紅色）")
+                onClicked: root.session.directionMask ^= 2
+            }
             Tool { objectName: "modelOriginAxes"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "origin-axes"; hint: Theme.t("原点坐标轴 · X 红 / Y 绿 / Z 蓝", "Origin axes · X red / Y green / Z blue", "原點座標軸 · X 紅 / Y 綠 / Z 藍"); checkable: true; checked: root.showAxes; enabled: root.session.available; onToggled: root.showAxes=checked }
             Tool { objectName: "modelFocus"; Layout.preferredWidth: 32; iconName: "focus"; hint: Theme.t("聚焦所选对象（F）", "Focus selection (F)", "聚焦所選物件（F）"); enabled: root.session.available; onClicked: root.fit(true) }
             Tool { objectName: "modelFrameAll"; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
             Tool { objectName: "modelCompareSkeleton"; Layout.minimumWidth: 32; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; visible: root.session.hasComparableSkeleton && !root.session.compareBusy; text: Theme.t("骨架对比…", "Compare skeletons…", "骨架對比…"); hint: Theme.t("与另一 FBX / glTF 比较骨架层级", "Compare the skeleton hierarchy with another FBX / glTF", "與另一 FBX / glTF 比較骨架層級"); enabled: root.session.available && !root.session.busy; onClicked: compareDialog.open(); Accessible.name: hint }
+        }
+        Label {
+            Layout.leftMargin: 10
+            visible: text.length > 0 && !root.session.busy
+            color: Theme.muted
+            text: [
+                (root.session.directionMask & 1) && !root.session.normalDirectionsAvailable ? Theme.t("无可用法线", "No normal data", "無可用法線") : "",
+                !(root.session.directionMask & 2) ? "" :
+                root.session.tangentSource === "source" ? Theme.t("切线 · 源数据", "Tangents · source", "切線 · 來源資料") :
+                root.session.tangentSource === "uv" ? Theme.t("切线 · 由 UV 计算", "Tangents · from UVs", "切線 · 由 UV 計算") :
+                root.session.tangentSource === "mixed" ? Theme.t("切线 · 源数据及 UV 推算", "Tangents · source and UVs", "切線 · 來源資料及 UV 推算") :
+                Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
+            ].filter(Boolean).join(" · ")
         }
         RowLayout {
             Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10

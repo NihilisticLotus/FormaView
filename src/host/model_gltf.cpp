@@ -414,6 +414,13 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
           attribute(primitive.attributes, primitive.attributes_count,
                     cgltf_attribute_type_normal);
       const auto *normalValues = normal ? &access.read(normal) : nullptr;
+      const auto *tangent = attribute(primitive.attributes, primitive.attributes_count, cgltf_attribute_type_tangent);
+      if (tangent && (tangent->type != cgltf_type_vec4 || tangent->count != count)) fail("glTF tangent shape mismatch");
+      const auto *tangentValues = tangent ? &access.read(tangent) : nullptr;
+      const auto localTangent = [&](std::size_t i) {
+        const auto &v = *tangentValues;
+        return QVector3D(v[i*4], v[i*4+1], v[i*4+2]);
+      };
       m.raw.reserve(count);
       m.points.reserve(count);
       m.corners.resize(count);
@@ -505,6 +512,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
         m.animationPositions.push_back({v.x(), v.y(), v.z()});
         m.animationNormals.push_back(n);
         m.points.push_back(worlds[ni].map(v));
+        if (tangentValues) m.tangents.push_back(worlds[ni].mapVector(localTangent(i)).normalized());
         if (normalValues) {
           if (normal->type != cgltf_type_vec3 || normal->count != count)
             fail("glTF normal shape mismatch");
@@ -634,6 +642,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                       static_cast<float>(transform(r, c) * w.value / sum);
             }
             m.points[v] = blended.map(localPositions[v]);
+            if (tangentValues) m.tangents[v] = blended.mapVector(localTangent(v)).normalized();
             if (normalValues)
               m.normals[v] = blended.inverted()
                                  .transposed()

@@ -614,6 +614,17 @@ FbxDocument FbxDocument::read_impl(const std::filesystem::path &path,
       }
       g.corner_attributes.emplace("normal", std::move(b));
     }
+    if (m->vertex_tangent.exists) {
+      budget(m->num_indices, 3 * sizeof(double));
+      Buffer b{ScalarType::Float64, 3, m->num_indices, {}};
+      for (std::size_t k = 0; k < m->num_indices; ++k) {
+        const auto v = ufbx_get_vertex_vec3(&m->vertex_tangent, k);
+        append(b, v.x);
+        append(b, v.y);
+        append(b, v.z);
+      }
+      g.corner_attributes.emplace("tangent", std::move(b));
+    }
     for (std::size_t i = 0; i < m->color_sets.count; ++i) {
       budget(m->num_indices, 4 * sizeof(double));
       Buffer b{ScalarType::Float64, 4, m->num_indices, {}};

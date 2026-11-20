@@ -260,9 +260,9 @@ public:
         const auto guideBytes = data->guides.size() * sizeof(Vertex);
         if (guideBytes > 1024 * 1024 ||
             data->gridVertices +
-                    static_cast<std::uint64_t>(data->selectionVertices) >
+                    static_cast<std::uint64_t>(data->selectionVertices) + data->directionVertices >
                 data->guides.size() ||
-            data->selectionVertices % 2 || data->gridVertices % 2 ||
+            data->directionVertices % 2 || data->selectionVertices % 2 || data->gridVertices % 2 ||
             data->guides.size() % 2) {
           rejectFrame(cb, updates, "Invalid model guide geometry"); return;
         }
@@ -602,7 +602,7 @@ public:
     const auto guideData=payload->geometry?payload:data;
     const auto drawGuides = [&] {
       if (!guideVertices ||
-          (!showGrid && !showAxes && !guideData->selectionVertices) ||
+          (!showGrid && !showAxes && !guideData->directionVertices && !guideData->selectionVertices) ||
           data->uv)
         return;
       cb->setGraphicsPipeline(guidePipeline.get());
@@ -612,9 +612,11 @@ public:
       if (showGrid && guideData->gridVertices)
         cb->draw(guideData->gridVertices);
       const auto axes = static_cast<quint32>(guideData->guides.size()) -
-                        guideData->gridVertices - guideData->selectionVertices;
+                        guideData->gridVertices - guideData->selectionVertices - guideData->directionVertices;
       if (showAxes && axes)
         cb->draw(axes, 1, guideData->gridVertices);
+      if (guideData->directionVertices)
+        cb->draw(guideData->directionVertices, 1, guideData->gridVertices + axes);
       if (guideData->selectionVertices) {
         cb->setGraphicsPipeline(selectionPipeline.get());
         cb->setShaderResources(guideBindings.get());

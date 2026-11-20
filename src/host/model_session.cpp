@@ -330,6 +330,7 @@ void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
       }
     for (auto &p : m.points)
       p = d->displayBasis.map(p);
+    for (auto &t : m.tangents) t = d->displayBasis.mapVector(t);
     for (auto &n : m.normals)
       n = d->displayBasis.mapVector(n);
     d->points += m.points.size();
@@ -818,6 +819,12 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
             d->warnings.append(m.name +
                                ": source material references absent UV set " +
                                text(mat.colour_uv));
+        }
+        if (const auto tangent = g.corner_attributes.find("tangent"); tangent != g.corner_attributes.end()) {
+          const auto &buffer = tangent->second;
+          for (std::size_t i = 0; i < m.corners.size(); ++i)
+            m.tangents.push_back(transform.mapVector(QVector3D(float(scalar(buffer, i * 3)),
+                float(scalar(buffer, i * 3 + 1)), float(scalar(buffer, i * 3 + 2)))).normalized());
         }
         const auto normalMatrix = transform.normalMatrix();
         for (std::size_t i = 0; i < m.corners.size(); ++i) {
@@ -1423,6 +1430,7 @@ void ModelSession::clear() {
   reset(false);
 }
 void ModelSession::reset(bool opening) {
+  directionMask_ = 0;
   mode_ = 0;
   ++generation_;
   ++frameRequest_;
@@ -1526,6 +1534,7 @@ void ModelSession::cancel() {
   pendingFrame_ = preparing_ = false;
   frameError_.clear();
   globalFrameFailure_ = false;
+  directionMask_ = renderedState_.directionMask;
   mode_ = renderedState_.mode;
   mesh_ = renderedState_.mesh;
   bone_ = renderedState_.bone;
@@ -2016,7 +2025,7 @@ void ModelSession::attachRenderWindow(QQuickWindow *window) {
 }
 
 bool ModelSession::gpuSkinActive() const {
-  return document_ && document_->cameras.empty() && (document_->gpuSkinDomain() ||
+  return !directionMask_ && document_ && document_->cameras.empty() && (document_->gpuSkinDomain() ||
                        (pairMeshVisible_ && document_->pairPreviewDomain()));
 }
 void ModelSession::enableGpuSkinning(bool enabled) {
@@ -2245,7 +2254,7 @@ void ModelSession::refreshAnimationFrame() {
                            *document, clip, seconds, revision * 2, pairMesh,
                            worlds ? worlds.get() : nullptr, token);
                        ModelFrames result;
-                       if (state.mode != 0 || state.isolated || state.materialOnly ||
+                       if (state.directionMask || state.mode != 0 || state.isolated || state.materialOnly ||
                            std::any_of(document->meshes.begin(), document->meshes.end(), [](const auto &mesh) {
                              return !mesh.materials.empty() || !mesh.colours.empty() || !mesh.textures.empty();
                            }) ||
@@ -2264,7 +2273,7 @@ void ModelSession::refreshAnimationFrame() {
     const auto frame = buildAnimationFrame(
         *document_, static_cast<std::size_t>(clipIndex_), time_,
         ++frameRevision_ * 2, pairMesh,
-        lockedWorlds ? &*lockedWorlds : nullptr);
+        lockedWorlds ? &*lockedWorlds : nullptr, {}, directionMask_);
     frames_.model = frame;
     frames_.uv = frame;
     frame_ = frame;
@@ -3299,6 +3308,13 @@ void ModelSession::selectUV(int i) {
     return;
   uvSelections_[static_cast<std::size_t>(mesh_)] = i;
   clearSelection();
+  rebuild();
+  emit changed();
+}
+void ModelSession::setDirectionMask(int mask) {
+  if (mask < 0 || mask > 3 || mask == directionMask_) return;
+  directionMask_ = mask;
+  if (playing_ && mask) animTimer_.start();
   rebuild();
   emit changed();
 }

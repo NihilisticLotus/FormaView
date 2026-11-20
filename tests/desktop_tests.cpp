@@ -2089,7 +2089,81 @@ private slots:
     QSKIP("Windows Explorer association");
 #endif
   }
+  void meshDirectionGuides() {
+#ifdef FORMAVIEW_MODEL_UI
+    ModelSession session;
+    const auto path = QFINDTESTDATA("fixtures/direction-plane.gltf");
+    QVERIFY(!path.isEmpty());
+    session.open(path);
+    QTRY_VERIFY_WITH_TIMEOUT(session.available() && session.frame(), 10000);
+    QCOMPARE(session.directionMask(), 0);
+    QCOMPARE(session.frame()->directionVertices, 0U);
+    session.setDirectionMask(1);
+    QTRY_COMPARE(session.frame()->directionVertices, 18U);
+    session.setDirectionMask(2);
+    QTRY_COMPARE(session.frame()->directionVertices, 12U);
+    session.setDirectionMask(3);
+    QTRY_COMPARE(session.frame()->directionVertices, 30U);
+    QCOMPARE(session.tangentSource(), QString("mixed"));
+    const auto delta = [&](int line) {
+      const auto f = session.frame();
+      const auto first = f->guides.size() - f->selectionVertices - f->directionVertices + 2 * line;
+      const auto &a = f->guides.at(first), &b = f->guides.at(first + 1);
+      return QVector3D(b.x - a.x, b.y - a.y, b.z - a.z).normalized();
+    };
+    const auto f = session.frame();
+    const auto base = f->guides.size() - f->selectionVertices - f->directionVertices;
+    const auto &firstCorner = f->guides[base], &hardCorner = f->guides[base + 12];
+    QCOMPARE(QVector3D(firstCorner.x, firstCorner.y, firstCorner.z),
+             QVector3D(hardCorner.x, hardCorner.y, hardCorner.z));
+    const auto basis = session.documentSnapshot()->displayBasis;
+    const auto check = [&](int line, QVector3D expected) {
+      return QVector3D::dotProduct(delta(line), basis.mapVector(expected).normalized()) > .995F;
+    };
+    QVERIFY(check(0, {0,0,1}));
+    QVERIFY(check(1, {0,1,0})); // Authored T overrides UV-derived +X.
+    QVERIFY(check(6, {0,1,0})); // Hard edge at the same origin.
+    QVERIFY(check(7, {-1,0,0})); // Mirrored U on second triangle.
+    session.seek(1);
+    QTRY_VERIFY(check(1, {-1,0,0}));
+    QVERIFY(check(7, {0,-1,0}));
+    auto dense = *session.documentSnapshot();
+    auto &indices = dense.meshes.front().triangles;
+    const auto triangle = indices;
+    for (int copy = 1; copy < 4096; ++copy)
+      indices.insert(indices.end(), triangle.begin(), triangle.end());
+    const auto bounded = buildModelFrames(dense, session.renderStateForTest(), 1, {}).model;
+    QVERIFY(bounded->sourceTriangles >= 4096);
+    QVERIFY(bounded->directionVertices > 0 && bounded->directionVertices <= 512 * 12);
+    session.setDirectionMask(0);
+    QTRY_COMPARE(session.frame()->directionVertices, 0U);
 
+    auto *live = qobject_cast<ModelSession *>(desktop_->model());
+    QVERIFY(live);
+    desktop_->openPath(path);
+    QTRY_VERIFY(modelPanelsReady() && live->available() && !live->busy() && !live->preparing());
+    QTRY_VERIFY(item("modelNormals") && item("modelTangents"));
+    QCOMPARE(live->directionMask(), 0);
+    for (const auto *name : {"modelNormals", "modelTangents"}) {
+      auto *control = item(name);
+      QTRY_VERIFY(control->isEnabled() && control->width() > 0 && control->height() > 0);
+      const auto center = control->mapToScene(control->boundingRect().center());
+      QTest::mouseClick(window_, Qt::LeftButton, {}, center.toPoint());
+      if (!control->property("checked").toBool()) {
+        save("direction-click-" + QString::fromLatin1(name));
+        qInfo() << name << center << control->size() << window_->size() << live->directionMask();
+      }
+      QTRY_VERIFY2(control->property("checked").toBool(), name);
+    }
+    QTRY_VERIFY(live->frame() && live->frame()->directionVertices == 30);
+    ModelView *viewport{};
+    QTRY_VERIFY((viewport = window_->findChild<ModelView *>("modelViewport")));
+    QTRY_VERIFY(viewport->frame == live->frame());
+    save("model-normal-tangent-directions");
+#else
+    QSKIP("Model workspace required");
+#endif
+  }
   void nativeFrameAppearance() {
 #if defined(Q_OS_WIN) && defined(FORMAVIEW_IMAGE_UI)
     auto *shortcut = window_->findChild<QObject *>("quickTextureExport");

@@ -42,6 +42,72 @@ void appendGuides(render::Frame &frame, const ModelDocument &document) {
     guide(tip, tint); guide(base - wing, tint);
   }
 }
+// Transport authored corner directions with the triangle when the pose changes.
+// Each corner retains its own normal/tangent at coincident positions and UV seams.
+struct TriangleBasis {
+  QVector3D u, v, n;
+  explicit TriangleBasis(const std::array<QVector3D, 3> &p) {
+    u = (p[1] - p[0]).normalized();
+    n = QVector3D::crossProduct(u, p[2] - p[0]).normalized();
+    v = QVector3D::crossProduct(n, u);
+  }
+  QVector3D rotateFrom(const TriangleBasis &rest, QVector3D dir) const {
+    return u * QVector3D::dotProduct(rest.u, dir) + v * QVector3D::dotProduct(rest.v, dir) +
+           n * QVector3D::dotProduct(rest.n, dir);
+  }
+};
+void appendTriangleDirections(render::Frame &frame, std::vector<render::Vertex> &lines,
+    const std::array<QVector3D,3> &p, const std::array<QVector3D,3> &rest,
+    const std::array<QPointF,3> &uv, const std::array<QVector3D,3> &normals,
+    const std::array<QVector3D,3> &tangents, int mask, bool posed, bool normalsPosed) {
+  const TriangleBasis basis(p), source(rest);
+  if (basis.n.isNull()) return;
+  const auto a = uv[1] - uv[0], b = uv[2] - uv[0];
+  const auto det = a.x() * b.y() - a.y() * b.x();
+  QVector3D uvTangent;
+  if (std::isfinite(det) && std::abs(det) > 1e-15)
+    uvTangent = ((p[1] - p[0]) * float(b.y()) - (p[2] - p[0]) * float(a.y())) / float(det);
+  const auto line = [&](QVector3D pos, QVector3D dir, QVector3D rgb) {
+    const auto length = dir.length();
+    if (!std::isfinite(length) || length < 1e-10F) return false;
+    for (const auto &point : {pos, pos + dir * (.045F / length)})
+      lines.push_back({point.x(), point.y(), point.z(), 0, 0, 0, 0, 1, 0,
+                       rgb.x(), rgb.y(), rgb.z(), 1, -2, .5F});
+    return true;
+  };
+  for (int i = 0; i < 3; ++i) {
+    auto normal = normals[i];
+    if (posed && !normalsPosed) normal = basis.rotateFrom(source, normal);
+    normal = normal.isNull() ? basis.n : normal.normalized();
+    if ((mask & 1) && line(p[i], normal, {.18F,.48F,1.F})) frame.normalDirections = true;
+    if (!(mask & 2)) continue;
+    auto tangent = tangents[i];
+    const bool authored = !tangent.isNull() && std::isfinite(tangent.lengthSquared());
+    if (!authored) tangent = uvTangent;
+    else if (posed) tangent = basis.rotateFrom(source, tangent);
+    tangent -= normal * QVector3D::dotProduct(tangent, normal);
+    if (line(p[i], tangent, {1.F,.14F,.12F})) {
+      if (authored) frame.sourceTangents = true;
+      else frame.uvTangents = true;
+    }
+  }
+}
+void appendDirections(render::Frame &frame, std::vector<render::Vertex> &lines,
+                      const ModelMesh &mesh, std::size_t triangle, std::size_t first,
+                      int uvSet, int mask, bool posed) {
+  std::array<QVector3D, 3> p, rest, normals, tangents;
+  std::array<QPointF, 3> uv{};
+  for (int i = 0; i < 3; ++i) {
+    const auto c = mesh.triangles.at(triangle + i);
+    const auto &vertex = frame.vertices.at(first + i);
+    p[i] = {vertex.x, vertex.y, vertex.z};
+    normals[i] = posed && mesh.morphAnimated ? QVector3D(vertex.nx, vertex.ny, vertex.nz) : mesh.normals.at(c);
+    if (c < mesh.tangents.size()) tangents[i] = mesh.tangents[c];
+    rest[i] = mesh.points.at(mesh.corners.at(c));
+    if (!mesh.uvs.empty() && !mesh.invalidUVs.at(uvSet)) uv[i] = mesh.uvs.at(uvSet).at(c);
+  }
+  appendTriangleDirections(frame, lines, p, rest, uv, normals, tangents, mask, posed, mesh.morphAnimated);
+}
 void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
                           int clip, double seconds) {
   if (document.cameras.empty()) return;
@@ -308,6 +374,8 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
     capacity += corners * multiplier;
   }
   f->vertices.reserve(capacity);
+  std::vector<render::Vertex> directions;
+  const auto stride = std::max<std::size_t>(1, (capacity / 3 + 511) / 512);
   std::size_t poseOffset = 0;
   for (std::size_t mi = 0; mi < document.meshes.size(); ++mi) {
     const auto meshPoseOffset = poseOffset;
@@ -516,6 +584,8 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
         for (int e = 0; e < 3; ++e)
           f->vertices.push_back(
               vertex(m.triangles[t + static_cast<std::size_t>(e)]));
+      if (state.directionMask && mode != 1 && (f->sourceTriangles - 1) % stride == 0)
+        appendDirections(*f, directions, m, t, first, state.uvs[mi], state.directionMask, pose != nullptr);
       if (mode == 0) {
         const int texture =
             textureIndices.at(m.cornerMaterial.at(m.triangles[t]));
@@ -543,6 +613,10 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
     }
   }
   if (mode != 1) appendCameraGeometry(*f, document, state.clip, state.time);
+  if (!directions.empty()) {
+    f->directionVertices = static_cast<std::uint32_t>(directions.size());
+    f->guides.insert(f->guides.end() - f->selectionVertices, directions.begin(), directions.end());
+  }
   return f;
 }
 } // namespace
@@ -600,7 +674,7 @@ ModelFrames buildAbcStreamFrames(const ModelDocument &d, const ModelRenderState 
   validateModelState(d,s);
   // The normal builder remains the oracle/fallback for UV inspection, heat,
   // collision overlays, selected-node guides and session texture overrides.
-  const bool plain = d.geometryCache && d.cameras.empty() && s.mode == 0 && s.highlightedNode.isEmpty() &&
+  const bool plain = !s.directionMask && d.geometryCache && d.cameras.empty() && s.mode == 0 && s.highlightedNode.isEmpty() &&
       d.cacheMeshKeys.size() == d.meshes.size() &&
       std::none_of(s.classes.begin(),s.classes.end(),[](const auto &c){return c.collision;}) &&
       std::all_of(s.textures.begin(),s.textures.end(),[](const auto &t){return t.empty();});
@@ -736,7 +810,7 @@ std::shared_ptr<const render::Frame>
 buildAnimationFrame(const ModelDocument &d, std::size_t clip, double seconds,
                     std::uint64_t revision, bool pairMesh,
                     const std::vector<formaview::Matrix4> *overrideWorlds,
-                    std::stop_token stop) {
+                    std::stop_token stop, int directionMask) {
   const auto cancelled = [&] {
     if (stop.stop_requested())
       throw skeletal::Failure(ErrorCode::Cancelled, "Animation frame cancelled");
@@ -835,6 +909,20 @@ buildAnimationFrame(const ModelDocument &d, std::size_t clip, double seconds,
     f->displayHigh = mappedHigh;
     f->hasDisplayBounds = true;
     appendGuides(*f, d);
+    if (directionMask) {
+      const auto before = f->guides.size();
+      const auto stride = std::max<std::size_t>(1, (f->vertices.size() / 3 + 511) / 512);
+      for (std::size_t first = 0; first < f->vertices.size(); first += 3 * stride) {
+        std::array<QVector3D,3> p, normals;
+        std::array<QPointF,3> uv;
+        for (int i = 0; i < 3; ++i) {
+          const auto &v = f->vertices.at(first+i);
+          p[i] = {v.x,v.y,v.z}; normals[i] = {v.nx,v.ny,v.nz}; uv[i] = {v.u,v.v};
+        }
+        appendTriangleDirections(*f, f->guides, p, p, uv, normals, {}, directionMask, false, true);
+      }
+      f->directionVertices = static_cast<std::uint32_t>(f->guides.size() - before);
+    }
     return f;
   }
   if (!d.meshes.empty()) {
