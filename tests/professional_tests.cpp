@@ -1,4 +1,5 @@
 #include "formaview/geometry_cache.hpp"
+#include "formaview/image_preview.hpp"
 #include "formaview/preview.hpp"
 #include "formaview/pro_image.hpp"
 #include "formaview/scheduler.hpp"
@@ -82,6 +83,59 @@ void images(const std::filesystem::path &dir) {
       require(imaging::value(c, 2) == 16777217 &&
                   imaging::value(c, 3) == 4294967295.,
               "UINT precision lost");
+  }
+  // PIZ stores 32 rows per block. Use an offset data window, a partial
+  // last block, sparse sampling and repeated rows to verify exact samples.
+  const auto scanlinePath = dir / "scanline-preview.exr";
+  {
+    constexpr int width = 37, height = 77;
+    E::Header header(width, height);
+    header.dataWindow() = {{-3, -45}, {width - 4, height - 46}};
+    header.compression() = E::PIZ_COMPRESSION;
+    header.lineOrder() = E::DECREASING_Y;
+    header.channels().insert("R", E::Channel(E::HALF));
+    header.channels().insert("id", E::Channel(E::UINT));
+    std::vector<IMATH_NAMESPACE::half> half(width * height);
+    std::vector<std::uint32_t> ids(width * height);
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      half[i] = static_cast<float>(i % 1024) / 31.F;
+      ids[i] = 16777217 + static_cast<std::uint32_t>(i);
+    }
+    E::FrameBuffer frame;
+    frame.insert("R", E::Slice::Make(E::HALF, half.data(), header.dataWindow()));
+    frame.insert("id", E::Slice::Make(E::UINT, ids.data(), header.dataWindow()));
+    E::OutputFile file(scanlinePath.string().c_str(), header);
+    file.setFrameBuffer(frame);
+    file.writePixels(height);
+  }
+  {
+    const auto file = imaging::ImageFile::open(scanlinePath);
+    const auto native = file.decode(0);
+    for (const imaging::PreviewRequest request : {
+             imaging::PreviewRequest{5, 18, 29, 59, 29, 59},
+             imaging::PreviewRequest{2, 0, 35, 77, 13, 2},
+             imaging::PreviewRequest{6, 30, 13, 9, 23, 24}}) {
+      const auto preview = file.decode_preview(0, request);
+      for (std::size_t c = 0; c < native.channels.size(); ++c) {
+        const auto &source = native.channels[c];
+        const auto &output = preview.channels[c];
+        const auto bytes = imaging::preview_component(source.samples.scalar);
+        require(source.name == output.name &&
+                    source.samples.scalar == output.samples.scalar,
+                "Scanline preview channel changed");
+        for (std::uint64_t y = 0; y < request.output_height; ++y) {
+          for (std::uint64_t x = 0; x < request.output_width; ++x) {
+            const auto src = request.sy(y) * native.data_window.width +
+                             request.sx(x);
+            const auto dst = y * request.output_width + x;
+            require(std::memcmp(source.samples.bytes.data() + src * bytes,
+                                output.samples.bytes.data() + dst * bytes,
+                                bytes) == 0,
+                    "Scanline block preview changed source sample bits");
+          }
+        }
+      }
+    }
   }
   const auto multipartPath = dir / "multipart.exr";
   {
