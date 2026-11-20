@@ -140,6 +140,7 @@ constexpr int reviewProducerPreflightWaitMs = reviewPreflightWaitMs + 5000;
 #include <d3d11.h>
 #include <dxgi1_4.h>
 #include <windows.h>
+#include <dwmapi.h>
 #include <wrl/client.h>
 #endif
 
@@ -2001,6 +2002,64 @@ private slots:
     QVERIFY(QTest::qWaitForWindowExposed(&probe));
     QTRY_VERIFY(swaps.count()>before);
     QVERIFY(!captureExposedWindow(&probe).isNull());
+  }
+  void nativeFrameAppearance() {
+#if defined(Q_OS_WIN) && defined(FORMAVIEW_IMAGE_UI)
+    auto *shortcut = window_->findChild<QObject *>("quickTextureExport");
+    desktop_->openPath(small_ + "/唯一图片.png");
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), small_ + "/唯一图片.png");
+    QTRY_VERIFY(shortcut && shortcut->property("enabled").toBool());
+    QVERIFY(QMetaObject::invokeMethod(shortcut, "triggered"));
+    QQuickWindow *tool{};
+    const auto locate = [&] {
+      for (auto *w : QGuiApplication::topLevelWindows())
+        if (w->objectName() == "quickExportWindow" && w->isVisible())
+          tool = qobject_cast<QQuickWindow *>(w);
+      return tool != nullptr;
+    };
+    QTRY_VERIFY(locate());
+    const auto cleanup = qScopeGuard([&] { tool->close(); window_->showNormal(); });
+    const auto darkEdge = [](QWindow *w) {
+      const auto hwnd = reinterpret_cast<HWND>(w->winId());
+      RECT frame{};
+      if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame)))) return false;
+      if (IsZoomed(hwnd)) {
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof(monitor);
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+          IntersectRect(&frame, &frame, &monitor.rcWork);
+      }
+      const auto screen = GetDC(nullptr);
+      int visible = 0, bright = 0;
+      for (int part = 1; part < 8; ++part) {
+        const LONG x = frame.left + (frame.right - frame.left) * part / 8;
+        const LONG y = frame.top + (frame.bottom - frame.top) * part / 8;
+        for (const POINT p : {POINT{x, frame.bottom - 1}, POINT{frame.left, y}, POINT{frame.right - 1, y}}) {
+          if (GetAncestor(WindowFromPoint(p), GA_ROOT) != hwnd) continue;
+          const auto rgb = GetPixel(screen, p.x, p.y);
+          if (rgb == CLR_INVALID) continue;
+          ++visible;
+          if (GetRValue(rgb) > 195 && GetGValue(rgb) > 195 && GetBValue(rgb) > 195) ++bright;
+        }
+      }
+      ReleaseDC(nullptr, screen);
+      return visible >= 3 && bright == 0;
+    };
+    for (QQuickWindow *w : std::array<QQuickWindow *, 2>{window_, tool}) {
+      w->requestActivate();
+      w->resize(w->size() + QSize(16, 12));
+      QTRY_VERIFY(darkEdge(w));
+      w->showMaximized();
+      QTRY_COMPARE(w->visibility(), QWindow::Maximized);
+      QTRY_VERIFY(darkEdge(w));
+      w->showNormal();
+      QTRY_COMPARE(w->visibility(), QWindow::Windowed);
+      QTRY_VERIFY(darkEdge(w));
+    }
+    QVERIFY(darkEdge(window_));
+#else
+    QSKIP("Requires Windows and the image workspace");
+#endif
   }
   void nativeCaptionHitPurity() {
 #ifdef Q_OS_WIN
