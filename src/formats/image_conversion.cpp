@@ -1,4 +1,5 @@
 #include "formaview/image_conversion.hpp"
+#include <cmath>
 #include <QByteArray>
 #include <algorithm>
 #include <cstring>
@@ -185,6 +186,45 @@ prepare_image_conversion(const ImageDocument &document,
     loss("colour_transform",
          "Explicit exposure/transfer/compositing applied to colour samples");
   auto &image = transformed.image;
+  const auto divisor = options.scale_divisor;
+  if (divisor != 1 && divisor != 2 && divisor != 4 && divisor != 8)
+    invalid("Unsupported output scale divisor");
+  if (divisor > 1) {
+    const auto scaled = [divisor](std::uint64_t n) {
+      return std::max<std::uint64_t>(1, (n + divisor / 2) / divisor);
+    };
+    const auto w = image.data_window.width, h = image.data_window.height;
+    const auto ow = scaled(w), oh = scaled(h);
+    // Sample all channels at the same pixel centre, preserving exact numeric
+    // values and RGB under transparent texels. Shrinking permits in-place writes.
+    for (auto &ch : image.channels) {
+      auto &buffer = ch.samples;
+      const auto stride = buffer.bytes.size() / (w * h);
+      for (std::uint64_t y = 0; y < oh; ++y) {
+        if (stop.stop_requested()) throw skeletal::Failure(ErrorCode::Cancelled, "Resize cancelled");
+        const auto sy = (2 * y + 1) * h / (2 * oh);
+        for (std::uint64_t x = 0; x < ow; ++x) {
+          const auto sx = (2 * x + 1) * w / (2 * ow);
+          std::memmove(buffer.bytes.data() + (y * ow + x) * stride,
+                       buffer.bytes.data() + (sy * w + sx) * stride, stride);
+        }
+      }
+      buffer.element_count = ow * oh;
+      buffer.bytes.resize(buffer.element_count * stride);
+    }
+    for (auto *window : {&image.data_window, &image.display_window}) {
+      window->x = static_cast<std::int64_t>(std::floor(double(window->x) / divisor));
+      window->y = static_cast<std::int64_t>(std::floor(double(window->y) / divisor));
+      window->width = scaled(window->width);
+      window->height = scaled(window->height);
+    }
+    image.encoded_blocks.clear();
+    image.block_encoding.reset();
+    if (ow != w || oh != h) loss("resolution_reduced", std::to_string(w) + " × " +
+        std::to_string(h) + " → " + std::to_string(ow) + " × " + std::to_string(oh));
+  }
+  result.width = image.data_window.width;
+  result.height = image.data_window.height;
   // Channel names carry meaning; EXR enumeration is often alphabetical (ABGR).
   // Put conventional named channels into encoder order without dropping or
   // inventing channels. Unsupported channel sets still fail the encoder checks.

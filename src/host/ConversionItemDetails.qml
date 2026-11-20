@@ -35,6 +35,7 @@ Popup {
             ColumnLayout {
                 width: detailScroll.availableWidth; spacing: 12
                 Readout { Layout.fillWidth: true; label: Theme.t("来源 → 确定输出", "Source → Resolved output", "來源 → 確定輸出"); value: (root.request.input || "") + "\n→ " + root.output }
+                Readout { visible: !!root.result.width; Layout.fillWidth: true; label: Theme.t("输出分辨率", "Output resolution", "輸出解析度"); value: root.result.width + " × " + root.result.height + " px" }
                 Readout { Layout.fillWidth: true; label: Theme.t("状态", "Status", "狀態"); value: Theme.state(root.entry.status || "") }
                 ExplainedText { objectName: "conversionItemError"; Layout.fillWidth: true; kind: "error"; raw: root.entry.error ? root.entry.error.code + ": " + root.entry.error.message : "" }
                 Repeater {

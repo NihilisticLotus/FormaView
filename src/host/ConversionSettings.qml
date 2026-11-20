@@ -30,7 +30,7 @@ ColumnLayout {
     readonly property var namingPreview: controller.imageJobs.nameExamples(root.inputs, root.modelMode && modelFields.contentValue === "model" ? naming.nameTemplate.replace(/\{clip\}/g, root.abcSample >= 0 ? "frame" + root.abcSample : "model") : naming.nameTemplate, root.modelMode ? "fbx" : root.targets[target.currentIndex] || "", root.itemOverrides())
     function options(): var {
         if (modelMode) return modelFields.options()
-        const o = {target: targets[target.currentIndex], subresource: resource.value,
+        const o = {scale_divisor: resolution.divisor, target: targets[target.currentIndex], subresource: resource.value,
             alpha_action: ["preserve", "drop", "composite"][alphaAction.currentIndex],
             meaning: colour.checked ? "colour" : "data", transfer: colour.checked ? ["preserve", "linear_to_srgb", "srgb_to_linear"][transfer.currentIndex] : "preserve",
             exposure: colour.checked ? exposure.realValue : 0, background_linear: [background.value / 100, background.value / 100, background.value / 100],
@@ -84,6 +84,24 @@ FormGroup { visible: !root.modelMode; objectName: "conversionEncoding"; title: T
  ColumnLayout { anchors.fill: parent; spacing: 12
 RowLayout { Layout.fillWidth: true; Layout.minimumHeight: 36; Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("目标格式", "Target format", "目標格式") } Choice { form: true; id: target; notes: root.targets.map(t => ({png: Theme.t("无损整数图像，支持 Alpha。", "Lossless integer image with alpha.", "無損整數影像，支援 Alpha。"), tga: Theme.t("常用 8 位通道，支持 Alpha。", "Commonly 8-bit channels with alpha.", "常用 8 位通道，支援 Alpha。"), tiff: Theme.t("支持多种数值类型；按实际编码能力预检。", "Multiple numeric types; preflight checks encoder support.", "支援多種數值類型；按實際編碼能力預檢。"), exr: Theme.t("高动态范围，支持半精度与单精度浮点。", "HDR with half and single-precision floats.", "高動態範圍，支援半精度與單精度浮點。"), hdr: Theme.t("Radiance RGBE；不支持 Alpha、负值，编码会损失精度。", "Radiance RGBE: no alpha or negative values; encoding loses precision.", "Radiance RGBE；不支援 Alpha、負值，編碼會損失精度。")}[t] || Theme.t("按源通道、数值范围与编码能力预检。", "Preflight checks source channels, range and encoder support.", "按來源通道、數值範圍與編碼能力預檢。"))); objectName: "conversionTarget"; Layout.preferredWidth: 220; Layout.maximumWidth: 260; Layout.fillWidth: true; model: root.targets.map(t => t.toUpperCase()); onActivated: root.edited(); Accessible.name: Theme.t("目标格式", "Target format", "目標格式") } }
 RowLayout { visible: root.detailed; Layout.fillWidth: true; Layout.minimumHeight: 36; Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("位深", "Precision", "位深") } Choice { form: true; id: depth; notes: [Theme.t("尽可能保留源数值类型；不兼容时预检阻止。", "Keep source numeric type where supported; preflight blocks incompatible types.", "盡可能保留來源數值類型；不相容時預檢阻止。"), Theme.t("8 位无符号整数；浮点转整数可能裁切与量化。", "8-bit unsigned integer; float conversion can clamp and quantize.", "8 位無符號整數；浮點轉整數可能裁切與量化。"), Theme.t("16 位无符号整数。", "16-bit unsigned integer.", "16 位無符號整數。"), Theme.t("16 位半精度浮点；范围与精度有限。", "16-bit half float with limited range and precision.", "16 位半精度浮點；範圍與精度有限。"), Theme.t("32 位单精度浮点。", "32-bit single-precision float.", "32 位單精度浮點。")]; objectName: "conversionDepth"; Layout.preferredWidth: 220; Layout.maximumWidth: 260; Layout.fillWidth: true; labels: [Theme.t("保留源类型", "Preserve source type", "保留來源類型"), "uint8", "uint16", "half", "float32"]; onActivated: root.edited(); Accessible.name: Theme.t("输出精度", "Output precision", "輸出精度") } }
+RowLayout {
+    Layout.fillWidth: true
+    Label { Layout.preferredWidth: 148; color: Theme.muted; text: Theme.t("输出分辨率", "Output resolution", "輸出解析度") }
+    Choice {
+        id: resolution; objectName: "conversionResolution"; form: true
+        readonly property int divisor: [1, 2, 4, 8][currentIndex] || 1
+        labels: [Theme.t("原始", "Original", "原始"), "50%", "25%", "12.5%"]
+        onActivated: root.edited()
+    }
+    Label {
+        readonly property var source: root.inputs.length === 1 && root.inputs[0] === root.controller.image?.path
+            ? root.controller.image.subresources.find(s => s.index === resource.value) : null
+        text: source ? Math.max(1, Math.round(source.width / resolution.divisor)) + " × " +
+                       Math.max(1, Math.round(source.height / resolution.divisor)) + " px" :
+                       Theme.t("预检查看逐项尺寸", "See sizes in preflight", "預檢查看逐項尺寸")
+        color: Theme.text
+    }
+}
 RowLayout { Layout.fillWidth: true; Layout.minimumHeight: 40; visible: root.detailed && root.targets[target.currentIndex] === "png"; Label { font.pixelSize: Theme.formText; Layout.preferredWidth: 148; wrapMode: Text.WordWrap; text: Theme.t("PNG 无损压缩级别", "PNG lossless compression", "PNG 無損壓縮等級"); color: Theme.text } NumberField { form: true; id: pngCompression; objectName: "conversionPngCompression"; Layout.preferredWidth: 160; Layout.maximumWidth: 180; Layout.fillWidth: true; from: 0; to: 9; value: 0; onValueModified: root.edited(); Accessible.name: Theme.t("PNG 无损压缩级别", "PNG lossless compression level", "PNG 無損壓縮等級") } }
 Label { objectName: "pngCompressionExplanation"; visible: root.detailed && root.targets[target.currentIndex] === "png"; Layout.fillWidth: true; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("默认 0：不压缩，保留像素值、位深和 Alpha。1–9 为可选无损压缩，只改变编码速度和文件大小，不改变画质。", "Default 0: no compression; pixel values, bit depth and alpha are preserved. Optional levels 1–9 use lossless compression, changing encoding speed and file size, not image quality.", "預設 0：不壓縮，保留像素值、位元深度與 Alpha。1–9 為可選無損壓縮，只改變編碼速度與檔案大小，不改變畫質。") }
 RowLayout { visible: ["jpeg", "webp"].includes(root.targets[target.currentIndex]); Label { font.pixelSize: Theme.formText; text: Theme.t("质量", "Quality", "品質"); color: Theme.text } NumberField { form: true; id: quality; from: 1; to: 100; value: 90; onValueModified: root.edited(); Accessible.name: Theme.t("编码质量", "Encoding quality", "編碼品質") } }

@@ -4696,6 +4696,60 @@ private slots:
   }
 #endif
 
+  void scaledImageExports() {
+    QTemporaryDir dir(root_ + "/scaled-XXXXXX");
+    QVERIFY(dir.isValid());
+    QImage input(17, 9, QImage::Format_RGBA8888);
+    for (int y = 0; y < input.height(); ++y)
+      for (int x = 0; x < input.width(); ++x) input.setPixelColor(x, y, QColor(x*10, y*20, 187, x < 8 ? 0 : 255));
+    const auto source = dir.filePath("透明边缘.png");
+    QVERIFY(input.save(source));
+    desktop_->openPath(source);
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), source);
+    auto *menu = window_->findChild<QObject *>("quickTextureExport");
+    QVERIFY(menu && QMetaObject::invokeMethod(menu, "triggered"));
+    const auto locate = []() -> QQuickWindow * {
+      for (auto *w : QGuiApplication::topLevelWindows())
+        if (w->objectName() == "quickExportWindow" && w->isVisible()) return qobject_cast<QQuickWindow *>(w);
+      return nullptr;
+    };
+    QTRY_VERIFY(locate());
+    auto *w = locate();
+    const auto cleanup = qScopeGuard([&] { if (locate()) locate()->close(); });
+    auto *choice = w->findChild<QObject *>("conversionResolution");
+    QVERIFY(choice); QCOMPARE(choice->property("divisor").toInt(), 1);
+    choice->setProperty("currentIndex", 1);
+    QCOMPARE(choice->property("divisor").toInt(), 2);
+    auto *output = w->findChild<QObject *>("conversionOutputRoot");
+    QVERIFY(output); output->setProperty("text", dir.path());
+    QVERIFY(QMetaObject::invokeMethod(output, "textEdited"));
+    auto *start = w->findChild<QObject *>("createImagePlan");
+    QVERIFY(start && QMetaObject::invokeMethod(start, "clicked"));
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+    const auto info = service->plan().value("items").toList().value(0).toMap().value("preflight").toMap();
+    QCOMPARE(info.value("width").toInt(), 9);
+    QCOMPARE(info.value("height").toInt(), 5);
+    auto *ack = w->findChild<QObject *>("acknowledgeImageLosses");
+    QVERIFY(ack); ack->setProperty("checked", true);
+    auto *submit = w->findChild<QObject *>("submitImagePlan");
+    QVERIFY(submit && QMetaObject::invokeMethod(submit, "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->job().value("state") == "succeeded", 15000);
+    const auto actual = QImage(dir.filePath("透明边缘-converted.png")).convertToFormat(QImage::Format_RGBA8888);
+    QCOMPARE(actual.size(), QSize(9,5));
+    for (int y = 0; y < 5; ++y) for (int x = 0; x < 9; ++x)
+      QCOMPARE(actual.pixel(x,y), input.pixel((2*x+1)*17/18, (2*y+1)*9/10));
+    w->close();
+    const auto previous = service->job().value("id");
+    const QVariantMap scope{{"input_roots", QStringList{dir.path()}}, {"output_roots", QStringList{dir.path()}}};
+    service->preflight({source}, scope, {{"target","png"},{"scale_divisor",2}}, "batch.{ext}", "skip");
+    QTRY_VERIFY_WITH_TIMEOUT(!service->busy() && service->plan().value("state") == "ready", 15000);
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(service->job().value("id") != previous && service->job().value("state") == "succeeded", 15000);
+    QCOMPARE(QImage(dir.filePath("batch.png")).convertToFormat(QImage::Format_RGBA8888), actual);
+    QCOMPARE(QImage(source).convertToFormat(QImage::Format_RGBA8888), input);
+  }
+
   void quickExportWorkflow() {
     try {
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());

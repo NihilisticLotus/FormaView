@@ -46,6 +46,7 @@ struct ImageConversionOptions {
   bool webp_lossless{true}, exr_tiled{};
   TiffCompression tiff_compression{TiffCompression::Deflate};
   std::uint32_t dds_format{};
+  unsigned scale_divisor{1};
 };
 struct ConversionLoss {
   std::string code, detail;
@@ -53,6 +54,7 @@ struct ConversionLoss {
 struct ImageConversionProduct {
   std::string input_sha256;
   std::size_t subresource{};
+  std::uint64_t width{}, height{};
   TransformReport transform;
   std::vector<ConversionLoss> losses;
   std::vector<std::byte> encoded;
