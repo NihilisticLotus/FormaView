@@ -236,6 +236,7 @@ public:
   Q_INVOKABLE void selectBinding(int);
   Q_INVOKABLE void selectBone(int);
   Q_INVOKABLE void selectUV(int);
+  std::uint64_t framingRevision() const { return framingRevision_; }
   int directionMask() const { return directionMask_; }
   QString tangentSource() const {
     const auto f = frames_.model;
@@ -317,7 +318,7 @@ private:
   QByteArray stateKey(const ModelRenderState &) const;
   void cacheFrame();
   void poll();
-  void rebuild();
+  void rebuild(bool framingChanged = true);
   void clearSelection();
   void updateSkeleton(bool resetHighlight = true,ModelSkeleton::Prepared *prepared = nullptr);
   const ModelMesh *selectedMesh() const;
@@ -401,6 +402,7 @@ private:
   bool textureBusy_{};
   QString textureError_;
   quint64 textureRequest_{};
+  std::uint64_t framingRevision_{};
   int directionMask_{};
   int mesh_{}, bone_{}, mode_{}, material_{};
   int clipIndex_{};

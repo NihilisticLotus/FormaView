@@ -137,19 +137,6 @@ Rectangle {
             Tool { objectName: "modelFrameAll"; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
             Tool { objectName: "modelCompareSkeleton"; Layout.minimumWidth: 32; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; visible: root.session.hasComparableSkeleton && !root.session.compareBusy; text: Theme.t("骨架对比…", "Compare skeletons…", "骨架對比…"); hint: Theme.t("与另一 FBX / glTF 比较骨架层级", "Compare the skeleton hierarchy with another FBX / glTF", "與另一 FBX / glTF 比較骨架層級"); enabled: root.session.available && !root.session.busy; onClicked: compareDialog.open(); Accessible.name: hint }
         }
-        Label {
-            Layout.leftMargin: 10
-            visible: text.length > 0 && !root.session.busy
-            color: Theme.muted
-            text: [
-                (root.session.directionMask & 1) && !root.session.normalDirectionsAvailable ? Theme.t("无可用法线", "No normal data", "無可用法線") : "",
-                !(root.session.directionMask & 2) ? "" :
-                root.session.tangentSource === "source" ? Theme.t("切线 · 源数据", "Tangents · source", "切線 · 來源資料") :
-                root.session.tangentSource === "uv" ? Theme.t("切线 · 由 UV 计算", "Tangents · from UVs", "切線 · 由 UV 計算") :
-                root.session.tangentSource === "mixed" ? Theme.t("切线 · 源数据及 UV 推算", "Tangents · source and UVs", "切線 · 來源資料及 UV 推算") :
-                Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
-            ].filter(Boolean).join(" · ")
-        }
         RowLayout {
             Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
             visible: root.session.mode===1
@@ -224,6 +211,21 @@ Rectangle {
                         }
                     }
                 }
+            }
+            Label {
+                anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 8
+                visible: text.length > 0 && !root.session.busy
+                color: Theme.text
+                padding: 4
+                background: Rectangle { color: Theme.panel; radius: Theme.radius }
+                text: [
+                    (root.session.directionMask & 1) && !root.session.normalDirectionsAvailable ? Theme.t("无可用法线", "No normal data", "無可用法線") : "",
+                    !(root.session.directionMask & 2) ? "" :
+                    root.session.tangentSource === "source" ? Theme.t("切线 · 源数据", "Tangents · source", "切線 · 來源資料") :
+                    root.session.tangentSource === "uv" ? Theme.t("切线 · 由 UV 计算", "Tangents · from UVs", "切線 · 由 UV 計算") :
+                    root.session.tangentSource === "mixed" ? Theme.t("切线 · 源数据及 UV 推算", "Tangents · source and UVs", "切線 · 來源資料及 UV 推算") :
+                    Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
+                ].filter(Boolean).join(" · ")
             }
             SkeletonComparePane {
                 id: skeletonCompareHost

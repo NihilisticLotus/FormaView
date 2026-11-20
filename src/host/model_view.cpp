@@ -52,7 +52,10 @@ void ModelView::setSession(ModelSession *value) {
 void ModelView::refresh() {
   const bool uv = representation_ == 1 ||
                   (representation_ < 0 && session_ && session_->mode() == 1);
-  const auto previousGeometry=frame?frame->geometry:nullptr;
+  // Pose updates and guide overlays can replace the render backend. The
+  // camera only needs new bounds on initial framing or a changed view scope.
+  const bool needsFit = !frame || uvMode_ != uv ||
+      (session_ && framingRevision_ != session_->framingRevision());
   setFrame(session_ ? (representation_ < 0 ? session_->frame()
                                            : session_->frameFor(uv))
                     : nullptr);
@@ -65,8 +68,8 @@ void ModelView::refresh() {
     pitch_ = state.pitch;
     distance_ = state.distance;
   }
-  if (automatic_ && session_ && session_->available() &&
-      !(previousGeometry && frame && previousGeometry==frame->geometry))
+  if (session_ && frame) framingRevision_ = session_->framingRevision();
+  if (automatic_ && needsFit && session_ && session_->available() && frame)
     fit(fitSelected_);
   else
     camera();

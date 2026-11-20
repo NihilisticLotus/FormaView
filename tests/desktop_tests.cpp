@@ -2089,6 +2089,103 @@ private slots:
     QSKIP("Windows Explorer association");
 #endif
   }
+  void directionCameraStability_data() {
+    QTest::addColumn<bool>("animated");
+    QTest::addColumn<bool>("manual");
+    QTest::addColumn<bool>("external");
+    QTest::newRow("static-fit") << false << false << false;
+    QTest::newRow("static-manual") << false << true << false;
+    QTest::newRow("playing-fit") << true << false << false;
+    QTest::newRow("playing-manual") << true << true << false;
+    if (!qEnvironmentVariableIsEmpty("FORMAVIEW_MODEL_PREVIEW_SAMPLE"))
+      QTest::newRow("original-model-manual") << false << true << true;
+  }
+  void directionCameraStability() {
+#ifdef FORMAVIEW_MODEL_UI
+    QFETCH(bool, animated);
+    QFETCH(bool, manual);
+    QFETCH(bool, external);
+    const auto fixture = QFINDTESTDATA("fixtures/direction-plane.gltf");
+    QVERIFY(!fixture.isEmpty());
+    QString path = external ? qEnvironmentVariable("FORMAVIEW_MODEL_PREVIEW_SAMPLE") : fixture;
+    if (!animated && !external) {
+      QFile source(fixture);
+      QVERIFY(source.open(QIODevice::ReadOnly));
+      auto data = QJsonDocument::fromJson(source.readAll()).object();
+      data.remove("animations");
+      path = root_ + "/static-directions.gltf";
+      QFile output(path);
+      QVERIFY(output.open(QIODevice::WriteOnly));
+      QVERIFY(output.write(QJsonDocument(data).toJson()) > 0);
+    }
+    desktop_->clearAsset();
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    desktop_->openPath(path);
+    QTRY_VERIFY(modelPanelsReady() && session->available() && !session->busy() && !session->preparing());
+    auto *view = window_->findChild<ModelView *>("modelViewport");
+    QVERIFY(view);
+    QTRY_VERIFY(view->frame && view->height() > 10 && view->width() > 10);
+    if (animated) {
+      session->seek(.45);
+      QTRY_VERIFY(view->frame && std::abs(view->frame->seconds - .45) < .01);
+    }
+    QVERIFY(view->cameraState().value("automatic").toBool());
+    if (manual) {
+      view->orbit(35, -17);
+      view->panBy(45, 22);
+      view->zoomBy(1.65);
+    }
+    QTest::qWait(100);
+    const auto camera = view->cameraState();
+    const auto matrix = view->viewMatrix;
+    const auto rect = view->mapRectToScene(view->boundingRect());
+    struct Probe { bool matrixChanged{}, rectChanged{}; std::atomic<int> swaps{}, badMatrix{}, badRect{}; };
+    const auto probe = std::make_shared<Probe>();
+    const auto synced = connect(window_, &QQuickWindow::afterSynchronizing, window_, [=] {
+      // GUI is blocked here. Sample the same matrix the renderer synchronized.
+      probe->matrixChanged = view->viewMatrix != matrix;
+      probe->rectChanged = view->mapRectToScene(view->boundingRect()) != rect;
+    }, Qt::DirectConnection);
+    const auto swapped = connect(window_, &QQuickWindow::frameSwapped, window_, [probe] {
+      ++probe->swaps;
+      if (probe->matrixChanged) ++probe->badMatrix;
+      if (probe->rectChanged) ++probe->badRect;
+    }, Qt::DirectConnection);
+    const auto cleanup = qScopeGuard([&] {
+      disconnect(synced); disconnect(swapped);
+      if (session->playing()) session->togglePlay();
+    });
+    if (animated) { session->togglePlay(); QVERIFY(session->playing()); }
+    for (int mask : {1,3,2,0,2,3,1,0}) {
+      const int bit = session->directionMask() ^ mask;
+      auto *button = item(bit == 1 ? "modelNormals" : "modelTangents");
+      QVERIFY(button && button->width() > 0);
+      const int before = probe->swaps.load();
+      QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
+      QTRY_COMPARE(session->directionMask(), mask);
+      QTRY_VERIFY(view->frame && view->frame->normalDirections == bool(mask & 1) &&
+                  (view->frame->sourceTangents || view->frame->uvTangents) == bool(mask & 2));
+      window_->update();
+      QTRY_VERIFY(probe->swaps.load() > before);
+    }
+    qInfo() << "swapped frames" << probe->swaps.load() << "changed projection" << probe->badMatrix.load()
+            << "changed viewport" << probe->badRect.load();
+    QCOMPARE(probe->badRect.load(), 0);
+    QCOMPARE(probe->badMatrix.load(), 0);
+    QCOMPARE(view->cameraState(), camera);
+    if (external) save("original-model-camera-after-toggles");
+    if (animated) session->togglePlay();
+    disconnect(synced); disconnect(swapped);
+    view->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_F);
+    QVERIFY(view->cameraState().value("selected").toBool());
+    QTest::keyClick(window_, Qt::Key_Home);
+    QVERIFY(view->cameraState().value("automatic").toBool());
+    QVERIFY(!view->cameraState().value("selected").toBool());
+#else
+    QSKIP("Model workspace required");
+#endif
+  }
   void meshDirectionGuides() {
 #ifdef FORMAVIEW_MODEL_UI
     ModelSession session;
@@ -2141,7 +2238,8 @@ private slots:
     auto *live = qobject_cast<ModelSession *>(desktop_->model());
     QVERIFY(live);
     desktop_->openPath(path);
-    QTRY_VERIFY(modelPanelsReady() && live->available() && !live->busy() && !live->preparing());
+    QTRY_VERIFY(modelPanelsReady() && live->path() == path && live->available() &&
+                !live->busy() && !live->preparing());
     QTRY_VERIFY(item("modelNormals") && item("modelTangents"));
     QCOMPARE(live->directionMask(), 0);
     for (const auto *name : {"modelNormals", "modelTangents"}) {

@@ -2369,6 +2369,7 @@ void ModelSession::setClipIndex(int index) {
   if (!document_ || !document_->animated() || index < 0 ||
       static_cast<std::size_t>(index) >= document_->animationClips.size())
     return;
+  ++framingRevision_;
   clipIndex_ = index;
   time_ = document_->animationClips[static_cast<std::size_t>(index)].start;
   if (!canPlayAnimation()) {
@@ -2569,6 +2570,7 @@ QVariantMap ModelSession::rootLockInfo() const {
 void ModelSession::setPairMeshVisible(bool value) {
   if (pairMeshVisible_ == value || !document_ || !document_->pairSource)
     return;
+  ++framingRevision_;
   pairMeshVisible_ = value;
   // Leaving the GPU paired preview hands the clock back to the CPU timer; the
   // swap-driven GPU clock stops it again once the preview geometry is ready.
@@ -3315,7 +3317,7 @@ void ModelSession::setDirectionMask(int mask) {
   if (mask < 0 || mask > 3 || mask == directionMask_) return;
   directionMask_ = mask;
   if (playing_ && mask) animTimer_.start();
-  rebuild();
+  rebuild(false);
   emit changed();
 }
 void ModelSession::setMode(int i) {
@@ -3333,7 +3335,8 @@ void ModelSession::setIsolated(bool v) {
   rebuild();
   emit changed();
 }
-void ModelSession::rebuild() {
+void ModelSession::rebuild(bool framingChanged) {
+  if (framingChanged) ++framingRevision_;
   if (globalFrameFailure_ && document_) {
     emit changed();
     return;
