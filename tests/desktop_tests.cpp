@@ -6916,6 +6916,26 @@ private slots:
     QVERIFY(done.wait(10000));
     QVERIFY(!invalid->errorString().isEmpty());
   }
+  void externalThumbnailViews() {
+    const auto path = qEnvironmentVariable("FORMAVIEW_THUMBNAIL_FIXTURE");
+    if (path.isEmpty()) QSKIP("Set FORMAVIEW_THUMBNAIL_FIXTURE to test a real asset");
+    const QFileInfo file(path);
+    QVERIFY(file.isFile());
+    desktop_->navigate(file.absolutePath());
+    for (const auto *mode : {"tiles", "thumbnails"}) {
+      desktop_->preference("fileViewMode", mode);
+      const auto thumb = [&]() -> QQuickItem * {
+        for (auto *entry : visualItems(window_->contentItem(), "fileDelegate"))
+          if (entry->isVisible() && entry->property("fileName") == file.fileName())
+            return visualItems(entry, "fileThumbnail").value(0);
+        return nullptr;
+      };
+      QTRY_VERIFY_WITH_TIMEOUT(thumb() && thumb()->property("status").toInt() == 1, 15000);
+      QVERIFY(thumb()->property("paintedWidth").toReal() > 0);
+      save(QString("external-thumbnail-") + mode);
+    }
+  }
+
   void imageThumbnailsWorkflow() {
     const auto restoreList = qScopeGuard([&] { desktop_->preference("thumbnails", false); });
     const auto folder = root_ + "/thumbnail-ui";
@@ -6941,9 +6961,9 @@ private slots:
     auto thumbs = visualItems(first,"fileThumbnail"); QVERIFY(!thumbs.empty());
     QTRY_COMPARE_WITH_TIMEOUT(thumbs.front()->property("status").toInt(),1,10000);
     QTRY_VERIFY(delegate("02 broken.png"));
-    QTRY_VERIFY(!visualItems(delegate("02 broken.png"),"thumbnailFailure").isEmpty());
-    auto failed = visualItems(delegate("02 broken.png"),"thumbnailFailure"); QVERIFY(!failed.empty());
-    QTRY_VERIFY(failed.front()->isVisible());
+    const auto failed = visualItems(delegate("02 broken.png"), "thumbnailFallback");
+    QVERIFY(!failed.empty());
+    QTRY_VERIFY(failed.front()->isVisible() && failed.front()->property("name") == "image-file");
     auto models = visualItems(delegate("03 model.obj"),"fileThumbnail"); QVERIFY(!models.empty());
     QCOMPARE(models.front()->property("source").toUrl(),QUrl{});
     if (!workflowHeadless()) save("thumbnails-ready-and-failed");

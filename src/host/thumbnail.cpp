@@ -2,6 +2,7 @@
 #ifdef FORMAVIEW_IMAGE_UI
 #include "formaview/image_batch.hpp"
 #include "formaview/image_conversion.hpp"
+#include "formaview/image_preview.hpp"
 #endif
 #include <QCache>
 #include <QDateTime>
@@ -228,7 +229,7 @@ Result documentThumbnail(const QString &path, std::stop_token stop) {
   auto document =
       ImageDocument::open(std::filesystem::path(path.toStdWString()),
                           {static_cast<std::uint64_t>(maxInput),
-                           512ULL * 1024 * 1024, 16384, 65536, 256},
+                           512ULL * 1024 * 1024, 16384, 65536, 256, true},
                           stop);
   const auto &entries = document.description().subresources;
   if (entries.empty())
@@ -242,14 +243,18 @@ Result documentThumbnail(const QString &path, std::stop_token stop) {
         s.data_window.width < best.data_window.width)
       selected = i;
   }
-  const auto source = document.decode(selected, stop);
   const auto semantics = document.semantics(selected);
-  const auto w = source.data_window.width, h = source.data_window.height;
+  const auto &bounds = entries[selected].data_window;
+  const auto w = bounds.width, h = bounds.height;
   if (!w || !h)
     return {{}, "Empty image"};
   const auto target = QSize(static_cast<int>(w), static_cast<int>(h))
                           .scaled(width, height, Qt::KeepAspectRatio);
-  QImage image(target, QImage::Format_RGBA8888);
+  const auto output = target.expandedTo(QSize(1, 1));
+  const auto source = document.decode_preview(selected,
+      {0, 0, w, h, static_cast<std::uint64_t>(output.width()),
+       static_cast<std::uint64_t>(output.height())}, stop);
+  QImage image(output, QImage::Format_RGBA8888);
   if (image.isNull())
     return {{}, "Thumbnail allocation failed"};
   const auto channel = [&](const std::string &name) -> const ImageChannel * {
@@ -276,19 +281,15 @@ Result documentThumbnail(const QString &path, std::stop_token stop) {
     if (!channels[0] && !source.channels.empty())
       channels[0] = &source.channels.front();
   }
-  for (int y = 0; y < target.height(); ++y) {
+  for (int y = 0; y < image.height(); ++y) {
     if (stop.stop_requested())
       return {{}, "Thumbnail cancelled"};
     auto *out = image.scanLine(y);
-    const auto sy =
-        static_cast<std::uint64_t>(2 * y + 1) * h / (2 * target.height());
-    for (int x = 0; x < target.width(); ++x) {
-      const auto sx =
-          static_cast<std::uint64_t>(2 * x + 1) * w / (2 * target.width());
+    for (int x = 0; x < image.width(); ++x) {
       std::array<double, 4> rgba{0, 0, 0, 1};
       for (std::size_t c = 0; c < 4; ++c)
         if (channels[c])
-          rgba[c] = interpreted_value(*channels[c], sy * w + sx);
+          rgba[c] = interpreted_value(*channels[c], y * image.width() + x);
       if (!std::all_of(rgba.begin(), rgba.end(),
                        [](double v) { return std::isfinite(v); }))
         rgba = {1, 0, 1, 1};

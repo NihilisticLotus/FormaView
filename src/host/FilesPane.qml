@@ -164,14 +164,7 @@ Rectangle {
                             width: root.tiles ? 48 : parent.width; height: root.tiles ? 48 : 84; visible: root.gridMode
                             source: root.gridMode && !entry.isDirectory && entry.fileKind === "image" ? "image://thumb/"+String(Qt.btoa(Array.from(encodeURIComponent(entry.filePath), c => c.charCodeAt(0)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")+"?"+entry.fileModified+"-"+entry.fileBytes : ""
                             sourceSize: root.tiles ? Qt.size(64,64) : Qt.size(160,120); asynchronous: true; cache: false; fillMode: Image.PreserveAspectFit
-                            AppIcon { anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Error ? "warning" : thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: thumbnail.status === Image.Error ? "warning" : "muted" }
-                            Label {
-                                objectName: "thumbnailFailure"
-                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
-                                visible: thumbnail.status === Image.Error
-                                text: Theme.t("缩略图不可用", "Thumbnail unavailable", "縮圖無法使用")
-                                color: Theme.muted; font.pixelSize: 10
-                            }
+                            AppIcon { objectName: "thumbnailFallback"; anchors.centerIn: parent; visible: parent.status !== Image.Ready; name: thumbnail.status === Image.Loading ? "loading" : entry.isDirectory ? "folder" : entry.fileKind === "image" ? "image-file" : (entry.fileKind === "model" || entry.fileKind === "convert" || entry.fileKind === "cache") ? "model" : "file"; size: 24; variant: "muted" }
                         }
                         RowLayout {
                             anchors.left: parent.left; anchors.leftMargin: root.tiles ? 60 : 0; anchors.right: parent.right; anchors.verticalCenter: root.thumbnails ? undefined : parent.verticalCenter; anchors.bottom: root.thumbnails ? parent.bottom : undefined; spacing: 12
