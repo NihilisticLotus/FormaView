@@ -247,7 +247,7 @@ def association_source(file_icon_name):
     return prefix + ext + read(HERE / "wizard-code.iss")
 
 
-def build(dest, evidence, compile_setup, runtime_delivery):
+def build(dest, evidence, compile_setup, runtime_delivery, development=False):
     if DEV is None:
         configure_staging_root()
     for path in (dest, evidence):
@@ -291,7 +291,8 @@ def build(dest, evidence, compile_setup, runtime_delivery):
     file_icon_name = f"formaview-file-icon-{sha(icon)}.ico"
     (metadata / file_icon_name).write_bytes(icon.read_bytes())
     (metadata / "installation.ini").write_bytes(f"[Install]\r\nAppId={IDENTITY}\r\nVersion={version}\r\n".encode())
-    write(metadata / "安装使用说明.txt", GUIDE.format(version=version))
+    label = f"{version} 开发测试版（{d['sourceCommit'][:7]}）" if development else version
+    write(metadata / "安装使用说明.txt", GUIDE.format(version=label))
     for name in ("runtime-manifest.json", "formaview.ico", file_icon_name, "installation.ini", "安装使用说明.txt"):
         sources[name] = metadata / name
     names = sorted(set(sources) | {"owned-files.txt", "sha256.json"})
@@ -307,8 +308,24 @@ def build(dest, evidence, compile_setup, runtime_delivery):
         suffix = "" if str(parent) == "." else "\\" + str(parent)
         entries.append(f'Source: "{sources[name]}"; DestDir: "{{app}}{suffix}"; Flags: ignoreversion')
     write(engine / "files.generated.iss", "\n".join(entries) + "\n")
-    write(engine / "install-notice.txt", NOTICE)
-    write(engine / "FormaView.iss", setup_source())
+    setup = setup_source()
+    filename = f"FormaView-{version}-Windows-x64-Setup"
+    notice = NOTICE
+    if development:
+        commit = d["sourceCommit"]
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("Development installers need a full source commit")
+        filename = f"FormaView-{version}-dev-{commit[:7]}-Windows-x64-Setup"
+        setup = replace(setup, "OutputBaseFilename=FormaView-{#PackageVersion}-Windows-x64-Setup",
+                        f"OutputBaseFilename={filename}")
+        for key in ("AppVerName", "UninstallDisplayName"):
+            setup = replace(setup, f"{key}=FormaView {{#PackageVersion}}", f"{key}=FormaView {label}")
+        setup = replace(setup, "VersionInfoDescription=FormaView Windows x64 installer",
+                        f"VersionInfoDescription=FormaView {label} Windows x64")
+        setup = replace(setup, "SetupWindowTitle=安装 FormaView", f"SetupWindowTitle=安装 FormaView {label}")
+        notice = f"FormaView {label}\n\n本构建供试用和反馈。请在反馈问题时附上构建号 {commit[:7]}。\n\n" + notice
+    write(engine / "install-notice.txt", notice)
+    write(engine / "FormaView.iss", setup)
     write(engine / "upgrade-policy.iss", read(HERE / "upgrade-policy.iss"))
     write(engine / "uninstall-data.iss", read(HERE / "uninstall-data.iss"))
     assoc = association_source(file_icon_name)
@@ -328,7 +345,7 @@ def build(dest, evidence, compile_setup, runtime_delivery):
     (evidence / "compile.log").write_bytes(log.stdout)
     if log.returncode:
         raise SystemExit(log.stdout.decode(errors="replace"))
-    exe = output / f"FormaView-{version}-Windows-x64-Setup.exe"
+    exe = output / f"{filename}.exe"
     info = dict(installer=str(exe), sha256=sha(exe), bytes=exe.stat().st_size, compiler=lock["version"],
                 compilerSha256=sha(ISCC), runtimeZipSha256=d["archiveSha256"], runtimeManifestSha256=d["manifestSha256"],
                 runtimeDelivery=str(runtime_delivery), sourceCommit=d["sourceCommit"], sourceIdentity=d["sourceIdentity"],
@@ -341,6 +358,8 @@ def build(dest, evidence, compile_setup, runtime_delivery):
                 productVersion=version, versionSource="verified runtime PE resources",
                 supportsInPlaceVersionChanges=True, profileContract="formaview-user-state-v1",
                 retainsRetiredPayloadFilesOutsideLoadPaths=True)
+    if development:
+        info["channel"] = "development"
     save(output / "build-record.json", info)
     save(evidence / "installer-build-record.json", info)
     (output / "SHA256SUMS.txt").write_text(f"{info['sha256']} *{exe.name}\n", encoding="ascii")
@@ -350,10 +369,11 @@ def build(dest, evidence, compile_setup, runtime_delivery):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--development", action="store_true", help="Label a tester build and include its source revision in the filename")
     parser.add_argument("--staging-root", type=Path)
     parser.add_argument("--runtime-delivery", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
     configure_staging_root(args.staging_root)
-    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, args.runtime_delivery.resolve())
+    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, args.runtime_delivery.resolve(), development=args.development)

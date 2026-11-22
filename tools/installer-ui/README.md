@@ -15,6 +15,8 @@ python tools/installer-ui/build.py `
   --evidence "$stage/verification/<new-candidate>"
 ```
 
+For a tester build, add `--development` to the build command. The setup filename, wizard title, installed guide and Windows Apps entry identify the development build and its source revision. The numeric product version and installer identity continue to support in-place updates of earlier development builds.
+
 `build.py` refuses non-empty output/evidence directories. The compiler binary, runtime delivery, candidate installer, and evidence are not checked into Git. Do not overwrite frozen candidate files. Review their recorded source identity and hashes before treating any generated package as a release candidate.
 
 The setup and upgrade simulation helpers require an isolated Windows environment and the release staging root:
