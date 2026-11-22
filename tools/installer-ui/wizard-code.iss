@@ -2,20 +2,20 @@ function SelectedFormats: Integer;
 var I: Integer;
 begin
   Result := 0;
-  for I := 0 to 24 do if AssocList.Checked[Rows[I]] then Result := Result + 1;
+  for I := 0 to GetArrayLength(Extensions) - 1 do if AssocList.Checked[Rows[I]] then Result := Result + 1;
 end;
 
 procedure SelectionChanged(Sender: TObject);
 begin
-  AssocCount.Caption := '已选 ' + IntToStr(SelectedFormats) + ' / 25 个预览格式';
+  AssocCount.Caption := '已选 ' + IntToStr(SelectedFormats) + ' / ' + IntToStr(GetArrayLength(Extensions)) + ' 个预览格式';
 end;
 
 procedure ChoosePreset(Sender: TObject);
 var I, Mode: Integer; Common: string;
 begin
   Mode := TNewButton(Sender).Tag;
-  Common := ',.png,.jpg,.jpeg,.bmp,.tga,.dds,.fbx,.obj,.gltf,.glb,.psk,.pskx,.psa,';
-  for I := 0 to 24 do
+  Common := ',@@COMMON_FORMATS@@,';
+  for I := 0 to GetArrayLength(Extensions) - 1 do
     AssocList.Checked[Rows[I]] := (Mode = 2) or
       ((Mode = 1) and (Pos(',' + Extensions[I] + ',', Common) > 0));
   SelectionChanged(Sender);
@@ -53,7 +53,7 @@ var I, Pending, Done, FailedCount: Integer; Status: string;
 begin
   Pending := 0; Done := 0; FailedCount := 0;
   AssocReport := '';
-  for I := 0 to 24 do if AssocList.Checked[Rows[I]] then begin
+  for I := 0 to GetArrayLength(Extensions) - 1 do if AssocList.Checked[Rows[I]] then begin
     if Failed[I] then begin
       Status := '注册未完成'; FailedCount := FailedCount + 1;
     end else if ConfirmedDefault(I) then begin
@@ -79,7 +79,7 @@ procedure ApplyAssociations(RetryOnly: Boolean);
 var I: Integer; SharedOk: Boolean;
 begin
   if not RetryOnly then begin
-    for I := 0 to 24 do begin
+    for I := 0 to GetArrayLength(Extensions) - 1 do begin
       Failed[I] := False;
       if not AssocList.Checked[Rows[I]] then RemoveOwned(Copy(Extensions[I], 2, 20) + '_');
     end;
@@ -88,9 +88,9 @@ begin
   SharedOk := True;
   if SelectedFormats > 0 then
     SharedOk := PutOwned('shared_name', Caps, 'ApplicationName', 'FormaView') and
-      PutOwned('shared_description', Caps, 'ApplicationDescription', '预览图片、模型、动画和 Alembic 缓存文件。') and
+      PutOwned('shared_description', Caps, 'ApplicationDescription', '预览@@MEDIA_DESCRIPTION@@、模型、动画和 Alembic 缓存文件。') and
       PutOwned('shared_registration', 'Software\RegisteredApplications', 'FormaView.Local', Caps);
-  for I := 0 to 24 do
+  for I := 0 to GetArrayLength(Extensions) - 1 do
     if AssocList.Checked[Rows[I]] and (not RetryOnly or Failed[I]) then
       Failed[I] := not (SharedOk and RegisterExtension(I));
   SHChangeNotify($08000000, 0, 0, 0);
@@ -131,6 +131,8 @@ procedure InitializeWizard;
 var I: Integer; Button: TNewButton; Group, Param, LabelText: string; Checked: Boolean;
 begin
   Extensions := ExtensionList;
+  SetArrayLength(Rows, GetArrayLength(Extensions));
+  SetArrayLength(Failed, GetArrayLength(Extensions));
   WizardForm.WelcomeLabel2.Caption := '版本 {#PackageVersion}   ·   Windows x64' + #13#10#13#10 + WizardForm.WelcomeLabel2.Caption;
   if PreviousInstallDir <> '' then begin
     WizardForm.WelcomeLabel1.Caption := UpgradeActionLabel + ' FormaView';
@@ -165,8 +167,8 @@ begin
     Button.SetBounds(I * ScaleX(107), ScaleY(34), ScaleX(100), ScaleY(26));
     case I of
       0: Button.Caption := '不关联';
-      1: Button.Caption := '常用格式（13）';
-      2: Button.Caption := '全部格式（25）';
+      1: Button.Caption := '常用格式（@@COMMON_COUNT@@）';
+      2: Button.Caption := '全部格式（' + IntToStr(GetArrayLength(Extensions)) + '）';
     end;
     Button.Tag := I; Button.OnClick := @ChoosePreset;
   end;
@@ -175,12 +177,10 @@ begin
   AssocList.Anchors := [akLeft, akTop, akRight, akBottom];
   AssocList.OnClickCheck := @SelectionChanged;
   Param := Lowercase(ExpandConstant('{param:ASSOC|#auto#}'));
-  for I := 0 to 24 do begin
+  for I := 0 to GetArrayLength(Extensions) - 1 do begin
     Group := '';
     case I of
-      0: Group := '图片（17）';
-      17: Group := '模型与缓存（7）';
-      24: Group := '动画与骨架（1）';
+@@GROUP_LABELS@@
     end;
     if Group <> '' then AssocList.AddGroup(Group, '', 0, nil);
     LabelText := Extensions[I] + '   ·   ' + FormatDescription(I);
@@ -234,7 +234,7 @@ begin
   end;
   Result := Result + '文件关联（' + IntToStr(SelectedFormats) + ' 个格式）' + NewLine + Space;
   ItemsOnLine := 0;
-  for I := 0 to 24 do if AssocList.Checked[Rows[I]] then begin
+  for I := 0 to GetArrayLength(Extensions) - 1 do if AssocList.Checked[Rows[I]] then begin
     if ItemsOnLine = 8 then begin
       Result := Result + NewLine + Space;
       ItemsOnLine := 0;

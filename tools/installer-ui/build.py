@@ -230,24 +230,73 @@ function InitialTaskHistoryLayout(""")
     return source
 
 
-def association_source(file_icon_name):
+# Extension order controls the order of the file association page.
+VIDEO_FORMATS = "mp4 mkv mov webm m4v avi ts m2ts mpg mpeg".split()
+FORMAT_GROUPS = {
+    "视频": [(ext, ext.upper() + " 视频") for ext in VIDEO_FORMATS],
+    "图片": [
+        ("bmp", "BMP 图像"), ("dib", "DIB 图像"), ("dds", "DDS 纹理"), ("exr", "OpenEXR 图像"),
+        ("gif", "GIF 图像"), ("hdr", "HDR 图像"), ("ico", "ICO 图标"), ("jfif", "JPEG 图像"),
+        ("jpe", "JPEG 图像"), ("jpeg", "JPEG 图像"), ("jpg", "JPEG 图像"), ("png", "PNG 图像"),
+        ("rgbe", "RGBE 图像"), ("tga", "TGA 图像"), ("tif", "TIFF 图像"), ("tiff", "TIFF 图像"),
+        ("webp", "WebP 图像"),
+    ],
+    "模型与缓存": [
+        ("fbx", "FBX 模型"), ("gltf", "glTF 模型"), ("glb", "GLB 模型"), ("obj", "OBJ 模型"),
+        ("psk", "ActorX 模型"), ("pskx", "ActorX 模型"), ("abc", "Alembic 几何缓存"),
+    ],
+    "动画与骨架": [("psa", "ActorX 动画 / 骨架")],
+}
+COMMON_FORMATS = set("png jpg jpeg bmp tga dds fbx obj gltf glb psk pskx psa mp4 mkv mov".split())
+
+
+def association_source(file_icon_name, has_video):
+    groups = {k: v for k, v in FORMAT_GROUPS.items() if has_video or k != "视频"}
+    formats = [item for items in groups.values() for item in items]
+    exts = ["." + ext for ext, _ in formats]
+    assert len(exts) == len(set(exts))
+    common = ["." + ext for ext, _ in formats if ext in COMMON_FORMATS]
+    group_labels = []
+    first = 0
+    for name, items in groups.items():
+        group_labels.append(f"      {first}: Group := '{name}（{len(items)}）';")
+        first += len(items)
+
     previous = read(BASE / "associations.iss")
-    # Preserve the existing extension/ProgID inventory, registration protocol,
-    # and ownership ledger. Presentation is defined independently.
     prefix = previous[:previous.index("procedure SelectionChanged")]
-    prefix = prefix.replace("HKCU64", "InstallRootKey")
+    prefix = prefix.replace("HKCU64", "InstallRootKey").replace("array[0..24]", "array")
     prefix = prefix.replace("Extensions, Defaults:", "Extensions:")
+    quoted = ", ".join(f"'{ext}'" for ext in exts)
+    descriptions = "\n".join(f"    {i}: Result := '{label}';" for i, (_, label) in enumerate(formats))
+    catalog = f"""function ExtensionList: TArrayOfString;
+begin Result := [{quoted}]; end;
+
+function FormatDescription(I: Integer): string;
+begin
+  case I of
+{descriptions}
+  end;
+end;
+
+"""
+    prefix = prefix[:prefix.index("function FormatDescription")] + catalog + prefix[prefix.index("function DefaultDescription"):]
+    start = prefix.index("  All := [")
+    prefix = prefix[:start] + "  All := ExtensionList;" + prefix[prefix.index("];", start) + 2:]
     prefix = replace(prefix, "  Id := QueryAssociation(Extensions[I], 20);",
                      """  if IsAdminInstallMode then begin
     Result := '需在 Windows 中按账户确认'; exit;
   end;
   Id := QueryAssociation(Extensions[I], 20);""")
     prefix = replace(prefix, "@@FILE_ICON_FILENAME@@", file_icon_name)
-    ext = previous[previous.index("function ExtensionList:"):previous.index("procedure InitializeWizard;")]
-    return prefix + ext + read(HERE / "wizard-code.iss")
+    wizard = read(HERE / "wizard-code.iss")
+    wizard = replace(wizard, "@@COMMON_FORMATS@@", ",".join(common))
+    wizard = replace(wizard, "@@COMMON_COUNT@@", str(len(common)))
+    wizard = replace(wizard, "@@GROUP_LABELS@@", "\n".join(group_labels))
+    wizard = replace(wizard, "@@MEDIA_DESCRIPTION@@", "图片、视频" if has_video else "图片")
+    return prefix + wizard, exts
 
 
-def build(dest, evidence, compile_setup, runtime_delivery, development=False):
+def build(dest, evidence, compile_setup, runtime_delivery, development=False, installer_commit=None):
     if DEV is None:
         configure_staging_root()
     for path in (dest, evidence):
@@ -291,7 +340,10 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False):
     file_icon_name = f"formaview-file-icon-{sha(icon)}.ico"
     (metadata / file_icon_name).write_bytes(icon.read_bytes())
     (metadata / "installation.ini").write_bytes(f"[Install]\r\nAppId={IDENTITY}\r\nVersion={version}\r\n".encode())
-    label = f"{version} 开发测试版（{d['sourceCommit'][:7]}）" if development else version
+    commit = installer_commit or d["sourceCommit"]
+    if development and not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Development installers need a full build commit")
+    label = f"{version} 开发测试版（{commit[:7]}）" if development else version
     write(metadata / "安装使用说明.txt", GUIDE.format(version=label))
     for name in ("runtime-manifest.json", "formaview.ico", file_icon_name, "installation.ini", "安装使用说明.txt"):
         sources[name] = metadata / name
@@ -312,9 +364,6 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False):
     filename = f"FormaView-{version}-Windows-x64-Setup"
     notice = NOTICE
     if development:
-        commit = d["sourceCommit"]
-        if not re.fullmatch(r"[0-9a-f]{40}", commit):
-            raise ValueError("Development installers need a full source commit")
         filename = f"FormaView-{version}-dev-{commit[:7]}-Windows-x64-Setup"
         setup = replace(setup, "OutputBaseFilename=FormaView-{#PackageVersion}-Windows-x64-Setup",
                         f"OutputBaseFilename={filename}")
@@ -328,9 +377,7 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False):
     write(engine / "FormaView.iss", setup)
     write(engine / "upgrade-policy.iss", read(HERE / "upgrade-policy.iss"))
     write(engine / "uninstall-data.iss", read(HERE / "uninstall-data.iss"))
-    assoc = association_source(file_icon_name)
-    exts = re.search(r"Text := '([^']+)'", assoc)[1].rstrip(",").split(",")
-    assert len(exts) == len(set(exts)) == 25 and not {".pmx", ".vrm"}.intersection(exts)
+    assoc, exts = association_source(file_icon_name, has_video="libmpv-2.dll" in sources)
     assert "UserChoice" not in assoc and '--open "%1"' in assoc
     write(engine / "associations.iss", assoc)
     render_art(engine, icon)
@@ -360,6 +407,7 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False):
                 retainsRetiredPayloadFilesOutsideLoadPaths=True)
     if development:
         info["channel"] = "development"
+        info["installerCommit"] = commit
     save(output / "build-record.json", info)
     save(evidence / "installer-build-record.json", info)
     (output / "SHA256SUMS.txt").write_text(f"{info['sha256']} *{exe.name}\n", encoding="ascii")
@@ -370,10 +418,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--development", action="store_true", help="Label a tester build and include its source revision in the filename")
+    parser.add_argument("--installer-commit", help="Identify a packaging-only rebuild separately from its verified runtime")
     parser.add_argument("--staging-root", type=Path)
     parser.add_argument("--runtime-delivery", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
     configure_staging_root(args.staging_root)
-    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, args.runtime_delivery.resolve(), development=args.development)
+    build(args.destination.resolve(), args.evidence.resolve(), not args.prepare_only, args.runtime_delivery.resolve(), development=args.development, installer_commit=args.installer_commit)
