@@ -237,6 +237,7 @@ public:
   Q_INVOKABLE void selectBone(int);
   Q_INVOKABLE void selectUV(int);
   std::uint64_t framingRevision() const { return framingRevision_; }
+  Q_INVOKABLE void setSkeletonOverlay(bool enabled);
   int directionMask() const { return directionMask_; }
   QString tangentSource() const {
     const auto f = frames_.model;
@@ -403,6 +404,7 @@ private:
   QString textureError_;
   quint64 textureRequest_{};
   std::uint64_t framingRevision_{};
+  bool skeletonOverlay_{};
   int directionMask_{};
   int mesh_{}, bone_{}, mode_{}, material_{};
   int clipIndex_{};

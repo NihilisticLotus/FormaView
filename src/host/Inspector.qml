@@ -14,6 +14,8 @@ GlassPanel {
     radius: Theme.groupRadius
     readonly property bool imageActive: !!controller.image && controller.image.available
     readonly property bool modelActive: !!controller.model && controller.model.available
+    signal activateAnimationSection()
+    signal addExternalAnimation()
     property string pendingModelSection: ""
     function inspectSection(section) {
         showInfo = false
@@ -40,6 +42,11 @@ GlassPanel {
     Loader {
         id: modelInspectorHost
         objectName: "modelInspectorLoader"
+        Connections {
+            target: modelInspectorHost.item
+            function onAddExternalAnimation() { root.addExternalAnimation() }
+            function onActivateAnimationSection() { root.activateAnimationSection() }
+        }
         onLoaded: if (root.pendingModelSection) {
             item.inspectSection(root.pendingModelSection)
             root.pendingModelSection = ""

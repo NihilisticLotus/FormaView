@@ -6,8 +6,8 @@ FocusScope {
     id: root
     required property var session
     property bool uv: false
-    property bool showGrid: true
-    property bool showAxes: true
+    property bool showGrid: false
+    property bool showAxes: false
     property bool wireframe: false
     property int shadingMode: 0
     property var initialCamera: ({})
@@ -20,7 +20,7 @@ FocusScope {
         objectName: root.uv ? "uvViewport" : "modelViewport"
         anchors.fill: parent
         session: root.session
-        backdrop: root.uv ? "#202b34" : Theme.light ? "#dfe4ea" : "#383f4b"
+        backdrop: root.uv ? "#202b34" : Theme.light ? "#e7ebef" : "#24272b"
         representation: root.uv ? 1 : 0
         showGrid: !root.uv && root.showGrid
         showAxes: !root.uv && root.showAxes

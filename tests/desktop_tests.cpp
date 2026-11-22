@@ -904,6 +904,62 @@ private slots:
     QSKIP("Model UI is disabled");
 #endif
   }
+  void modelAnimationInspectorControls() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto asset = requireFixture("FORMAVIEW_REVIEW_ANIMATED_MODEL", true);
+    if (asset.isEmpty()) QSKIP("Requires a playable animated model");
+    const auto originalSize = window_->size();
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); window_->resize(originalSize); });
+    window_->resize(1420, 860);
+    desktop_->openPath(asset);
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == asset && session->inspectable() && session->canPlayAnimation() && modelPanelsReady(), 30000);
+    auto click = [&](const char *name) {
+      QTRY_VERIFY(item(name) && item(name)->isEnabled());
+      QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!presented.isEmpty());
+      auto *button = item(name);
+      QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
+    };
+    if (!session->bindings().isEmpty()) {
+      click("modelSection_skeleton");
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame() && session->frame()->selectionVertices > 0, 10000);
+      QVERIFY(window_->grabWindow().save(root_ + "/model-skeleton-overlay.png"));
+    }
+    click("modelSection_animation");
+    QTRY_VERIFY(item("motionSpeed") && item("motionClipChoice"));
+    QCOMPARE(item("motionClipChoice")->property("currentIndex").toInt(), session->clipIndex());
+    auto *speed = item("motionSpeed");
+    speed->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(window_, Qt::Key_2);
+    QTest::keyClick(window_, Qt::Key_Return);
+    QTRY_COMPARE(session->speed(), 2.);
+    if (session->playing()) session->togglePlay();
+    click("animPlay");
+    QTRY_VERIFY(session->playing());
+    click("animStepForward");
+    QTRY_VERIFY(!session->playing());
+    click("animPlay");
+    QTRY_VERIFY(session->playing());
+    auto *slider = item("animScrubber");
+    QVERIFY(slider);
+    QTest::mouseClick(window_, Qt::LeftButton, {}, slider->mapToScene(slider->boundingRect().center()).toPoint());
+    QTRY_VERIFY(!session->playing());
+    const auto paused = session->time();
+    QTest::qWait(120);
+    QCOMPARE(session->time(), paused);
+    QVERIFY(window_->grabWindow().save(root_ + "/model-animation-inspector.png"));
+    click("modelModeTab3");
+    QTRY_VERIFY(item("modelSectionLegend") && !item("motionSpeed"));
+    QVERIFY(window_->grabWindow().save(root_ + "/model-lod-legend.png"));
+    click("modelModeTab0");
+    QTRY_VERIFY(!item("modelSectionLegend"));
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
   void modelAnimationAvailability() {
 #ifdef FORMAVIEW_MODEL_UI
     try {
@@ -943,6 +999,11 @@ private slots:
     }
     QVERIFY(session->canAttachExternalAnimation());
     QVERIFY(item("animExternalAttach"));
+    auto *animationSection = item("modelSection_animation");
+    QVERIFY(animationSection && animationSection->isEnabled());
+    QTest::mouseClick(window_, Qt::LeftButton, {}, animationSection->mapToScene(animationSection->boundingRect().center()).toPoint());
+    QTRY_VERIFY(item("motionAttach") && item("motionClipChoice"));
+    QVERIFY(!item("animPlay"));
     session->attachExternalAnimation(samples.filePath("invalid.fbx"));
     QTRY_VERIFY(!session->externalBusy());
     QCOMPARE(session->externalInfo().value("status").toString(), "refused");
@@ -977,9 +1038,9 @@ private slots:
     session->togglePlay();
     QVERIFY2(open("static.gltf"), qPrintable(session->error()+session->frameError())); // Static landing stops the old clock.
     QVERIFY(!session->playing());
-    QVERIFY(!bar->isVisible());
+    QVERIFY(!item("modelAnimationBarHost"));
     QVERIFY2(open("animated.gltf"), qPrintable(session->error()+session->frameError()));
-    QVERIFY(bar->isVisible() && session->canPlayAnimation());
+    QVERIFY(item("modelAnimationBarHost") && session->canPlayAnimation());
     session->togglePlay(); QTRY_VERIFY(session->time() > 0.01);
     session->togglePlay();
     QVERIFY2(open("animated.fbx"), qPrintable(session->error()+session->frameError()));
@@ -1100,7 +1161,7 @@ private slots:
     QTRY_VERIFY(idle());
     auto *button = item("navigateDesktopButton");
     QVERIFY(button);
-    QVERIFY(!button->property("hint").toString().isEmpty());
+    QTRY_VERIFY(!button->property("hint").toString().isEmpty());
     const auto currentSession = desktop_->sessionRevision();
     button->forceActiveFocus();
     QTest::keyClick(window_, Qt::Key_Space);
@@ -3532,10 +3593,13 @@ private slots:
     QVERIFY2(!path.isEmpty(),"Set FORMAVIEW_MODEL_PREVIEW_SAMPLE to a read-only model");
     auto *session=qobject_cast<ModelSession *>(desktop_->model());
     desktop_->openPath(path);
-    QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() && !session->preparing(),30000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && session->inspectable() && modelPanelsReady(),30000);
     QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
     QTRY_VERIFY(item("modelPane"));
     // The same shading choices live inline on wide viewports and in a menu on compact ones.
+    QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!presented.isEmpty());
     if (auto *inlineChoice = item("modelShadingOption1"); inlineChoice && inlineChoice->isVisible()) {
       QTest::mouseClick(window_, Qt::LeftButton, {}, inlineChoice->mapToScene(inlineChoice->boundingRect().center()).toPoint());
       QTRY_COMPARE(item("modelPane")->property("previewMode").toInt(), 1);
@@ -3551,7 +3615,7 @@ private slots:
     QVERIFY(menu);
     QTRY_COMPARE(menu->property("count").toInt(), 5);
     QCOMPARE(button->property("text").toString(), QString());
-    QVERIFY(!button->property("hint").toString().isEmpty());
+    QTRY_VERIFY(!button->property("hint").toString().isEmpty());
     QVERIFY(button->width() < 48);
     ModelView *view{};
     QTRY_VERIFY((view=window_->findChild<ModelView *>("modelViewport")));
@@ -3567,15 +3631,22 @@ private slots:
       else QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
       QTRY_VERIFY(menu->property("opened").toBool());
       QQuickItem *selected = nullptr;
-      qreal lastY = -1;
+      // The popup can reposition when its implicit height resolves. Compare all
+      // five positions from the same layout pass.
+      const auto optionsInOrder = [&] {
+        qreal lastY = -1;
+        for (int index : {0,1,4,2,3}) {
+          auto *option = item(("modelDisplayOption" + QByteArray::number(index)).constData());
+          if (!option || option->mapToScene({0,0}).y() <= lastY) return false;
+          lastY = option->mapToScene({0,0}).y();
+        }
+        return true;
+      };
+      QTRY_VERIFY(optionsInOrder());
       for (int index : {0,1,4,2,3}) {
         const auto name = "modelDisplayOption" + QByteArray::number(index);
         auto *option = item(name.constData());
         QVERIFY(option && !option->property("text").toString().isEmpty());
-        QTRY_VERIFY2(option->mapToScene({0,0}).y() > lastY,
-                     qPrintable(QString("mode %1 at %2, previous %3")
-                       .arg(index).arg(option->mapToScene({0,0}).y()).arg(lastY)));
-        lastY = option->mapToScene({0,0}).y();
         QCOMPARE(option->property("checked").toBool(), previous == index);
         if (index == mode) selected = option;
       }
@@ -8070,8 +8141,8 @@ private slots:
     for (int i = 0; i < 10; ++i) {
       const auto path = fixture_ + QString("/asset%1.obj").arg(i % 2);
       pane->setProperty("previewMode", 3);
-      pane->setProperty("showGrid", false);
-      pane->setProperty("showAxes", false);
+      pane->setProperty("showGrid", true);
+      pane->setProperty("showAxes", true);
       pane->setProperty("showUV", false);
       view->orbit(20, 10);
       view->zoomBy(2);
@@ -8080,8 +8151,8 @@ private slots:
       QVERIFY2(pane, "A new model open must not destroy the preview during reset");
       QCOMPARE(item("modelPane"), pane.data());
       QVERIFY(!pane->property("wireframe").toBool());
-      QVERIFY(pane->property("showGrid").toBool());
-      QVERIFY(pane->property("showAxes").toBool());
+      QVERIFY(!pane->property("showGrid").toBool());
+      QVERIFY(!pane->property("showAxes").toBool());
       QVERIFY(pane->property("showUV").toBool());
       QVERIFY(view->cameraState().value("automatic").toBool());
       QCOMPARE(view->cameraState().value("yaw").toDouble(), 25.0);
@@ -8224,7 +8295,9 @@ private slots:
     const auto frame=view->frame;
     const auto counts=session->info();
     const auto camera=view->cameraState();
-    QVERIFY(view->gridVisible() && view->axesVisible());
+    QVERIFY(!view->gridVisible() && !view->axesVisible());
+    click(item("modelGroundGrid")); click(item("modelOriginAxes"));
+    QTRY_VERIFY(view->gridVisible() && view->axesVisible());
     click(item("modelGroundGrid"));
     QTRY_VERIFY(!view->gridVisible());
     QVERIFY(view->axesVisible());
@@ -8257,7 +8330,7 @@ private slots:
     const auto hit=view->mapToScene({(ndc.x()+1)*view->width()/2,(1-ndc.y())*view->height()/2});
     QTest::mouseClick(window_,Qt::LeftButton,Qt::NoModifier,hit.toPoint());
     QTRY_VERIFY(!session->picked().isEmpty());
-    QVERIFY(item("globalOpenFolderButton") && !item("chooseBrowseFolder"));
+    QVERIFY(item("folderDriveButton") && item("copyFolderPath"));
     QVERIFY(item("editLocation") && item("editLocation")->property("iconName").toString().isEmpty());
     save("model-left-click-source-inspection");
     desktop_->clearAsset();
@@ -9563,7 +9636,10 @@ private slots:
       return snapshot.copy(QRect(int(top.x() * scale), int(top.y() * scale),
                                  int(guideView->width() * scale), int(guideView->height() * scale)));
     };
-    QVERIFY(guideView->gridVisible() && guideView->axesVisible());
+    QVERIFY(!guideView->gridVisible() && !guideView->axesVisible());
+    clickGuide("modelGroundGrid");
+    clickGuide("modelOriginAxes");
+    QTRY_VERIFY(guideView->gridVisible() && guideView->axesVisible());
     const auto guidesOn = viewportPixels();
     clickGuide("modelGroundGrid");
     QVERIFY(!guideView->gridVisible() && guideView->axesVisible());
@@ -10638,7 +10714,7 @@ private slots:
           if (QString::fromLatin1(name) != "modelCompareSkeleton") {
             QVERIFY(button->property("text").toString().isEmpty());
             QVERIFY(!button->property("iconName").toString().isEmpty());
-            QVERIFY(!button->property("hint").toString().isEmpty());
+            QTRY_VERIFY(!button->property("hint").toString().isEmpty());
             QVERIFY(button->width() <= 33);
           }
         }

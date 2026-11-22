@@ -17,6 +17,7 @@ Rectangle {
     function selectSection(key, mode) {
         section = key
         session.setMode(mode)
+        session.setSkeletonOverlay(key === "skeleton" || key === "binding")
         if (key === "animation") {
             animationBarHost.collapsed = false
             animationBarHost.optionsVisible = false
@@ -29,12 +30,14 @@ Rectangle {
     readonly property ModelViewport uvViewport: uvLoader.status === Loader.Ready ? uvLoader.item as ModelViewport : null
     property bool showUV: true
     property bool showCompare: false
-    property bool showGrid: true
-    property bool showAxes: true
+    property bool showGrid: false
+    property bool showAxes: false
     property int previewMode: 0
     readonly property var shadingOrder: [0, 1, 4, 2, 3]
     readonly property var shadingLabels: [Theme.t("材质","Material","材質"), Theme.t("棋盘格","Checker","棋盤格"),
         Theme.t("顶点色","Vertex color","頂點色"), Theme.t("线框","Wireframe","線框"), Theme.t("素模","Clay","素模")]
+    readonly property string triangleText: Theme.t("%1 三角形","%1 triangles","%1 三角形")
+        .arg(Number(session.info.visibleTriangles ?? session.info.triangles ?? 0).toLocaleString(Qt.locale(), "f", 0))
     readonly property bool wireframe: previewMode === 3
     property var uvCamera: ({})
     Connections {
@@ -44,8 +47,8 @@ Rectangle {
             // The pane survives model opens; preserve the fresh-document defaults.
             root.showUV = true
             root.showCompare = false
-            root.showGrid = true
-            root.showAxes = true
+            root.showGrid = false
+            root.showAxes = false
             root.section = "model"
             root.previewMode = 0
             root.uvCamera = ({})
@@ -103,7 +106,7 @@ Rectangle {
                                     text: modelData[2]; height: 26; padding: 4; implicitWidth: implicitContentWidth + 14
                                     checked: modelData[1] === root.session.mode && (modelData[1] !== 0 || root.section === sectionKey || (sectionKey==="model" && ["uv","weights","lod"].includes(root.section)))
                                     enabled: sectionKey === "model" || (!root.session.info.cameraOnly &&
-                                        (sectionKey==="animation" ? root.session.hasPlayableAnimation :
+                                        (sectionKey==="animation" ? (root.session.hasPlayableAnimation || root.session.canAttachExternalAnimation || animationBarHost.hasDiagnostics) :
                                         ["skeleton","binding","weights"].includes(sectionKey) ? !root.session.geometryCache && (sectionKey==="weights" || root.session.hasComparableSkeleton || root.session.bindings.length>0) : true))
                                     onClicked: root.selectSection(sectionKey, modelData[1])
                                 }
@@ -210,6 +213,26 @@ Rectangle {
                     Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
                 ].filter(Boolean).join(" · ")
             }
+            Label {
+                objectName: "modelSectionLegend"
+                anchors.left: parent.left; anchors.bottom: displayTools.top; anchors.margins: 10
+                width: Math.min(implicitWidth, parent.width - 20)
+                visible: root.session.inspectable && (root.section === "skeleton" || root.session.mode === 3)
+                padding: 6; leftPadding: 10; rightPadding: 10
+                color: Theme.text; font.pixelSize: Theme.noteText
+                textFormat: Text.PlainText; elide: Text.ElideRight
+                background: Rectangle { color: Theme.panel; radius: height / 2; border.color: Theme.line }
+                text: {
+                    if (!visible) return ""
+                    if (root.session.mode === 3) {
+                        const collision = [Theme.t("隐藏碰撞","Hide collision","隱藏碰撞"),
+                                           Theme.t("叠加碰撞","Overlay collision","疊加碰撞"),
+                                           Theme.t("仅碰撞","Collision only","僅碰撞")]
+                        return collision[root.session.collisionMode] + " · " + root.triangleText
+                    }
+                    return root.session.skeletonSelection.name || Theme.t("选择骨骼以查看层级","Select a bone to inspect","選擇骨骼以查看階層")
+                }
+            }
             SkeletonComparePane {
                 id: skeletonCompareHost
                 objectName: "skeletonCompareHost"
@@ -275,7 +298,7 @@ Rectangle {
                 AppPopupMenu {
                     id: modes
                     objectName: "modelDisplayMenu"
-                    y: modeButton.height + 2
+                    y: -height - 2
                     width: 206
                     onOpened: itemAt(root.shadingOrder.indexOf(root.previewMode)).forceActiveFocus(Qt.PopupFocusReason)
                     onClosed: modeButton.forceActiveFocus(Qt.PopupFocusReason)
@@ -320,7 +343,7 @@ Rectangle {
             Tool { objectName: "modelFrameAll"; quiet: true; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
             Tool { objectName: "modelCompareSkeleton"; Layout.minimumWidth: 32; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; visible: root.session.hasComparableSkeleton && !root.session.compareBusy; iconName: "weights"; quiet: true; hint: Theme.t("与另一 FBX / glTF 比较骨架层级", "Compare the skeleton hierarchy with another FBX / glTF", "與另一 FBX / glTF 比較骨架層級"); enabled: root.session.available && !root.session.busy; onClicked: compareDialog.present(); Accessible.name: hint }
                 Item { Layout.fillWidth: true }
-                Label { visible: !root.narrow; text: Theme.t("%1 三角形","%1 triangles","%1 三角形").arg(root.session.info.visibleTriangles ?? root.session.info.triangles ?? 0); color: Theme.muted }
+                Label { visible: !root.narrow; text: root.triangleText; color: Theme.muted }
             }
             AnimationBar {
                 id: animationBarHost

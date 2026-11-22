@@ -140,6 +140,7 @@ struct ModelDocument {
   std::function<formaview::skeletal::transform::Evidence(std::stop_token)> transformEvidence;
   std::vector<ModelMesh> meshes;
   QVariantList nodes, resources;
+  std::vector<std::pair<int, int>> boneEdges; // Source node indices, parent to child.
   QHash<QString, QVariantMap> nodeById;
   QStringList warnings;
   bool linearColour{};
@@ -278,6 +279,7 @@ struct ModelTextureLink {
   int uv{-1};
 };
 struct ModelRenderState {
+  bool skeletonOverlay{};
   int directionMask{}; // 1 normal, 2 tangent
   QString highlightedNode;
   int mode{}, mesh{}, bone{}, material{};
@@ -360,7 +362,7 @@ GpuHighlight resolveGpuHighlight(const ModelDocument &, const QString &node);
 ModelFrames buildModelGpuPose(const ModelDocument &, const ModelGpuGeometry &,
     std::shared_ptr<const formaview::render::Frame>,
     const std::vector<formaview::Matrix4> &, std::uint64_t, int, double,
-    const GpuView *view = nullptr, const GpuHighlight *highlight = nullptr);
+    const GpuView *view = nullptr, const GpuHighlight *highlight = nullptr, bool skeletonOverlay = false);
 
 struct ModelPickHit {
   int hitMesh{-1};

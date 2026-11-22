@@ -259,13 +259,20 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
       f->guides.push_back({p.x(), p.y(), p.z(), 0, 0, 0, 0, 1, 0, tint.x(),
                            tint.y(), tint.z(), 1, -2, .5F});
     };
-    if (!state.highlightedNode.isEmpty() && pose && !pose->worlds.empty()) {
+    if ((state.skeletonOverlay || !state.highlightedNode.isEmpty()) && pose && !pose->worlds.empty() && !document.pairPreviewDomain()) {
       const auto selection=resolveGpuHighlight(document,state.highlightedNode);
       const auto position=[&](int index){const auto &m=pose->worlds.at(static_cast<std::size_t>(index));
         return (document.displayBasis.map(QVector3D(float(m[3]),float(m[7]),float(m[11])))-document.center)/std::max(document.radius,1e-6F);};
+      if (state.skeletonOverlay) {
+        for (const auto &[parent, child] : document.boneEdges) {
+          guide(position(parent), QVector3D(.48F,.74F,.90F));
+          guide(position(child), QVector3D(.48F,.74F,.90F));
+          f->selectionVertices += 2;
+        }
+      }
       if(selection.node>=0){const auto start=position(selection.node);
         for(int edge:selection.edges){guide(start,QVector3D(.95F,.48F,.18F));guide(position(edge),QVector3D(.95F,.48F,.18F));f->selectionVertices+=2;}}
-    } else if (!state.highlightedNode.isEmpty() && !pose) {
+    } else if ((state.skeletonOverlay || !state.highlightedNode.isEmpty()) && !pose && !document.meshes.empty()) {
       const auto &mesh =
           document.meshes.at(static_cast<std::size_t>(state.mesh));
       QHash<QString, QVariantMap> palette;
@@ -337,6 +344,17 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
           return {};
         return result;
       };
+      if (state.skeletonOverlay) {
+        for (const auto &[parent, child] : document.boneEdges) {
+          const auto a = position(document.nodes[parent].toMap());
+          const auto b = position(document.nodes[child].toMap());
+          if (!a || !b) continue;
+          guide(*a, QVector3D(.48F,.74F,.90F));
+          guide(*b, QVector3D(.48F,.74F,.90F));
+          f->selectionVertices += 2;
+        }
+      }
+      const auto hierarchyVertices = f->selectionVertices;
       const auto selected = document.nodeById.value(state.highlightedNode);
       const auto start = position(selected);
       const auto connect = [&](const QVariantMap &other) {
@@ -353,7 +371,7 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
             node.value("bone").toBool())
           connect(node);
       }
-      if (!f->selectionVertices)
+      if (f->selectionVertices == hierarchyVertices)
         connect(document.nodeById.value(selected.value("parent").toString()));
     }
   }

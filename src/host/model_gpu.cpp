@@ -114,6 +114,7 @@ std::shared_ptr<const ModelGpuGeometry> buildModelGpuGeometry(
   }
   const bool superset=state.mode==0 && allBytes<=256ULL*1024*1024;
   auto buildState=state;
+  buildState.skeletonOverlay = false; // Overlay endpoints come from the presented pose.
   if(superset){buildState.visible.assign(d.meshes.size(),true);buildState.isolated=false;buildState.highlightedNode.clear();buildState.collisionMode=1;}
   out->frames=buildModelFrames(d,buildState,revision,stop,nullptr,true);
   // This frame has just been allocated by the builder and has never been
@@ -399,7 +400,7 @@ GpuHighlight resolveGpuHighlight(const ModelDocument &d, const QString &node) {
 ModelFrames buildModelGpuPose(const ModelDocument &d, const ModelGpuGeometry &g,
     std::shared_ptr<const formaview::render::Frame> uv,
     const std::vector<formaview::Matrix4> &worlds, std::uint64_t revision, int clip, double seconds,
-    const GpuView *viewIn, const GpuHighlight *highlightIn) {
+    const GpuView *viewIn, const GpuHighlight *highlightIn, bool skeletonOverlay) {
   // Paired ActorX (PSK-first or PSA-first) poses use the bone list; others the node domain.
   if (worlds.size()!=(d.pairSource?d.boneParents.size():d.animNodeParents.size())) throw std::runtime_error("GPU pose node domain mismatch");
   const auto &base=g.frames.model;
@@ -418,10 +419,23 @@ ModelFrames buildModelGpuPose(const ModelDocument &d, const ModelGpuGeometry &g,
     f->draws=base->draws;drawSource.resize(f->draws.size());
     for (std::size_t di=0;di<drawSource.size();++di) drawSource[di]=static_cast<std::uint32_t>(di);
   }
-  if (highlight.node>=0) {
+  if ((skeletonOverlay && !d.pairPreviewDomain()) || highlight.node >= 0) {
     const auto position=[&](int index){const auto &w=worlds.at(static_cast<std::size_t>(index));return base->skin->display.map(QVector3D(static_cast<float>(w[3]),static_cast<float>(w[7]),static_cast<float>(w[11])));};
-    const auto a=position(highlight.node);
-    for(int index:highlight.edges)for(const auto &p:{a,position(index)}) {f->guides.push_back({p.x(),p.y(),p.z(),0,0,0,0,1,0,.95F,.48F,.18F,1,-2,.5F});++f->selectionVertices;}
+    if (skeletonOverlay && !d.pairPreviewDomain()) {
+      for (const auto &[parent, child] : d.boneEdges) {
+        for (const auto &p : {position(parent), position(child)})
+          f->guides.push_back({p.x(),p.y(),p.z(),0,0,0,0,1,0,.48F,.74F,.90F,1,-2,.5F});
+        f->selectionVertices += 2;
+      }
+    }
+    if (highlight.node >= 0) {
+      const auto a = position(highlight.node);
+      for (int index : highlight.edges) {
+        for (const auto &p : {a, position(index)})
+          f->guides.push_back({p.x(),p.y(),p.z(),0,0,0,0,1,0,.95F,.48F,.18F,1,-2,.5F});
+        f->selectionVertices += 2;
+      }
+    }
   }
   ModelGpuGeometry::Bounds bounds;
   std::vector<QMatrix4x4> palette; palette.reserve(g.clusters.size());

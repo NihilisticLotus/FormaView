@@ -8,6 +8,8 @@ import QtQml.Models
 Item {
     id: root
     objectName: "modelInspector"
+    signal activateAnimationSection()
+    signal addExternalAnimation()
     required property var controller
     readonly property var session: controller.model
     readonly property var camera: session.cameraInfo
@@ -51,6 +53,14 @@ Item {
                     enabled: !root.session.info.cameraOnly || index===0
                     onClicked: root.tab=index
                 }
+            }
+            PageTab {
+                objectName: "modelInspectorAnimationTab"
+                Layout.fillWidth: true
+                visible: !root.session.geometryCache && (root.session.hasPlayableAnimation || root.session.canAttachExternalAnimation || root.session.info.psa === true)
+                text: Theme.t("动画","Animation","動畫")
+                checked: root.tab === 4
+                onClicked: { root.tab = 4; root.activateAnimationSection() }
             }
         }
         ScrollView {
@@ -97,8 +107,10 @@ Item {
                         if (rows) expand(0)
                         revealSelection()
                     }
-                    Component.onCompleted: Qt.callLater(tree.revealInitial)
-                    Connections { target: root.session; function onDocumentChanged() { Qt.callLater(tree.revealSelection) } }
+                    Timer { id: initialReveal; interval: 0; onTriggered: tree.revealInitial() }
+                    Timer { id: revealSelectionTimer; interval: 0; onTriggered: tree.revealSelection() }
+                    Component.onCompleted: initialReveal.start()
+                    Connections { target: root.session; function onDocumentChanged() { revealSelectionTimer.restart() } }
                     delegate: TreeViewDelegate {
                         id: node
                         required property int column
@@ -200,20 +212,79 @@ Item {
             visible: root.tab === 4
             Layout.fillWidth: true; Layout.fillHeight: true
             contentWidth: availableWidth; clip: true
+            readonly property var currentClip: visible ? root.session.clipInfo : ({})
+            readonly property var lock: visible ? root.session.rootLockInfo : ({})
+            readonly property var roots: visible ? root.session.rootCandidates : []
             ColumnLayout {
-                width: motionInspector.availableWidth; spacing: 10
+                width: motionInspector.availableWidth; spacing: 8
                 Label { text: Theme.t("动画片段","Animation clips","動畫片段"); font.bold: true; color: Theme.text }
                 Choice {
+                    objectName: "motionClipChoice"
                     Layout.fillWidth: true; model: root.session.clips; textRole: "name"
                     currentIndex: root.session.clipIndex; enabled: count > 0
+                    displayText: count ? currentText : Theme.t("无动画片段","No animation clips","無動畫片段")
                     Accessible.name: Theme.t("当前动作","Active clip","目前動作")
                     onActivated: index => root.session.setClipIndex(index)
                 }
-                Readout { Layout.fillWidth: true; label: Theme.t("源帧率","Source frame rate","來源影格率"); value: (root.session.clipInfo.fps ?? "—")+" fps" }
-                Readout { Layout.fillWidth: true; label: Theme.t("当前帧","Current frame","目前影格"); value: (root.session.clipInfo.frame ?? "—")+" / "+(root.session.clipInfo.lastFrame ?? "—") }
-                Readout { Layout.fillWidth: true; label: Theme.t("片段时长","Clip duration","片段長度"); value: Number((root.session.clipInfo.end ?? 0)-(root.session.clipInfo.start ?? 0)).toFixed(3)+" s" }
+                Tool {
+                    objectName: "motionAttach"
+                    visible: root.session.canAttachExternalAnimation
+                    enabled: !root.session.busy && !root.session.externalBusy
+                    iconName: "external"; text: Theme.t("添加外部动画…","Add external animation…","新增外部動畫…")
+                    onClicked: root.addExternalAnimation()
+                }
                 Readout { Layout.fillWidth: true; visible: !!root.session.externalInfo.driven; label: Theme.t("外部动画","External animation","外部動畫"); value: root.session.externalInfo.path || "" }
-                OptionCheck { text: Theme.t("循环播放","Loop playback","循環播放"); checked: root.session.loop; onToggled: root.session.setLoop(checked) }
+                ColumnLayout {
+                    visible: motionInspector.currentClip.start !== undefined
+                    Layout.fillWidth: true; spacing: 8
+                    Readout { Layout.fillWidth: true; label: Theme.t("源帧率","Source frame rate","來源影格率"); value: motionInspector.currentClip.fps > 0 ? Number(motionInspector.currentClip.fps.toFixed(3)) + " fps" : "—" }
+                    Readout { Layout.fillWidth: true; label: Theme.t("当前帧","Current frame","目前影格"); value: (motionInspector.currentClip.frame ?? "—")+" / "+(motionInspector.currentClip.lastFrame ?? "—") }
+                    Readout { Layout.fillWidth: true; label: Theme.t("片段时长","Clip duration","片段長度"); value: ((motionInspector.currentClip.end ?? 0)-(motionInspector.currentClip.start ?? 0)).toFixed(3)+" s" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { Layout.fillWidth: true; color: Theme.text; text: Theme.t("播放速度","Playback speed","播放速度") }
+                        AnimationSpeedField { objectName: "motionSpeed"; session: root.session; Layout.preferredWidth: 72 }
+                        Label { text: "×"; color: Theme.muted }
+                    }
+                    OptionCheck { text: Theme.t("循环播放","Loop playback","循環播放"); checked: root.session.loop; enabled: root.session.canPlayAnimation; onToggled: root.session.setLoop(checked) }
+                    Label { visible: motionInspector.roots.length > 0; text: Theme.t("根运动","Root motion","根運動"); font.bold: true; color: Theme.text }
+                    Choice {
+                        objectName: "motionRoot"
+                        Layout.fillWidth: true; visible: count > 0
+                        model: motionInspector.roots; textRole: "name"; valueRole: "index"
+                        currentIndex: motionInspector.roots.findIndex(candidate => candidate.index === motionInspector.lock.root)
+                        enabled: count > 1
+                        displayText: currentIndex >= 0 ? currentText : Theme.t("选择根节点…","Choose a root…","選擇根節點…")
+                        Accessible.name: Theme.t("根节点","Root node","根節點")
+                        onActivated: index => root.session.setRootIndex(valueAt(index))
+                    }
+                    OptionCheck {
+                        objectName: "motionRootLock"
+                        visible: motionInspector.roots.length > 0
+                        text: Theme.t("锁定根平移与旋转","Lock root motion","鎖定根平移與旋轉")
+                        checked: root.session.rootLockOn
+                        enabled: root.session.canPlayAnimation && (checked || (motionInspector.lock.root >= 0 && motionInspector.lock.rootMapped))
+                        onToggled: root.session.setRootLock(checked)
+                    }
+                    Choice {
+                        Layout.fillWidth: true; visible: root.session.rootLockOn
+                        readonly property var bases: motionInspector.lock.referenceAvailable ? [0, 1, 2] : [0, 2]
+                        labels: bases.map(base => [Theme.t("动画首帧","Animation first frame","動畫首幀"), Theme.t("参考姿态","Reference pose","參考姿態"), Theme.t("零点","Zero","零點")][base])
+                        currentIndex: bases.indexOf(root.session.rootBase)
+                        Accessible.name: Theme.t("锁定基准","Lock basis","鎖定基準")
+                        onActivated: index => root.session.setRootBase(bases[index])
+                    }
+                    Label {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        visible: motionInspector.lock.rootMapped === false || root.session.rootLockOn
+                        text: motionInspector.lock.rootMapped === false
+                            ? Theme.t("当前动作未映射此根节点","This clip does not map this root","目前動作未映射此根節點")
+                            : motionInspector.lock.status === "multiRoot"
+                            ? Theme.t("请选择根节点","Choose a root node","請選擇根節點")
+                            : Theme.t("根运动仅在预览中锁定","Root motion locked for preview","根運動僅在預覽中鎖定")
+                        color: Theme.muted; font.pixelSize: Theme.noteText
+                    }
+                }
             }
         }
         ModelSkeletonPane {

@@ -20,9 +20,6 @@ Rectangle {
     readonly property bool effectiveCollapsed: root.collapsed && root.session.hasPlayableAnimation
     ButtonGroup { id: rootBaseGroup }
     ButtonGroup { id: rootBoneGroup }
-    function speedText(value: real): string {
-        return value >= 0.01 && value < 1e21 && Number(value.toFixed(2)) === value ? value.toFixed(2) : value.toString();
-    }
     color: Theme.light ? "#65ffffff" : "#53435869"
     radius: Theme.radius
     border.width: 0
@@ -95,7 +92,11 @@ Rectangle {
                 from: root.ready ? root.clipData.start : 0
                 to: root.ready ? root.clipData.end : 1
                 value: root.session.time
-                onMoved: root.session.seek(value)
+                onPressedChanged: if (pressed && root.session.playing) root.session.togglePlay()
+                onMoved: {
+                    if (root.session.playing) root.session.togglePlay()
+                    root.session.seek(value)
+                }
                 background: Rectangle {
                     x: scrubber.leftPadding; y: (scrubber.height-height)/2
                     width: scrubber.availableWidth; height: 3; radius: 1.5; color: Theme.line
@@ -160,46 +161,10 @@ Rectangle {
                 spacing: 6
                 // Manual speed entry only: plain editable field with an x
                 // suffix. Accept any finite positive speed without range caps.
-                TextField {
-                    id: speedInput
+                AnimationSpeedField {
                     objectName: "animSpeed"
-                    width: 64
                     height: root.controlHeight
-                    enabled: root.ready
-                    horizontalAlignment: TextInput.AlignHCenter
-                    color: Theme.text
-                    background: Rectangle {
-                        radius: 4
-                        color: Theme.field
-                        border.width: parent && parent.activeFocus ? 2 : 1
-                        border.color: parent && parent.activeFocus ? Theme.accent : Theme.line
-                    }
-                    Binding {
-                        target: speedInput
-                        property: "text"
-                        value: root.speedText(root.session.speed)
-                        when: !speedInput.activeFocus
-                        restoreMode: Binding.RestoreNone
-                    }
-                    font.family: "Consolas"
-                    inputMethodHints: Qt.ImhFormattedNumbersOnly
-                    validator: DoubleValidator {
-                        bottom: 0
-                        decimals: -1
-                        notation: DoubleValidator.ScientificNotation
-                        locale: "C"
-                    }
-                    onEditingFinished: {
-                        const parsed = Number(text);
-                        if (isFinite(parsed) && parsed > 0)
-                            root.session.setSpeed(parsed);
-                        text = root.speedText(root.session.speed);
-                    }
-                    Accessible.name: Theme.t("播放速度（正数，回车确认）", "Playback speed (positive number, press Enter)", "播放速度（正數，按 Enter 確認）")
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: Accessible.name
-                    hoverEnabled: true
+                    session: root.session
                 }
                 Label {
                     anchors.verticalCenter: parent.verticalCenter

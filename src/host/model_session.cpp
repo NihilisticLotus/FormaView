@@ -277,9 +277,19 @@ void finalizeModelGeometry(ModelDocument &document, std::stop_token stop,
                 std::numeric_limits<float>::max()),
       high = -low;
   std::size_t renderCorners = 0;
-  for (const auto &value : d->nodes) {
-    const auto node = value.toMap();
-    d->nodeById.insert(node.value("id").toString(), node);
+  QHash<QString, int> boneNodes;
+  for (int i = 0; i < d->nodes.size(); ++i) {
+    const auto node = d->nodes[i].toMap();
+    const auto id = node.value("id").toString();
+    d->nodeById.insert(id, node);
+    if (node.value("bone").toBool()) boneNodes.insert(id, i);
+  }
+  d->boneEdges.clear();
+  for (const int child : std::as_const(boneNodes)) {
+    const auto parentId = d->nodes[child].toMap().value("parent").toString();
+    const auto parent = boneNodes.constFind(parentId);
+    if (parent != boneNodes.cend() && *parent != child)
+      d->boneEdges.emplace_back(*parent, child);
   }
   for (auto &m : d->meshes) {
     check(stop);
@@ -1430,6 +1440,7 @@ void ModelSession::clear() {
   reset(false);
 }
 void ModelSession::reset(bool opening) {
+  skeletonOverlay_ = false;
   directionMask_ = 0;
   mode_ = 0;
   ++generation_;
@@ -1758,7 +1769,12 @@ void ModelSession::poll() {
         rootBase_ = 0;
       if (document_ && document_->animated()) {
         clipIndex_ = std::max(0, document_->firstPlayableAnimation());
-        time_ = document_->animationClips[static_cast<std::size_t>(clipIndex_)].start;
+        const auto &clips = document_->animationClips;
+        const auto idle = std::find_if(clips.begin(), clips.end(), [](const auto &clip) {
+          return clip.name == QStringLiteral("Idle") && clip.playable();
+        });
+        if (idle != clips.end()) clipIndex_ = static_cast<int>(idle - clips.begin());
+        time_ = clips[static_cast<std::size_t>(clipIndex_)].start;
         if (resumePlaybackOnLanding_ && canPlayAnimation()) {
           playing_ = true;
           animClock_.restart();
@@ -2075,7 +2091,7 @@ bool ModelSession::refreshGpuFrame() {
     const auto viewKey=gpuViewKey(state);
     if (gpuViewOwner_!=gpuGeometry_ || viewKey!=gpuViewKey_) { gpuView_=makeGpuView(*document_,*gpuGeometry_,state); gpuViewKey_=viewKey; gpuViewOwner_=gpuGeometry_; }
     if (gpuHighlightOwner_!=gpuGeometry_ || gpuHighlightNode_!=state.highlightedNode) { gpuHighlight_=resolveGpuHighlight(*document_,state.highlightedNode); gpuHighlightNode_=state.highlightedNode; gpuHighlightOwner_=gpuGeometry_; }
-    frames_=buildModelGpuPose(*document_,*gpuGeometry_,gpuGeometry_->frames.uv,worlds,++frameRevision_*2,clipIndex_,time_,&gpuView_,&gpuHighlight_);
+    frames_=buildModelGpuPose(*document_,*gpuGeometry_,gpuGeometry_->frames.uv,worlds,++frameRevision_*2,clipIndex_,time_,&gpuView_,&gpuHighlight_,state.skeletonOverlay);
     // The PSA-first paired frame serves both views, as on the CPU path.
     if (document_->pairPreviewDomain()) frames_.uv=frames_.model;
     frame_=frames_.mode==1?frames_.uv:frames_.model;
@@ -2254,7 +2270,7 @@ void ModelSession::refreshAnimationFrame() {
                            *document, clip, seconds, revision * 2, pairMesh,
                            worlds ? worlds.get() : nullptr, token);
                        ModelFrames result;
-                       if (state.directionMask || state.mode != 0 || state.isolated || state.materialOnly ||
+                       if (state.skeletonOverlay || state.directionMask || state.mode != 0 || state.isolated || state.materialOnly ||
                            std::any_of(document->meshes.begin(), document->meshes.end(), [](const auto &mesh) {
                              return !mesh.materials.empty() || !mesh.colours.empty() || !mesh.textures.empty();
                            }) ||
@@ -2358,6 +2374,8 @@ void ModelSession::stepFrame(int frames) {
     return;
   const auto &clip =
       document_->animationClips[static_cast<std::size_t>(clipIndex_)];
+  playing_ = false;
+  animTimer_.stop();
   const double step = 1.0 / clip.fps;
   time_ = std::clamp(time_ + step * frames, clip.start, clip.end);
   ++poseRequest_;
@@ -3320,10 +3338,16 @@ void ModelSession::setDirectionMask(int mask) {
   rebuild(false);
   emit changed();
 }
+void ModelSession::setSkeletonOverlay(bool enabled) {
+  if (skeletonOverlay_ == enabled) return;
+  skeletonOverlay_ = enabled;
+  rebuild(false);
+}
 void ModelSession::setMode(int i) {
   if (i < 0 || i > 3 || mode_ == i)
     return;
   mode_ = i;
+  skeletonOverlay_ = false;
   clearSelection();
   rebuild();
   emit changed();
