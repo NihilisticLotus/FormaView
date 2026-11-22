@@ -123,7 +123,7 @@ Item {
                         readonly property string extension: folder ? "" : (name.includes(".") ? name.split(".").pop().toUpperCase() : "")
                         readonly property string kind: root.directoryView ? (model.fileKind || "") :
                             /^(PNG|JPE?G|BMP|TGA|WEBP|GIF|DDS|EXR|HDR|TIFF?|ICO)$/.test(extension) ? "image" :
-                            /^(MP4|MKV|WEBM|MOV|AVI|M4V)$/.test(extension) ? "video" :
+                            /^(MP4|MKV|WEBM|MOV|AVI|M4V|TS|M2TS|MPG|MPEG|FLV)$/.test(extension) ? "video" :
                             /^(GLB|GLTF|OBJ|FBX|PSKX?|VRM|ABC)$/.test(extension) ? "model" : ""
                         readonly property bool imageFile: kind === "image"
                         objectName: "libraryCard"; width: grid.cellWidth-6; height: grid.cellHeight-6

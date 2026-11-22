@@ -231,7 +231,7 @@ function InitialTaskHistoryLayout(""")
 
 
 # Extension order controls the order of the file association page.
-VIDEO_FORMATS = "mp4 mkv mov webm m4v avi ts m2ts mpg mpeg".split()
+VIDEO_FORMATS = "mp4 mkv mov webm m4v avi ts m2ts mpg mpeg flv".split()
 FORMAT_GROUPS = {
     "视频": [(ext, ext.upper() + " 视频") for ext in VIDEO_FORMATS],
     "图片": [
@@ -355,12 +355,18 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
     save(metadata / "sha256.json", [dict(path=n, bytes=sources[n].stat().st_size, sha256=sha(sources[n])) for n in sorted(sources)])
     sources["sha256.json"] = metadata / "sha256.json"
     entries = []
-    for name in names:
+    media = {name for name in names if re.fullmatch(r"(avcodec|avformat|avutil|swresample|swscale|libmpv)-\d+\.dll", name)}
+    for name in sorted(names, key=lambda n: (n not in media, n)):
         parent = Path(name).parent
         suffix = "" if str(parent) == "." else "\\" + str(parent)
         entries.append(f'Source: "{sources[name]}"; DestDir: "{{app}}{suffix}"; Flags: ignoreversion')
     write(engine / "files.generated.iss", "\n".join(entries) + "\n")
     setup = setup_source()
+    if "libmpv-2.dll" in sources:
+        # Group the media binaries in one solid stream so matches between
+        # the playback and frame inspection libraries fit in the dictionary.
+        setup = replace(setup, "Compression=lzma2\n",
+                        "Compression=lzma2/ultra64\nLZMADictionarySize=262144\nLZMAUseSeparateProcess=yes\n")
     filename = f"FormaView-{version}-Windows-x64-Setup"
     notice = NOTICE
     if development:

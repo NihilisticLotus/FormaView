@@ -49,7 +49,8 @@ QString kind(const QString &name) {
     return "image";
   if (QStringList{"fbx", "obj", "gltf", "glb", "psk", "pskx"}.contains(suffix))
     return "model";
-  if (QStringList{"mp4","m4v","mov","mkv","webm","avi","ts","m2ts","mpg","mpeg"}.contains(suffix))
+  if (QStringList{"mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "m2ts",
+                  "mpg", "mpeg", "flv"}.contains(suffix))
     return "video";
   if (suffix == "psa")
     return "animation";

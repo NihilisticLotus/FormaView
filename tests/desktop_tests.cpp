@@ -709,7 +709,8 @@ private slots:
     const auto first = clips + "/Episode 2.mp4";
     const auto second = clips + "/Episode 10.mkv";
     const auto external = other + "/Preview.webm";
-    for (const auto &path : {first, second, external, clips + "/reference.png"}) {
+    const auto recording = other + "/Recording.FLV";
+    for (const auto &path : {first, second, external, recording, clips + "/reference.png"}) {
       QFile file(path);
       QVERIFY(file.open(QIODevice::WriteOnly));
       QVERIFY(file.write("file model fixture") > 0);
@@ -732,8 +733,11 @@ private slots:
     desktop.adjacentVideo(1);
     QTRY_COMPARE(desktop.asset().value("path").toString(), second);
     desktop.openPath(external);
-    QTRY_COMPARE(list->rowCount(), 1);
+    QTRY_COMPARE(list->rowCount(), 2);
     QCOMPARE(list->index(0, 0).data(FileList::Path).toString(), external);
+    desktop.adjacentVideo(1);
+    QTRY_COMPARE(desktop.asset().value("path").toString(), recording);
+    QCOMPARE(desktop.asset().value("kind").toString(), QStringLiteral("video"));
     desktop.clearAsset();
     QCOMPARE(list->rowCount(), 0);
   }
