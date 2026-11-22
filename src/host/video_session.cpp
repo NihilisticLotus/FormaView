@@ -9,6 +9,7 @@
 #ifdef FORMAVIEW_INDEXED_VIDEO
 #include "video_frames.hpp"
 #include "video_index.hpp"
+#include "flv_seek_index.hpp"
 #include <mpv/stream_cb.h>
 #endif
 #include <QCoreApplication>
@@ -49,6 +50,7 @@ struct Api {
   X(initialize)                                                                \
   X(set_option_string) X(get_property_async) X(get_property_string) X(free)     \
   X(observe_property) X(wait_event) X(command_async) X(terminate_destroy)      \
+  X(hook_add) X(hook_continue) X(set_property_string)                         \
       X(error_string) X(render_context_create) X(render_context_render)        \
           X(render_context_update) X(render_context_get_info) X(render_context_free)                      \
               X(render_context_set_update_callback)
@@ -299,6 +301,9 @@ void VideoSession::releaseSession() {
   prefetchDeferred_ = false;
   if (!engine_)
     return;
+#ifdef FORMAVIEW_INDEXED_VIDEO
+  engine_->stream.cancelled = true;
+#endif
   {
     std::lock_guard lock(engine_->callbackLock);
     engine_->view = nullptr;
@@ -458,6 +463,15 @@ void VideoSession::openSession(const QString &path, bool switchingWindow, bool h
     fail(tr("视频播放器初始化失败"));
     return;
   }
+#ifdef FORMAVIEW_INDEXED_VIDEO
+  if (path.endsWith(".flv", Qt::CaseInsensitive) && QFileInfo(path).size() >= minIndexedFlvSize) {
+    e->stream.path = path;
+    e->stream.flv = e->stream.attach(e->handle,
+        reinterpret_cast<void *>(api().library.resolve("mpv_stream_cb_add_ro"))) &&
+        api().hook_add(e->handle, 0, "on_load", 0) >= 0;
+    if (e->stream.flv) e->stream.prepareFlvIndex();
+  }
+#endif
   for (const char *name : {"time-pos",
                            "duration",
                            "pause",
@@ -949,6 +963,16 @@ void VideoSession::events() {
   while (auto *ev = api().wait_event(engine_->handle, 0)) {
     if (ev->event_id == MPV_EVENT_NONE)
       break;
+#ifdef FORMAVIEW_INDEXED_VIDEO
+    if (ev->event_id == MPV_EVENT_HOOK && engine_->stream.flv) {
+      // Preserve the original playlist path, subtitle discovery and title;
+      // only the demuxer's read handle uses the indexed byte view.
+      const auto id = static_cast<mpv_event_hook *>(ev->data)->id;
+      api().set_property_string(engine_->handle, "stream-open-filename", "fvmedia://source.flv");
+      api().hook_continue(engine_->handle, id);
+      continue;
+    }
+#endif
     if (ev->event_id == MPV_EVENT_PLAYBACK_RESTART && seekTrace().isDebugEnabled())
       traceSeek("restart", status_.value("time-pos", -1).toDouble());
     if (ev->event_id == MPV_EVENT_PROPERTY_CHANGE) {

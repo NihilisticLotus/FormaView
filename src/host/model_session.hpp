@@ -120,6 +120,8 @@ public:
   ModelSkeleton *skeleton() { return &skeleton_; }
   QVariantMap skeletonSelection() const;
   Q_INVOKABLE void selectSkeletonIndex(const QModelIndex &);
+  Q_INVOKABLE void clearSkeletonSelection();
+  Q_INVOKABLE void showAvailableMeshes();
   QStringList warnings() const {
     return document_ ? document_->warnings : QStringList{};
   }

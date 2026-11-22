@@ -11,13 +11,24 @@ layout(std140,binding=0) uniform Params { mat4 matrix; vec4 options; };
 layout(binding=1) uniform sampler2D sourceTexture;
 vec3 linearValue(vec3 v){return mix(v/12.92,pow((v+.055)/1.055,vec3(2.4)),step(vec3(.04045),v));}
 vec3 displayValue(vec3 v){return mix(v*12.92,1.055*pow(max(v,vec3(0)),vec3(1.0/2.4))-.055,step(vec3(.0031308),v));}
+// Warm key and cool fill match the inspection stage. Keep analytical colour,
+// checker, heat and wire displays independent of the studio light colour.
+vec3 studioLight(vec3 normal) {
+    vec3 n = normalize(normal);
+    if (options.y < 1.5)
+        return vec3(.3 + .7 * abs(dot(n, normalize(vec3(.4,.7,1)))));
+    float key = max(dot(n, normalize(vec3(6,10,7))), 0.0);
+    float fill = max(dot(n, normalize(vec3(-5,4,-5))), 0.0);
+    vec3 sky = mix(vec3(.28,.27,.25), vec3(.48,.51,.55), n.y * .5 + .5);
+    return sky + key * vec3(.57,.55,.51) + fill * vec3(.24,.28,.34);
+}
 void main(){
     if(surfaceCoverage.y < -1.5) { color=vec4(surfaceTint,1); return; }
     if(options.w>1.5) {
         if(options.w>4.5) {
             vec3 n=dot(worldNormal,worldNormal)>1e-20?worldNormal:cross(dFdx(deformedPosition),dFdy(deformedPosition));
             if(dot(n,n)<1e-20)n=vec3(0,0,1);
-            float light=.30+.70*abs(dot(normalize(n),normalize(vec3(.4,.7,1))));
+            vec3 light=studioLight(n);
             color=vec4(vec3(.847,.843,.820)*light,1);
             return;
         }
@@ -49,7 +60,7 @@ void main(){
         if(surfaceCoverage.y<1.5)color.a=1;
         vec3 n=dot(worldNormal,worldNormal)>1e-20?worldNormal:cross(dFdx(deformedPosition),dFdy(deformedPosition));
         if(dot(n,n)<1e-20)n=vec3(0,0,1);
-        float light=.3+.7*abs(dot(normalize(n),normalize(vec3(.4,.7,1))));
+        vec3 light=studioLight(n);
         if(options.z>0.5)color.rgb=displayValue(linearValue(color.rgb)*surfaceTint*light);
         else color.rgb*=surfaceTint*light;
     }

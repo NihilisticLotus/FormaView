@@ -1,4 +1,5 @@
 #include "video_index.hpp"
+#include "flv_seek_index.hpp"
 #include <QCryptographicHash>
 #include <QFile>
 #include <QtEndian>
@@ -119,31 +120,52 @@ std::optional<Picture> picture(const AVPacket *pkt) {
 struct Reader {
   QFile file;
   VideoStream *owner;
+  QByteArray metadata;
+  qint64 position = 0;
 };
 int openStream(void *cookie, char *uri, mpv_stream_cb_info *info) {
   auto *stream = static_cast<VideoStream *>(cookie);
-  if (QByteArray(uri) != "fvmedia://source.mp4")
+  if (QByteArray(uri) != (stream->flv ? "fvmedia://source.flv" : "fvmedia://source.mp4"))
     return MPV_ERROR_LOADING_FAILED;
   auto r = std::make_unique<Reader>();
   r->file.setFileName(stream->path);
   r->owner = stream;
   if (!r->file.open(QIODevice::ReadOnly))
     return MPV_ERROR_LOADING_FAILED;
+  if (stream->flv) {
+    r->metadata = stream->flvMetadata();
+    if (!r->file.seek(0) || stream->cancelled.load()) return MPV_ERROR_LOADING_FAILED;
+  }
   info->read_fn = [](void *c, char *p, uint64_t wanted) -> int64_t {
     auto *r = static_cast<Reader *>(c);
-    qint64 off = r->file.pos();
-    auto n = r->file.read(
-        p, static_cast<qint64>(std::min<uint64_t>(wanted, INT_MAX)));
-    if (n > 0)
-      r->owner->filter(p, off, n);
+    qint64 wantedBytes = static_cast<qint64>(std::min<uint64_t>(wanted, INT_MAX));
+    const qint64 off = r->position;
+    if (!r->metadata.isEmpty()) {
+      if (off < 13) wantedBytes = std::min(wantedBytes, 13 - off);
+      else if (off < 13 + r->metadata.size()) {
+        const auto n = std::min(wantedBytes, 13 + qint64(r->metadata.size()) - off);
+        std::memcpy(p, r->metadata.constData() + (off - 13), size_t(n));
+        r->position += n;
+        return n;
+      }
+    }
+    auto n = r->file.read(p, wantedBytes);
+    if (n > 0) {
+      if (!r->owner->flv) r->owner->filter(p, off, n);
+      r->position += n;
+    }
     return n;
   };
   info->seek_fn = [](void *c, int64_t off) -> int64_t {
-    auto &file = static_cast<Reader *>(c)->file;
-    return off >= 0 && off <= file.size() && file.seek(off) ? off : -1;
+    auto *r = static_cast<Reader *>(c);
+    if (off < 0 || off > r->file.size() + r->metadata.size()) return -1;
+    const auto physical = off <= 13 ? off : std::max<int64_t>(13, off - r->metadata.size());
+    if (!r->file.seek(physical)) return -1;
+    return r->position = off;
   };
   info->size_fn = [](void *c) -> int64_t {
-    return static_cast<Reader *>(c)->file.size();
+    auto *r = static_cast<Reader *>(c);
+    return r->file.size() + r->metadata.size();
   };
   info->close_fn = [](void *c) { delete static_cast<Reader *>(c); };
   info->cookie = r.release();
@@ -242,6 +264,22 @@ VideoSeekPlan VideoIndex::plan(double seconds) {
   plan.firstSafe = plan.ticks[floor];
   plan.scale = scale;plan.prefix=target;
   return plan;
+}
+void VideoStream::prepareFlvIndex() {
+  flvIndex_ = std::async(std::launch::async, [this] {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? flvSeekMetadata(file, cancelled) : QByteArray{};
+  }).share();
+}
+QByteArray VideoStream::flvMetadata() const {
+  // A slow disk must still start playing. The worker can finish caching the
+  // index during playback for the next open. Closing cancels both waits.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!cancelled && std::chrono::steady_clock::now() < deadline) {
+    if (flvIndex_.wait_for(std::chrono::milliseconds(25)) == std::future_status::ready)
+      return flvIndex_.get();
+  }
+  return {};
 }
 bool VideoStream::attach(mpv_handle *handle, void *fn) {
   auto reg = reinterpret_cast<decltype(&mpv_stream_cb_add_ro)>(fn);

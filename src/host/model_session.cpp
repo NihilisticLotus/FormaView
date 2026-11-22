@@ -1665,19 +1665,26 @@ void ModelSession::startPending() {
   });
   jobs_.push_back({generation_, std::move(stop), std::move(future)});
 }
+// Signals emitted while landing a result can synchronously open another
+// document and grow the same vector. Own the job before notifying observers.
+template<class Job>
+static std::optional<Job> takeReady(std::vector<Job> &jobs) {
+  const auto ready = std::find_if(jobs.begin(), jobs.end(), [](const Job &job) {
+    return job.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+  });
+  if (ready == jobs.end()) return {};
+  Job result = std::move(*ready);
+  jobs.erase(ready);
+  return result;
+}
 void ModelSession::poll() {
   finishAbcJob();
   finishGpuPick();
   finishGpuGeometry();
   finishAsyncFrame();
-  for (auto it = frameJobs_.begin(); it != frameJobs_.end();) {
-    if (it->future.wait_for(std::chrono::seconds(0)) !=
-        std::future_status::ready) {
-      ++it;
-      continue;
-    }
-    auto r = it->future.get();
-    if (it->generation == generation_ && it->request == frameRequest_ &&
+  while (auto job = takeReady(frameJobs_)) {
+    auto r = job->future.get();
+    if (job->generation == generation_ && job->request == frameRequest_ &&
         document_) {
       preparing_ = false;
       frameError_ = r.error;
@@ -1696,36 +1703,24 @@ void ModelSession::poll() {
       emit frameChanged();
       emit changed();
     }
-    it = frameJobs_.erase(it);
   }
-  for (auto it = textureJobs_.begin(); it != textureJobs_.end();) {
-    if (it->future.wait_for(std::chrono::seconds(0)) !=
-        std::future_status::ready) {
-      ++it;
-      continue;
-    }
-    auto r = it->future.get();
-    if (it->generation == generation_ && it->request == textureRequest_ &&
+  while (auto job = takeReady(textureJobs_)) {
+    auto r = job->future.get();
+    if (job->generation == generation_ && job->request == textureRequest_ &&
         document_) {
       textureBusy_ = false;
       textureError_ = r.error;
       if (r.pixels) {
-        textureLinks_.at(static_cast<std::size_t>(it->mesh))[it->material] = {
-            std::move(r.pixels), r.path, it->uv};
+        textureLinks_.at(static_cast<std::size_t>(job->mesh))[job->material] = {
+            std::move(r.pixels), r.path, job->uv};
         rebuild();
       }
       emit changed();
     }
-    it = textureJobs_.erase(it);
   }
-  for (auto it = jobs_.begin(); it != jobs_.end();) {
-    if (it->future.wait_for(std::chrono::seconds(0)) !=
-        std::future_status::ready) {
-      ++it;
-      continue;
-    }
-    auto r = it->future.get();
-    if (it->generation == generation_) {
+  while (auto job = takeReady(jobs_)) {
+    auto r = job->future.get();
+    if (job->generation == generation_) {
       busy_ = false;
       error_ = r.error;
       document_ = std::move(r.document);
@@ -1803,7 +1798,6 @@ void ModelSession::poll() {
       emit changed();
       emit documentChanged();
     }
-    it = jobs_.erase(it);
   }
   bool externalJobsFinished = false;
   // Apply in selection order: a later file waits for every earlier one, so
@@ -1811,9 +1805,11 @@ void ModelSession::poll() {
   while (!externalJobs_.empty() &&
          externalJobs_.front().future.wait_for(std::chrono::seconds(0)) ==
              std::future_status::ready) {
-    const auto it = externalJobs_.begin();
-    auto r = it->future.get();
-    if (it->generation == generation_ && document_ && !busy_) {
+    externalJobsFinished = true;
+    auto job = std::move(externalJobs_.front());
+    externalJobs_.erase(externalJobs_.begin());
+    auto r = job.future.get();
+    if (job.generation == generation_ && document_ && !busy_) {
       const auto sourcesBefore = document_->externalHolders.size() +
                                  document_->externalActorSources.size();
       if (r.holder)
@@ -1829,6 +1825,7 @@ void ModelSession::poll() {
         emit animChanged();
         emit changed();
       }
+      if (generation_ != job.generation || !document_) continue;
       if (document_->externalHolders.size() +
               document_->externalActorSources.size() > sourcesBefore) {
         ++externalApplied_;
@@ -1838,8 +1835,6 @@ void ModelSession::poll() {
         externalFailed_.append(QFileInfo(r.path).fileName());
       }
     }
-    externalJobs_.erase(it);
-    externalJobsFinished = true;
   }
   while (!externalQueue_.empty() && externalJobs_.size() < 8) {
     const auto path = externalQueue_.front();
@@ -1864,14 +1859,9 @@ void ModelSession::poll() {
   if (externalJobsFinished)
     emit changed();
   bool compareJobsFinished=false;
-  for (auto it = compareJobs_.begin(); it != compareJobs_.end();) {
-    if (it->future.wait_for(std::chrono::seconds(0)) !=
-        std::future_status::ready) {
-      ++it;
-      continue;
-    }
-    auto r = it->future.get();
-    if (it->generation == generation_ && document_) {
+  while (auto job = takeReady(compareJobs_)) {
+    auto r = job->future.get();
+    if (job->generation == generation_ && document_) {
       compareError_ = r.error;
       compareResult_ = {};
       if (r.error.isEmpty()) {
@@ -2002,11 +1992,10 @@ void ModelSession::poll() {
         compareResult_.insert("timing", QVariantMap{
             {"readMs", r.readMs},
             {"guiCompareMs", std::chrono::duration<double, std::milli>(now - guiBegin).count()},
-            {"endToEndMs", std::chrono::duration<double, std::milli>(now - it->started).count()}});
+            {"endToEndMs", std::chrono::duration<double, std::milli>(now - job->started).count()}});
       }
       emit changed();
     }
-    it = compareJobs_.erase(it);
     compareJobsFinished=true;
   }
   if (compareJobsFinished) emit changed();
@@ -3098,7 +3087,13 @@ QVariantMap ModelSession::info() const {
       frames_.model ? frames_.model->sourcePoints : 0;
   const qulonglong visibleTriangles =
       frames_.model ? frames_.model->sourceTriangles : 0;
+  const auto &visible = renderedState_.visible;
+  const auto mesh = static_cast<size_t>(renderedState_.mesh);
+  const int visibleCount = renderedState_.isolated ? int(mesh < visible.size() && visible[mesh])
+      : static_cast<int>(std::count(visible.begin(), visible.end(), true));
   return {{"sha256", document_->hash},
+          {"visibleMeshes", visibleCount},
+          {"meshCount", static_cast<int>(document_->meshes.size())},
           {"visiblePoints", visiblePoints},
           {"visibleTriangles", visibleTriangles},
           {"cachedFrameBytes", QVariant::fromValue<qulonglong>(cachedBytes_)},
@@ -3306,6 +3301,16 @@ void ModelSession::updateSkeleton(bool resetHighlight,ModelSkeleton::Prepared *p
 }
 QVariantMap ModelSession::skeletonSelection() const {
   return skeleton_.details(skeletonNode_, skeletonJoint_);
+}
+void ModelSession::clearSkeletonSelection() {
+  if (skeletonNode_.isEmpty()) return;
+  if (selectedNode_ == skeletonNode_ && selectedMesh())
+    selectedNode_ = selectedMesh()->nodeId;
+  highlightedNode_.clear();
+  skeletonNode_.clear();
+  skeletonJoint_ = -1;
+  rebuild(false);
+  emit changed();
 }
 void ModelSession::selectSkeletonIndex(const QModelIndex &index) {
   if (index.model() != &skeleton_ || !index.isValid())

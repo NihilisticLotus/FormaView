@@ -53,7 +53,7 @@ class Renderer final : public QQuickRhiItemRenderer {
 public:
   ~Renderer() override {
     residentCache.clear();
-    guidePipeline.reset();
+    floorPipeline.reset(); guidePipeline.reset();
     selectionPipeline.reset();
     guideVertices.reset();
     retiredBuffers.clear();
@@ -85,6 +85,7 @@ public:
                      ? source->viewMatrix
                      : (payload ? payload->matrix : QMatrix4x4{});
     sceneBackground = source->sceneBackground;
+    studioView = source->useViewMatrix && data && !data->uv && !source->skinProbe;
     showGrid = source->showGrid;
     showAxes = source->showAxes;
     requestedWireframe = source->wireframe;
@@ -105,7 +106,7 @@ public:
         readbackPasses = 0;
       }
       residentCache.clear();
-      guidePipeline.reset();
+      floorPipeline.reset(); guidePipeline.reset();
       selectionPipeline.reset();
       guideVertices.reset();
       uploadedFrame.reset();
@@ -145,7 +146,7 @@ public:
     if (!data || data->vertices.empty()) {
       deformationBuffer.reset(); deformationBytes=0; deformationFrame.reset();
       residentCache.clear();
-      guidePipeline.reset();
+      floorPipeline.reset(); guidePipeline.reset();
       selectionPipeline.reset();
       guideVertices.reset();
       uploadedFrame.reset();
@@ -173,7 +174,7 @@ public:
     }
     if (skinSource != data->skin) {
       residentCache.clear();
-      pipeline.reset(); blendedPipeline.reset(); guidePipeline.reset(); selectionPipeline.reset(); uvBackgroundPipeline.reset();
+      pipeline.reset(); blendedPipeline.reset(); floorPipeline.reset(); guidePipeline.reset(); selectionPipeline.reset(); uvBackgroundPipeline.reset();
       guideBindings.reset();
     bindings.reset(); guideBindings.reset(); extraTextures.clear(); texture.reset(); vertices.reset(); guideVertices.reset();
       skinRanges.reset(); morphRanges.reset(); influenceTexture.reset(); paletteTexture.reset(); morphTexture.reset();
@@ -214,7 +215,7 @@ public:
     if (lineMode != data->lines || wireMode != wire || pipelineProbe!=skinProbe ||
         streamMode != streaming) {
       if (streamMode != streaming) uploadedFrame.reset();
-      guidePipeline.reset();selectionPipeline.reset();pipelineProbe=skinProbe;
+      floorPipeline.reset(); guidePipeline.reset();selectionPipeline.reset();pipelineProbe=skinProbe;
       pipeline.reset();
       blendedPipeline.reset();
       uvBackgroundPipeline.reset();
@@ -254,7 +255,7 @@ public:
       else if(skinSource)updates->uploadStaticBuffer(vertices.get(),data->vertices.data());
       else updates->updateDynamicBuffer(vertices.get(), 0,static_cast<quint32>(bytes),data->vertices.data());
       if (data->guides.empty()) {
-        guidePipeline.reset();
+        floorPipeline.reset(); guidePipeline.reset();
         selectionPipeline.reset();
         guideVertices.reset();
       } else {
@@ -284,7 +285,7 @@ public:
       }
       const QSize size(data->width, data->height);
       if (!texture || texture->pixelSize() != size) {
-        guidePipeline.reset();
+        floorPipeline.reset(); guidePipeline.reset();
         selectionPipeline.reset();
         pipeline.reset();
         blendedPipeline.reset();
@@ -491,6 +492,28 @@ public:
         rejectFrame(cb, updates, "UV background pipeline failed"); return;
         }
     }
+    const bool showFloor = studioView && guideVertices && data->gridVertices >= 6;
+    if (showFloor && !floorPipeline) {
+      floorPipeline.reset(rhi()->newGraphicsPipeline());
+      floorPipeline->setShaderStages({
+          {QRhiShaderStage::Vertex, shader(":/shaders/floor.vert.qsb")},
+          {QRhiShaderStage::Fragment, shader(":/shaders/floor.frag.qsb")}});
+      QRhiVertexInputLayout layout;
+      layout.setBindings({QRhiVertexInputBinding(sizeof(Vertex))});
+      layout.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0)});
+      floorPipeline->setVertexInputLayout(layout);
+      floorPipeline->setShaderResourceBindings(guideBindings.get());
+      floorPipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+      floorPipeline->setSampleCount(renderTarget()->sampleCount());
+      QRhiGraphicsPipeline::TargetBlend blend;
+      blend.enable = true;
+      blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+      blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+      floorPipeline->setTargetBlends({blend});
+      if (!floorPipeline->create()) {
+        rejectFrame(cb, updates, "Model floor pipeline failed"); return;
+      }
+    }
     if (guideVertices && !guidePipeline) {
       guidePipeline.reset(rhi()->newGraphicsPipeline());
       guidePipeline->setShaderStages(
@@ -556,7 +579,8 @@ public:
     const auto matrix = rhi()->clipSpaceCorrMatrix() * viewMatrix;
     std::memcpy(u.data(), matrix.constData(), 64);
     u[16] = data->heat ? 1.F : 0.F;
-    u[17] = data->lit ? 1.F : 0.F;
+    // The raw material renderer keeps its calibrated reference illumination.
+    u[17] = data->lit ? (studioView ? 2.F : 1.F) : 0.F;
     u[18] = data->linearColour ? 1.F : 0.F;
     u[19] = data->uv ? 1.F : 0.F;
     const bool overrideMaterial = !data->uv && !data->lines &&
@@ -588,6 +612,17 @@ public:
                      static_cast<float>(renderTarget()->pixelSize().height())});
     cb->setShaderResources();
 
+    if (showFloor) {
+      // The first grid segment vertices all lie on the source origin plane.
+      // Draw as a backdrop so inspecting below that plane still shows the mesh.
+      cb->setGraphicsPipeline(floorPipeline.get());
+      cb->setShaderResources(guideBindings.get());
+      const QRhiCommandBuffer::VertexInput guides(guideVertices.get(), 0);
+      cb->setVertexInput(0, 1, &guides);
+      cb->draw(6);
+      cb->setGraphicsPipeline(pipeline.get());
+      cb->setShaderResources(bindings.get());
+    }
     const QRhiCommandBuffer::VertexInput meshInputs[]={{vertices.get(),0},{streaming?deformationBuffer.get():skinRanges.get(),0},{morphRanges.get(),0}};
     cb->setVertexInput(0, skinSource?3:streaming?2:1, meshInputs);
     if (data->backgroundVertices) {
@@ -708,7 +743,7 @@ private:
     std::unique_ptr<QRhiSampler> sampler;
     std::unique_ptr<QRhiShaderResourceBindings> bindings, guideBindings;
     std::vector<std::unique_ptr<ExtraTexture>> extraTextures;
-    std::unique_ptr<QRhiGraphicsPipeline> pipeline, blended, background, guide,
+    std::unique_ptr<QRhiGraphicsPipeline> pipeline, blended, background, guide, floor,
         selection;
   };
   static constexpr std::uint64_t residentBudget = 256ULL * 1024 * 1024;
@@ -753,6 +788,7 @@ private:
     saved.pipeline = std::move(pipeline);
     saved.blended = std::move(blendedPipeline);
     saved.background = std::move(uvBackgroundPipeline);
+    saved.floor = std::move(floorPipeline);
     saved.guide = std::move(guidePipeline);
     saved.selection = std::move(selectionPipeline);
     residentCache.push_front(std::move(saved));
@@ -762,6 +798,7 @@ private:
   }
   void restore(Resident saved) {
     pipeline = std::move(saved.pipeline);
+    floorPipeline = std::move(saved.floor);
     guidePipeline = std::move(saved.guide);
     selectionPipeline = std::move(saved.selection);
     blendedPipeline = std::move(saved.blended);
@@ -901,9 +938,9 @@ private:
   std::unique_ptr<QRhiGraphicsPipeline> pipeline;
   std::unique_ptr<QRhiGraphicsPipeline> blendedPipeline;
   std::unique_ptr<QRhiGraphicsPipeline> uvBackgroundPipeline;
-  std::unique_ptr<QRhiGraphicsPipeline> guidePipeline, selectionPipeline;
+  std::unique_ptr<QRhiGraphicsPipeline> guidePipeline, selectionPipeline, floorPipeline;
   QColor sceneBackground{24, 24, 24};
-  bool showGrid{}, showAxes{}, requestedWireframe{}, wireMode{};
+  bool studioView{}, showGrid{}, showAxes{}, requestedWireframe{}, wireMode{};
   int requestedShading{};
   std::function<void(Observation)> observe;
   std::function<void(QByteArray, QSize)> readback;

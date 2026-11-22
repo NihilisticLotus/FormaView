@@ -9,7 +9,7 @@ qt_add_shaders(formaview_render "preview_shaders"
 qt_add_shaders(formaview_render "skin_shaders"
     PREFIX "/shaders"
     GLSL "300es,330"
-    FILES skin.vert skin_probe.frag
+    FILES skin.vert skin_probe.frag floor.vert floor.frag
 )
 add_library(FormaView::Render ALIAS formaview_render)
 if(BUILD_TESTING AND TARGET formaview_professional)

@@ -217,6 +217,51 @@ Item {
             readonly property var roots: visible ? root.session.rootCandidates : []
             ColumnLayout {
                 width: motionInspector.availableWidth; spacing: 8
+                SectionHeader {
+                    id: sourcesHeader
+                    Layout.fillWidth: true; checked: true
+                    text: root.session.canAttachExternalAnimation || root.session.externalInfo.driven
+                          ? Theme.t("外部动画配对", "External animation pairing", "外部動畫配對")
+                          : Theme.t("动作来源", "Animation source", "動作來源")
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true; visible: sourcesHeader.checked; spacing: 5
+                    Readout {
+                        Layout.fillWidth: true; inlineValue: true
+                        label: Theme.t("目标模型", "Target model", "目標模型")
+                        value: root.session.path.split("/").pop()
+                    }
+                    Readout {
+                        Layout.fillWidth: true; inlineValue: true
+                        label: root.session.externalInfo.driven
+                               ? Theme.t("已配对文件", "Paired file", "已配對檔案")
+                               : Theme.t("动作来源", "Animation source", "動作來源")
+                        value: root.session.externalInfo.driven ? root.session.externalInfo.path || "—"
+                               : root.session.hasPlayableAnimation
+                               ? Theme.t("模型内置片段", "Embedded clips", "模型內建片段")
+                               : Theme.t("尚未配对", "No paired file", "尚未配對")
+                    }
+                    ExplainedText {
+                        Layout.fillWidth: true
+                        visible: !!root.session.externalInfo.notice
+                        kind: root.session.externalInfo.status === "refused" ? "error" : "note"
+                        tone: root.session.externalInfo.status === "refused" ? Theme.error : Theme.muted
+                        raw: root.session.externalInfo.notice || ""
+                    }
+                    Tool {
+                        objectName: "motionAttach"
+                        visible: root.session.canAttachExternalAnimation
+                        enabled: !root.session.busy && !root.session.externalBusy
+                        iconName: "external"; text: Theme.t("添加外部动画…","Add external animation…","新增外部動畫…")
+                        onClicked: root.addExternalAnimation()
+                    }
+                    Tool {
+                        visible: !!root.session.externalInfo.driven
+                        enabled: !root.session.busy && !root.session.externalBusy
+                        text: Theme.t("移除外部动画", "Remove external animation", "移除外部動畫")
+                        onClicked: root.session.detachExternalAnimation()
+                    }
+                }
                 Label { text: Theme.t("动画片段","Animation clips","動畫片段"); font.bold: true; color: Theme.text }
                 Choice {
                     objectName: "motionClipChoice"
@@ -226,20 +271,12 @@ Item {
                     Accessible.name: Theme.t("当前动作","Active clip","目前動作")
                     onActivated: index => root.session.setClipIndex(index)
                 }
-                Tool {
-                    objectName: "motionAttach"
-                    visible: root.session.canAttachExternalAnimation
-                    enabled: !root.session.busy && !root.session.externalBusy
-                    iconName: "external"; text: Theme.t("添加外部动画…","Add external animation…","新增外部動畫…")
-                    onClicked: root.addExternalAnimation()
-                }
-                Readout { Layout.fillWidth: true; visible: !!root.session.externalInfo.driven; label: Theme.t("外部动画","External animation","外部動畫"); value: root.session.externalInfo.path || "" }
                 ColumnLayout {
                     visible: motionInspector.currentClip.start !== undefined
                     Layout.fillWidth: true; spacing: 8
-                    Readout { Layout.fillWidth: true; label: Theme.t("源帧率","Source frame rate","來源影格率"); value: motionInspector.currentClip.fps > 0 ? Number(motionInspector.currentClip.fps.toFixed(3)) + " fps" : "—" }
-                    Readout { Layout.fillWidth: true; label: Theme.t("当前帧","Current frame","目前影格"); value: (motionInspector.currentClip.frame ?? "—")+" / "+(motionInspector.currentClip.lastFrame ?? "—") }
-                    Readout { Layout.fillWidth: true; label: Theme.t("片段时长","Clip duration","片段長度"); value: ((motionInspector.currentClip.end ?? 0)-(motionInspector.currentClip.start ?? 0)).toFixed(3)+" s" }
+                    Readout { Layout.fillWidth: true; inlineValue: true; label: Theme.t("源帧率","Source frame rate","來源影格率"); value: motionInspector.currentClip.fps > 0 ? Number(motionInspector.currentClip.fps.toFixed(3)) + " fps" : "—" }
+                    Readout { Layout.fillWidth: true; inlineValue: true; label: Theme.t("当前帧","Current frame","目前影格"); value: (motionInspector.currentClip.frame ?? "—")+" / "+(motionInspector.currentClip.lastFrame ?? "—") }
+                    Readout { Layout.fillWidth: true; inlineValue: true; label: Theme.t("片段时长","Clip duration","片段長度"); value: ((motionInspector.currentClip.end ?? 0)-(motionInspector.currentClip.start ?? 0)).toFixed(3)+" s" }
                     RowLayout {
                         Layout.fillWidth: true
                         Label { Layout.fillWidth: true; color: Theme.text; text: Theme.t("播放速度","Playback speed","播放速度") }

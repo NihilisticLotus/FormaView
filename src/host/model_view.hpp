@@ -111,14 +111,16 @@ private:
   void bindPresentedWindow(QQuickWindow *);
   QMatrix4x4 matrix_;
   QVector3D target_;
-  double yaw_{25}, pitch_{12}, distance_{3.2};
+  // Orbit direction of the prototype home camera, relative to its target.
+  static constexpr double homeYaw = 38.2, homePitch = 7.05, verticalFov = 38.;
+  double yaw_{homeYaw}, pitch_{homePitch}, distance_{3.2};
   bool uvMode_{};
   bool automatic_{true}, fitSelected_{};
   int representation_{-1};
   std::uint64_t framingRevision_{};
   struct CameraState {
     QVector3D target;
-    double yaw{25}, pitch{12}, distance{3.2};
+    double yaw{homeYaw}, pitch{homePitch}, distance{3.2};
   };
   CameraState saved_[2];
 };

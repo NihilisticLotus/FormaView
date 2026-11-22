@@ -83,7 +83,7 @@ void ModelView::camera() {
     projection.ortho(-span * aspect, span * aspect, -span, span, -10, 10);
     view.translate(-target_);
   } else {
-    projection.perspective(40, aspect, .001F, 1000);
+    projection.perspective(verticalFov, aspect, .001F, 1000);
     const double y = qDegreesToRadians(yaw_), p = qDegreesToRadians(pitch_);
     const QVector3D offset(static_cast<float>(std::sin(y) * std::cos(p)),
                            static_cast<float>(std::sin(p)),
@@ -136,15 +136,15 @@ void ModelView::fit(bool selected) {
   fitSelected_ = selected;
   target_ = {};
   distance_ = 3.2;
-  yaw_ = 25;
-  pitch_ = 12;
+  yaw_ = homeYaw;
+  pitch_ = homePitch;
   if (session_ && !uvMode_) {
     const auto [center, radius] = session_->focusBounds(selected);
     target_ = center;
     const double aspect = std::max(width(), 1.0) / std::max(height(), 1.0);
     const double half =
-        std::min(qDegreesToRadians(20.0),
-                 std::atan(std::tan(qDegreesToRadians(20.0)) * aspect));
+        std::min(qDegreesToRadians(verticalFov / 2),
+                 std::atan(std::tan(qDegreesToRadians(verticalFov / 2)) * aspect));
     distance_ =
         std::max(static_cast<double>(radius) * 1.05 / std::sin(half), .002);
   } else if (session_ && uvMode_) {
@@ -168,8 +168,8 @@ void ModelView::restoreCamera(const QVariantMap &state) {
   for (const auto &v : state)
     if (!std::isfinite(v.toDouble()))
       return;
-  yaw_ = state.value("yaw", 25).toDouble();
-  pitch_ = std::clamp(state.value("pitch", 12).toDouble(), -89.0, 89.0);
+  yaw_ = state.value("yaw", homeYaw).toDouble();
+  pitch_ = std::clamp(state.value("pitch", homePitch).toDouble(), -89.0, 89.0);
   distance_ = std::clamp(state.value("distance", 3.2).toDouble(), .002, 1e9);
   target_ = {state.value("x").toFloat(), state.value("y").toFloat(),
              state.value("z").toFloat()};

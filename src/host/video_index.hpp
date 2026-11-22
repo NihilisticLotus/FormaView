@@ -1,5 +1,7 @@
 #pragma once
 #include <QString>
+#include <atomic>
+#include <future>
 #include <QVector>
 #include <memory>
 #include <mutex>
@@ -38,11 +40,16 @@ private:
 class VideoStream {
 public:
   QString path;
+  bool flv = false;
+  std::atomic_bool cancelled{false};
+  void prepareFlvIndex();
+  QByteArray flvMetadata() const;
   void apply(const VideoSeekPlan &plan);
   bool attach(mpv_handle *handle, void *registerFunction);
   void filter(char *data, qint64 start, qint64 count);
 
 private:
+  std::shared_future<QByteArray> flvIndex_;
   QVector<VideoSpan> spans_;
   std::mutex mutex_;
 };

@@ -804,6 +804,39 @@ private slots:
     QCOMPARE(position(), 20.0);
     QVERIFY(session->status().value("pause").toBool());
   }
+  void videoLongFlvSeekAndStep() {
+    const auto path = qEnvironmentVariable("FORMAVIEW_LONG_FLV_FIXTURE");
+    if (path.isEmpty()) QSKIP("Requires a long local AVC FLV recording at 60 fps");
+    QVERIFY(QFileInfo::exists(path));
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(path);
+    QTRY_VERIFY(item("videoSession"));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    const auto position = [&] { return session->status().value("time-pos", -1).toDouble(); };
+    QTRY_VERIFY_WITH_TIMEOUT(session->status().value("duration").toDouble() > 600, 15000);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    const auto duration = session->status().value("duration").toDouble();
+    for (double fraction : {.90, .20, .96}) {
+      const double target = std::floor(duration * fraction);
+      session->seek(target, false);
+      QTRY_VERIFY_WITH_TIMEOUT(!session->seekPending() && std::abs(position() - target) < .02, 5000);
+    }
+    const auto paused = position();
+    session->step(true);
+    QTRY_VERIFY(std::abs(position() - paused - 1. / 60) < .003);
+    session->step(false);
+    QTRY_VERIFY(std::abs(position() - paused) < .003);
+    session->togglePause();
+    QTRY_VERIFY(!session->status().value("pause").toBool() && position() > paused + .05);
+    const auto playingTarget = std::floor(duration / 10);
+    session->seek(playingTarget, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->seekPending() && position() >= playingTarget - .02 &&
+                             position() < playingTarget + 3., 5000);
+    QVERIFY(!session->status().value("pause").toBool());
+    QVERIFY(session->error().isEmpty());
+  }
   void videoReviewAcrossChapterAndSubtitles() {
     const auto clip = qEnvironmentVariable("FORMAVIEW_CHAPTER_REVIEW_FIXTURE");
     if (clip.isEmpty())
@@ -904,6 +937,30 @@ private slots:
     QSKIP("Model UI is disabled");
 #endif
   }
+  void modelSwitchDuringDocumentNotification() {
+#ifdef FORMAVIEW_MODEL_UI
+    if (qEnvironmentVariableIsEmpty("FORMAVIEW_PLAYBACK_FIXTURES"))
+      QSKIP("Requires the animated and static glTF playback fixtures");
+    const QDir samples(requireFixture("FORMAVIEW_PLAYBACK_FIXTURES"));
+    ModelSession session;
+    int landed = 0;
+    QStringList paths{samples.filePath("animated.gltf"), samples.filePath("static.gltf")};
+    connect(&session, &ModelSession::documentChanged, &session, [&] {
+      if (!session.available() || session.busy()) return;
+      QCOMPARE(session.path(), paths[landed % 2]);
+      if (++landed == 20) return;
+      if (session.canPlayAnimation()) session.togglePlay();
+      session.setMode(1);
+      session.open(paths[landed % 2]);
+    });
+    session.open(paths.front());
+    QTRY_COMPARE_WITH_TIMEOUT(landed, 20, 15000);
+    QTRY_VERIFY(session.inspectable());
+    session.clear();
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
   void modelAnimationInspectorControls() {
 #ifdef FORMAVIEW_MODEL_UI
     const auto asset = requireFixture("FORMAVIEW_REVIEW_ANIMATED_MODEL", true);
@@ -926,6 +983,12 @@ private slots:
       click("modelSection_skeleton");
       QTRY_VERIFY_WITH_TIMEOUT(session->frame() && session->frame()->selectionVertices > 0, 10000);
       QVERIFY(window_->grabWindow().save(root_ + "/model-skeleton-overlay.png"));
+      const auto firstBone = session->skeleton()->index(0, 0);
+      QVERIFY(firstBone.isValid());
+      session->selectSkeletonIndex(firstBone);
+      QTRY_VERIFY(!session->skeletonSelection().value("id").toString().isEmpty());
+      click("modelClearBoneSelection");
+      QTRY_VERIFY(session->skeletonSelection().value("id").toString().isEmpty());
     }
     click("modelSection_animation");
     QTRY_VERIFY(item("motionSpeed") && item("motionClipChoice"));
@@ -936,6 +999,13 @@ private slots:
     QTest::keyClick(window_, Qt::Key_2);
     QTest::keyClick(window_, Qt::Key_Return);
     QTRY_COMPARE(session->speed(), 2.);
+    QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(window_, Qt::Key_0);
+    QTest::keyClick(window_, Qt::Key_Return);
+    QVERIFY(speed->property("invalid").toBool());
+    QCOMPARE(session->speed(), 2.);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QCOMPARE(speed->property("text").toString(), QString("2.00"));
     if (session->playing()) session->togglePlay();
     click("animPlay");
     QTRY_VERIFY(session->playing());
@@ -954,6 +1024,12 @@ private slots:
     click("modelModeTab3");
     QTRY_VERIFY(item("modelSectionLegend") && !item("motionSpeed"));
     QVERIFY(window_->grabWindow().save(root_ + "/model-lod-legend.png"));
+    session->setCollisionMode(2);
+    QTRY_VERIFY(session->inspectable());
+    if (session->info().value("visibleMeshes").toInt() == 0) {
+      click("modelShowAvailableMeshes");
+      QTRY_VERIFY(session->inspectable() && session->info().value("visibleMeshes").toInt() > 0);
+    }
     click("modelModeTab0");
     QTRY_VERIFY(!item("modelSectionLegend"));
 #else
@@ -8155,7 +8231,7 @@ private slots:
       QVERIFY(!pane->property("showAxes").toBool());
       QVERIFY(pane->property("showUV").toBool());
       QVERIFY(view->cameraState().value("automatic").toBool());
-      QCOMPARE(view->cameraState().value("yaw").toDouble(), 25.0);
+      QCOMPARE(view->cameraState().value("yaw").toDouble(), 38.2);
       QCOMPARE(session->path(), path);
       QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && !session->error().isEmpty(), 10000);
       QCOMPARE(item("modelPane"), pane.data());
@@ -8170,7 +8246,7 @@ private slots:
       QVERIFY(session->error().isEmpty());
       QCOMPARE(item("modelPane"), pane.data());
       QVERIFY(view->cameraState().value("automatic").toBool());
-      QCOMPARE(view->cameraState().value("yaw").toDouble(), 25.0);
+      QCOMPARE(view->cameraState().value("yaw").toDouble(), 38.2);
     }
     session->clear();
     QTRY_VERIFY(pane.isNull());

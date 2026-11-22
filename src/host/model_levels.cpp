@@ -75,6 +75,21 @@ void ModelSession::chooseVisibleMesh() {
   bone_ = material_ = 0;
   updateSkeleton();
 }
+void ModelSession::showAvailableMeshes() {
+  if (!document_ || classes_.empty()) return;
+  isolated_ = false;
+  collisionMode_ = 1;
+  levels_.clear();
+  for (const auto &item : classes_) {
+    if (item.group.isEmpty()) continue;
+    auto [it, inserted] = levels_.try_emplace(item.group, item.level);
+    if (!inserted) it->second = std::min(it->second, item.level);
+  }
+  chooseVisibleMesh();
+  clearSelection();
+  rebuild();
+  emit changed();
+}
 void ModelSession::selectLodGroup(int index) {
   if (index < 0 || index >= lodGroups().size())
     return;

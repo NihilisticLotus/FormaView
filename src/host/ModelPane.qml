@@ -213,24 +213,48 @@ Rectangle {
                     Theme.t("无可用切线或有效 UV", "No tangents or valid UVs", "無可用切線或有效 UV")
                 ].filter(Boolean).join(" · ")
             }
-            Label {
+            Rectangle {
+                id: legend
                 objectName: "modelSectionLegend"
                 anchors.left: parent.left; anchors.bottom: displayTools.top; anchors.margins: 10
-                width: Math.min(implicitWidth, parent.width - 20)
+                width: Math.min(legendRow.implicitWidth + 16, Math.max(0, parent.width - 20))
+                height: legendRow.implicitHeight + 6
                 visible: root.session.inspectable && (root.section === "skeleton" || root.session.mode === 3)
-                padding: 6; leftPadding: 10; rightPadding: 10
-                color: Theme.text; font.pixelSize: Theme.noteText
-                textFormat: Text.PlainText; elide: Text.ElideRight
-                background: Rectangle { color: Theme.panel; radius: height / 2; border.color: Theme.line }
-                text: {
-                    if (!visible) return ""
-                    if (root.session.mode === 3) {
-                        const collision = [Theme.t("隐藏碰撞","Hide collision","隱藏碰撞"),
-                                           Theme.t("叠加碰撞","Overlay collision","疊加碰撞"),
-                                           Theme.t("仅碰撞","Collision only","僅碰撞")]
-                        return collision[root.session.collisionMode] + " · " + root.triangleText
+                color: Theme.panel; radius: height / 2; border.color: Theme.line
+                RowLayout {
+                    id: legendRow
+                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                    spacing: 5
+                    Label {
+                        Layout.fillWidth: true; Layout.minimumWidth: 0
+                        color: Theme.text; font.pixelSize: Theme.noteText
+                        textFormat: Text.PlainText; elide: Text.ElideRight
+                        text: {
+                            if (!legend.visible) return ""
+                            if (root.session.mode !== 3)
+                                return root.session.skeletonSelection.name || Theme.t("选择骨骼以查看层级","Select a bone to inspect","選擇骨骼以查看階層")
+                            const collision = [Theme.t("隐藏碰撞","Hide collision","隱藏碰撞"),
+                                               Theme.t("叠加碰撞","Overlay collision","疊加碰撞"),
+                                               Theme.t("仅碰撞","Collision only","僅碰撞")]
+                            const info = root.session.info
+                            return Theme.t("%1 / %2 个网格","%1 / %2 meshes","%1 / %2 個網格")
+                                .arg(info.visibleMeshes ?? 0).arg(info.meshCount ?? 0) + " · "
+                                + root.triangleText + " · " + collision[root.session.collisionMode]
+                        }
                     }
-                    return root.session.skeletonSelection.name || Theme.t("选择骨骼以查看层级","Select a bone to inspect","選擇骨骼以查看階層")
+                    Tool {
+                        objectName: "modelClearBoneSelection"
+                        visible: root.section === "skeleton" && !!root.session.skeletonSelection.id
+                        quiet: true; iconName: "close"
+                        hint: Theme.t("清除骨骼选择","Clear bone selection","清除骨骼選取")
+                        onClicked: root.session.clearSkeletonSelection()
+                    }
+                    Tool {
+                        objectName: "modelShowAvailableMeshes"
+                        visible: root.session.mode === 3 && root.session.info.visibleMeshes === 0
+                        text: Theme.t("显示可用网格","Show available meshes","顯示可用網格")
+                        onClicked: root.session.showAvailableMeshes()
+                    }
                 }
             }
             SkeletonComparePane {

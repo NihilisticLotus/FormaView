@@ -19,13 +19,15 @@
 
 ## v0.2.0 开发中的模型检查
 
-模型预览提供五种显示模式。「骨骼」与「绑定」可查看模型上的父子骨骼连线，「LOD / 碰撞」显示当前可见三角形数。在「动画」检查器中可选择片段、调整速度和根运动，或为兼容模型添加外部动作。播放中拖动时间轴或逐帧会定格在所选姿态。[模型预览](docs/model-preview-modes.md) · [动画播放与配对入口](docs/animation-availability.md)
+模型预览提供五种显示模式。「骨骼」与「绑定」可查看模型上的父子骨骼连线，「LOD / 碰撞」显示可见网格数、三角形数与碰撞模式。在「动画」检查器中可选择片段、调整速度和根运动，或为兼容模型添加外部动作。播放中拖动时间轴或逐帧会定格在所选姿态。[模型预览](docs/model-preview-modes.md) · [动画播放与配对入口](docs/animation-availability.md)
 
 ## 视频开发版
 
 v0.2.0 Windows x64 开发测试版支持本地 FLV、MP4、M4V、MOV、MKV、WebM、AVI、TS、M2TS、MPG 和 MPEG。安装时可在“文件关联 → 视频”勾选需要的扩展名，再到 Windows 的“默认应用”中确认。
 
 开发版 0.2.0 在文件预览区加入了本地视频播放。在资源管理器中双击视频会复用最近使用的视频窗口。“设置 → 预览”可分别调整视频、图片和模型的窗口复用。点击画面聚焦后，空格播放或暂停，上下键调音量，左右键按各自设定的秒数跳转。逗号和句号逐帧回退和前进，方括号按 0.1× 调速，数字 1 恢复原速，S 保存 PNG。字幕、A–B 循环、置顶小窗、滤镜和输出状态可从播放区打开。
+
+对于至少 64 MiB、缺少关键帧表的本地 H.264 FLV，播放器会读取关键帧时间与文件位置，并在应用缓存中保存索引。远跳时从目标附近的关键帧解码到所选画面，暂停后仍可逐帧前进或后退。首次建索引最多等待约 3 秒。较慢磁盘上若超时，当前会话先用普通定位，后台完成的索引供下次打开使用。文件大小或修改时间变化会重新建索引。
 
 Windows 视频构建使用 Qt 6.12.0 MSVC x64、GuiPrivate 和 D3D11。配置 CMake 时将 `FORMAVIEW_MPV_ROOT` 指向包含 Windows D3D11 render API 的 LGPL `libmpv-2.dll` 所在目录，将 `FORMAVIEW_FFMPEG_ROOT` 指向包含 bin、include、lib 的共享开发包。v0.2 的 libmpv 和五个 FFmpeg DLL 采用锁定源码重建。六个 DLL 的 SHA-256 及构建镜像见 [媒体构建清单](third_party/media-builds.json)，对应源码包为 `FormaView-0.2.0-media-sources.zip`。普通素材走 mpv 精确定位；验证过的 HEVC MP4 编码参数另启用有限邻帧缓存。HDR10 全屏和杜比直通取决于屏幕、系统和音频端点。[mpv 源码](https://github.com/mpv-player/mpv/tree/f92afa75c) · [FFmpeg 共享构建](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases)
 
