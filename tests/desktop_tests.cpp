@@ -734,7 +734,7 @@ private slots:
     QTRY_COMPARE(desktop.asset().value("path").toString(), second);
     desktop.openPath(external);
     QTRY_COMPARE(list->rowCount(), 2);
-    QCOMPARE(list->index(0, 0).data(FileList::Path).toString(), external);
+    QTRY_COMPARE(list->index(0, 0).data(FileList::Path).toString(), external);
     desktop.adjacentVideo(1);
     QTRY_COMPARE(desktop.asset().value("path").toString(), recording);
     QCOMPARE(desktop.asset().value("kind").toString(), QStringLiteral("video"));

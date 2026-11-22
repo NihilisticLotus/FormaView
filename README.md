@@ -19,6 +19,8 @@
 
 ## 视频开发版
 
+v0.2.0 Windows x64 开发测试版支持本地 FLV、MP4、M4V、MOV、MKV、WebM、AVI、TS、M2TS、MPG 和 MPEG。安装时可在“文件关联 → 视频”勾选需要的扩展名，再到 Windows 的“默认应用”中确认。
+
 开发版 0.2.0 在文件预览区加入了本地视频播放。在资源管理器中双击视频会复用最近使用的视频窗口。“设置 → 预览”可分别调整视频、图片和模型的窗口复用。点击画面聚焦后，空格播放或暂停，上下键调音量，左右键按各自设定的秒数跳转。逗号和句号逐帧回退和前进，方括号按 0.1× 调速，数字 1 恢复原速，S 保存 PNG。字幕、A–B 循环、置顶小窗、滤镜和输出状态可从播放区打开。
 
 Windows 视频构建使用 Qt 6.12.0 MSVC x64、GuiPrivate 和 D3D11。配置 CMake 时将 `FORMAVIEW_MPV_ROOT` 指向包含 Windows D3D11 render API 的 LGPL `libmpv-2.dll` 所在目录，将 `FORMAVIEW_FFMPEG_ROOT` 指向包含 bin、include、lib 的共享开发包。v0.2 的 libmpv 和五个 FFmpeg DLL 采用锁定源码重建。六个 DLL 的 SHA-256 及构建镜像见 [媒体构建清单](third_party/media-builds.json)，对应源码包为 `FormaView-0.2.0-media-sources.zip`。普通素材走 mpv 精确定位；验证过的 HEVC MP4 编码参数另启用有限邻帧缓存。HDR10 全屏和杜比直通取决于屏幕、系统和音频端点。[mpv 源码](https://github.com/mpv-player/mpv/tree/f92afa75c) · [FFmpeg 共享构建](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases)
@@ -111,7 +113,7 @@ flowchart LR
 | 动画读取 / 预览 | FBX、glTF、PSA | 可读取模型内动画；PSA 等独立动画需要合适的模型/参考骨架才能完整配对 |
 | 模型 / 动画导出 | FBX | 输入包括支持的 FBX、OBJ、glTF/GLB、PSK/PSKX/PSA；ABC 仅可将预览当前采样写为静态几何快照，不输出 ABC 动画序列；PMX、VRM 当前作为转换输入，不提供专业模型视口预览 |
 
-**当前不支持**：常规视频解码播放、Unity `.unitypackage` 内容预览、Markdown、PDF、字体和 PSD 预览。这些项目已列入后续规划，但尚未包含在 0.1.x 中。
+**0.1.x 的范围**。常规视频播放已进入 v0.2.0 开发测试。Unity `.unitypackage` 内容预览、Markdown、PDF、字体和 PSD 预览仍在后续规划中。
 
 ABC 支持仅限上表所列的 Ogawa 多边形缓存与相机预览；含几何的文件可将当前采样导出为静态 FBX 快照。导出会烘焙顶点变换；分组层级可保留为空节点，但不保留各部件的旋转中心/轴心。单位按可识别的写出程序约定，否则按米并提示。ABC 容器写出、ABC 动画序列导出和骨骼动画生成均不支持。具体运行目录是否包含这些源码能力，以该目录对应的构建与说明为准。
 
@@ -263,7 +265,7 @@ FormaView 使用 `a.b.c` 表示产品阶段与迭代：
 | **0.1.2** | 窗口、文件浏览、纹理导出、模型视口和 EXR 预览优化 | 正式版，已完成人工功能验证 |
 | **0.1.1** | 大图预览和导航优化、模型显示模式及关联图标修补 | 正式版；Windows x64 安装包与二进制运行包已发布 |
 | **0.1.0** | 图片、模型和动画浏览/预览；转换预检与任务；可选 MCP 集成 | 正式版；Windows x64 安装包与功能验证运行包已发布；人工验证待完成 |
-| **0.2.0** | 常规视频解码与播放 | 规划中 |
+| **0.2.0** | 本地视频播放、逐帧检查和文件关联 | 开发测试中 |
 | **0.3.0** | Unity `.unitypackage` 预览；筛选并整合 UE Viewer 中选定的功能 | 规划中，功能范围待细化 |
 | **0.4.0** | Markdown、PDF、字体文件和 PSD 预览 | 规划中 |
 
