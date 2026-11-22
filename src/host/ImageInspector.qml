@@ -7,6 +7,7 @@ ScrollView {
     required property var controller
     readonly property var session: controller.image
     readonly property var info: session.info
+    readonly property var metadata: info.metadata || ({})
     readonly property var sourceWindow: info.dataWindow || ({})
     readonly property var displayWindow: info.displayWindow || ({})
     readonly property var channelNames: [""].concat(session.channels.map(c => c.name))
@@ -17,25 +18,43 @@ ScrollView {
         return "#" + s.index + " · " + s.name + " · " + s.width + "×" + s.height
             + (root.info.hasMips ? " / mip " + s.mip : "") + (root.info.hasArrays ? " / array " + s.array : "")
             + (root.info.hasFaces ? " / face " + s.face : "") + (root.info.hasSlices ? " / z " + s.slice : "")
-            + (root.info.metadata["entry." + s.index + ".encoding"] ? " / " + root.info.metadata["entry." + s.index + ".encoding"] : "")
-            + (root.info.metadata["entry." + s.index + ".directory_bits_per_pixel"] ? " / " + Theme.t("目录声明 ", "Header ", "目錄宣告 ") + root.info.metadata["entry." + s.index + ".directory_bits_per_pixel"] + " bpp" : "")
+            + (root.metadata["entry." + s.index + ".encoding"] ? " / " + root.metadata["entry." + s.index + ".encoding"] : "")
+            + (root.metadata["entry." + s.index + ".directory_bits_per_pixel"] ? " / " + Theme.t("目录声明 ", "Header ", "目錄宣告 ") + root.metadata["entry." + s.index + ".directory_bits_per_pixel"] + " bpp" : "")
     }
     clip: true
     ColumnLayout {
         width: root.availableWidth; spacing: 10
-        TabBar {
-            Layout.fillWidth: true
-            PageTab { text: Theme.t("图像", "Image", "影像"); onClicked: { channelSection.checked = false; metadataSection.checked = false } }
-            PageTab { text: Theme.t("通道", "Channels", "通道"); onClicked: { channelSection.checked = true; metadataSection.checked = false } }
-            PageTab { text: Theme.t("元数据", "Metadata", "中繼資料"); onClicked: { channelSection.checked = false; metadataSection.checked = true } }
+        Label { text: root.info.format === "GIF" ? Theme.t("动图信息","GIF information","動圖資訊") : Theme.t("图像信息","Image information","影像資訊"); font.bold: true; color: Theme.text }
+        Repeater {
+            model: [[Theme.t("格式","Format","格式"),root.info.format || "—"],
+                    [Theme.t("源尺寸","Source size","來源尺寸"),root.sourceWindow.width !== undefined ? root.sourceWindow.width + " × " + root.sourceWindow.height : "—"],
+                    [Theme.t("通道","Channels","通道"),root.session.channels.map(c=>c.name).join(" · ")]]
+            delegate: RowLayout {
+                required property var modelData; Layout.fillWidth: true
+                Label { Layout.fillWidth: true; text: modelData[0]; color: Theme.muted }
+                Label { Layout.maximumWidth: 185; text: modelData[1]; color: Theme.text; elide: Text.ElideMiddle }
+            }
         }
+        Rectangle {
+            Layout.fillWidth: true; implicitHeight: gifRows.implicitHeight+20; radius: 11
+            visible: root.info.format === "GIF"; color: Theme.glass
+            ColumnLayout {
+                id: gifRows; anchors.fill: parent; anchors.margins: 10
+                Label { text: Theme.t("动画采样","Animation frame","動畫取樣"); font.bold: true; color: Theme.text }
+                Label { text: Theme.t("第 %1 / %2 帧","Frame %1 / %2","第 %1 / %2 影格").arg(root.session.frame+1).arg(root.session.frameCount) + "   ·   " + root.session.frameDelay + " ms"; color: Theme.text }
+                ProgressBar { Layout.fillWidth: true; from: 0; to: Math.max(1,root.session.frameCount-1); value: root.session.frame }
+            }
+        }
+        Readout { Layout.fillWidth: true; visible: root.session.samplePinned
+            label: Theme.t("已固定源像素","Pinned source pixel","已固定來源像素")
+            value: "(" + (root.session.pixel.x ?? "—") + ", " + (root.session.pixel.y ?? "—") + ")" }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
         SectionHeader { id: imageDetails; Layout.fillWidth: true; checked: true; text: Theme.t("图像 · 只读", "Image · Read only", "影像 · 唯讀") }
         Rectangle {
             Layout.fillWidth: true; implicitHeight: details.implicitHeight + 20; visible: imageDetails.checked; color: Theme.raised; radius: Theme.radius
             Readout { id: details; anchors.fill: parent; anchors.margins: 10; label: (root.info.format || "—") + " · " + root.sourceWindow.width + " × " + root.sourceWindow.height; value: root.session.channels.map(c => c.name + " " + c.type).join(" / ") + "\nAlpha · " + (["unknown", "absent", "straight", "premultiplied"][root.info.alpha] || "—") }
         }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: root.info.block || ""; visible: !!text }
-        Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; visible: root.info.format === "GIF"; text: Theme.t("GIF：当前仅静态帧", "GIF: static frame only", "GIF：目前僅靜態影格") }
         Choice {
             objectName: "imageSubresource"; Layout.fillWidth: true; visible: root.session.subresources.length > 1 && root.info.format !== "DDS"
             model: root.session.subresources.map(s => root.resourceText(s))
@@ -120,7 +139,7 @@ ScrollView {
             Readout { Layout.fillWidth: true; label: "dataWindow"; value: root.windowText(root.sourceWindow) }
             Readout { Layout.fillWidth: true; label: "displayWindow"; value: root.windowText(root.displayWindow) }
             Readout { Layout.fillWidth: true; label: "SHA-256"; value: root.info.sha256 || "—" }
-            Repeater { model: Object.keys(root.info.metadata || {}); Readout { required property string modelData; Layout.fillWidth: true; label: modelData; value: String(root.info.metadata[modelData]) } }
+            Repeater { model: Object.keys(root.metadata); Readout { required property string modelData; Layout.fillWidth: true; label: modelData; value: String(root.metadata[modelData] ?? "") } }
         }
     }
 }

@@ -1,0 +1,132 @@
+{
+  "origin": "FormaView local cross-build",
+  "sourceKit": "FormaView-0.2.0-media-sources.zip",
+  "builder": "ghcr.io/ffmpeg-builds/ffmpeg-builds/win64-lgpl@sha256:8200b2dfd9c004df0003080b5aa4f48230ca34b57616b2269798955c799ded8f",
+  "builderRecipe": "7f2a6b1050d302144de8366afa37a75e46f326aa",
+  "sources": {
+    "mpv": {
+      "name": "mpv-f92afa75cdb06e077a9ecd9a9ec2eb36b16327c2.tar.gz",
+      "sha256": "9c5fb5c14155cb90e20ed11c97748a7eeb2a076fc99875b22e542e0d18ff81b6"
+    },
+    "ffmpeg-linked": {
+      "name": "ffmpeg-linked-64f6bcffaf2646d76463c89f13a8ae9abe0a1b66.tar.gz",
+      "sha256": "812460d529ba3c66e01d081e5efc23121ad267ab814ad476fe937ea21fe2c1f8"
+    },
+    "ffmpeg-shared": {
+      "name": "ffmpeg-shared-f1acb0a2666c78d92688f4c3d2803a132f5590f6.tar.gz",
+      "sha256": "3d9e59cb878618b9a334d2ce752fa6d9c6896bff39947bc3c3d299e63088f68d"
+    },
+    "LuaJIT": {
+      "name": "LuaJIT-63c8f1a9b479ba5518cf6a170ff7729178bc3cfd.tar.gz",
+      "sha256": "8cad76f444b76001b7123dc626c5d0bfc24f1f790333737443345f7e6b41bb5f"
+    },
+    "libarchive": {
+      "name": "libarchive-432ab464725aa99c53de7572979bd9bbbf382ed1.tar.gz",
+      "sha256": "bb4406294910202ffc8ae8bf6944a95992575ea6b815b3fa099b0186b12fcea2"
+    },
+    "libsixel": {
+      "name": "libsixel-72ed7d6b4a2252a6245567908c32c4e8e8c226ea.tar.gz",
+      "sha256": "a8af23f3e9559231ff962b32eb2007922ed8521fdce87ec5f2ac51f987b4d385"
+    },
+    "uchardet": {
+      "name": "uchardet-ae6302a016088ad07177f86d417b20010053632b.tar.gz",
+      "sha256": "26f7fe5032ce3f481b5a8881bcab54e27c21386c300bf8e737c7391f105ab8b4"
+    },
+    "cppwinrt": {
+      "name": "cppwinrt-69c78cfc7920367c4ce9cc024cf8c5b8d217fb1b.tar.gz",
+      "sha256": "3387e6aae883224cc8d610530402bee6e2f4fed5dcafb7ab1cfdc1371cce2c10"
+    },
+    "windows-rs": {
+      "name": "windows-rs-65c0c07b5b88ac031cf56acddd9f892efee1634a.tar.gz",
+      "sha256": "eb6068536298f5cb200286903e96665bd7008f47faa8af92b718b4a25cc00871"
+    },
+    "subrandr": {
+      "name": "subrandr-af0803fb5d1162420bdfb93c4074004502c11ba2.tar.gz",
+      "sha256": "3106aac58ef6818304fd060ecca2978be3c2a0916fdc95a31d656d0f6981f61d"
+    },
+    "ffbuild-new": {
+      "name": "ffbuild-7f2a6b1050d302144de8366afa37a75e46f326aa.tar.gz",
+      "sha256": "e9bb8c9b0e0b5927bca3dd7817a959daaee24eef486eb857b2b8cbae3959568f"
+    }
+  },
+  "embeddedFFmpegConfiguration": "--prefix=/opt/ffbuild --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libcurl --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags=-pthread --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --enable-static --disable-shared --disable-doc --disable-programs --disable-librav1e --disable-librsvg --disable-openal",
+  "mpvBuild": "build-libmpv.sh",
+  "libraries": {
+    "avcodec": {
+      "file": "avcodec-62.dll",
+      "sha256": "3ea1106f18d802f4e09f82176bc3903dda940b6ffc7ba2c6eebe92db3f5a6332",
+      "configuration": "--prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --enable-shared --disable-static --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libshaderc --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags='-pthread -Wl,-Map,%.map' --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --disable-programs --disable-doc",
+      "license": "LGPL version 3 or later",
+      "version": "62.28.103"
+    },
+    "avformat": {
+      "file": "avformat-62.dll",
+      "sha256": "6d5405b95b5941eb90e056092f306d7d04f5a26bf2e7746765f633c5bf51f2df",
+      "configuration": "--prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --enable-shared --disable-static --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libshaderc --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags='-pthread -Wl,-Map,%.map' --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --disable-programs --disable-doc",
+      "license": "LGPL version 3 or later",
+      "version": "62.12.103"
+    },
+    "avutil": {
+      "file": "avutil-60.dll",
+      "sha256": "eac6edeecfc450765a584d18df713b9894ac259b3242f35e4ba4c64f72039e31",
+      "configuration": "--prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --enable-shared --disable-static --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libshaderc --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags='-pthread -Wl,-Map,%.map' --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --disable-programs --disable-doc",
+      "license": "LGPL version 3 or later",
+      "version": "60.26.103"
+    },
+    "swresample": {
+      "file": "swresample-6.dll",
+      "sha256": "036bb88a7c8ac1a44c3607f80ba57e167a6c65577ef0ca3ceaa540bd36adfc0a",
+      "configuration": "--prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --enable-shared --disable-static --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libshaderc --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags='-pthread -Wl,-Map,%.map' --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --disable-programs --disable-doc",
+      "license": "LGPL version 3 or later",
+      "version": "6.3.103"
+    },
+    "swscale": {
+      "file": "swscale-9.dll",
+      "sha256": "9b512700bc365bf5a963c204b6b3e271d0b3a567a3143f5b8265849a52faf2dd",
+      "configuration": "--prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3 --disable-debug --enable-shared --disable-static --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-lcms2 --enable-vulkan --enable-libshaderc --enable-libdav1d --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2 --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264 --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1 --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi --enable-vapoursynth --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264 --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --disable-libzvbi --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp --extra-ldflags='-pthread -Wl,-Map,%.map' --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm --disable-programs --disable-doc",
+      "license": "LGPL version 3 or later",
+      "version": "9.5.103"
+    },
+    "mpv": {
+      "file": "libmpv-2.dll",
+      "sha256": "32401674e24b6874f291c85a9de2949c4dd5736d807e787a316c39b68ffc71f1"
+    }
+  },
+  "staticSourceMap": "archive-source-map.json",
+  "focusedComponents": {
+    "LuaJIT": {
+      "lockedCommit": "63c8f1a9b479ba5518cf6a170ff7729178bc3cfd",
+      "licenseFiles": [
+        "COPYRIGHT"
+      ],
+      "directUpstreamCodePatches": [],
+      "oldBinaryEvidence": "LuaJIT 2.1.1794386141",
+      "versionMatchesCommit": true,
+      "packageMetadataPatch": "LuaJIT.expected.patch"
+    },
+    "libsixel": {
+      "lockedCommit": "72ed7d6b4a2252a6245567908c32c4e8e8c226ea",
+      "licenseFiles": [
+        "LICENSE",
+        "LICENSE.images",
+        "LICENSE.mesa",
+        "LICENSE.pngsuite",
+        "LICENSE.pnmcolormap",
+        "LICENSE.sdump",
+        "LICENSE.sixel",
+        "LICENSE.stb"
+      ],
+      "directUpstreamCodePatches": [],
+      "oldBinaryEvidence": "upstream recipe enabled sixel, no unique full checkout identity"
+    },
+    "libarchive": {
+      "lockedCommit": "432ab464725aa99c53de7572979bd9bbbf382ed1",
+      "licenseFiles": [
+        "COPYING"
+      ],
+      "directUpstreamCodePatches": [],
+      "oldBinaryEvidence": "libarchive 3.9.0dev",
+      "versionMatchesCommit": "development version, non-unique"
+    }
+  }
+}

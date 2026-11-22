@@ -2,6 +2,7 @@
 #include "image_preview_geometry.hpp"
 #include "formaview/file_access.hpp"
 #include "formaview/image_batch.hpp"
+#include "formaview/image_path.hpp"
 #include "formaview/image_preview.hpp"
 #include "gif_decoder.hpp"
 #include <QBuffer>
@@ -18,7 +19,7 @@
 #include <deque>
 #include <set>
 #ifdef Q_OS_WIN
-#include <windows.h>
+#include "image_file_stamp.hpp"
 #endif
 
 namespace {
@@ -31,12 +32,15 @@ QString text(const std::string &s) { return QString::fromStdString(s); }
 struct ImageReadLease {
   HANDLE handle{INVALID_HANDLE_VALUE};
   explicit ImageReadLease(const QString &path) {
-    handle = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
+    const auto native = nativeImagePath(path.toStdWString());
+    handle = CreateFileW(native.c_str(), GENERIC_READ,
                          FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
-      throw skeletal::Failure(
-          ErrorCode::Io,
-          "Cannot open stable image input; it may be in use by a writer");
+    if (handle == INVALID_HANDLE_VALUE) {
+      const auto error = GetLastError();
+      throw skeletal::Failure(ErrorCode::Io, error == ERROR_SHARING_VIOLATION
+          ? "Cannot open stable image input; it may be in use by a writer"
+          : "Cannot open image input (Windows error " + std::to_string(error) + ")");
+    }
   }
   ~ImageReadLease() { CloseHandle(handle); }
   ImageReadLease(const ImageReadLease &) = delete;
@@ -46,33 +50,9 @@ struct ImageReadLease {
 // Last-write time alone can be restored by an editor or asset pipeline. Include
 // file identity and NTFS change time, queried off the GUI thread, in cache
 // keys.
-QString fileStamp(const QString &path) {
+QString fileStamp(const QString &path, std::stop_token stop) {
 #ifdef Q_OS_WIN
-  const auto handle =
-      CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), FILE_READ_ATTRIBUTES,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, 0, nullptr);
-  if (handle == INVALID_HANDLE_VALUE)
-    throw skeletal::Failure(ErrorCode::Io, "Cannot identify image file");
-  FILE_ID_INFO identity{};
-  FILE_BASIC_INFO basic{};
-  FILE_STANDARD_INFO standard{};
-  const bool ok = GetFileInformationByHandleEx(handle, FileIdInfo, &identity,
-                                               sizeof(identity)) &&
-                  GetFileInformationByHandleEx(handle, FileBasicInfo, &basic,
-                                               sizeof(basic)) &&
-                  GetFileInformationByHandleEx(handle, FileStandardInfo,
-                                               &standard, sizeof(standard));
-  CloseHandle(handle);
-  if (!ok)
-    throw skeletal::Failure(ErrorCode::Io, "Cannot read image file identity");
-  return QString::number(identity.VolumeSerialNumber) + ':' +
-         QByteArray(reinterpret_cast<const char *>(identity.FileId.Identifier),
-                    16)
-             .toHex() +
-         ':' + QString::number(basic.ChangeTime.QuadPart) + ':' +
-         QString::number(basic.LastWriteTime.QuadPart) + ':' +
-         QString::number(standard.EndOfFile.QuadPart);
+  return host::imageFileStamp(path, stop);
 #else
   const QFileInfo file(path);
   return QString::number(file.size()) + ':' +
@@ -458,12 +438,12 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
 #ifdef Q_OS_WIN
       const ImageReadLease lease(path);
 #endif
-      const auto stamp = fileStamp(path);
+      const auto stamp = fileStamp(path, stop);
       // A replaced file needs a fresh overview, never old overview + new detail.
       if (!region.isEmpty() && stamp != baseStamp)
         region = {};
-      const auto admission = ImageAdmission(true, stop);
       if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
+        const auto admission = ImageAdmission(true, stop);
         cache_->document.reset();
         cache_->documentKey.clear();
         const auto key = path + '\n' + stamp +
@@ -487,7 +467,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
           cache_->gifReader.reset();
           throw;
         }
-        if (fileStamp(path) != stamp)
+        if (fileStamp(path, stop) != stamp)
           throw skeletal::Failure(ErrorCode::Io,
                                   "Image changed while being decoded; reopen it");
         (*result)->info["sourceStamp"] = stamp;
@@ -513,6 +493,8 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
           return TaskResult{};
         }
       const auto documentKey = path + '\n' + stamp;
+      // A validated cache hit uses no decoder and must not queue behind a batch encode.
+      const auto admission = ImageAdmission(true, stop);
       auto opened = cache_->documentKey == documentKey ? cache_->document : nullptr;
       if (!opened) {
         opened = std::make_shared<ImageDocument>(
@@ -696,7 +678,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
       if (stop.stop_requested())
         throw skeletal::Failure(ErrorCode::Cancelled,
                                 "Image preparation cancelled");
-      if (fileStamp(path) != stamp)
+      if (fileStamp(path, stop) != stamp)
         throw skeletal::Failure(ErrorCode::Io,
                                 "Image changed while being decoded; reopen it");
       cache_->insert(key, p);
@@ -956,7 +938,7 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
 #ifdef Q_OS_WIN
         const ImageReadLease lease(path);
 #endif
-        if (fileStamp(path) != expected)
+        if (fileStamp(path, stop) != expected)
           throw std::runtime_error("Image changed; reopen it before sampling");
         const auto admission = ImageAdmission(true, stop);
         std::shared_ptr<ImagePixels> p;
@@ -982,7 +964,7 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
         }
         p->source.data_window.x = int(std::floor(x));
         p->source.data_window.y = int(std::floor(y));
-        if (fileStamp(path) != expected)
+        if (fileStamp(path, stop) != expected)
           throw std::runtime_error("Image changed during sampling");
         *result = std::move(p);
       } catch (const std::exception &e) {

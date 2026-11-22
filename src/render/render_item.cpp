@@ -84,6 +84,7 @@ public:
     viewMatrix = source->useViewMatrix
                      ? source->viewMatrix
                      : (payload ? payload->matrix : QMatrix4x4{});
+    sceneBackground = source->sceneBackground;
     showGrid = source->showGrid;
     showAxes = source->showAxes;
     requestedWireframe = source->wireframe;
@@ -136,7 +137,7 @@ public:
   void render(QRhiCommandBuffer *cb) override {
     if (!frameFailed && owner != rhi()) initialize(nullptr);
     if (frameFailed) {
-      cb->beginPass(renderTarget(), QColor(24, 24, 24), {1, 0}); cb->endPass();
+      cb->beginPass(renderTarget(), sceneBackground, {1, 0}); cb->endPass();
       return;
     }
     // The previous frame has been submitted: buffers replaced during it can go now.
@@ -160,7 +161,7 @@ public:
       extraTextures.clear();
       skinSource.reset(); skinRanges.reset(); morphRanges.reset(); influenceTexture.reset(); paletteTexture.reset(); morphTexture.reset(); skinBytes=0;
       revision = ~std::uint64_t{};
-      cb->beginPass(renderTarget(), QColor(28, 28, 30), {1, 0});
+      cb->beginPass(renderTarget(), sceneBackground, {1, 0});
       cb->endPass();
       if (observe)
         observe({0, 0, 0, uniform ? std::uint64_t{uniformBytes} : 0ULL, gpu_usage(rhi()), false});
@@ -185,7 +186,7 @@ public:
     auto *updates = rhi()->nextResourceUpdateBatch();
     if (skinSource && !prepareSkin(updates, uploadedBytes)) {
       updates->release();
-      cb->beginPass(renderTarget(), QColor(24,24,24), {1,0}); cb->endPass();
+      cb->beginPass(renderTarget(), sceneBackground, {1,0}); cb->endPass();
       return;
     }
     if (uploadedFrame.lock() != data || data->revision != revision) {
@@ -561,7 +562,7 @@ public:
     const bool overrideMaterial = !data->uv && !data->lines &&
         (wire || (!data->heat && requestedShading > 0));
     if (overrideMaterial)
-      u[19] = wire ? 4.F : static_cast<float>(requestedShading + 1);
+      u[19] = wire ? 4.F : requestedShading == 3 ? 5.F : static_cast<float>(requestedShading + 1);
     if(skinSource) {
       std::memcpy(u.data()+20,skinSource->display.constData(),64);
       u[36]=static_cast<float>(influenceWidth); u[37]=static_cast<float>(paletteWidth);
@@ -580,7 +581,7 @@ public:
          static_cast<std::size_t>(data->backgroundTexture) >= extraTextures.size())) {
       rejectFrame(cb, updates, "Invalid UV background range"); return;
     }
-    cb->beginPass(renderTarget(), QColor(24, 24, 24, skinProbe?0:255), {1, 0}, updates);
+    cb->beginPass(renderTarget(), skinProbe ? QColor(24, 24, 24, 0) : sceneBackground, {1, 0}, updates);
     cb->setGraphicsPipeline(pipeline.get());
     cb->setViewport({0, 0,
                      static_cast<float>(renderTarget()->pixelSize().width()),
@@ -823,7 +824,7 @@ private:
     // initialize() retires all resources before a new payload is rendered.
     owner = nullptr;
     if (readback && !readbackCompleted) { readbackCompleted = true; readback({}, {}); }
-    if (cb) { cb->beginPass(renderTarget(), QColor(24, 24, 24), {1, 0}); cb->endPass(); }
+    if (cb) { cb->beginPass(renderTarget(), sceneBackground, {1, 0}); cb->endPass(); }
   }
   bool rejectSkin(QString reason) {
     if (!skinFailed) { qWarning().noquote()<<"GPU skinning CPU fallback:"<<reason; if(skinFailure)skinFailure(reason,payload); }
@@ -901,6 +902,7 @@ private:
   std::unique_ptr<QRhiGraphicsPipeline> blendedPipeline;
   std::unique_ptr<QRhiGraphicsPipeline> uvBackgroundPipeline;
   std::unique_ptr<QRhiGraphicsPipeline> guidePipeline, selectionPipeline;
+  QColor sceneBackground{24, 24, 24};
   bool showGrid{}, showAxes{}, requestedWireframe{}, wireMode{};
   int requestedShading{};
   std::function<void(Observation)> observe;

@@ -16,14 +16,29 @@ Item {
                ? Theme.t("源文件未提供 / 无法推导", "Not provided / cannot derive", "來源未提供 / 無法推導")
                : Number(value).toFixed(3) + unit
     }
-    property int tab: 0
+    function inspectSection(section) {
+        tab = section === "animation" ? 4 : ["weights","binding","skeleton"].includes(section) ? 1 : 0
+        if (tab === 1) skeletonPane.showBindingDetails(section === "binding")
+    }
+    property int tab: session.geometryCache ? 3 : 0
+    // Geometry-cache mode can resolve asynchronously when opening an archive.
+    readonly property bool cacheDocument: session.geometryCache
+    onCacheDocumentChanged: tab = cacheDocument ? 3 : 0
+    Connections {
+        target: root.session
+        function onDocumentChanged() { if (!root.session.path) root.tab = 0 }
+    }
     onTabChanged: {
-        if (tab!==1 && session.mode===2) session.setMode(0)
+        if (visible && tab!==1 && session.mode===2) session.setMode(0)
     }
     ColumnLayout {
         anchors.fill: parent; spacing: 10
         RowLayout {
             Layout.fillWidth: true
+            PageTab {
+                visible: root.session.geometryCache; Layout.fillWidth: true
+                text: Theme.t("采样","Samples","取樣"); checked: root.tab===3; onClicked: root.tab=3
+            }
             Repeater {
                 model: [Theme.t("场景", "Scene", "場景"),Theme.t("骨骼", "Skeleton", "骨骼"),Theme.t("材质", "Materials", "材質")]
                 delegate: PageTab {
@@ -32,6 +47,7 @@ Item {
                     objectName: "modelInspectorTab" + index
                     Layout.fillWidth: true
                     text: modelData; checked: root.tab===index
+                    visible: !(root.session.geometryCache && index===1)
                     enabled: !root.session.info.cameraOnly || index===0
                     onClicked: root.tab=index
                 }
@@ -46,11 +62,27 @@ Item {
             ColumnLayout {
                 objectName: "modelSceneColumn"
                 width: sceneScroll.availableWidth; spacing: 10
-                Label { text: Theme.t("源场景 · 只读", "Source scene · Read only", "來源場景 · 唯讀"); color: Theme.text; font.bold: true }
+                Label { text: Theme.t("模型信息","Model information","模型資訊"); font.bold: true; color: Theme.text }
+                Repeater {
+                    model: [[Theme.t("网格","Meshes","網格"),root.session.meshes.length],
+                            [Theme.t("三角形","Triangles","三角形"),Number(root.session.info.triangles || 0).toLocaleString(Qt.locale(),"f",0)],
+                            [Theme.t("材质","Materials","材質"),root.session.materials.length],
+                            ["UV",root.session.uvSets.join(" · ") || "—"]]
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label { Layout.fillWidth: true; text: modelData[0]; color: Theme.muted }
+                        Label { text: String(modelData[1]); color: Theme.text; elide: Text.ElideMiddle; Layout.maximumWidth: 180 }
+                    }
+                }
+                Readout { Layout.fillWidth: true; visible: !!root.session.externalInfo.driven
+                    label: Theme.t("外部动作","External animation","外部動作"); value: (root.session.externalInfo.path || "").split("/").pop() }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
+                Label { text: Theme.t("场景结构", "Scene structure", "場景結構"); color: Theme.text; font.bold: true }
                 TreeView {
                     id: tree
                     objectName: "modelSceneTree"
-                    Layout.fillWidth: true; Layout.preferredHeight: 330
+                    Layout.fillWidth: true; Layout.preferredHeight: Math.max(Theme.rowHeight,Math.min(225,rows*Theme.rowHeight))
                     model: root.session.scene
                     clip: true
                     editTriggers: TableView.NoEditTriggers
@@ -61,7 +93,11 @@ Item {
                         const selected = root.session.treeSelection()
                         if (selected.valid) tree.expandToIndex(selected)
                     }
-                    Component.onCompleted: Qt.callLater(tree.revealSelection)
+                    function revealInitial() {
+                        if (rows) expand(0)
+                        revealSelection()
+                    }
+                    Component.onCompleted: Qt.callLater(tree.revealInitial)
                     Connections { target: root.session; function onDocumentChanged() { Qt.callLater(tree.revealSelection) } }
                     delegate: TreeViewDelegate {
                         id: node
@@ -108,6 +144,25 @@ Item {
                     Readout { Layout.fillWidth: true; label: Theme.t("当前可见", "Currently visible", "目前可見"); value: (root.session.info.visiblePoints ?? "—")+" / "+(root.session.info.visibleTriangles ?? "—") }
                     Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; text: Explain.noteText(root.session.info.coordinates || ""); font.pixelSize: Theme.noteText; textFormat: Text.PlainText }
                 }
+                SectionHeader { id: issues; objectName: "modelSourceResources"; Layout.fillWidth: true; text: Theme.t("资源与说明", "Resources and notes", "資源與說明")+" · "+(root.session.resources.length+root.session.warnings.length) }
+                ColumnLayout {
+                    Layout.fillWidth: true; visible: issues.checked
+                    Repeater {
+                        model: root.session.warnings
+                        delegate: ExplainedText { required property string modelData; objectName: "modelNote"; Layout.fillWidth: true; kind: "note"; raw: modelData; tone: Theme.muted }
+                    }
+                    Repeater {
+                        model: root.session.resources
+                        delegate: Readout { required property var modelData; Layout.fillWidth: true; label: modelData.reference || modelData.resolved || ""; value: modelData.loaded ? Theme.t("已读取", "Read", "已讀取") : modelData.detail || Theme.t("未读取", "Not read", "未讀取") }
+                    }
+                }
+            }
+        }
+        ScrollView {
+            id: cacheScroll; Layout.fillWidth: true; Layout.fillHeight: true
+            visible: root.session.geometryCache && root.tab === 3; contentWidth: availableWidth; clip: true
+            ColumnLayout {
+                width: cacheScroll.availableWidth; spacing: 10
                 SectionHeader { id: cacheSection; objectName: "modelGeometryCache"; Layout.fillWidth: true; visible: root.session.geometryCache; checked: true; text: Theme.t("几何缓存", "Geometry cache", "幾何快取") }
                 ColumnLayout {
                     id: cacheDetails
@@ -138,21 +193,31 @@ Item {
                     }
                     Label { visible: (cacheDetails.cache.skipped || 0) > 0; Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.warning; font.pixelSize: Theme.noteText; text: Theme.t("%1 个非多边形对象（曲线、点、细分曲面等）未预览，详见资源与说明。", "%1 non-polygon objects (curves, points, subdivision surfaces…) are not previewed; see Resources and notes.", "%1 個非多邊形物件（曲線、點、細分曲面等）未預覽，詳見資源與說明。").arg(cacheDetails.cache.skipped || 0) }
                 }
-                SectionHeader { id: issues; objectName: "modelSourceResources"; Layout.fillWidth: true; text: Theme.t("资源与说明", "Resources and notes", "資源與說明")+" · "+(root.session.resources.length+root.session.warnings.length) }
-                ColumnLayout {
-                    Layout.fillWidth: true; visible: issues.checked
-                    Repeater {
-                        model: root.session.warnings
-                        delegate: ExplainedText { required property string modelData; objectName: "modelNote"; Layout.fillWidth: true; kind: "note"; raw: modelData; tone: Theme.muted }
-                    }
-                    Repeater {
-                        model: root.session.resources
-                        delegate: Readout { required property var modelData; Layout.fillWidth: true; label: modelData.reference || modelData.resolved || ""; value: modelData.loaded ? Theme.t("已读取", "Read", "已讀取") : modelData.detail || Theme.t("未读取", "Not read", "未讀取") }
-                    }
+            }
+        }
+        ScrollView {
+            id: motionInspector
+            visible: root.tab === 4
+            Layout.fillWidth: true; Layout.fillHeight: true
+            contentWidth: availableWidth; clip: true
+            ColumnLayout {
+                width: motionInspector.availableWidth; spacing: 10
+                Label { text: Theme.t("动画片段","Animation clips","動畫片段"); font.bold: true; color: Theme.text }
+                Choice {
+                    Layout.fillWidth: true; model: root.session.clips; textRole: "name"
+                    currentIndex: root.session.clipIndex; enabled: count > 0
+                    Accessible.name: Theme.t("当前动作","Active clip","目前動作")
+                    onActivated: index => root.session.setClipIndex(index)
                 }
+                Readout { Layout.fillWidth: true; label: Theme.t("源帧率","Source frame rate","來源影格率"); value: (root.session.clipInfo.fps ?? "—")+" fps" }
+                Readout { Layout.fillWidth: true; label: Theme.t("当前帧","Current frame","目前影格"); value: (root.session.clipInfo.frame ?? "—")+" / "+(root.session.clipInfo.lastFrame ?? "—") }
+                Readout { Layout.fillWidth: true; label: Theme.t("片段时长","Clip duration","片段長度"); value: Number((root.session.clipInfo.end ?? 0)-(root.session.clipInfo.start ?? 0)).toFixed(3)+" s" }
+                Readout { Layout.fillWidth: true; visible: !!root.session.externalInfo.driven; label: Theme.t("外部动画","External animation","外部動畫"); value: root.session.externalInfo.path || "" }
+                OptionCheck { text: Theme.t("循环播放","Loop playback","循環播放"); checked: root.session.loop; onToggled: root.session.setLoop(checked) }
             }
         }
         ModelSkeletonPane {
+            id: skeletonPane
             Layout.fillWidth: true; Layout.fillHeight: true
             visible: root.tab===1 && !root.session.geometryCache
             session: root.session
@@ -176,12 +241,13 @@ Item {
                 Readout { Layout.fillWidth: true; label: Theme.t("源引用", "Source reference", "來源參照"); value: root.session.textureReference || "—" }
                 Readout { Layout.fillWidth: true; label: Theme.t("已验证贴图", "Validated texture", "已驗證貼圖"); value: root.session.texturePath || "—" }
                 Choice { Layout.fillWidth: true; model: root.session.uvSets; currentIndex: root.session.uvIndex; enabled: count>0; onActivated: root.session.selectUV(currentIndex); Accessible.name: Theme.t("会话关联使用的UV集", "UV set for session association", "工作階段關聯使用的UV集") }
-                Tool { Layout.fillWidth: true; text: root.session.textureBusy ? Theme.t("读取中…", "Reading…", "讀取中…") : Theme.t("定位贴图…", "Locate texture…", "定位貼圖…"); enabled: root.session.available&&!root.session.textureBusy; onClicked: textureDialog.open() }
+                Tool { Layout.fillWidth: true; text: root.session.textureBusy ? Theme.t("读取中…", "Reading…", "讀取中…") : Theme.t("定位贴图…", "Locate texture…", "定位貼圖…"); enabled: root.session.available&&!root.session.textureBusy; onClicked: textureDialog.present() }
                 Tool { Layout.fillWidth: true; text: Theme.t("清除会话关联", "Clear session association", "清除工作階段關聯"); enabled: root.session.canClearTexture; onClicked: root.session.removeTexture() }
                 ExplainedText { objectName: "modelTextureError"; Layout.fillWidth: true; kind: "error"; raw: root.session.textureError }
                 Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; font.pixelSize: Theme.noteText; text: Theme.t("定位后仍须真实解码；只改变本次显示，不保存或覆盖源模型、材质或贴图。", "Located images must decode successfully. Associations only affect this session and never overwrite source models, materials or textures.", "定位後仍須實際解碼；僅改變本次顯示，不儲存或覆寫來源模型、材質或貼圖。") }
             }
         }
+        ModelPointPanel { Layout.fillWidth: true; visible: (root.tab===0 || root.session.mode===2) && !root.session.info.cameraOnly; session: root.session }
     }
-    FileDialog { id: textureDialog; title: Theme.t("选择基础颜色贴图", "Choose a base colour texture", "選取基礎顏色貼圖"); onAccepted: root.session.associateTexture(selectedFile.toString()) }
+    FrostFileDialog { parentWindow: root.Window.window; id: textureDialog; title: Theme.t("选择基础颜色贴图", "Choose a base colour texture", "選取基礎顏色貼圖"); onAccepted: root.session.associateTexture(selectedFile.toString()) }
 }

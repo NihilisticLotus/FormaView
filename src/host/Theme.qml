@@ -1,6 +1,11 @@
 pragma Singleton
 import QtQuick
 QtObject {
+    property bool light: false
+    readonly property color glass: light ? "#1fffffff" : "#45192633"
+    readonly property color glassEdge: light ? "#bcffffff" : "#598da4b6"
+    readonly property color thumbnail: light ? "#dee7ee" : field
+    property bool reduceMotion: false
     property bool compact: false
     readonly property int bodyText: 13
     readonly property int compactText: 13
@@ -12,34 +17,34 @@ QtObject {
     readonly property int rowHeight: compact ? 32 : 36
     readonly property int fileRowHeight: compact ? 48 : 60
     readonly property int topBarHeight: 60
-    readonly property int statusHeight: 44
+    readonly property int statusHeight: 28
     readonly property int panelGap: 8
     readonly property int filesWidth: 236
-    readonly property int inspectorWidth: 312
+    readonly property int inspectorWidth: 340
     readonly property int narrowInspectorWidth: 300
     readonly property int railWidth: 40
     readonly property int radius: 6
-    readonly property int groupRadius: 10
+    readonly property int groupRadius: 16
     readonly property int dialogRadius: 14
-    readonly property color hover: "#38383e"
+    readonly property color hover: light ? "#e1ebf4" : "#405568"
     property string language: "zh-CN"
-    readonly property color base: "#1c1c1e"
-    readonly property color sidebar: "#161618"
-    readonly property color panel: "#26262a"
-    readonly property color raised: "#2e2e33"
-    readonly property color field: "#26262a"
-    readonly property color line: "#3e3e45"
-    readonly property color text: "#e4e4e7"
-    readonly property color muted: "#ababb3"
-    readonly property color tertiary: "#9a9aa2"
-    readonly property color accent: "#d8783a"
-    readonly property color action: "#c74c0a"
-    readonly property color actionHover: "#b84308"
-    readonly property color actionPressed: "#a33b07"
-    readonly property color selection: "#313136"
-    readonly property color error: "#f87171"
-    readonly property color success: "#4ade80"
-    readonly property color warning: "#fbbf24"
+    readonly property color base: light ? "#e8eff4" : "#253443"
+    readonly property color sidebar: light ? "#e1eaf0" : "#273b4d"
+    readonly property color panel: light ? "#f3f7fa" : "#2e4253"
+    readonly property color raised: light ? "#f9fbfd" : "#374d60"
+    readonly property color field: light ? "#f3f7fb" : "#2e4253"
+    readonly property color line: light ? "#c4d2df" : "#526779"
+    readonly property color text: light ? "#1e3044" : "#eef4fa"
+    readonly property color muted: light ? "#4d6278" : "#becddb"
+    readonly property color tertiary: light ? "#586d81" : "#aabccb"
+    readonly property color accent: light ? "#2767a3" : "#a6d2ef"
+    readonly property color action: light ? "#275f99" : "#33688e"
+    readonly property color actionHover: light ? "#204f82" : "#2d5b7e"
+    readonly property color actionPressed: light ? "#193f68" : "#284f6d"
+    readonly property color selection: light ? "#d5e6f6" : "#415e75"
+    readonly property color error: light ? "#9a322f" : "#f87171"
+    readonly property color success: light ? "#22684c" : "#4ade80"
+    readonly property color warning: light ? "#805419" : "#fbbf24"
     function revealIn(scroll: var, focused: var): void {
         const view = scroll.contentItem as Flickable
         if (!view || !focused) return

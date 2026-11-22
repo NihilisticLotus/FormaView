@@ -98,6 +98,7 @@ signals:
   void submissionFinished(const QString &planId, const QString &jobId);
   void changed();
   void sourcesChanged();
+  void endpointEnabled(formaview::imaging::ImageEndpoint *endpoint);
 
 private:
   void prepare(const QStringList &, const QVariantMap &, const QVariantMap &,

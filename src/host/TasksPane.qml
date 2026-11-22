@@ -5,31 +5,40 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     required property var controller
+    property string search: ""
+    readonly property string needle: search.trim().toLocaleLowerCase()
+    readonly property var filteredTasks: controller.tasks.filter(task => !needle ||
+        [task.path, task.operation, Theme.state(task.state), task.detail].some(value => String(value || "").toLocaleLowerCase().includes(needle)))
+    signal newConversion()
     signal back()
     signal retryImageJob(string id)
     readonly property bool hasImageJobs: !!controller.imageJobs && (controller.imageJobs.configured || controller.imageJobs.jobs.length > 0)
-    color: Theme.base
+    color: "transparent"
+    GlassPanel { anchors.fill: parent; anchors.margins: 10 }
     ColumnLayout {
-        anchors.fill: parent; anchors.margins: 20; spacing: 16
+        anchors.fill: parent; anchors.margins: 30; spacing: 14
         RowLayout { Layout.fillWidth: true
             Label { Layout.fillWidth: true; text: Theme.t("任务中心", "Task center", "工作中心"); color: Theme.text; font.pixelSize: 24 }
-            Tool { text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.back() }
+            Field { objectName: "taskSearch"; Layout.preferredWidth: 210; placeholderText: Theme.t("搜索任务","Search tasks","搜尋工作"); onTextChanged: root.search = text }
+            Tool { visible: !!root.controller.imageJobs; iconName: "conversion"; text: Theme.t("新建转换","New conversion","新建轉換"); onClicked: root.newConversion() }
+            Tool { quiet: true; text: Theme.t("返回预览", "Back to preview", "返回預覽"); onClicked: root.back() }
         }
         Label { color: Theme.muted; text: Theme.t("文件任务：%1 · 转换批次：%2 · 已暂停：%3", "File tasks: %1 · Active batches: %2 · Paused: %3", "檔案工作：%1 · 轉換批次：%2 · 已暫停：%3").arg(root.controller.activeTasks).arg(root.controller.imageJobs ? root.controller.imageJobs.jobs.filter(j => ["queued", "running", "pausing"].includes(j.state)).length : 0).arg(root.controller.imageJobs ? root.controller.imageJobs.jobs.filter(j => j.state === "paused").length : 0) }
-        TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.fillWidth: true
+        TabBar { id: taskTabs; visible: root.hasImageJobs; Layout.preferredWidth: 270
+            background: Rectangle { radius: 11; color: Theme.glass; border.color: Theme.glassEdge }
             PageTab { text: Theme.t("转换任务", "Conversion jobs", "轉換工作") }
             PageTab { text: Theme.t("文件浏览", "File browsing", "檔案瀏覽") }
         }
         Loader {
             id: imageJobs; Layout.fillWidth: true; Layout.fillHeight: true
             active: root.visible && root.hasImageJobs && taskTabs.currentIndex === 0; visible: active
-            onActiveChanged: { if (active) setSource("ImageJobsPane.qml", {controller: root.controller}) }
+            onActiveChanged: { if (active) setSource("ImageJobsPane.qml", {controller: root.controller, search: Qt.binding(() => root.needle)}) }
         }
         Connections { target: imageJobs.item; function onRetry(id) { root.retryImageJob(id) } }
         ListView {
             visible: !root.hasImageJobs || taskTabs.currentIndex === 1
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; reuseItems: true
-            model: root.visible ? root.controller.tasks : null; spacing: 6
+            model: root.visible ? root.filteredTasks : null; spacing: 6
             ScrollBar.vertical: ScrollBar {}
             delegate: Rectangle {
                 id: row
@@ -49,7 +58,7 @@ Rectangle {
                     Tool { text: Theme.t("复制详情", "Copy details", "複製詳情"); onClicked: root.controller.copy(JSON.stringify(row.modelData,null,2)) }
                 }
             }
-            Label { anchors.centerIn: parent; visible: root.controller.tasks.length === 0; text: Theme.t("暂无任务", "No tasks yet", "尚無工作"); color: Theme.muted }
+            Label { anchors.centerIn: parent; visible: root.filteredTasks.length === 0; text: root.needle ? Theme.t("没有匹配任务","No matching tasks","沒有符合的工作") : Theme.t("暂无任务", "No tasks yet", "尚無工作"); color: Theme.muted }
         }
     }
 }

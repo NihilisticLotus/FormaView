@@ -12,9 +12,10 @@ Rectangle {
     // session-only state, no persistence.
     property bool collapsed: false
     property bool detailsVisible: false
+    property bool optionsVisible: false
     readonly property int controlHeight: 28
     readonly property var clipData: root.session.clipInfo
-    readonly property bool ready: root.session.canPlayAnimation
+    readonly property bool ready: root.session.canPlayAnimation && Number.isFinite(clipData.start) && Number.isFinite(clipData.end)
     readonly property bool hasDiagnostics: root.session.externalInfo.driven === true || root.session.externalInfo.status === "refused" || root.session.info.psa === true || !!root.session.info.referencePath
     readonly property bool effectiveCollapsed: root.collapsed && root.session.hasPlayableAnimation
     ButtonGroup { id: rootBaseGroup }
@@ -22,7 +23,7 @@ Rectangle {
     function speedText(value: real): string {
         return value >= 0.01 && value < 1e21 && Number(value.toFixed(2)) === value ? value.toFixed(2) : value.toString();
     }
-    color: Theme.panel
+    color: Theme.light ? "#65ffffff" : "#53435869"
     radius: Theme.radius
     border.width: 0
     border.color: Theme.line
@@ -57,12 +58,11 @@ Rectangle {
         anchors.margins: 6
         spacing: 2
         visible: !root.effectiveCollapsed
-        Flow {
-            id: controls
-            objectName: "animControls"
-            visible: root.session.hasPlayableAnimation
+        RowLayout {
             Layout.fillWidth: true
-            spacing: 6
+            Layout.minimumWidth: 0
+            spacing: root.width < 450 ? 1 : 5
+            visible: root.session.hasPlayableAnimation
             Tool {
                 objectName: "animPlay"
                 height: root.controlHeight
@@ -72,6 +72,47 @@ Rectangle {
                 enabled: root.ready
                 onClicked: root.session.togglePlay()
                 Accessible.name: root.session.playing ? Theme.t("暂停动画", "Pause animation", "暫停動畫") : Theme.t("播放动画", "Play animation", "播放動畫")
+            }
+            Choice {
+                objectName: "animClip"
+                Layout.preferredWidth: Math.min(138, Math.max(62, root.width * 0.2)); Layout.minimumWidth: 42
+                height: root.controlHeight
+                model: root.session.clips
+                textRole: "name"
+                currentIndex: root.session.clipIndex
+                enabled: root.session.hasPlayableAnimation
+                onActivated: index => root.session.setClipIndex(index)
+                Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
+            }
+            Slider {
+                id: scrubber
+                objectName: "animScrubber"
+                visible: root.session.hasPlayableAnimation
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.preferredHeight: 24
+                enabled: root.ready
+                from: root.ready ? root.clipData.start : 0
+                to: root.ready ? root.clipData.end : 1
+                value: root.session.time
+                onMoved: root.session.seek(value)
+                background: Rectangle {
+                    x: scrubber.leftPadding; y: (scrubber.height-height)/2
+                    width: scrubber.availableWidth; height: 3; radius: 1.5; color: Theme.line
+                    Rectangle { width: scrubber.visualPosition * parent.width; height: parent.height; radius: 1.5; color: Theme.accent }
+                }
+                handle: Rectangle {
+                    x: scrubber.leftPadding + scrubber.visualPosition * (scrubber.availableWidth-width)
+                    y: (scrubber.height-height)/2; width: 10; height: 10; radius: 5
+                    color: Theme.accent; border.color: scrubber.visualFocus ? Theme.text : Theme.accent
+                }
+                Accessible.name: Theme.t("时间轴拖动", "Timeline scrub", "時間軸拖動")
+            }
+            Label {
+                text: root.ready ? root.session.time.toFixed(2) + " s" : "—"
+                visible: root.width >= 400; color: Theme.muted; font.pixelSize: Theme.noteText
+                Layout.preferredWidth: Math.max(46, implicitWidth)
+                horizontalAlignment: Text.AlignRight
             }
             Tool {
                 objectName: "animStepBack"
@@ -93,6 +134,19 @@ Rectangle {
                 onClicked: root.session.stepFrame(1)
                 Accessible.name: Theme.t("下一帧", "Next frame", "下一幀")
             }
+            Tool {
+                objectName: "animOptions"; quiet: true; iconName: "more"
+                checked: root.optionsVisible
+                hint: Theme.t("播放选项","Playback options","播放選項")
+                onClicked: root.optionsVisible = !root.optionsVisible
+            }
+        }
+        Flow {
+            id: controls
+            objectName: "animControls"
+            visible: root.session.hasPlayableAnimation && root.optionsVisible
+            Layout.fillWidth: true
+            spacing: 6
             OptionCheck {
                 objectName: "animLoop"
                 height: root.controlHeight
@@ -151,21 +205,6 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "×"
                     color: Theme.muted
-                }
-            }
-            Row {
-                height: root.controlHeight
-                spacing: 6
-                Choice {
-                    objectName: "animClip"
-                    width: Math.min(150, controls.width)
-                    height: root.controlHeight
-                    model: root.session.clips
-                    textRole: "name"
-                    currentIndex: root.session.clipIndex
-                    enabled: root.session.hasPlayableAnimation
-                    onActivated: index => root.session.setClipIndex(index)
-                    Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
                 }
             }
             Row {
@@ -326,13 +365,13 @@ Rectangle {
                     AppMenuItem {
                         objectName: "animReference"
                         text: Theme.t("选择参考 PSK…", "Choose reference PSK…", "選擇參考 PSK…")
-                        onTriggered: referenceDialog.open()
+                        onTriggered: referenceDialog.present()
                     }
                     AppMenuItem {
                         objectName: "animCompanion"
                         text: Theme.t("选择轨道配置…", "Choose track config…", "選擇軌道設定…")
                         enabled: !!root.session.info.referencePath
-                        onTriggered: companionDialog.open()
+                        onTriggered: companionDialog.present()
                     }
                     AppMenuItem {
                         objectName: "animReferenceClear"
@@ -346,6 +385,7 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
+            visible: root.optionsVisible || root.detailsVisible
             Label {
                 objectName: "animTime"
                 Layout.preferredWidth: implicitWidth
@@ -383,19 +423,6 @@ Rectangle {
             }
         }
 
-        Slider {
-            objectName: "animScrubber"
-            visible: root.session.hasPlayableAnimation
-            Layout.fillWidth: true
-            Layout.minimumWidth: 0
-            Layout.preferredHeight: 24
-            enabled: root.ready
-            from: root.ready ? root.clipData.start : 0
-            to: root.ready ? root.clipData.end : 1
-            value: root.session.time
-            onMoved: root.session.seek(value)
-            Accessible.name: Theme.t("时间轴拖动", "Timeline scrub", "時間軸拖動")
-        }
         Flow {
             Layout.fillWidth: true
             visible: root.detailsVisible && root.session.hasPlayableAnimation
@@ -419,13 +446,15 @@ Rectangle {
             }
         }
     }
-    FileDialog {
+    FrostFileDialog {
+        parentWindow: root.Window.window
         id: referenceDialog
         title: Theme.t("选择与 PSA 对应的参考骨架", "Choose the PSA reference skeleton", "選擇與 PSA 對應的參考骨架")
         nameFilters: ["ActorX (*.psk *.pskx)"]
         onAccepted: root.session.setAnimationReference(selectedFile.toString())
     }
-    FileDialog {
+    FrostFileDialog {
+        parentWindow: root.Window.window
         id: companionDialog
         title: Theme.t("选择 PSA 轨道配置", "Choose PSA track config", "選擇 PSA 軌道設定")
         nameFilters: ["PSA config (*.config)"]

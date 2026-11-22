@@ -24,7 +24,14 @@ ColumnLayout {
     onInputsChanged: { selectedClips = []; content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex() }
     onAnimationOnlyPresetChanged: content.currentIndex = animationOnlyPreset ? 2 : defaultContentIndex()
     onAbcFrameChanged: content.currentIndex = defaultContentIndex()
-    Component.onCompleted: if (abcFrame) content.currentIndex = 1
+    Component.onCompleted: {
+        if (abcFrame) content.currentIndex = 1
+        applyFormatDefaults()
+    }
+    function applyFormatDefaults(): void {
+        axes.currentIndex = Math.max(0, ["source","maya","houdini","unreal","3ds-max","cinema4d","blender","unity"].indexOf(controller.preferences.defaultAxes))
+        unit.currentIndex = Math.max(0, ["source","cm","m","mm","in"].indexOf(controller.preferences.defaultUnit))
+    }
     readonly property bool multipleStacks: organization.currentIndex === 1
     readonly property bool hasActorX: (inputs || []).some(p => /\.(psk|pskx|psa)$/i.test(String(p)))
     readonly property string contentLabel: content.displayText
@@ -75,7 +82,7 @@ ColumnLayout {
             RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("配对文件", "Paired file", "配對檔案") }
                 Field { id: paired; objectName: "modelExportPaired"; form: true; Layout.fillWidth: true; placeholderText: Theme.t("模型配 PSA；PSA 配参考 PSK / PSKX", "PSA for model; reference PSK/PSKX for PSA", "模型配 PSA；PSA 配參考 PSK / PSKX"); onTextEdited: { root.selectedClips = []; root.edited() } Accessible.name: placeholderText }
-                Tool { form: true; iconName: "folder"; hint: Theme.t("选择配对文件", "Choose paired file", "選擇配對檔案"); onClicked: pairFile.open() }
+                Tool { form: true; iconName: "folder"; hint: Theme.t("选择配对文件", "Choose paired file", "選擇配對檔案"); onClicked: pairFile.present() }
             }
             RowLayout { Layout.fillWidth: true; visible: root.hasActorX && content.currentIndex !== 1
                 Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("骨架配对", "Skeleton pairing", "骨架配對") }
@@ -139,5 +146,5 @@ ColumnLayout {
             Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("统一转换几何、法线、骨架、绑定和所有动作，保持实际尺寸。RH = 右手，LH = 左手。", "Convert geometry, normals, skeleton, bind poses and all clips together, preserving physical size. RH = right-handed, LH = left-handed.", "統一轉換幾何、法線、骨架、繫結和所有動作，保持實際尺寸。RH = 右手，LH = 左手。") }
         }
     }
-    FileDialog { id: pairFile; nameFilters: ["ActorX (*.psk *.pskx *.psa)"]; onAccepted: { paired.text = root.controller.localFile(selectedFile); root.selectedClips = []; root.edited() } }
+    FrostFileDialog { parentWindow: root.Window.window; id: pairFile; nameFilters: ["ActorX (*.psk *.pskx *.psa)"]; onAccepted: { paired.text = root.controller.localFile(selectedFile); root.selectedClips = []; root.edited() } }
 }

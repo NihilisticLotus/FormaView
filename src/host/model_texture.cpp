@@ -1,4 +1,5 @@
 #include "model_texture.hpp"
+#include "../formats/raster_preview.hpp"
 #include "formaview/skeletal.hpp"
 #ifdef FORMAVIEW_MODEL_IMAGES
 #include "formaview/pro_image.hpp"
@@ -56,7 +57,20 @@ decodeModelTexture(const QByteArray &encoded, std::stop_token stop) {
     throw formaview::skeletal::Failure(
         formaview::ErrorCode::ResourceLimit,
         "Embedded texture exceeds preview dimensions");
-  const auto pixels = reader.read().convertToFormat(QImage::Format_RGBA8888);
+  QImage decoded;
+  // Large embedded PNGs share the row-wise preview decoder with texture inspection.
+  // Keep both the Qt image allocation limit and the model's aggregate texture budget.
+  if (encoded.startsWith(QByteArrayLiteral("\x89PNG\r\n\x1a\n")) &&
+      qint64(size.width()) * size.height() > 8 * 1024 * 1024) {
+    const QSize preview = size.scaled(2048, 2048, Qt::KeepAspectRatio).expandedTo({1, 1});
+    const formaview::imaging::PreviewRequest region{
+        0, 0, quint64(size.width()), quint64(size.height()),
+        quint64(preview.width()), quint64(preview.height())};
+    decoded = formaview::imaging::preview_png(encoded, region, stop);
+  } else {
+    decoded = reader.read();
+  }
+  const auto pixels = decoded.convertToFormat(QImage::Format_RGBA8888);
   if (pixels.isNull())
     throw formaview::skeletal::Failure(formaview::ErrorCode::InvalidArgument,
                                        "Embedded texture cannot decode");

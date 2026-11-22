@@ -49,6 +49,8 @@ QString kind(const QString &name) {
     return "image";
   if (QStringList{"fbx", "obj", "gltf", "glb", "psk", "pskx"}.contains(suffix))
     return "model";
+  if (QStringList{"mp4","m4v","mov","mkv","webm","avi","ts","m2ts","mpg","mpeg"}.contains(suffix))
+    return "video";
   if (suffix == "psa")
     return "animation";
   // PMX/VRM convert to FBX but have no professional preview in this release.
@@ -182,7 +184,8 @@ void Desktop::styleToolWindow(QObject *window) {
   installWindowChrome(qobject_cast<QQuickWindow *>(window));
 }
 Desktop::Desktop(QObject *parent, std::function<QString()> desktopLocation)
-    : QObject(parent), files_(this), desktopLocation_(std::move(desktopLocation)) {
+    : QObject(parent), files_(this), videos_(this),
+      desktopLocation_(std::move(desktopLocation)) {
   if (!desktopLocation_)
     desktopLocation_ = [] { return QStandardPaths::writableLocation(QStandardPaths::DesktopLocation); };
   recentWriter_.setMaxThreadCount(1);
@@ -208,6 +211,7 @@ Desktop::Desktop(QObject *parent, std::function<QString()> desktopLocation)
     preferences_["filesVisible"] =
         preferences_.value("defaultFilesVisible", true);
   }
+  reloadLibrary();
   recent_ = settings.value("recent").toStringList().mid(0, 20);
   pollTimer_.setInterval(30);
   pollTimer_.setObjectName("desktopJobPoll");
@@ -231,7 +235,7 @@ void Desktop::refreshExplorerPreferences() {
   QSettings settings;
   settings.sync();
   bool changed = false;
-  for (const auto *key : {"reuseImageWindow", "reuseModelWindow"}) {
+  for (const auto *key : {"reuseImageWindow", "reuseModelWindow", "reuseVideoWindow"}) {
     const auto current = settings.value(QStringLiteral("explorer/") + key, true).toBool();
     if (preferences_.value(key) == current) continue;
     preferences_[key] = current;
@@ -242,11 +246,12 @@ void Desktop::refreshExplorerPreferences() {
 QString Desktop::reuseKeyForFile(const QString &path) {
   const auto type = kind(path);
   if (type == "image") return "reuseImageWindow";
+  if (type == "video") return "reuseVideoWindow";
   if (type == "model" || type == "animation" || type == "cache") return "reuseModelWindow";
   return {};
 }
 void Desktop::preference(const QString &key, const QVariant &value) {
-  if (key == "reuseImageWindow" || key == "reuseModelWindow") {
+  if (key == "reuseImageWindow" || key == "reuseModelWindow" || key == "reuseVideoWindow") {
     QSettings{}.setValue("explorer/" + key, value.toBool());
     if (preferences_.value(key) != value.toBool()) {
       preferences_[key] = value.toBool();
@@ -255,10 +260,14 @@ void Desktop::preference(const QString &key, const QVariant &value) {
     return;
   }
   if (!QStringList{"fileWidth", "thumbnails", "fileViewMode", "filesVisible", "mcpInputRoot",
-                   "mcpOutputRoot", "mcpPython", "mcpAdapter", "density",
+                   "mcpOutputRoot", "mcpPython", "mcpAdapter", "density", "appearance", "defaultImageTarget", "defaultAxes", "defaultUnit", "reduceMotion",
                    "restoreLayout", "defaultFilesVisible", "inspectorMode"}
            .contains(key))
     return;
+  if (key == "defaultAxes" && !QStringList{"source","maya","houdini","unreal","3ds-max","cinema4d","blender","unity"}.contains(value.toString())) return;
+  if (key == "defaultUnit" && !QStringList{"source","cm","m","mm","in"}.contains(value.toString())) return;
+  if (key == "defaultImageTarget" && !QStringList{"png", "jpeg", "bmp", "tga", "tiff", "webp", "dds", "exr", "hdr"}.contains(value.toString())) return;
+  if (key == "appearance" && !QStringList{"light", "dark"}.contains(value.toString())) return;
   if (key == "density" &&
       !QStringList{"standard", "compact"}.contains(value.toString()))
     return;
@@ -361,6 +370,76 @@ void Desktop::start(
                    historyTarget});
   poll();
 }
+QVariantMap Desktop::libraryFileGroups(const QString &collection, const QString &search) const {
+  QMap<QString, QStringList> groups;
+  auto append = [&](const QString &path, QString category) {
+    if (category == "animation" || category == "cache" || category == "convert")
+      category = "model";
+    groups[category].append(path);
+  };
+  if (collection == "directory") {
+    for (int row = 0; row < files_.rowCount(); ++row) {
+      const auto *entry = files_.at(row);
+      append(entry->path, entry->directory ? QStringLiteral("folder") : entry->kind);
+    }
+  } else {
+    const auto &paths = collection == "added" ? addedAssets_ : favoriteAssets_;
+    for (const auto &path : paths) {
+      if (QFileInfo(path).fileName().contains(search, Qt::CaseInsensitive))
+        append(path, kind(path));
+    }
+  }
+  QVariantMap result;
+  for (auto it = groups.cbegin(); it != groups.cend(); ++it)
+    result.insert(it.key(), it.value());
+  return result;
+}
+
+void Desktop::reloadLibrary() {
+  QSettings settings;
+  const auto added = settings.value("library/added").toStringList();
+  const auto favorites = settings.value("library/favorites").toStringList();
+  if (addedAssets_ == added && favoriteAssets_ == favorites) return;
+  addedAssets_ = added;
+  favoriteAssets_ = favorites;
+  emit libraryChanged();
+}
+
+void Desktop::addLibraryFiles(const QList<QUrl> &urls) {
+  reloadLibrary();
+  auto paths = addedAssets_;
+  for (const auto &url : urls) {
+    if (!url.isLocalFile()) continue;
+    const auto path = localPath(url.toLocalFile());
+    if (QFileInfo(path).isFile() && !paths.contains(path, Qt::CaseInsensitive))
+      paths.append(path);
+  }
+  if (paths == addedAssets_) return;
+  QSettings{}.setValue("library/added", paths);
+  reloadLibrary();
+}
+
+void Desktop::removeLibraryFile(const QString &input) {
+  reloadLibrary();
+  auto paths = addedAssets_;
+  const auto path = localPath(input);
+  if (!paths.removeIf([&](const QString &entry) { return !entry.compare(path, Qt::CaseInsensitive); })) return;
+  QSettings{}.setValue("library/added", paths);
+  reloadLibrary();
+}
+
+void Desktop::toggleFavorite(const QString &input) {
+  reloadLibrary();
+  auto paths = favoriteAssets_;
+  const auto path = localPath(input);
+  if (!paths.removeIf([&](const QString &entry) { return !entry.compare(path, Qt::CaseInsensitive); })) {
+    if (!QFileInfo(path).isFile()) return;
+    paths.append(path);
+  }
+  QSettings{}.setValue("library/favorites", paths);
+  reloadLibrary();
+}
+
 void Desktop::navigate(const QString &path) { scan(localPath(path)); }
 void Desktop::navigateDesktop() {
   const auto path = desktopLocation_();
@@ -576,7 +655,7 @@ void Desktop::filter(const QString &text, int type, int order) {
   if (text != query_ || type != type_)
     scroll_ = 0;
   query_ = text.left(512);
-  type_ = std::clamp(type, 0, 5);
+  type_ = std::clamp(type, 0, 6);
   sort_ = std::clamp(order, 0, 3);
   emit changed();
   if (!source_)
@@ -591,7 +670,7 @@ void Desktop::filter(const QString &text, int type, int order) {
   start("filter", directory_, revision,
         [data, query, category, sort](std::stop_token stop, Result &out) {
           const auto types =
-              QStringList{"", "image", "model", "animation", "cache", ""};
+              QStringList{"", "image", "model", "animation", "cache", "", "video"};
           for (const auto &entry : *data) {
             if (stop.stop_requested())
               return failure(formaview::ErrorCode::Cancelled, "Cancelled");
@@ -653,6 +732,7 @@ void Desktop::selectAll() {
   files_.restoreSelection(paths);
   emit changed();
 }
+QString Desktop::assetKind(const QString &path) { return kind(path); }
 void Desktop::openPath(const QString &input) {
   for (auto &job : jobs_)
     if (job.operation == "resource" && !job.consumed)
@@ -700,6 +780,38 @@ void Desktop::openPath(const QString &input) {
                        {"headerBytes", header.size()}};
           return formaview::TaskResult{};
         });
+}
+void Desktop::adjacentVideo(int direction) {
+  const int current = videos_.indexOf(asset_.value("path").toString());
+  if (current < 0 || (direction != 1 && direction != -1))
+    return;
+  if (const auto *entry = videos_.at(current + direction))
+    openPath(entry->path);
+}
+void Desktop::refreshVideoPlaylist() {
+  const auto path = asset_.value("kind") == QStringLiteral("video")
+                        ? asset_.value("path").toString()
+                        : QString{};
+  const auto folder = path.isEmpty() ? QString{} : QFileInfo(path).absolutePath();
+  if (folder != videoDirectory_) {
+    videoDirectory_ = folder;
+    videos_.replace({});
+  }
+  if (folder.isEmpty() || directory_ != folder || !source_)
+    return;
+
+  std::vector<FileEntry> entries;
+  for (const auto &entry : *source_)
+    if (entry.kind == QStringLiteral("video"))
+      entries.push_back(entry);
+  QCollator collator{QLocale(QLocale::English)};
+  collator.setNumericMode(true);
+  collator.setCaseSensitivity(Qt::CaseInsensitive);
+  std::sort(entries.begin(), entries.end(), [&](const auto &a, const auto &b) {
+    const auto order = collator.compare(a.name, b.name);
+    return order == 0 ? a.path < b.path : order < 0;
+  });
+  videos_.replace(std::move(entries));
 }
 void Desktop::openUrls(const QList<QUrl> &urls) {
   if (!urls.isEmpty() && urls.first().isLocalFile())
@@ -766,6 +878,7 @@ void Desktop::clearAsset() {
     if ((j.operation == "inspect" || j.operation == "resource") && !j.consumed)
       j.handle.cancel();
   asset_.clear();
+  refreshVideoPlaylist();
   resourceIssues_.clear();
   ++sessionRevision_;
   emit changed();
@@ -920,6 +1033,7 @@ void Desktop::publish(Job &job) {
     directory_ = job.path;
     source_ = std::make_shared<const std::vector<FileEntry>>(
         std::move(job.result->entries));
+    refreshVideoPlaylist();
     recent_.removeAll(directory_);
     recent_.prepend(directory_);
     recent_ = recent_.mid(0, 20);
@@ -977,6 +1091,9 @@ void Desktop::publish(Job &job) {
         Qt::QueuedConnection);
   } else {
     asset_ = job.result->asset;
+    if (asset_.value("kind") != QStringLiteral("video") ||
+        QFileInfo(job.path).absolutePath() != videoDirectory_)
+      refreshVideoPlaylist();
 #ifdef FORMAVIEW_MODEL_UI
     // M07: standalone animation sources (PSA, animation-only FBX) preview in
     // the model workspace as skeleton documents.

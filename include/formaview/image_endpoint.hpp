@@ -20,6 +20,8 @@ public:
   // Delivered on this object's thread after a state-changing request. Hosts
   // can resume observation after becoming idle, including metadata-free clients.
   std::function<void()> workChanged;
+  using Reply = std::function<void(QJsonObject)>;
+  std::function<void(const QJsonObject &, Reply)> desktopRequest;
 
 private:
   struct Impl;

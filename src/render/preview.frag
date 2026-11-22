@@ -14,6 +14,13 @@ vec3 displayValue(vec3 v){return mix(v*12.92,1.055*pow(max(v,vec3(0)),vec3(1.0/2
 void main(){
     if(surfaceCoverage.y < -1.5) { color=vec4(surfaceTint,1); return; }
     if(options.w>1.5) {
+        if(options.w>4.5) {
+            vec3 n=dot(worldNormal,worldNormal)>1e-20?worldNormal:cross(dFdx(deformedPosition),dFdy(deformedPosition));
+            if(dot(n,n)<1e-20)n=vec3(0,0,1);
+            float light=.30+.70*abs(dot(normalize(n),normalize(vec3(.4,.7,1))));
+            color=vec4(vec3(.847,.843,.820)*light,1);
+            return;
+        }
         if(options.w>3.5) { color=vec4(.85,.88,.92,1); return; }
         if(options.w>2.5) { color=vec4(vertexColour.rgb,1); return; }
         vec3 n=dot(worldNormal,worldNormal)>1e-20?worldNormal:cross(dFdx(deformedPosition),dFdy(deformedPosition));

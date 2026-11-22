@@ -128,6 +128,7 @@ GUIDE = r"""FormaView {version} · Windows x64
 为本机所有用户安装：%ProgramFiles%\FormaView。
 仅为当前账户安装：默认 %LOCALAPPDATA%\Programs\FormaView，可选择其他本机目录。
 升级、重新安装或覆盖为较早版本时沿用原目录和范围，并保留用户数据。
+当前账户如需降回官方 0.1.0，请在 PowerShell 用 .\rollback-to-0.1.0.ps1 -Installer 指定旧安装包。脚本核对旧安装包和文件类型登记结果，需要时自动运行一次修复。直接打开旧安装包可能丢失关联。
 
 从开始菜单或安装目录打开 FormaView。如需通过双击打开所选格式，请在 Windows 设置 → 应用 → 默认应用中确认。
 卸载入口：Windows 设置 → 应用 → 已安装的应用 → FormaView。

@@ -13,8 +13,8 @@ ColumnLayout {
         Layout.fillWidth: true; spacing: 12
         Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("输入图片", "Input images", "輸入影像") }
         Label { objectName: "conversionInputCount"; Layout.fillWidth: true; font.pixelSize: Theme.formText; color: Theme.text; text: Theme.t("已添加 %1 张", "%1 images added", "已加入 %1 張").arg(root.service.sourcePaths.length) }
-        Tool { objectName: "addConversionImages"; form: true; text: Theme.t("添加图片…", "Add images…", "加入影像…"); enabled: !root.service.importing; onClicked: files.open() }
-        Tool { objectName: "addConversionFolder"; form: true; iconName: "folder"; text: Theme.t("添加文件夹…", "Add folder…", "加入資料夾…"); enabled: !root.service.importing; onClicked: folder.open() }
+        Tool { objectName: "addConversionImages"; form: true; text: Theme.t("添加图片…", "Add images…", "加入影像…"); enabled: !root.service.importing; onClicked: files.present() }
+        Tool { objectName: "addConversionFolder"; form: true; iconName: "folder"; text: Theme.t("添加文件夹…", "Add folder…", "加入資料夾…"); enabled: !root.service.importing; onClicked: folder.present() }
     }
     RowLayout {
         Layout.fillWidth: true
@@ -50,11 +50,12 @@ ColumnLayout {
     }
     Readout { objectName: "conversionSourceRoots"; form: true; Layout.fillWidth: true; label: Theme.t("来源目录", "Source folders", "來源資料夾"); value: root.service.sourceRoots.join("\n") || "—" }
     Label { Layout.fillWidth: true; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.WordWrap; text: Theme.t("继续添加会追加并去重；文件夹默认只读取当前层。一次提交的文件自动分段处理，没有固定数量上限。", "Additions are appended and deduplicated. Folders include this level by default. One submission is processed in chunks, with no fixed file-count limit.", "繼續加入會追加並去重；資料夾預設只讀取目前層。一次提交的檔案自動分段處理，沒有固定數量上限。") }
-    FileDialog {
+    FrostFileDialog {
+        parentWindow: root.Window.window
         id: files; objectName: "conversionImageFileDialog"; fileMode: FileDialog.OpenFiles
         title: Theme.t("添加转换图片", "Add conversion images", "加入轉換影像")
         nameFilters: [Theme.t("支持的图片", "Supported images", "支援的影像") + " (" + (root.service.capabilities.read_extensions || []).map(e => "*" + e).join(" ") + ")"]
         onAccepted: root.service.addSourceFiles(selectedFiles.map(f => root.controller.localFile(f)))
     }
-    FolderDialog { id: folder; title: Theme.t("添加图片文件夹", "Add image folder", "加入影像資料夾"); onAccepted: root.service.addSourceFolder(root.controller.localFile(selectedFolder), recursive.checked) }
+    FrostFolderDialog { parentWindow: root.Window.window; id: folder; title: Theme.t("添加图片文件夹", "Add image folder", "加入影像資料夾"); onAccepted: root.service.addSourceFolder(root.controller.localFile(selectedFolder), recursive.checked) }
 }

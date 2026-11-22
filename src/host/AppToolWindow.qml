@@ -4,6 +4,11 @@ import QtQuick.Controls.Basic
 ApplicationWindow {
     id: root
     required property var controller
+    property int frostDepth: 0
+    property FrostRequest ownerFrost: FrostRequest {
+        host: root.transientParent
+        shown: root.visible && root.visibility !== Window.Minimized
+    }
     property real nativeCaptionInset: 64
     property bool escapeClosesWindow: true
     flags: Qt.Tool | Qt.CustomizeWindowHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
@@ -22,6 +27,8 @@ ApplicationWindow {
     palette.mid: Theme.line
     topPadding: 0; bottomPadding: 0; leftPadding: 0; rightPadding: 0
     header: Rectangle {
+        layer.enabled: root.frostDepth > 0
+        layer.effect: FrostEffect {}
         objectName: "topBar"; height: 52; color: Theme.base
         Item { objectName: "windowTitleDrag"; anchors.fill: parent }
         Label { anchors.left: parent.left; anchors.leftMargin: 24; anchors.right: parent.right; anchors.rightMargin: Math.max(64, root.nativeCaptionInset); anchors.verticalCenter: parent.verticalCenter; font.pixelSize: Theme.formHeading; color: Theme.text; text: root.title; elide: Text.ElideRight }

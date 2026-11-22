@@ -1,4 +1,5 @@
 #include "formaview/image_requests.hpp"
+#include "formaview/image_preview.hpp"
 #ifdef FORMAVIEW_MODEL_EXPORT
 #include "formaview/model_export.hpp"
 #endif
@@ -394,7 +395,7 @@ QJsonObject execute_image_request(
     const std::filesystem::path &approved_output) {
   keys(request, {"version", "operation", "input", "output", "options",
                  "conflict", "approval_digest", "acknowledge_losses",
-                 "subresource", "offset", "limit"});
+                 "subresource", "offset", "limit", "x", "y"});
   if (integer(request, "version", 0) != 1)
     invalid("Request version must be 1");
   const auto operation = string(request, "operation");
@@ -402,11 +403,13 @@ QJsonObject execute_image_request(
     keys(request, {"version", "operation"});
     return image_capabilities();
   }
-  if (operation != "inspect" && operation != "preflight" &&
+  if (operation != "pixel" && (request.contains("x") || request.contains("y")))
+    invalid("Coordinates apply only to pixel sampling");
+  if (operation != "inspect" && operation != "pixel" && operation != "preflight" &&
       operation != "convert")
     invalid("Unsupported image operation");
 #ifdef FORMAVIEW_MODEL_EXPORT
-  if (model_export::handles(request)) {
+  if (operation != "pixel" && model_export::handles(request)) {
     skeletal::Limits model_limits;
     model_limits.input_bytes = limits.input_bytes;
     model_limits.decoded_bytes = limits.decoded_bytes;
@@ -417,11 +420,36 @@ QJsonObject execute_image_request(
   auto lease = InputLease::open(scope, path(string(request, "input")),
                                 limits.input_bytes, stop);
   const auto &input = lease.snapshot();
+  if (operation == "pixel") limits.preview = true;
   auto document = ImageDocument::open(input.resolved_path, limits, stop);
   const auto &description = document.description();
-  if (description.source.identity.sha256 != input.content_sha256)
+  // Preview readers map the already leased file without hashing it a second time.
+  const auto &decodedHash = description.source.identity.sha256;
+  if ((!limits.preview || !decodedHash.empty()) && decodedHash != input.content_sha256)
     throw skeletal::Failure(ErrorCode::InputChanged,
                             "Decoded source differs from held snapshot");
+  if (operation == "pixel") {
+    keys(request, {"version", "operation", "input", "subresource", "x", "y"});
+    if (!request.contains("x") || !request.contains("y"))
+      invalid("Supply integer pixel coordinates relative to the selected data window");
+    const auto x = integer(request, "x", 0), y = integer(request, "y", 0);
+    const auto index = integer(request, "subresource", 0);
+    if (index >= description.subresources.size()) invalid("Invalid subresource");
+    const auto &bounds = description.subresources[index].data_window;
+    if (x >= bounds.width || y >= bounds.height) invalid("Pixel outside selected data window");
+    const auto pixel = document.decode_preview(index, {x, y, 1, 1, 1, 1}, stop);
+    const auto jsonNumber = [](double v) -> QJsonValue {
+      if (std::isfinite(v)) return v;
+      return std::isnan(v) ? "NaN" : v > 0 ? "+Infinity" : "-Infinity";
+    };
+    QJsonArray channels;
+    for (const auto &channel : pixel.channels)
+      channels.append(QJsonObject{{"name", QString::fromStdString(channel.name)},
+          {"scalar", scalar(channel.samples.scalar)}, {"raw", jsonNumber(value(channel, 0))},
+          {"interpreted", jsonNumber(interpreted_value(channel, 0))}});
+    return {{"version", 1}, {"input", snapshot(input)}, {"subresource", qint64(index)},
+            {"x", qint64(x)}, {"y", qint64(y)}, {"data_window", window(bounds)}, {"channels", channels}};
+  }
   if (operation == "inspect") {
     const auto selected = integer(request, "subresource", 0);
     // Validate the requested page before decoding pixels for it.

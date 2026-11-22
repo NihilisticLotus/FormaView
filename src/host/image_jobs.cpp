@@ -1102,6 +1102,7 @@ void ImageJobs::setMcpEnabled(bool enabled) {
                     QString::number(QCoreApplication::applicationPid()) + '-' +
                     QUuid::createUuid().toString(QUuid::WithoutBraces);
     endpoint_ = std::make_unique<ImageEndpoint>(service_, endpointName_, nullptr, groups_);
+    emit endpointEnabled(endpoint_.get());
     endpoint_->workChanged = [this] {
       // Observe on the next event-loop turn: poll() may retire this endpoint.
       // Do not erase the callback owner inside its own completion event.
@@ -1133,7 +1134,8 @@ QString ImageJobs::mcpConfiguration(const QString &python,
   const QJsonObject command{
       {"command", python},
       {"args", QJsonArray{adapter}},
-      {"env", QJsonObject{{"FORMAVIEW_IMAGE_ENDPOINT", endpointName_}}}};
+      {"env", QJsonObject{{"FORMAVIEW_IMAGE_ENDPOINT", endpointName_},
+                         {"FORMAVIEW_DESKTOP", "1"}}}};
   const QJsonObject config{
       {"mcpServers", QJsonObject{{"formaview-images", command}}}};
   return QString::fromUtf8(

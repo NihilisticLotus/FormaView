@@ -49,6 +49,7 @@ private:
 class Desktop final : public QObject {
   Q_OBJECT
   Q_PROPERTY(QAbstractItemModel *files READ files CONSTANT)
+  Q_PROPERTY(QAbstractItemModel *videos READ videos CONSTANT)
   Q_PROPERTY(QObject *image READ image CONSTANT)
   Q_PROPERTY(QObject *model READ model CONSTANT)
   Q_PROPERTY(QObject *imageJobs READ imageJobs CONSTANT)
@@ -71,6 +72,8 @@ class Desktop final : public QObject {
   Q_PROPERTY(
       QString language READ language WRITE setLanguage NOTIFY languageChanged)
   Q_PROPERTY(QVariantMap preferences READ preferences NOTIFY preferencesChanged)
+  Q_PROPERTY(QStringList addedAssets READ addedAssets NOTIFY libraryChanged)
+  Q_PROPERTY(QStringList favoriteAssets READ favoriteAssets NOTIFY libraryChanged)
   Q_PROPERTY(QStringList recent READ recent NOTIFY changed)
   Q_PROPERTY(QVariantList resourceIssues READ resourceIssues NOTIFY changed)
   Q_PROPERTY(double scrollPosition READ scrollPosition NOTIFY viewRestored)
@@ -80,6 +83,7 @@ public:
                    std::function<QString()> desktopLocation = {});
   ~Desktop() override;
   QAbstractItemModel *files() { return &files_; }
+  QAbstractItemModel *videos() { return &videos_; }
   QObject *image() const { return image_.get(); }
   QObject *model() const { return model_.get(); }
   QObject *imageJobs() const { return imageJobs_.get(); }
@@ -113,7 +117,15 @@ public:
   QString language() const { return language_; }
   void setLanguage(const QString &);
   static QString reuseKeyForFile(const QString &path);
+  static QString assetKind(const QString &path);
   QVariantMap preferences() const { return preferences_; }
+  QStringList addedAssets() const { return addedAssets_; }
+  QStringList favoriteAssets() const { return favoriteAssets_; }
+  Q_INVOKABLE void addLibraryFiles(const QList<QUrl> &urls);
+  Q_INVOKABLE void removeLibraryFile(const QString &path);
+  Q_INVOKABLE void toggleFavorite(const QString &path);
+  Q_INVOKABLE void reloadLibrary();
+  Q_INVOKABLE QVariantMap libraryFileGroups(const QString &collection, const QString &search) const;
   QStringList recent() const { return recent_; }
   QVariantList resourceIssues() const { return resourceIssues_; }
   // Adapter entry: only reports belonging to the currently displayed session
@@ -139,6 +151,7 @@ public:
   Q_INVOKABLE void selectAll();
   Q_INVOKABLE void activate(int row);
   Q_INVOKABLE void openPath(const QString &path);
+  Q_INVOKABLE void adjacentVideo(int direction);
   Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
   Q_INVOKABLE void cancel(const QString &id);
   Q_INVOKABLE void retry(const QString &id);
@@ -155,6 +168,7 @@ signals:
   void explorerFileOpened();
   void tasksChanged();
   void languageChanged();
+  void libraryChanged();
   void preferencesChanged();
   void viewRestored();
   void folderMenuChanged();
@@ -191,7 +205,10 @@ private:
   void poll();
   void saveDirectory();
   void publish(Job &);
+  void refreshVideoPlaylist();
   FileList files_;
+  FileList videos_;
+  QString videoDirectory_;
   std::function<QString()> desktopLocation_;
   std::unique_ptr<QObject> image_;
   std::unique_ptr<QObject> model_;
@@ -206,6 +223,7 @@ private:
   QVariantMap asset_, preferences_, folderMenu_;
   QVariantList taskRows_, resourceIssues_;
   QMap<QString, View> views_;
+  QStringList addedAssets_, favoriteAssets_;
   QStringList viewOrder_, history_, recent_;
   int historyAt_{-1}, type_{}, sort_{}, current_{-1}, active_{};
   quint64 directoryRevision_{}, filterRevision_{}, assetRevision_{},

@@ -65,10 +65,25 @@ $sourceFiles = [ordered]@{
     'mcp/requirements.lock' = 'tools/mcp/requirements.lock'
     'mcp/requirements.txt' = 'tools/mcp/requirements.txt'
     'README-run.txt' = 'tools/runtime/README-run.txt'
+    'rollback-to-0.1.0.ps1' = 'tools/runtime/rollback-to-0.1.0.ps1'
 }
-$required = @('formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe') + @($sourceFiles.Keys)
+$notices = @('libmpv-LICENSE.txt', 'ffmpeg-LICENSE.txt', 'mpv-Copyright.txt', 'media-runtime-GPLv3.txt',
+    'ffmpeg-shared-LICENSE-notes.txt', 'ffmpeg-linked-LICENSE-notes.txt', 'media-runtime-NOTICE.txt', 'media-static-copyrights.txt', 'media-builds.json')
+foreach ($notice in $notices) { $sourceFiles["licenses/$notice"] = "third_party/$notice" }
+$mediaFiles = @('libmpv-2.dll','avcodec-62.dll','avformat-62.dll','avutil-60.dll','swresample-6.dll','swscale-9.dll')
+$required = $mediaFiles + @('formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe') + @($sourceFiles.Keys)
 $absent = @($required | Where-Object { $_ -notin $listed -or -not (Test-Path -LiteralPath (Join-Path $RunDir $_) -PathType Leaf) })
 Add-Check 'required-runtime-files' ($absent.Count -eq 0) ("missing=" + ($absent -join '; '))
+if ($absent.Count -eq 0) {
+    $media = Get-Content -LiteralPath (Join-Path $RunDir 'licenses/media-builds.json') -Raw | ConvertFrom-Json
+    $entries = @($media.libraries.PSObject.Properties | ForEach-Object Value)
+    $mismatch = @($mediaFiles | Where-Object {
+        $filename = $_
+        $entry = @($entries | Where-Object file -eq $filename)
+        $entry.Count -ne 1 -or (Get-FileHash -LiteralPath (Join-Path $RunDir $filename)).Hash -ne $entry[0].sha256
+    })
+    Add-Check 'media-binary-provenance' ($mismatch.Count -eq 0) ("mismatched=" + ($mismatch -join ', '))
+}
 if ($SourceRoot) {
     $different = @($sourceFiles.Keys | Where-Object {
         $packed = Join-Path $RunDir $_

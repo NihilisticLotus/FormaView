@@ -9,6 +9,20 @@ Rectangle {
     objectName: "modelPane"
     required property var controller
     property bool focused: false
+    property Item headerSlot
+    readonly property int toolsWidth: modeTools.implicitWidth
+    readonly property bool inlineHeader: !!headerSlot && width >= toolsWidth + 230
+    signal inspectSection(string section)
+    property string section: "model"
+    function selectSection(key, mode) {
+        section = key
+        session.setMode(mode)
+        if (key === "animation") {
+            animationBarHost.collapsed = false
+            animationBarHost.optionsVisible = false
+        }
+        inspectSection(key)
+    }
     readonly property var session: controller.model
     readonly property var uvBackground: session.uvBackground
     readonly property bool narrow: width < 700 || (root.Window.window && root.Window.window.width <= 1300)
@@ -18,6 +32,9 @@ Rectangle {
     property bool showGrid: true
     property bool showAxes: true
     property int previewMode: 0
+    readonly property var shadingOrder: [0, 1, 4, 2, 3]
+    readonly property var shadingLabels: [Theme.t("材质","Material","材質"), Theme.t("棋盘格","Checker","棋盤格"),
+        Theme.t("顶点色","Vertex color","頂點色"), Theme.t("线框","Wireframe","線框"), Theme.t("素模","Clay","素模")]
     readonly property bool wireframe: previewMode === 3
     property var uvCamera: ({})
     Connections {
@@ -29,15 +46,16 @@ Rectangle {
             root.showCompare = false
             root.showGrid = true
             root.showAxes = true
+            root.section = "model"
             root.previewMode = 0
             root.uvCamera = ({})
             externalDialog.close()
             compareDialog.close()
         }
     }
-    color: Theme.base
+    color: Theme.light ? "#edf1f4" : "#232d37"
     function addExternalAnimation(): void {
-        if (root.session.canAttachExternalAnimation && !root.session.busy && !root.session.externalBusy) externalDialog.open()
+        if (root.session.canAttachExternalAnimation && !root.session.busy && !root.session.externalBusy) externalDialog.present()
     }
     function fit(selected: bool): void {
         if (root.narrow && root.session.mode===1 && root.showUV && root.uvViewport) root.uvViewport.fit(selected)
@@ -45,97 +63,62 @@ Rectangle {
     }
     ColumnLayout {
         anchors.fill: parent; spacing: 0
-        RowLayout {
-            Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.margins: 8; spacing: 6
-            Repeater {
-                model: root.narrow ? [Theme.t("模型", "Model", "模型"), "UV", Theme.t("权重", "Weights", "權重"), "LOD"] : [Theme.t("模型", "Model", "模型"), "UV", Theme.t("源权重", "Source weights", "來源權重"), Theme.t("LOD/碰撞", "LOD/Collision", "LOD/碰撞")]
-                delegate: PageTab {
-                    Layout.minimumWidth: 40
-                    required property int index
-                    required property string modelData
-                    objectName: "modelModeTab" + index
-                    // Geometry caches carry no skin: source weights do not apply.
-                    enabled: !(index===2 && root.session.geometryCache) &&
-                             !(root.session.info.cameraOnly && index!==0)
-                    text: modelData; checked: root.session.mode===index
-                    onClicked: root.session.setMode(index)
-                }
-            }
-            Tool {
-                objectName: "animExternalAttach"
-                Layout.minimumWidth: 32
-                Layout.fillWidth: true
-                Layout.maximumWidth: implicitWidth
-                visible: root.session.canAttachExternalAnimation || root.session.externalInfo.driven === true
-                text: Theme.t("添加外部动画…", "Add external animation…", "新增外部動畫…")
-                hint: root.session.externalInfo.format === "psa"
-                      ? Theme.t("选择匹配当前 PSK 的 PSA 动画，自动读取同名轨道配置", "Choose PSA animations matching this PSK; matching track configs load automatically", "選擇符合目前 PSK 的 PSA 動畫，自動讀取同名軌道設定")
-                      : Theme.t("选择一个或多个带骨架动画的 FBX，驱动当前模型", "Choose one or more skeletal-animation FBX files to drive this model", "選擇一個或多個帶骨架動畫的 FBX，驅動目前模型")
-                enabled: !root.session.busy && !root.session.externalBusy
-                onClicked: root.addExternalAnimation()
-            }
-            Item { Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0 }
-            Tool {
-                id: modeButton
-                objectName: "modelPreviewMode"
-                Layout.preferredWidth: Theme.controlHeight
-                readonly property var icons: ["display-shaded", "display-checker", "display-vertices", "display-wire"]
-                readonly property var labels: [Theme.t("默认显示", "Default", "預設顯示"), Theme.t("棋盘格材质", "Checker material", "棋盤格材質"), Theme.t("顶点色显示", "Vertex colors", "頂點色顯示"), Theme.t("线框显示", "Wireframe", "線框顯示")]
-                readonly property var notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), ""]
-                iconName: icons[root.previewMode]
-                hint: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式") + " · " + labels[root.previewMode]
-                Accessible.name: hint
-                enabled: root.session.available && !root.session.info.cameraOnly
-                onClicked: modes.open()
-                Keys.onDownPressed: modes.open()
-                Keys.onReturnPressed: modes.open()
-                Keys.onEnterPressed: modes.open()
-                AppPopupMenu {
-                    id: modes
-                    objectName: "modelDisplayMenu"
-                    y: modeButton.height + 2
-                    width: 206
-                    onOpened: itemAt(root.previewMode).forceActiveFocus(Qt.PopupFocusReason)
-                    onClosed: modeButton.forceActiveFocus(Qt.PopupFocusReason)
-                    component DisplayOption: AppMenuItem {
-                        id: option
-                        required property int mode
-                        objectName: "modelDisplayOption" + mode
-                        text: modeButton.labels[mode]
-                        leftPadding: 54
-                        checkable: true
-                        autoExclusive: true
-                        checked: root.previewMode === mode
-                        Accessible.description: modeButton.notes[mode]
-                        ToolTip.visible: hovered && modeButton.notes[mode].length > 0
-                        ToolTip.text: modeButton.notes[mode]
-                        ToolTip.delay: 350
-                        AppIcon { x: 28; anchors.verticalCenter: parent.verticalCenter; name: modeButton.icons[option.mode]; size: 18 }
-                        onTriggered: root.previewMode = mode
+        Item {
+            id: modesFallback
+            Layout.fillWidth: true
+            implicitHeight: root.inlineHeader ? 0 : 38
+            visible: !root.inlineHeader
+            Flickable {
+                id: modeStrip
+                parent: root.inlineHeader ? root.headerSlot : modesFallback
+                anchors.fill: parent
+                contentWidth: modeTools.implicitWidth
+                clip: true
+                flickableDirection: Flickable.HorizontalFlick
+                boundsBehavior: Flickable.StopAtBounds
+                Row {
+                    id: modeTools
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+                    Rectangle {
+                        radius: 9; color: Theme.light ? "#405e7889" : "#504e6476"
+                        width: group.implicitWidth + 6; height: 30
+                        Row {
+                            id: group
+                            anchors.centerIn: parent
+                            Repeater {
+                                model: [
+                                    ["model", 0, Theme.t("模型","Model","模型")],
+                                    ["uv", 1, "UV"],
+                                    ["skeleton", 0, Theme.t("骨骼","Skeleton","骨骼")],
+                                    ["weights", 2, Theme.t("权重","Weights","權重")],
+                                    ["binding", 0, Theme.t("绑定","Binding","綁定")],
+                                    ["lod", 3, Theme.t("LOD / 碰撞","LOD / Collision","LOD / 碰撞")],
+                                    ["animation", 0, Theme.t("动画","Animation","動畫")]
+                                ]
+                                delegate: PageTab {
+                                    required property var modelData
+                                    readonly property string sectionKey: modelData[0]
+                                    objectName: ["model","uv","weights","lod"].includes(sectionKey) ? "modelModeTab"+modelData[1] : "modelSection_"+sectionKey
+                                    text: modelData[2]; height: 26; padding: 4; implicitWidth: implicitContentWidth + 14
+                                    checked: modelData[1] === root.session.mode && (modelData[1] !== 0 || root.section === sectionKey || (sectionKey==="model" && ["uv","weights","lod"].includes(root.section)))
+                                    enabled: sectionKey === "model" || (!root.session.info.cameraOnly &&
+                                        (sectionKey==="animation" ? root.session.hasPlayableAnimation :
+                                        ["skeleton","binding","weights"].includes(sectionKey) ? !root.session.geometryCache && (sectionKey==="weights" || root.session.hasComparableSkeleton || root.session.bindings.length>0) : true))
+                                    onClicked: root.selectSection(sectionKey, modelData[1])
+                                }
+                            }
+                        }
                     }
-                    DisplayOption { mode: 0 }
-                    DisplayOption { mode: 1 }
-                    DisplayOption { mode: 2 }
-                    DisplayOption { mode: 3 }
+                    Tool {
+                        objectName: "animExternalAttach"; height: 30; quiet: true; iconName: "external"
+                        visible: root.session.canAttachExternalAnimation || root.session.externalInfo.driven === true
+                        hint: Theme.t("添加外部动画…","Add external animation…","新增外部動畫…")
+                        enabled: !root.session.busy && !root.session.externalBusy
+                        onClicked: root.addExternalAnimation()
+                    }
                 }
             }
-            Tool { objectName: "modelGroundGrid"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
-            Tool {
-                objectName: "modelNormals"; text: "N"; checked: !!(root.session.directionMask & 1); primary: checked
-                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
-                hint: Theme.t("法线方向（蓝色）", "Normal directions (blue)", "法線方向（藍色）")
-                onClicked: root.session.directionMask ^= 1
-            }
-            Tool {
-                objectName: "modelTangents"; text: "T"; checked: !!(root.session.directionMask & 2); primary: checked
-                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
-                hint: Theme.t("切线方向（红色）", "Tangent directions (red)", "切線方向（紅色）")
-                onClicked: root.session.directionMask ^= 2
-            }
-            Tool { objectName: "modelOriginAxes"; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "origin-axes"; hint: Theme.t("原点坐标轴 · X 红 / Y 绿 / Z 蓝", "Origin axes · X red / Y green / Z blue", "原點座標軸 · X 紅 / Y 綠 / Z 藍"); checkable: true; checked: root.showAxes; enabled: root.session.available; onToggled: root.showAxes=checked }
-            Tool { objectName: "modelFocus"; Layout.preferredWidth: 32; iconName: "focus"; hint: Theme.t("聚焦所选对象（F）", "Focus selection (F)", "聚焦所選物件（F）"); enabled: root.session.available; onClicked: root.fit(true) }
-            Tool { objectName: "modelFrameAll"; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
-            Tool { objectName: "modelCompareSkeleton"; Layout.minimumWidth: 32; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; visible: root.session.hasComparableSkeleton && !root.session.compareBusy; text: Theme.t("骨架对比…", "Compare skeletons…", "骨架對比…"); hint: Theme.t("与另一 FBX / glTF 比较骨架层级", "Compare the skeleton hierarchy with another FBX / glTF", "與另一 FBX / glTF 比較骨架層級"); enabled: root.session.available && !root.session.busy; onClicked: compareDialog.open(); Accessible.name: hint }
         }
         RowLayout {
             Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10
@@ -186,7 +169,7 @@ Rectangle {
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: animationBarHost.visible ? animationBarHost.top : cacheTimelineHost.visible ? cacheTimelineHost.top : parent.bottom
+                anchors.bottom: displayTools.top
                 spacing: 1
                 ModelViewport {
                     id: modelViewport
@@ -194,7 +177,7 @@ Rectangle {
                     session: root.session
                     showGrid: root.showGrid; showAxes: root.showAxes
                     wireframe: root.wireframe
-                    shadingMode: root.previewMode === 1 || root.previewMode === 2 ? root.previewMode : 0
+                    shadingMode: root.previewMode === 4 ? 3 : root.wireframe ? 0 : root.previewMode
                     visible: root.session.mode!==1 || !root.narrow || !root.showUV
                 }
                 Rectangle { Layout.fillHeight: true; Layout.preferredWidth: 1; visible: root.session.mode===1&&!root.narrow; color: Theme.line }
@@ -246,6 +229,98 @@ Rectangle {
                 anchors.margins: 16
                 height: Math.min(parent.height - 32, 420)
                 onClosed: root.showCompare = false
+            }
+            RowLayout {
+                id: displayTools
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.bottom: animationBarHost.visible ? animationBarHost.top : cacheTimelineHost.visible ? cacheTimelineHost.top : parent.bottom
+                anchors.leftMargin: 8; anchors.rightMargin: 8; anchors.bottomMargin: 4; spacing: 4
+
+            Rectangle {
+                visible: displayTools.width >= 660
+                Layout.preferredWidth: shadingOptions.implicitWidth + 6; implicitHeight: 30; radius: 9
+                color: Theme.light ? "#365b788c" : "#494e6476"
+                Row {
+                    id: shadingOptions
+                    anchors.centerIn: parent
+                    Repeater {
+                        model: root.shadingOrder
+                        delegate: PageTab {
+                            required property int modelData
+                            objectName: "modelShadingOption"+modelData
+                            text: root.shadingLabels[modelData]; height: 26; padding: 3; implicitWidth: implicitContentWidth+12
+                            checked: root.previewMode === modelData
+                            enabled: root.session.available && !root.session.info.cameraOnly
+                            onClicked: root.previewMode=modelData
+                        }
+                    }
+                }
+            }
+            Tool {
+                id: modeButton
+                visible: displayTools.width < 660
+                objectName: "modelPreviewMode"
+                Layout.preferredWidth: Theme.controlHeight
+                readonly property var icons: ["display-shaded", "display-checker", "display-vertices", "display-wire", "display-shaded"]
+                readonly property var labels: root.shadingLabels
+                readonly property var notes: ["", Theme.t("使用 UV 棋盘格；无 UV 时使用空间投影", "UV checker; spatial projection when UVs are absent", "使用 UV 棋盤格；無 UV 時使用空間投影"), Theme.t("显示第一组顶点 RGB；无顶点色时显示中性灰", "First vertex RGB set; neutral gray when absent", "顯示第一組頂點 RGB；無頂點色時顯示中性灰"), "", Theme.t("使用中性材质检查表面形体","Inspect form with a neutral material","使用中性材質檢查表面形體")]
+                iconName: icons[root.previewMode]
+                hint: Theme.t("预览显示模式", "Preview display mode", "預覽顯示模式") + " · " + labels[root.previewMode]
+                Accessible.name: hint
+                enabled: root.session.available && !root.session.info.cameraOnly
+                onClicked: modes.open()
+                Keys.onDownPressed: modes.open()
+                Keys.onReturnPressed: modes.open()
+                Keys.onEnterPressed: modes.open()
+                AppPopupMenu {
+                    id: modes
+                    objectName: "modelDisplayMenu"
+                    y: modeButton.height + 2
+                    width: 206
+                    onOpened: itemAt(root.shadingOrder.indexOf(root.previewMode)).forceActiveFocus(Qt.PopupFocusReason)
+                    onClosed: modeButton.forceActiveFocus(Qt.PopupFocusReason)
+                    component DisplayOption: AppMenuItem {
+                        id: option
+                        required property int mode
+                        objectName: "modelDisplayOption" + mode
+                        text: modeButton.labels[mode]
+                        leftPadding: 54
+                        checkable: true
+                        autoExclusive: true
+                        checked: root.previewMode === mode
+                        Accessible.description: modeButton.notes[mode]
+                        ToolTip.visible: hovered && modeButton.notes[mode].length > 0
+                        ToolTip.text: modeButton.notes[mode]
+                        ToolTip.delay: 350
+                        AppIcon { x: 28; anchors.verticalCenter: parent.verticalCenter; name: modeButton.icons[option.mode]; size: 18 }
+                        onTriggered: root.previewMode = mode
+                    }
+                    DisplayOption { mode: 0 }
+                    DisplayOption { mode: 1 }
+                    DisplayOption { mode: 4 }
+                    DisplayOption { mode: 2 }
+                    DisplayOption { mode: 3 }
+                }
+            }
+            Tool { objectName: "modelGroundGrid"; quiet: true; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "ground-grid"; hint: Theme.t("地面网格", "Ground grid", "地面網格"); checkable: true; checked: root.showGrid; enabled: root.session.available; onToggled: root.showGrid=checked }
+            Tool {
+                objectName: "modelNormals"; text: "N"; checked: !!(root.session.directionMask & 1); quiet: true
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("法线方向（蓝色）", "Normal directions (blue)", "法線方向（藍色）")
+                onClicked: root.session.directionMask ^= 1
+            }
+            Tool {
+                objectName: "modelTangents"; text: "T"; checked: !!(root.session.directionMask & 2); quiet: true
+                enabled: root.session.available; visible: root.session.mode !== 1 || !root.showUV || !root.narrow
+                hint: Theme.t("切线方向（红色）", "Tangent directions (red)", "切線方向（紅色）")
+                onClicked: root.session.directionMask ^= 2
+            }
+            Tool { objectName: "modelOriginAxes"; quiet: true; Layout.preferredWidth: 32; visible: root.session.mode!==1 || !root.narrow || !root.showUV; iconName: "origin-axes"; hint: Theme.t("原点坐标轴 · X 红 / Y 绿 / Z 蓝", "Origin axes · X red / Y green / Z blue", "原點座標軸 · X 紅 / Y 綠 / Z 藍"); checkable: true; checked: root.showAxes; enabled: root.session.available; onToggled: root.showAxes=checked }
+            Tool { objectName: "modelFocus"; quiet: true; Layout.preferredWidth: 32; iconName: "focus"; hint: Theme.t("聚焦所选对象（F）", "Focus selection (F)", "聚焦所選物件（F）"); enabled: root.session.available; onClicked: root.fit(true) }
+            Tool { objectName: "modelFrameAll"; quiet: true; Layout.preferredWidth: 32; iconName: "frame-all"; hint: Theme.t("显示全部（Home）", "Frame all (Home)", "顯示全部（Home）"); enabled: root.session.available; onClicked: root.fit(false) }
+            Tool { objectName: "modelCompareSkeleton"; Layout.minimumWidth: 32; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; visible: root.session.hasComparableSkeleton && !root.session.compareBusy; iconName: "weights"; quiet: true; hint: Theme.t("与另一 FBX / glTF 比较骨架层级", "Compare the skeleton hierarchy with another FBX / glTF", "與另一 FBX / glTF 比較骨架層級"); enabled: root.session.available && !root.session.busy; onClicked: compareDialog.present(); Accessible.name: hint }
+                Item { Layout.fillWidth: true }
+                Label { visible: !root.narrow; text: Theme.t("%1 三角形","%1 triangles","%1 三角形").arg(root.session.info.visibleTriangles ?? root.session.info.triangles ?? 0); color: Theme.muted }
             }
             AnimationBar {
                 id: animationBarHost
@@ -309,17 +384,9 @@ Rectangle {
                 color: Theme.muted
             }
         }
-        Label {
-            // Focus mode hides mouse-control hints to free preview space.
-            visible: !root.focused
-            Layout.fillWidth: true; Layout.margins: 8
-            color: Theme.muted; font.pixelSize: Theme.noteText; elide: Text.ElideRight
-            text: Theme.t("左键拖动旋转 · 中/右拖平移 · 滚轮缩放 · F 聚焦 · 单击检查源点", "Left drag orbit · Middle/right drag pan · Wheel zoom · F focus · Click to inspect", "左鍵拖曳旋轉 · 中/右拖平移 · 滾輪縮放 · F 聚焦 · 按一下檢查來源點")
-        }
-        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
-        ModelPointPanel { Layout.fillWidth: true; visible: !root.session.info.cameraOnly; session: root.session }
     }
-    FileDialog {
+    FrostFileDialog {
+        parentWindow: root.Window.window
         id: externalDialog
         objectName: "externalAnimationDialog"
         readonly property bool actorTarget: root.session.externalInfo.format === "psa"
@@ -333,7 +400,8 @@ Rectangle {
                 root.session.attachExternalAnimation(selectedFiles[i].toString())
         }
     }
-    FileDialog {
+    FrostFileDialog {
+        parentWindow: root.Window.window
         id: compareDialog
         title: Theme.t("选择要对比的 FBX / glTF 骨架", "Choose the FBX skeleton to compare", "選擇要對比的 FBX / glTF 骨架")
         nameFilters: ["Skeleton assets (*.fbx *.gltf *.glb)", "Autodesk FBX (*.fbx)", "glTF (*.gltf *.glb)"]

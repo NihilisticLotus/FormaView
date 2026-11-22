@@ -11,9 +11,9 @@ TextField {
     placeholderTextColor: Theme.muted
     selectByMouse: true
     background: Rectangle {
-        radius: Theme.radius
-        color: Theme.field
+        radius: 9
+        color: Theme.light ? "#acf9fcff" : "#524f687a"
         border.width: control.activeFocus ? 2 : 1
-        border.color: control.activeFocus ? Theme.accent : Theme.line
+        border.color: control.activeFocus ? Theme.accent : Theme.glassEdge
     }
 }

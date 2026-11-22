@@ -29,12 +29,12 @@ ScrollView {
         Label { textFormat: Text.PlainText; text: Theme.t("已安装 MCP SDK 的 Python", "Python with MCP SDK installed", "已安裝 MCP SDK 的 Python"); color: Theme.text }
         RowLayout { Layout.fillWidth: true
             Field { id: python; objectName: "mcpPython"; Layout.fillWidth: true; text: root.controller.preferences.mcpPython || ""; onEditingFinished: root.controller.preference("mcpPython", text); Accessible.name: "Python" }
-            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: pythonFile.open() }
+            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: pythonFile.present() }
         }
         Label { textFormat: Text.PlainText; text: Theme.t("已安装的 image_stdio.py 适配器", "Installed image_stdio.py adapter", "已安裝的 image_stdio.py 配接器"); color: Theme.text }
         RowLayout { Layout.fillWidth: true
             Field { id: adapter; objectName: "mcpAdapter"; Layout.fillWidth: true; text: root.controller.preferences.mcpAdapter || ""; onEditingFinished: root.controller.preference("mcpAdapter", text); Accessible.name: "image_stdio.py" }
-            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: adapterFile.open() }
+            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: adapterFile.present() }
         }
         Tool { objectName: "mcpCopyConfig"; text: Theme.t("复制当前端点配置", "Copy current endpoint configuration", "複製目前端點設定"); enabled: root.service.mcpEnabled && !!python.text && !!adapter.text; onClicked: { const config = root.service.mcpConfiguration(python.text, adapter.text); if (config) root.controller.copy(config) } }
         Label { textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: Theme.t("仅复制配置，不修改客户端设置。当前端点随本次应用会话关闭；下一次启用后需复制新端点配置。", "Copies configuration without changing client settings. This endpoint belongs to the current app session; copy a new configuration after enabling it next time.", "僅複製設定，不修改用戶端設定。目前端點隨本次應用程式工作階段關閉；下次啟用後需複製新的端點設定。") }
@@ -50,12 +50,12 @@ ScrollView {
         Label { textFormat: Text.PlainText; text: Theme.t("只读输入目录", "Read-only input directory", "唯讀輸入目錄"); color: Theme.text }
         RowLayout { Layout.fillWidth: true
             Field { id: input; objectName: "mcpInput"; Layout.fillWidth: true; text: root.controller.preferences.mcpInputRoot || root.controller.directory; onEditingFinished: root.controller.preference("mcpInputRoot", text); Accessible.name: Theme.t("MCP 输入目录", "MCP input directory", "MCP 輸入目錄") }
-            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: inputFolder.open() }
+            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: inputFolder.present() }
         }
         Label { textFormat: Text.PlainText; text: Theme.t("输出目录", "Output directory", "輸出目錄"); color: Theme.text }
         RowLayout { Layout.fillWidth: true
             Field { id: output; objectName: "mcpOutput"; Layout.fillWidth: true; text: root.controller.preferences.mcpOutputRoot || ""; onEditingFinished: root.controller.preference("mcpOutputRoot", text); Accessible.name: Theme.t("MCP 输出目录", "MCP output directory", "MCP 輸出目錄") }
-            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: outputFolder.open() }
+            Tool { text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: outputFolder.present() }
         }
         OptionCheck { Layout.fillWidth: true; id: overwrite; text: Theme.t("明确允许覆盖输出范围内的已有文件", "Explicitly allow overwriting files within the output scope", "明確允許覆寫輸出範圍內的現有檔案") }
         RowLayout {
@@ -76,8 +76,8 @@ ScrollView {
             }
         }
     }
-    FolderDialog { id: inputFolder; onAccepted: { input.text = root.controller.localFile(selectedFolder); root.controller.preference("mcpInputRoot", input.text) } }
-    FolderDialog { id: outputFolder; onAccepted: { output.text = root.controller.localFile(selectedFolder); root.controller.preference("mcpOutputRoot", output.text) } }
-    FileDialog { id: pythonFile; onAccepted: { python.text = root.controller.localFile(selectedFile); root.controller.preference("mcpPython", python.text) } }
-    FileDialog { id: adapterFile; onAccepted: { adapter.text = root.controller.localFile(selectedFile); root.controller.preference("mcpAdapter", adapter.text) } }
+    FrostFolderDialog { parentWindow: root.Window.window; id: inputFolder; onAccepted: { input.text = root.controller.localFile(selectedFolder); root.controller.preference("mcpInputRoot", input.text) } }
+    FrostFolderDialog { parentWindow: root.Window.window; id: outputFolder; onAccepted: { output.text = root.controller.localFile(selectedFolder); root.controller.preference("mcpOutputRoot", output.text) } }
+    FrostFileDialog { parentWindow: root.Window.window; id: pythonFile; onAccepted: { python.text = root.controller.localFile(selectedFile); root.controller.preference("mcpPython", python.text) } }
+    FrostFileDialog { parentWindow: root.Window.window; id: adapterFile; onAccepted: { adapter.text = root.controller.localFile(selectedFile); root.controller.preference("mcpAdapter", adapter.text) } }
 }

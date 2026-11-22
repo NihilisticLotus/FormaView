@@ -24,6 +24,7 @@ ComboBox {
         width: control.width; height: Theme.rowHeight
         highlighted: control.highlightedIndex === index
         hoverEnabled: true
+        Accessible.name: control.labels.length ? control.labels[index] : control.textAt(index)
         Accessible.description: control.noteAt(index)
         ToolTip.visible: hovered && control.noteAt(index).length > 0
         ToolTip.text: control.noteAt(index)

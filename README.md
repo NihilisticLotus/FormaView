@@ -17,6 +17,12 @@
 - **HDR 云图预览**。扫描线 EXR 按压缩块读取。在六张 8192 × 2048 PIZ 样本上，打开到主预览数据就绪的中位耗时从 2,341 ms 降到 491 ms。缩略图没有测到同样的提速。
 - **Windows 窗口**。主窗口与快捷导出窗口采用统一的深色原生边框设置。
 
+## 视频开发版
+
+开发版 0.2.0 在文件预览区加入了本地视频播放。在资源管理器中双击视频会复用最近使用的视频窗口。“设置 → 预览”可分别调整视频、图片和模型的窗口复用。点击画面聚焦后，空格播放或暂停，上下键调音量，左右键按各自设定的秒数跳转。逗号和句号逐帧回退和前进，方括号按 0.1× 调速，数字 1 恢复原速，S 保存 PNG。字幕、A–B 循环、置顶小窗、滤镜和输出状态可从播放区打开。
+
+Windows 视频构建使用 Qt 6.12.0 MSVC x64、GuiPrivate 和 D3D11。配置 CMake 时将 `FORMAVIEW_MPV_ROOT` 指向包含 Windows D3D11 render API 的 LGPL `libmpv-2.dll` 所在目录，将 `FORMAVIEW_FFMPEG_ROOT` 指向包含 bin、include、lib 的共享开发包。v0.2 的 libmpv 和五个 FFmpeg DLL 采用锁定源码重建。六个 DLL 的 SHA-256 及构建镜像见 [媒体构建清单](third_party/media-builds.json)，对应源码包为 `FormaView-0.2.0-media-sources.zip`。普通素材走 mpv 精确定位；验证过的 HEVC MP4 编码参数另启用有限邻帧缓存。HDR10 全屏和杜比直通取决于屏幕、系统和音频端点。[mpv 源码](https://github.com/mpv-player/mpv/tree/f92afa75c) · [FFmpeg 共享构建](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases)
+
 ## 目录
 
 - [FormaView 是什么](#formaview-是什么)
@@ -169,7 +175,7 @@ JPEG、BMP、TGA 等其他目标也会依据源通道、数值范围和目标编
 
 ## MCP 集成
 
-MCP 是可选功能，默认关闭。启用后，兼容的 MCP 客户端可通过 FormaView 的本机图片服务查询能力、检查素材、准备转换预检，并在授权范围内提交或管理任务。MCP 不提供通用 shell 执行，也不提供模型视口控制。
+MCP 默认关闭。启用后可在授权目录内检查素材、读取贴图像素、控制主程序的视频播放、保存视频帧和管理转换任务。
 
 ### 连接方式
 
@@ -184,7 +190,13 @@ flowchart LR
 
 桌面应用和 MCP 共用图片能力、文件范围授权、预检规则与任务记录。通常使用应用设置生成的端点配置；MCP 客户端需要支持 stdio MCP，并使用与适配器相匹配的 Python 3.12 环境。完整的 MCP 运行目录配置说明见 [`tools/runtime/README-run.txt`](tools/runtime/README-run.txt)。
 
-### 启用步骤
+### 后台连接
+
+给 stdio 客户端指定装有锁定依赖的 Python 和打包目录中的 `mcp/image_stdio.py`，在客户端的环境变量中将 `FORMAVIEW_DESKTOP_SCOPE` 指向本机 UTF-8 JSON 范围文件的绝对路径。文件包含 `input_roots`、`output_roots` 和 `allow_overwrite`，目录须已存在。适配器为本次连接启动独立的无窗口主程序，断开后退出。后台视频默认暂停，播放期间静音。
+
+先用 `open_asset` 获取 `asset_id`，再调用播放控制或截图。切换素材后重新取 ID。单独取色可以直接传贴图路径，无须先打开。已有 GUI 会话可按下方步骤连接。
+
+### 连接已打开的窗口
 
 1. 在“设置 → 权限 / MCP”中设置输入只读目录和输出目录，并应用授权。
 2. 指定 Python 解释器与本运行目录中的 MCP 适配器。
@@ -200,6 +212,15 @@ FormaView 不会自动修改 MCP 客户端配置，也不会在未启用端点�
 |---|---|
 | `get_image_capabilities` | 查询当前运行目录可用的图片读取与转换目标 |
 | `inspect_image` | 检查授权范围内的图片、通道和子资源 |
+| `read_texture_pixel` | 后台读取指定子资源的源通道和解释值，坐标从数据窗口左上角的 (0, 0) 起算 |
+| `open_asset`、`get_playback_state` | 用主程序打开视频或贴图，凭本次返回的素材 ID 查询播放器 |
+| `get_window_state`、`control_player_window` | 使用 `open_asset(path, window=True)` 打开独立可见窗口。查询显示器 ID、模式、置顶与几何信息；显式切换普通、全屏或置顶小窗，移动到指定显示器或按 Qt 逻辑像素调整小窗大小。默认后台素材继续独立播放 |
+| `control_video`、`step_video_frame` | 播放、暂停、绝对定位或按带符号的秒数快进回退、0.1–8 倍调速、音量、字幕延迟（±60000 毫秒），以及暂停后上一帧和下一帧 |
+| `video_chapters`、`set_video_toggle` | 列出章节或按零基索引跳转，设置静音、字幕显隐和整片循环。字幕显隐保留已选轨道 |
+| `capture_video_frame` | 保存当前视频帧，可选择字幕，输出为授权目录中的新 PNG |
+| `video_playlist` | 查看当前目录的视频列表、按索引选集、上一个或下一个。切换时保留播放或暂停状态，返回新素材 ID |
+| `list_video_tracks`、`select_video_track`、`load_video_subtitle` | 列出音轨和字幕、按类型和 ID 选择或关闭轨道、加载授权目录内的本地文本字幕 |
+| `video_ab_loop`、`set_video_filter` | 按秒设置或清除 A–B 循环，调整亮度、对比度、饱和度和锐化。后台模式的滤镜会写入截图，窗口模式沿用播放器的显示滤镜 |
 | `preflight_image`、`convert_image` | 单文件模式下预检并执行一次图片转换 |
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |

@@ -18,6 +18,10 @@ Popup {
     y: parent ? Math.max(0, (parent.height - height) / 2) : 0
     width: parent ? Math.max(0, Math.min(680, parent.width - 24)) : 680
     height: parent ? Math.max(0, Math.min(520, parent.height - 24)) : 520
+    property FrostRequest backdropRequest: FrostRequest {
+        host: root.parent ? root.parent.Window.window : null
+        shown: root.visible
+    }
     modal: false; focus: true
     closePolicy: Popup.CloseOnEscape
     padding: 16

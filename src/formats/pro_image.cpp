@@ -14,6 +14,7 @@
 #include <OpenEXR/ImfStandardAttributes.h>
 #include <OpenEXR/ImfTiledInputPart.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -105,6 +106,32 @@ struct Layout {
   bool normalized;
   bool bgra{};
 };
+struct PackedUnorm {
+  unsigned bytes{};
+  std::array<std::uint32_t, 4> masks{};
+
+  std::uint32_t read(const std::uint8_t *pixel) const {
+    std::uint32_t word{};
+    std::memcpy(&word, pixel, bytes);
+    return word;
+  }
+  float sample(std::uint32_t word, unsigned channel) const {
+    const auto mask = masks[channel];
+    if (!mask)
+      return 1.F;
+    const auto shift = std::countr_zero(mask);
+    return float((word & mask) >> shift) / float(mask >> shift);
+  }
+};
+PackedUnorm packedUnorm(DXGI_FORMAT format) {
+  switch (format) {
+  case DXGI_FORMAT_B5G6R5_UNORM: return {2, {0xf800, 0x07e0, 0x001f, 0}};
+  case DXGI_FORMAT_B5G5R5A1_UNORM: return {2, {0x7c00, 0x03e0, 0x001f, 0x8000}};
+  case DXGI_FORMAT_B4G4R4A4_UNORM: return {2, {0x0f00, 0x00f0, 0x000f, 0xf000}};
+  case DXGI_FORMAT_R10G10B10A2_UNORM: return {4, {0x3ff, 0xffc00, 0x3ff00000, 0xc0000000}};
+  default: return {};
+  }
+}
 Layout layout(DXGI_FORMAT f) {
   switch (f) {
   case DXGI_FORMAT_R32G32B32A32_FLOAT:
@@ -521,8 +548,7 @@ ImageSubresource ImageFile::decode(std::size_t index,
       hr(DirectX::Decompress(encoded, DXGI_FORMAT_R32G32B32A32_FLOAT, decoded));
       native = decoded.GetImage(0, 0, 0);
       format = native->format;
-    } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-               (impl_->tga && format == DXGI_FORMAT_B5G5R5A1_UNORM)) {
+    } else if (packedUnorm(format).bytes) {
       // Packed source words stay available in encoded_blocks, decoded values
       // are UNORM.
       hr(DirectX::Convert(*native, DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -994,7 +1020,8 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
     const auto &native = impl_->surfaces.at(index);
     auto format = native.format;
     const bool compressed = DirectX::IsCompressed(format);
-    auto l = compressed || format == DXGI_FORMAT_R10G10B10A2_UNORM
+    const auto packed = packedUnorm(format);
+    auto l = compressed || packed.bytes
                  ? Layout{ScalarType::Float32, 4, false}
                  : layout(format);
     const auto storedCount = l.count;
@@ -1053,10 +1080,9 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
                             12))
                   fail("DDS opaque alpha declaration conflicts with stored "
                        "values");
-          } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
-            std::uint32_t word;
-            std::memcpy(&word, native.pixels + y * native.rowPitch + x * 4, 4);
-            if ((word >> 30) != 3)
+          } else if (packed.bytes) {
+            const auto word = packed.read(native.pixels + y * native.rowPitch + x * packed.bytes);
+            if ((word & packed.masks[3]) != packed.masks[3])
               fail("DDS opaque alpha declaration conflicts with stored values");
           } else if (!opaque(native.pixels + y * native.rowPitch +
                              (x * 4 + 3) * scalar_size(l.type)))
@@ -1113,7 +1139,16 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
       for (std::uint64_t x = 0; x < ow; ++x) {
         const auto sx = r.sx(x), sy = r.sy(y);
         const std::uint8_t *pixel{};
-        if (impl_->legacy_expanded) {
+        std::array<float, 4> unpacked;
+        if (packed.bytes) {
+          const auto *src = impl_->legacy_expanded
+              ? patch->pixels + (sx - r.x) * packed.bytes
+              : native.pixels + sy * native.rowPitch + sx * packed.bytes;
+          const auto word = packed.read(src);
+          for (unsigned c = 0; c < l.count; ++c)
+            unpacked[c] = packed.sample(word, c);
+          pixel = reinterpret_cast<const std::uint8_t *>(unpacked.data());
+        } else if (impl_->legacy_expanded) {
           pixel = patch->pixels + (sx - r.x) * storedCount * component;
         } else if (compressed) {
           const auto block = sx / 4;
@@ -1132,13 +1167,6 @@ ImageSubresource ImageFile::decode_preview(std::size_t index,
             patch = decoded.GetImage(0, 0, 0);
           }
           pixel = patch->pixels + (sy % 4) * patch->rowPitch + (sx % 4) * 16;
-        } else if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
-          DirectX::Image encoded{
-              1, 1, format,
-              4, 4, native.pixels + sy * native.rowPitch + sx * 4};
-          hr(DirectX::Convert(encoded, DXGI_FORMAT_R32G32B32A32_FLOAT,
-                              DirectX::TEX_FILTER_DEFAULT, 0, decoded));
-          pixel = decoded.GetPixels();
         } else
           pixel = native.pixels + sy * native.rowPitch +
                   sx * storedCount * component;

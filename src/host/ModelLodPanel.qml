@@ -53,7 +53,7 @@ Item {
         text: Theme.t("归类仅影响本次显示，不写回资产，也不推断未导出的物理资产。准备或失败时，所有查看页的精确检查持续暂停。", "Classification only affects this session. It never writes assets or infers unexported physics assets. Exact inspection remains paused across modes while preparation is pending or failed.", "歸類僅影響本次顯示，不寫回資產，亦不推斷未匯出的物理資產。準備或失敗時，所有檢視頁的精確檢查持續暫緩。")
     }
     }
-    Dialog {
+    FrostDialog {
         id: correction
         parent: Overlay.overlay; anchors.centerIn: parent
         width: Math.min(420, parent ? parent.width-32 : 420)

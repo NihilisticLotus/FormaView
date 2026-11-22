@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-Rectangle {
+GlassPanel {
     id: root
     required property var controller
     property string locatingId: ""
@@ -11,27 +11,55 @@ Rectangle {
     onResourceCountChanged: if (resourcesSection) resourcesSection.checked = resourceCount > 0
     Component.onCompleted: resourcesSection.checked = resourceCount > 0
     objectName: "inspectorPane"
-    color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
+    radius: Theme.groupRadius
     readonly property bool imageActive: !!controller.image && controller.image.available
     readonly property bool modelActive: !!controller.model && controller.model.available
+    property string pendingModelSection: ""
+    function inspectSection(section) {
+        showInfo = false
+        if (modelInspectorHost.item) modelInspectorHost.item.inspectSection(section)
+        else pendingModelSection = section
+    }
+    property bool showInfo: false
+    ColumnLayout {
+        id: inspectorHead
+        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 12; spacing: 10
+        Label { text: Theme.t("检查器", "Inspector", "檢查器"); font.bold: true; font.pixelSize: 16; color: Theme.text }
+        Rectangle {
+            Layout.fillWidth: true; implicitHeight: 34; radius: 10; color: Theme.light ? "#425d8397" : "#494f677b"
+            RowLayout {
+                anchors.fill: parent; anchors.margins: 3; spacing: 2
+                PageTab { Layout.fillWidth: true; Layout.fillHeight: true; text: Theme.t("检查","Inspect","檢查"); checked: !root.showInfo; onClicked: root.showInfo=false }
+                PageTab { Layout.fillWidth: true; Layout.fillHeight: true; text: Theme.t("信息","Info","資訊"); checked: root.showInfo; onClicked: root.showInfo=true }
+            }
+        }
+    }
+    Item {
+        anchors.top: inspectorHead.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+        anchors.topMargin: 3
     Loader {
+        id: modelInspectorHost
         objectName: "modelInspectorLoader"
+        onLoaded: if (root.pendingModelSection) {
+            item.inspectSection(root.pendingModelSection)
+            root.pendingModelSection = ""
+        }
         anchors.fill: parent; anchors.margins: 12
         asynchronous: true
-        active: root.modelActive; visible: active
+        active: root.modelActive; visible: active && !root.showInfo
         onActiveChanged: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }
         Component.onCompleted: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }
     }
     Loader {
         anchors.fill: parent; anchors.margins: 12
-        active: root.imageActive; visible: active
+        active: root.imageActive; visible: active && !root.showInfo
         onActiveChanged: { if (active) setSource("ImageInspector.qml", {controller: root.controller}) }
         Component.onCompleted: { if (active) setSource("ImageInspector.qml", {controller: root.controller}) }
     }
     ColumnLayout {
-        visible: !root.imageActive && !root.modelActive
+        visible: root.showInfo || (!root.imageActive && !root.modelActive)
         anchors.fill: parent; anchors.margins: 12; spacing: 14
-        Label { text: Theme.t("检查", "Inspect", "檢查"); font.pixelSize: 15; font.bold: true; color: Theme.text }
+        Label { text: Theme.t("文件信息", "File information", "檔案資訊"); font.pixelSize: 15; font.bold: true; color: Theme.text }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
         Label { Layout.fillWidth: true; visible: !root.controller.asset.path; text: Theme.t("选择文件以检查", "Select a file to inspect", "選取檔案以檢查"); color: Theme.muted; wrapMode: Text.WordWrap }
         Readout { Layout.fillWidth: true; visible: !!root.controller.asset.path; label: Theme.t("实际文件", "Current file", "目前檔案"); value: root.controller.asset.path || "" }
@@ -58,7 +86,7 @@ Rectangle {
                 Readout { Layout.fillWidth: true; visible: issue.modelData.candidate.length>0; label: Theme.t("候选路径", "Candidate path", "候選路徑"); value: issue.modelData.candidate }
                 Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.muted; text: issue.modelData.state === "mapped" ? Theme.t("已记录路径，加载时仍须验证格式。", "Path recorded. Format validation is still required on load.", "已記錄路徑，載入時仍須驗證格式。") : Theme.t("候选检查仅验证路径与可读性。", "Candidate check verifies path and readability only.", "候選檢查僅驗證路徑與可讀性。") }
                 RowLayout {
-                    Tool { text: Theme.t("定位…", "Locate…", "定位…"); enabled: issue.modelData.state !== "checking"; onClicked: {root.locatingId=issue.modelData.id; candidate.open()} }
+                    Tool { text: Theme.t("定位…", "Locate…", "定位…"); enabled: issue.modelData.state !== "checking"; onClicked: {root.locatingId=issue.modelData.id; candidate.present()} }
                     Tool { text: Theme.t("使用路径", "Use path", "使用路徑"); enabled: issue.modelData.state === "checked"; onClicked: root.controller.applyResource(issue.modelData.id) }
                 }
             }
@@ -66,5 +94,6 @@ Rectangle {
         Item { Layout.fillHeight: true }
         Tool { Layout.fillWidth: true; enabled: !!root.controller.asset.path; text: Theme.t("复制文件路径", "Copy file path", "複製檔案路徑"); onClicked: root.controller.copy(root.controller.asset.path) }
     }
-    FileDialog { id: candidate; title: Theme.t("定位资源", "Locate resource", "定位資源"); onAccepted: root.controller.validateResource(root.locatingId,selectedFile.toString()) }
+    }
+    FrostFileDialog { parentWindow: root.Window.window; id: candidate; title: Theme.t("定位资源", "Locate resource", "定位資源"); onAccepted: root.controller.validateResource(root.locatingId,selectedFile.toString()) }
 }

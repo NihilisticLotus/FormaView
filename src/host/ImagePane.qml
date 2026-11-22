@@ -155,7 +155,7 @@ ColumnLayout {
                 Tool { objectName: "gifNext"; iconName: "animation-step-forward"; quiet: true; hint: Theme.t("下一帧", "Next frame", "下一幀"); onClicked: root.session.stepFrame(1) }
                 OptionCheck { objectName: "gifLoop"; text: Theme.t("循环", "Loop", "循環"); checked: root.session.loop; onToggled: root.session.setLoop(checked) }
                 Label { Layout.fillWidth: true; color: Theme.muted; font.family: "Consolas"; text: Theme.t("帧 %1 / %2 · %3 ms", "Frame %1 / %2 · %3 ms", "幀 %1 / %2 · %3 ms").arg(root.session.frame + 1).arg(root.session.frameCount).arg(root.session.frameDelay) }
-                Tool { objectName: "gifExportFrames"; text: Theme.t("导出逐帧 PNG…", "Export frame PNGs…", "匯出逐幀 PNG…"); enabled: !root.session.exporting; onClicked: gifFolder.open() }
+                Tool { objectName: "gifExportFrames"; text: Theme.t("导出逐帧 PNG…", "Export frame PNGs…", "匯出逐幀 PNG…"); enabled: !root.session.exporting; onClicked: gifFolder.present() }
             }
             Slider {
                 objectName: "gifScrubber"
@@ -186,12 +186,13 @@ ColumnLayout {
         visible: pixelToggle.checked
         controller: root.controller
     }
-    FolderDialog {
+    FrostFolderDialog {
+        parentWindow: root.Window.window
         id: gifFolder
         title: Theme.t("选择逐帧 PNG 输出目录", "Choose frame PNG output folder", "選擇逐幀 PNG 輸出目錄")
         onAccepted: { gifDirectory.text = root.controller.localFile(selectedFolder); gifExportDialog.open() }
     }
-    Dialog {
+    FrostDialog {
         id: gifExportDialog
         modal: true
         title: Theme.t("导出 GIF 逐帧 PNG", "Export GIF frame PNGs", "匯出 GIF 逐幀 PNG")

@@ -13,6 +13,7 @@ struct RenderItemForeign {
 class ModelView : public formaview::render::Item {
   Q_OBJECT
   QML_ELEMENT
+  Q_PROPERTY(QColor backdrop READ backdrop WRITE setBackdrop NOTIFY backdropChanged)
   Q_PROPERTY(
       ModelSession *session READ session WRITE setSession NOTIFY sessionChanged)
   Q_PROPERTY(int representation READ representation WRITE setRepresentation
@@ -24,6 +25,13 @@ class ModelView : public formaview::render::Item {
   Q_PROPERTY(bool wireframe READ wireframeVisible WRITE setWireframe NOTIFY wireframeChanged)
   Q_PROPERTY(int shadingMode READ shading WRITE setShading NOTIFY shadingChanged)
 public:
+  QColor backdrop() const { return sceneBackground; }
+  void setBackdrop(const QColor &value) {
+    if (value == sceneBackground) return;
+    sceneBackground = value;
+    update();
+    emit backdropChanged();
+  }
   explicit ModelView(QQuickItem *parent = nullptr);
   ModelSession *session() const { return session_; }
   int representation() const { return representation_; }
@@ -32,7 +40,7 @@ public:
   bool wireframeVisible() const { return wireframe; }
   int shading() const { return shadingMode; }
   void setShading(int value) {
-    if (value < 0 || value > 2 || value == shadingMode) return;
+    if (value < 0 || value > 3 || value == shadingMode) return;
     shadingMode = value;
     update();
     emit shadingChanged();
@@ -83,6 +91,7 @@ public:
   }
   Q_INVOKABLE void restoreCamera(const QVariantMap &);
 signals:
+  void backdropChanged();
   void sessionChanged();
   void representationChanged();
   void guidesChanged();

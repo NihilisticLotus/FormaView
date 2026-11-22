@@ -3,10 +3,16 @@ import QtQuick.Controls
 import QtQuick.Layouts
 Rectangle {
     id: root
+    signal closeCurrentFile()
     required property var controller
     signal openFile()
     signal locate()
     signal toggleFocus()
+    signal inspectModelSection(string section)
+    Connections {
+        target: root.modelPane
+        function onInspectSection(section) { root.inspectModelSection(section) }
+    }
     signal unavailable()
     signal convert()
     signal exportShortcut(string preset)
@@ -14,33 +20,52 @@ Rectangle {
     property bool focused: false
     readonly property bool imageActive: !!controller.image && (controller.image.available || controller.image.busy || !!controller.image.error)
     readonly property bool modelActive: !!controller.model && (controller.model.available || controller.model.busy || !!controller.model.error)
-    function focusLayoutControl() { imageFocus.forceActiveFocus() }
+    function pauseSession(): void {
+        if (videoLoader.item) videoLoader.item.player.setOption("pause", "yes")
+        if (controller.image && controller.image.playing) controller.image.togglePlay()
+        if (controller.model && controller.model.playing) controller.model.togglePlay()
+    }
+    function subtitleDrop(urls) { return videoLoader.item ? videoLoader.item.subtitleDrop(urls) : false }
+    function focusLayoutControl() {
+        if (videoLoader.item)
+            videoLoader.item.focusPlayback()
+        else
+            imageFocus.forceActiveFocus()
+    }
     function addExternalAnimation(): void { const pane = modelPane; if (pane) pane.addExternalAnimation() }
     readonly property var modelPane: modelLoader.item
     objectName: "previewPane"
-    color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
+    color: Theme.glass; radius: Theme.groupRadius; border.color: Theme.glassEdge
     ColumnLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            Layout.fillWidth: true; implicitHeight: 48; color: Theme.panel
+            visible: !videoLoader.active
+            Layout.fillWidth: true; implicitHeight: 39; color: "transparent"
             RowLayout {
-                anchors.fill: parent; anchors.margins: 12
+                anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8; anchors.topMargin: 2; anchors.bottomMargin: 2
+                AppIcon { name: root.modelActive ? "model" : "image-file"; size: 16; variant: "muted" }
                 Label { Layout.fillWidth: true; font.pixelSize: Theme.compactText; font.bold: true; elide: Text.ElideMiddle; color: Theme.text; text: root.controller.asset.name || Theme.t("预览", "Preview", "預覽") }
-                Label { objectName: "readOnlyPreviewLabel"; text: Theme.t("只读预览", "Read-only preview", "唯讀預覽"); color: Theme.muted; font.pixelSize: Theme.noteText; Accessible.description: Theme.t("预览调整仅影响显示，不修改原文件。", "Preview adjustments only affect the display; source files remain unchanged.", "預覽調整僅影響顯示，不修改原始檔案。") }
-                Tool { id: imageFocus; quiet: true; iconName: "fullscreen"; text: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
+                Item {
+                    id: modelHeaderSlot
+                    Layout.preferredWidth: root.modelPane && root.modelPane.inlineHeader ? root.modelPane.toolsWidth : 0
+                    Layout.fillHeight: true
+                    visible: Layout.preferredWidth > 0
+                }
+                Label { objectName: "readOnlyPreviewLabel"; visible: !root.controller.asset.path; text: Theme.t("只读预览", "Read-only preview", "唯讀預覽"); color: Theme.muted; font.pixelSize: Theme.noteText; Accessible.description: Theme.t("预览调整仅影响显示，不修改原文件。", "Preview adjustments only affect the display; source files remain unchanged.", "預覽調整僅影響顯示，不修改原始檔案。") }
+                Tool { id: imageFocus; quiet: true; iconName: "fullscreen"; hint: root.focused ? Theme.t("恢复布局", "Restore layout", "還原配置") : Theme.t("专注预览", "Focus view", "專注預覽"); onClicked: root.toggleFocus() }
                 Tool { iconName: "more"; quiet: true; hint: Theme.t("更多", "More", "更多"); onClicked: actions.open(); AppPopupMenu { id: actions; objectName: "previewActionsMenu"; y: parent.height
                     AppMenuItem { text: Theme.t("打开所在位置", "Show location", "開啟所在位置"); enabled: !!root.controller.asset.path; onTriggered: root.controller.reveal(root.controller.asset.path) }
                     AppMenuItem { objectName: "quickTextureExport"; visible: root.controller.asset.kind === "image"; text: Theme.t("导出贴图…", "Export texture…", "匯出貼圖…"); onTriggered: root.exportShortcut("texture") }
                     AppMenuItem { objectName: "quickModelExport"; visible: ["model", "convert"].includes(root.controller.asset.kind); text: Theme.t("导出模型…", "Export model…", "匯出模型…"); onTriggered: root.exportShortcut("model") }
                     AppMenuItem { objectName: "quickAbcFrameExport"; visible: root.controller.asset.kind === "cache" && !!root.controller.model && root.controller.model.geometryCache; enabled: !!root.controller.model && root.controller.model.cacheInfo.framed === true && !root.controller.model.cacheInfo.loading; text: Theme.t("导出当前帧为 FBX…", "Export current frame as FBX…", "匯出目前影格為 FBX…"); onTriggered: root.exportShortcut("abcFrame") }
                     AppMenuItem { objectName: "quickAnimationExport"; visible: ["model", "animation", "convert"].includes(root.controller.asset.kind); text: Theme.t("导出动画…", "Export animation…", "匯出動畫…"); onTriggered: root.exportShortcut("animation") }
-                    AppMenuItem { text: Theme.t("关闭当前文件", "Close current file", "關閉目前檔案"); enabled: !!root.controller.asset.path; onTriggered: root.controller.clearAsset() }
+                    AppMenuItem { text: Theme.t("关闭当前文件", "Close current file", "關閉目前檔案"); enabled: !!root.controller.asset.path; onTriggered: root.closeCurrentFile() }
                 } }
             }
         }
         Rectangle {
             visible: root.controller.error.length > 0
-            Layout.fillWidth: true; implicitHeight: errorColumn.implicitHeight+24; color: "#43302e"
+            Layout.fillWidth: true; implicitHeight: errorColumn.implicitHeight+24; color: Theme.light ? "#ffefed" : "#43302e"
             ColumnLayout {
                 id: errorColumn
                 anchors.fill: parent; anchors.margins: 12
@@ -56,7 +81,7 @@ Rectangle {
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; color: Theme.base
-            visible: !root.imageActive && !root.modelActive
+            visible: !root.imageActive && !root.modelActive && !videoLoader.active
             ColumnLayout {
                 anchors.centerIn: parent; width: Math.min(parent.width-48, 520); spacing: 16
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; text: root.controller.asset.path ? (root.controller.asset.suffix || Theme.t("文件", "File", "檔案")) : "FormaView"; color: Theme.text; font.pixelSize: 24 }
@@ -68,13 +93,26 @@ Rectangle {
             }
         }
         Loader {
+            id: videoLoader
+            Layout.fillWidth: true; Layout.fillHeight: true
+            active: root.controller.asset.kind === "video"; visible: active
+            source: active ? "VideoPane.qml" : ""
+            onLoaded: {
+                item.source = Qt.binding(() => root.controller.asset.path || "")
+                item.playlistModel = root.controller.videos
+                item.openVideo.connect(path => root.controller.openPath(path))
+                item.openAdjacent.connect(direction => root.controller.adjacentVideo(direction))
+                item.closeVideo.connect(() => root.closeCurrentFile())
+            }
+        }
+        Loader {
             id: modelLoader
             objectName: "modelPaneLoader"
             Layout.fillWidth: true; Layout.fillHeight: true
             asynchronous: true
             active: root.modelActive; visible: active
-            onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }
-            Component.onCompleted: { if (active) setSource("ModelPane.qml", {controller: root.controller, focused: Qt.binding(() => root.focused)}) }
+            onActiveChanged: { if (active) setSource("ModelPane.qml", {controller: root.controller, headerSlot: modelHeaderSlot, focused: Qt.binding(() => root.focused)}) }
+            Component.onCompleted: { if (active) setSource("ModelPane.qml", {controller: root.controller, headerSlot: modelHeaderSlot, focused: Qt.binding(() => root.focused)}) }
         }
         Loader {
             Layout.fillWidth: true; Layout.fillHeight: true

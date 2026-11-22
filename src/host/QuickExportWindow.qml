@@ -109,6 +109,8 @@ AppToolWindow {
         }
     }
     ColumnLayout {
+        layer.enabled: root.frostDepth > 0
+        layer.effect: FrostEffect {}
         anchors.fill: parent; anchors.margins: 20; spacing: 12
         anchors.topMargin: 20 + Math.max(0, root.header.mapToItem(parent, 0, root.header.height).y)
         Readout { objectName: "quickExportSource"; Layout.fillWidth: true; label: Theme.t("当前文件", "Current file", "目前檔案"); value: root.inputPath }

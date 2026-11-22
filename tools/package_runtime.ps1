@@ -20,7 +20,8 @@ $repo = Split-Path -Parent $PSScriptRoot
 $OutDir = [IO.Path]::GetFullPath($OutDir)
 if (-not $QtRoot) { throw 'Set FORMAVIEW_QT_ROOT or pass -QtRoot.' }
 $bin = Join-Path $BuildDir $Configuration
-$required = 'formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe'
+$productExecutables = 'formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe'
+$required = @('libmpv-2.dll') + $productExecutables
 foreach ($name in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $bin $name))) { throw "Missing built file: $name" }
 }
@@ -29,6 +30,10 @@ if ((Test-Path -LiteralPath $OutDir) -and (Get-ChildItem -LiteralPath $OutDir -F
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 foreach ($name in $required) { Copy-Item -LiteralPath (Join-Path $bin $name) -Destination $OutDir }
+foreach ($codec in 'avcodec-62','avformat-62','avutil-60','swscale-9','swresample-6') {
+    $codecPath=Join-Path $bin ($codec+'.dll')
+    if(Test-Path -LiteralPath $codecPath){Copy-Item -LiteralPath $codecPath -Destination $OutDir}
+}
 Get-ChildItem -LiteralPath $bin -Filter 'FormaView-*-LICENSE.txt' | Copy-Item -Destination $OutDir
 
 $deploy = Join-Path $QtRoot 'bin\windeployqt.exe'
@@ -93,7 +98,7 @@ if ($unresolved.Count) {
 $projectVersion = [regex]::Match((Get-Content -LiteralPath (Join-Path $repo 'CMakeLists.txt') -Raw),
     '(?im)^project\(FormaView\s+VERSION\s+([\d.]+)\b').Groups[1].Value
 if (-not $projectVersion) { throw 'Cannot determine the FormaView project version.' }
-foreach ($name in $required) {
+foreach ($name in $productExecutables) {
     $info = (Get-Item -LiteralPath (Join-Path $OutDir $name)).VersionInfo
     if ($info.FileVersion -ne "$projectVersion.0" -or $info.ProductVersion -ne "$projectVersion.0") {
         throw "$name version does not match the source version $projectVersion.0"
@@ -104,6 +109,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'mcp'), (Join-Path 
 Copy-Item -LiteralPath (Join-Path $repo 'tools\mcp\image_stdio.py'), (Join-Path $repo 'tools\mcp\requirements.lock'), (Join-Path $repo 'tools\mcp\requirements.txt') -Destination (Join-Path $OutDir 'mcp')
 Copy-Item -Path (Join-Path $repo 'third_party\*') -Destination (Join-Path $OutDir 'licenses') -Include *.txt
 Copy-Item -LiteralPath (Join-Path $repo 'tools\runtime\README-run.txt') -Destination (Join-Path $OutDir 'README-run.txt')
+Copy-Item -LiteralPath (Join-Path $repo 'tools\runtime\rollback-to-0.1.0.ps1') -Destination $OutDir
+Copy-Item -LiteralPath (Join-Path $repo 'third_party\media-builds.json') -Destination (Join-Path $OutDir 'licenses')
 
 $files = Get-ChildItem -LiteralPath $OutDir -Recurse -File | Where-Object Name -NotIn 'sha256.json' | Sort-Object FullName
 $manifest = foreach ($file in $files) {

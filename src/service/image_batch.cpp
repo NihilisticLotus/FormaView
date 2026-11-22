@@ -737,7 +737,7 @@ struct ImageBatchService::Impl {
       fields(request, {"version", "operation"});
       return image_capabilities();
     }
-    if (operation == "inspect") {
+    if (operation == "inspect" || operation == "pixel") {
       const auto allocation = ImageAdmission(true, stop);
       return execute_image_request(request, scope, limits.image, stop);
     }

@@ -29,6 +29,7 @@ public:
     connect(window, &QWindow::visibleChanged, this, [this](bool visible) {
       if (visible) applyFrameAppearance();
     });
+    connect(window, &QQuickWindow::colorChanged, this, [this] { applyFrameAppearance(); });
     connect(window, &QWindow::screenChanged, this, [this] {
       QMetaObject::invokeMethod(this, [this] { updateCaptionInset(); }, Qt::QueuedConnection);
     });
@@ -208,7 +209,7 @@ public:
     // "pressed"; let the caption beneath labels and empty space remain draggable.
     if (const auto *bar = window_->findChild<QQuickItem *>(QStringLiteral("topBar")))
       for (const auto *control : bar->childItems())
-        if (control->isVisible() && control->property("pressed").isValid() &&
+        if (control->isVisible() && (control->property("pressed").isValid() || control->property("captionClient").toBool()) &&
             control->contains(control->mapFromScene(scene)))
           return clientHit();
     // Use native caption hit testing so Windows handles move, snap, double-click
@@ -221,7 +222,8 @@ private:
     if (!window_ || !window_->handle() ||
         !window_->flags().testFlag(Qt::ExpandedClientAreaHint)) return;
     const auto hwnd = reinterpret_cast<HWND>(window_->winId());
-    const BOOL dark = TRUE;
+    const BOOL dark = window_->metaObject()->indexOfProperty("nativeCaptionHeight") >= 0 ||
+                      window_->color().lightness() < 128;
     const auto darkResult = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     const COLORREF border = DWMWA_COLOR_NONE;
     const auto borderResult = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
@@ -253,6 +255,8 @@ private:
     // Native caption pixels follow Windows DPI, while QML may additionally
     // use QT_SCALE_FACTOR. Reserve the painted/hit-tested native strip in
     // QML coordinates, including a small gap beside the application menu.
+    if (window_->metaObject()->indexOfProperty("nativeCaptionHeight") >= 0)
+      window_->setProperty("nativeCaptionHeight", std::ceil(height / window_->devicePixelRatio()));
     window_->setProperty("nativeCaptionInset",
         std::ceil(width * count / window_->devicePixelRatio()) + 8.);
   }
@@ -265,7 +269,7 @@ private:
 
 void installWindowChrome(QQuickWindow *window) {
 #ifdef Q_OS_WIN
-  if (window && !window->findChild<QObject *>(QStringLiteral("nativeWindowChrome")))
+  if (window && !window->findChild<QObject *>(QStringLiteral("nativeWindowChrome"), Qt::FindDirectChildrenOnly))
     std::make_unique<WindowChrome>(window).release(); // QObject parent owns the filter.
 #else
   Q_UNUSED(window);

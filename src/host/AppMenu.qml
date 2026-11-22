@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 MenuBar {
     id: root
+    signal closeCurrentFile()
     background: Rectangle { color: "transparent" }
     delegate: MenuBarItem {
         id: entry
@@ -37,7 +38,7 @@ MenuBar {
             }
         }
         AppMenuItem { text: Theme.t("刷新目录", "Refresh folder", "重新整理資料夾"); enabled: root.controller.directory.length>0; onTriggered: root.controller.refresh() }
-        AppMenuItem { text: Theme.t("关闭文件", "Close file", "關閉檔案"); enabled: !!root.controller.asset.path; onTriggered: root.controller.clearAsset() }
+        AppMenuItem { text: Theme.t("关闭文件", "Close file", "關閉檔案"); enabled: !!root.controller.asset.path; onTriggered: root.closeCurrentFile() }
         AppMenuItem { objectName: "menuConvertSelected"; text: Theme.t("转换选定文件…（图片 / 模型）", "Convert selected files… (images / models)", "轉換選定檔案…（影像 / 模型）"); enabled: !!root.controller.imageJobs; onTriggered: root.convert() }
         MenuSeparator {}
         AppMenuItem { text: Theme.t("退出", "Quit", "結束"); onTriggered: Qt.quit() }

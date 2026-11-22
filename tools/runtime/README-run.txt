@@ -42,3 +42,24 @@ MCP（可选 / optional）
   input/output scope in Settings, enable the endpoint and copy the generated client configuration.
   使用本目录随附的 mcp\image_stdio.py，不要引用源码树或其他旧版本目录中的脚本。
   Python 虚拟环境不随包提供；仅使用桌面预览/转换不需要 Python，也不需要启用 MCP。
+
+  无窗口工作流：将客户端 command 指向上述 python.exe，args 指向本包 mcp\image_stdio.py。
+  在该客户端配置的 env 中设置 FORMAVIEW_DESKTOP_SCOPE 为一个 UTF-8 JSON 文件的绝对路径。例如：
+    {"input_roots":["D:/Media/Videos","D:/Media/Textures"],"output_roots":["D:/FormaView输出"],"allow_overwrite":false}
+  目录须已存在。适配器随连接启动同一包的 formaview.exe，断开后退出。后台视频默认暂停，使用无声输出。
+  open_asset 返回 asset_id。用 control_video 播放、暂停、定位、调速和调音量；用 step_video_frame 单帧前进或后退。
+  capture_video_frame 将当前视频帧写入授权目录的新 PNG。read_texture_pixel(path,x,y,subresource) 可直接读取贴图源通道。
+  video_playlist 可分页查看当前目录的视频，按索引选集或切换上一部、下一部；切换后使用返回的新 asset_id。
+  list_video_tracks 枚举音轨与字幕，select_video_track 切换对应类型的 ID（0 为关闭）。
+  load_video_subtitle 在输入授权范围内加载 SRT、ASS、SSA 或 VTT。video_ab_loop 按绝对秒数设置或清除 A–B。
+  set_video_filter 调整亮度、对比度、饱和度（整数 -100 到 100）或锐化（0 到 2），传 0 可还原该项。
+  若要同步控制桌面正在显示的播放器，用设置页生成的配置。也可以用 formaview.exe --mcp-scope <范围文件绝对路径>
+  启动有窗口的主程序，从标准输出读取 endpoint，给适配器设置 FORMAVIEW_IMAGE_ENDPOINT 和 FORMAVIEW_DESKTOP=1。
+  同一个客户端配置选择一种连接方式。读播放器时间只反映当前播放器状态，显示器呈现及实际音响输出需要独立验证。
+窗口 MCP：open_asset(path, window=True) 按需启动可见播放器，普通 open_asset 继续在后台执行。
+get_window_state 返回显示器 ID、窗口模式、置顶与逻辑像素边界。control_player_window 支持 normal、fullscreen、mini、move、resize。
+
+当前账户从安装版 v0.2.0 降回官方 v0.1.0 时，在本目录的 PowerShell 中运行：
+  .\rollback-to-0.1.0.ps1 -Installer "D:\下载\FormaView-0.1.0-Windows-x64-Setup.exe"
+脚本使用原安装目录和当前文件类型，检查旧安装器的实际登记结果，需要时自动运行一次修复。
+视频依赖的版本、构建来源和许可见 licenses\media-runtime-NOTICE.txt 及 licenses\media-builds.json。

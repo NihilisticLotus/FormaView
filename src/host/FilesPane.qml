@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
-Rectangle {
+GlassPanel {
     id: root
     required property var controller
     property string viewMode: controller.preferences.fileViewMode || (controller.preferences.thumbnails ? "thumbnails" : "list")
@@ -17,9 +17,10 @@ Rectangle {
         if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MiB"
         return (bytes / 1073741824).toFixed(1) + " GiB"
     }
+    signal browseCollection(string key)
     signal collapse()
     objectName: "filesPane"
-    color: Theme.panel; radius: Theme.groupRadius; border.color: Theme.line
+    radius: Theme.groupRadius
     signal editAddress()
     function addressFocus() { editAddress() }
     function viewFocus() { activeView.forceActiveFocus() }
@@ -100,11 +101,16 @@ Rectangle {
             Keys.onEscapePressed: event => { root.viewFocus(); event.accepted = true }
             Timer { id: debounce; interval: 150; onTriggered: if (!search.inputMethodComposing) root.controller.filter(search.text, root.controller.typeFilter, root.controller.sortOrder) }
         }
+        RowLayout {
+            Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8
+            Tool { quiet: true; iconName: "assets"; text: Theme.t("已添加","Added","已加入"); onClicked: root.browseCollection("added") }
+            Tool { quiet: true; iconName: "save"; text: Theme.t("收藏","Favorites","收藏"); onClicked: root.browseCollection("favorites") }
+        }
         Tool {
             id: filterButton
             objectName: "filterButton"
             Layout.maximumWidth: root.width - 20; Layout.leftMargin: 10; Layout.rightMargin: 10
-            text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC",Theme.t("全部", "All", "全部")][root.controller.typeFilter] : "")
+            text: Theme.t("筛选 / 排序", "Filter / Sort", "篩選 / 排序") + " · " + [Theme.t("名称↑", "Name↑", "名稱↑"),Theme.t("名称↓", "Name↓", "名稱↓"),Theme.t("修改时间", "Modified", "修改時間"),Theme.t("大小", "Size", "大小")][root.controller.sortOrder] + (root.controller.typeFilter ? " · " + ["",Theme.t("图片", "Images", "影像"),Theme.t("模型", "Models", "模型"),Theme.t("动画", "Animation", "動畫"),"ABC",Theme.t("全部", "All", "全部"),Theme.t("视频","Video","影片")][root.controller.typeFilter] : "")
             hint: text
             onClicked: filters.open()
             AppPopupMenu {
@@ -114,6 +120,7 @@ Rectangle {
                 AppMenuItem { text: Theme.t("全部类型", "All types", "全部類型"); checkable: true; checked: root.controller.typeFilter === 5; onTriggered: root.controller.filter(search.text, 5, root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("图片 / 纹理", "Images / Textures", "影像 / 紋理"); checkable: true; checked: root.controller.typeFilter === 1; onTriggered: root.controller.filter(search.text, 1, root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("模型", "Models", "模型"); checkable: true; checked: root.controller.typeFilter === 2; onTriggered: root.controller.filter(search.text, 2, root.controller.sortOrder) }
+                AppMenuItem { text: Theme.t("视频","Video","影片"); checkable: true; checked: root.controller.typeFilter === 6; onTriggered: root.controller.filter(search.text,6,root.controller.sortOrder) }
                 AppMenuItem { text: Theme.t("骨骼动画", "Skeletal animation", "骨骼動畫"); checkable: true; checked: root.controller.typeFilter === 3; onTriggered: root.controller.filter(search.text, 3, root.controller.sortOrder) }
                 MenuSeparator {}
                 AppMenuItem { text: Theme.t("名称 ↑", "Name ↑", "名稱 ↑"); onTriggered: root.controller.filter(search.text, root.controller.typeFilter, 0) }

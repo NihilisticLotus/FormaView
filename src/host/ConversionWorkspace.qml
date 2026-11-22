@@ -22,6 +22,7 @@ FocusScope {
         const models = controller.selectedModels()
         const snapshot = JSON.stringify([selected, models, preset || ""])
         if (!initialized || snapshot !== selectionSnapshot) {
+            settings.applyFormatDefaults()
             service.setSourceInputs(selected)
             modelInputs = models
             modelMode = modelAvailable && (preset === "model" || preset === "animation" || (models.length > 0 && selected.length === 0))
@@ -37,16 +38,18 @@ FocusScope {
     function close(): void { focus = false; visible = false; closed() }
     onVisibleChanged: if (!visible) focus = false
     Keys.onEscapePressed: event => { close(); event.accepted = true }
+    GlassPanel { anchors.fill: parent; anchors.margins: 10 }
     ColumnLayout {
-        anchors.fill: parent; anchors.margins: root.width < 1200 ? 24 : 40; spacing: 24
+        anchors.fill: parent; anchors.margins: root.width < 1000 ? 22 : 32; spacing: 14
         RowLayout {
             Layout.fillWidth: true
+            Label { text: Theme.t("转换","Convert","轉換"); color: Theme.text; font.pixelSize: 23; font.bold: true; Layout.rightMargin: 14 }
             TabBar {
                 id: tabs; objectName: "conversionSteps"; Layout.preferredWidth: 300
-                background: Rectangle { color: "transparent" }
-                PageTab { stepStyle: true; text: Theme.t("1 设置", "1 Settings", "1 設定") }
-                PageTab { stepStyle: true; text: Theme.t("2 预检", "2 Preflight", "2 預檢") }
-                PageTab { stepStyle: true; lastStep: true; text: Theme.t("3 任务", "3 Jobs", "3 工作") }
+                background: Rectangle { radius: 12; color: Theme.glass; border.color: Theme.glassEdge }
+                PageTab { text: Theme.t("1 设置", "1 Settings", "1 設定") }
+                PageTab { text: Theme.t("2 预检", "2 Preflight", "2 預檢") }
+                PageTab { lastStep: true; text: Theme.t("3 任务", "3 Jobs", "3 工作") }
             }
             Item { Layout.fillWidth: true }
             Choice { objectName: "conversionCategory"; Layout.preferredWidth: 220; currentIndex: root.modelMode ? 1 : 0

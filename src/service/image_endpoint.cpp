@@ -199,6 +199,13 @@ struct ImageEndpoint::Impl {
                               .size() <= 2048)
                     owner->observedClient(client);
                   const auto operation = request["operation"].toString();
+                  if (operation.startsWith("desktop.") && owner->desktopRequest) {
+                    const QPointer<QLocalSocket> clientSocket(socket);
+                    owner->desktopRequest(request, [clientSocket](QJsonObject result) {
+                      if (clientSocket) respond(clientSocket, result);
+                    });
+                    return;
+                  }
                   if (QStringList{"get_plan", "get_job", "list_jobs",
                                   "get_discovery", "cancel"}
                           .contains(operation)) {
@@ -235,7 +242,7 @@ struct ImageEndpoint::Impl {
                         Qt::QueuedConnection);
                     return TaskResult{};
                   };
-                  const bool heavyRequest = operation == "inspect" || operation == "discover" ||
+                  const bool heavyRequest = operation == "inspect" || operation == "pixel" || operation == "discover" ||
                       (operation == "retry_plan" && groups && groups->contains(request.value("id").toString()));
                   auto &lane = heavyRequest ? heavy : control;
                   const auto accepted = lane.submit(std::move(task));
@@ -285,7 +292,7 @@ ImageEndpoint::ImageEndpoint(std::shared_ptr<ImageBatchService> service,
     : QObject(parent),
       impl_(std::make_unique<Impl>(this, std::move(service), name, std::move(groups), requestTimeout)) {}
 ImageEndpoint::~ImageEndpoint() = default;
-void ImageEndpoint::stop() { impl_->stop(); }
+void ImageEndpoint::stop() { desktopRequest = {}; impl_->stop(); }
 bool ImageEndpoint::idle() const {
   const auto s = impl_->control.stats();
   const auto h = impl_->heavy.stats();

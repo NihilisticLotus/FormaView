@@ -2,6 +2,7 @@
 #include "desktop.hpp"
 #ifdef Q_OS_WIN
 #include "explorer_open.hpp"
+#include <ole2.h>
 #endif
 #include "desktop_trace.hpp"
 #include "window_chrome.hpp"
@@ -9,7 +10,9 @@
 #include <QSettings>
 #include <QScopeGuard>
 #include <QThread>
+#include <QTemporaryDir>
 #ifdef FORMAVIEW_IMAGE_UI
+#include "desktop_mcp.hpp"
 #include "formaview/image_requests.hpp"
 #endif
 #include "formaview/telemetry.hpp"
@@ -26,6 +29,8 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include "video_session.hpp"
+#include <QtQml/qqml.h>
 #include <QStyleHints>
 #include <QTimer>
 #ifdef QT_QML_DEBUG
@@ -145,11 +150,20 @@ int main(int argc, char *argv[]) {
     }
   }
   const auto started = std::chrono::steady_clock::now();
+  qmlRegisterType<VideoSession>("FormaView.Video", 1, 0, "VideoSession");
   QQuickStyle::setStyle("Basic");
   QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
   // Large JPEG previews request bounded scaled/clip decoding; ordinary Qt
   // readers keep the existing per-image allocation guard.
   QImageReader::setAllocationLimit(32);
+#ifdef Q_OS_WIN
+  // Keep the GUI apartment alive until Qt's Windows platform plugin has
+  // released its cached WinRT interfaces, including during MCP shutdown.
+  const HRESULT apartment = OleInitialize(nullptr);
+  const auto releaseApartment = qScopeGuard([apartment] {
+    if (SUCCEEDED(apartment)) OleUninitialize();
+  });
+#endif
   auto app = DesktopApplication{argc, argv};
   app.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #ifdef FORMAVIEW_IMAGE_UI
@@ -190,6 +204,19 @@ int main(int argc, char *argv[]) {
             (traceRoot + "/image-journal").toUtf8());
   }
   const auto arguments = app.arguments();
+#ifdef FORMAVIEW_IMAGE_UI
+  std::unique_ptr<QTemporaryDir> windowProfile;
+  if (const auto i = arguments.indexOf("--mcp-window"); i >= 0) {
+    if (!watchMcpParent(arguments.value(i + 2).toULong())) return 2;
+    windowProfile = std::make_unique<QTemporaryDir>();
+    if (!windowProfile->isValid()) return 2;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, windowProfile->path());
+    qputenv("FORMAVIEW_IMAGE_STATE_ROOT", (windowProfile->path() + "/journal").toUtf8());
+  }
+  if (const auto i = arguments.indexOf("--mcp-background"); i >= 0)
+    return runBackgroundMcp(arguments.value(i + 1), arguments.value(i + 2).toULong());
+#endif
   const auto openIndex = arguments.indexOf("--open");
   const auto requested = openIndex >= 0 ? arguments.value(openIndex + 1)
       : arguments.size() == 2 && !arguments[1].startsWith('-') ? arguments[1] : QString{};
@@ -341,6 +368,12 @@ int main(int argc, char *argv[]) {
   auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().front());
   if (!window)
     return 3;
+#ifdef FORMAVIEW_IMAGE_UI
+  attachDesktopMcp(desktop, window);
+  const auto scopeIndex = windowProfile ? arguments.indexOf("--mcp-window") : arguments.indexOf("--mcp-scope");
+  if (scopeIndex >= 0 && !startScopedEndpoint(desktop, arguments.value(scopeIndex + 1)))
+    return 2;
+#endif
   std::unique_ptr<DesktopTrace> nativeTrace;
   if (!tracePath.isEmpty())
     nativeTrace = std::make_unique<DesktopTrace>(window, &desktop, tracePath,
@@ -503,7 +536,8 @@ int main(int argc, char *argv[]) {
                   // render thread.
   if (!openPath.isEmpty()) desktop.openPath(openPath);
 #ifdef Q_OS_WIN
-  explorer.publish(window, &desktop, openPath);
+  if (!arguments.contains("--mcp-window"))
+    explorer.publish(window, &desktop, openPath);
 #endif
   auto exit_code = app.exec();
   app.trace=nullptr;

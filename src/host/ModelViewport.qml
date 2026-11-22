@@ -20,6 +20,7 @@ FocusScope {
         objectName: root.uv ? "uvViewport" : "modelViewport"
         anchors.fill: parent
         session: root.session
+        backdrop: root.uv ? "#202b34" : Theme.light ? "#dfe4ea" : "#383f4b"
         representation: root.uv ? 1 : 0
         showGrid: !root.uv && root.showGrid
         showAxes: !root.uv && root.showAxes

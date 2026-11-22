@@ -2,6 +2,7 @@
 // timings.
 #include "formaview/image_preview.hpp"
 #include "image_session.hpp"
+#include "image_file_stamp.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -16,6 +17,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QtEndian>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -447,9 +449,41 @@ QJsonObject regression(const QString &directory) {
   require(QDir().mkpath(directory), "Fixture directory");
   QTemporaryDir temp(QDir(directory).filePath("session-XXXXXX"));
   require(temp.isValid(), "Isolated test fixture");
+  {
+    // Two RGB565 texels in a legacy DDS, stored green then red.
+    QByteArray bytes(132, '\0');
+    std::memcpy(bytes.data(), "DDS ", 4);
+    const auto field = [&](int offset, quint32 value) {
+      qToLittleEndian(value, bytes.data() + offset);
+    };
+    field(4, 124); field(8, 0x100f); field(12, 1); field(16, 2); field(20, 4);
+    field(76, 32); field(80, 0x40); field(88, 16);
+    field(92, 0xf800); field(96, 0x07e0); field(100, 0x001f);
+    field(108, 0x1000); field(128, 0xf80007e0);
+    const QString deep = temp.path() + '/' + QStringLiteral("texture-sources/").repeated(17) + QStringLiteral("材质");
+    require(QDir().mkpath(deep), "Create a long Unicode material directory");
+    QFile file(QDir(deep).filePath("packed.dds"));
+    require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Write RGB565 fixture");
+    file.close();
+    ImageSession packed;
+    packed.open(file.fileName());
+    waitFor(packed);
+    require(packed.error().isEmpty() && packed.pixels(), "RGB565 session opens");
+    const auto &channels = packed.pixels()->source.channels;
+    require(channels.size() == 3 && value(channels[1], 0) == 1 && value(channels[0], 1) == 1,
+            "RGB565 preview keeps channel order and two-byte stride");
+    ++cases;
+  }
   const auto a = temp.filePath("A.tga"), b = temp.filePath("B.tga");
   writeTga(a, 99);
   writeTga(b, 201);
+  const auto noFileId = [](HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD) -> BOOL {
+    return FALSE;
+  };
+  const auto portableStamp = host::imageFileStamp(a, {}, noFileId);
+  require(portableStamp.startsWith("sha256:") &&
+              host::imageFileStamp(a, {}, noFileId) == portableStamp,
+          "A provider without file IDs can read a stable image");
   ImageSession session;
   const auto open = [&](const QString &path) {
     session.open(path);
@@ -482,6 +516,8 @@ QJsonObject regression(const QString &directory) {
   open(a);
   require(session.info()["sha256"].toString() != oldHash,
           "Same-size same-mtime changes invalidate cache");
+  require(host::imageFileStamp(a, {}, noFileId) != portableStamp,
+          "A provider without file IDs detects a same-size same-mtime replacement");
   require(interpreted_value(session.pixels()->source.channels[0], 0) ==
               73 / 255.,
           "New source contents visible");

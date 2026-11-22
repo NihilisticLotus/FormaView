@@ -1,4 +1,5 @@
 #include "formaview/image_conversion.hpp"
+#include "formaview/image_path.hpp"
 #include <cmath>
 #include <QByteArray>
 #include <algorithm>
@@ -36,10 +37,11 @@ std::vector<std::byte> profile(const ImageData &data, std::size_t entry) {
 ImageDocument::ImageDocument(
     std::variant<ImageFile, RasterFile, ExtendedRasterFile> file)
     : file_(std::move(file)) {}
-ImageDocument ImageDocument::open(const std::filesystem::path &path,
+ImageDocument ImageDocument::open(const std::filesystem::path &source,
                                   Limits limits, std::stop_token stop) {
   if (stop.stop_requested())
     throw skeletal::Failure(ErrorCode::Cancelled, "Image open cancelled");
+  const auto path = nativeImagePath(source);
   std::ifstream in(path, std::ios::binary);
   if (!in)
     throw skeletal::Failure(ErrorCode::Io, "Cannot open image");

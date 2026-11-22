@@ -1,4 +1,5 @@
 #pragma once
+#include <QColor>
 #include <QMatrix4x4>
 #include <QQuickRhiItem>
 #include <cstdint>
@@ -121,8 +122,9 @@ public:
   std::shared_ptr<const Frame> frame;
   QMatrix4x4 viewMatrix;
   bool useViewMatrix{};
+  QColor sceneBackground{24, 24, 24};
   bool showGrid{}, showAxes{}, wireframe{};
-  int shadingMode{}; // 0 source material, 1 checker, 2 source vertex RGB.
+  int shadingMode{}; // 0 source material, 1 checker, 2 source vertex RGB, 3 neutral clay.
   int skinProbe{}; // Diagnostics only: 1 position, 2 normal, same vertex shader.
   // Callbacks run on the render thread. Do not touch GUI objects directly.
   std::function<void(Observation)> observe;

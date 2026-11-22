@@ -7,6 +7,7 @@ import QtQml.Models
 ColumnLayout {
     id: root
     required property var session
+    function showBindingDetails(open) { advanced.checked = open }
     readonly property var selected: session.skeletonSelection
     readonly property string selectionKey: (selected.id || "") + ":" + (selected.boneIndex ?? -1)
     onSelectionKeyChanged: revealTimer.restart()

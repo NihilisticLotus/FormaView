@@ -1,0 +1,24 @@
+FormaView 0.2.0 for Windows x64 includes locally built libmpv and FFmpeg.
+The replaceable DLLs are located beside formaview.exe.
+
+mpv f92afa75cdb06e077a9ecd9a9ec2eb36b16327c2 was configured with GPL features
+disabled. Its embedded FFmpeg is 64f6bcffaf2646d76463c89f13a8ae9abe0a1b66.
+The five separate FFmpeg shared libraries use
+f1acb0a2666c78d92688f4c3d2803a132f5590f6 and report LGPL version 3 or later.
+See mpv-Copyright.txt, libmpv-LICENSE.txt, ffmpeg-LICENSE.txt,
+media-runtime-GPLv3.txt and both FFmpeg license notes for the terms.
+Modification and reverse engineering for debugging modifications to the LGPL
+libraries are permitted under the applicable license. No warranty is provided.
+
+The companion FormaView-0.2.0-media-sources.zip contains source trees, patches,
+build scripts, dependency source mappings and notices. See SOURCE-KIT.txt inside.
+media-builds.json identifies the DLLs and the exact cross-build environment.
+media-static-copyrights.txt reproduces upstream notices and includes attribution
+for sources and build inputs as well as libraries linked into the binaries.
+
+LuaJIT 63c8f1a9b479ba5518cf6a170ff7729178bc3cfd. The build removes the
+Libs.private line in etc/luajit.pc. See LuaJIT.applied.patch in the source kit.
+libsixel 72ed7d6b4a2252a6245567908c32c4e8e8c226ea and libarchive
+432ab464725aa99c53de7572979bd9bbbf382ed1 were built from the locked trees.
+See the original LuaJIT COPYRIGHT, libsixel LICENSE files, and libarchive
+COPYING and individual file notices in the accompanying materials.

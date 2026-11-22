@@ -6,20 +6,85 @@ technical worker endpoint and does not advertise batch operations.
 It does not change user MCP configuration or grant filesystem scope.
 """
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 import json
 import os
 from pathlib import Path
 import subprocess
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from mcp.types import LATEST_PROTOCOL_VERSION
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
-server = FastMCP('FormaView images', instructions='Use inspect then preflight. Conversion requires the returned approval digest and explicit acknowledgement of reported losses. Filesystem access is limited by the native host scope configuration.')
+background_scope = os.environ.get('FORMAVIEW_DESKTOP_SCOPE')
+configured_endpoint = os.environ.get('FORMAVIEW_IMAGE_ENDPOINT')
+desktop_enabled = bool(background_scope or (configured_endpoint and os.environ.get('FORMAVIEW_DESKTOP') == '1'))
+active_endpoint = configured_endpoint
+window_endpoint = None
+window_process = None
+window_asset = None
+owned_hosts = None
+window_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def scoped_host(option):
+    scope = Path(background_scope)
+    executable = Path(__file__).resolve().parent.parent / 'formaview.exe'
+    if not scope.is_absolute() or not scope.is_file() or not executable.is_file():
+        raise ValueError('Use the packaged adapter and an existing absolute desktop scope file')
+    process = await asyncio.create_subprocess_exec(str(executable), option, str(scope), str(os.getpid()),
+        stdout=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        async with asyncio.timeout(30):
+            while line := await process.stdout.readline():
+                if line.startswith(b'{'):
+                    endpoint = json.loads(line)['endpoint']
+                    break
+            else:
+                raise RuntimeError('FormaView exited before its scoped endpoint was ready')
+        yield endpoint, process
+    finally:
+        try:
+            if 'endpoint' in locals() and process.returncode is None:
+                import pywintypes
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(pipe_request, endpoint,
+                        b'{"version":1,"operation":"desktop.close"}\n'), 5)
+                except pywintypes.error as error:
+                    # The owned host can finish before the final pipe read.
+                    if error.winerror not in (109, 233):
+                        raise
+                if await asyncio.wait_for(process.wait(), 10) != 0:
+                    raise RuntimeError('Background FormaView exited with an error')
+        finally:
+            if process.returncode is None:
+                process.terminate()
+                await process.wait()
+
+
+@asynccontextmanager
+async def host_lifetime(_server):
+    global active_endpoint, owned_hosts, window_endpoint, window_process, window_asset
+    if not background_scope:
+        yield {}
+        return
+    if configured_endpoint:
+        raise ValueError('Choose a background scope or an existing endpoint')
+    async with AsyncExitStack() as stack:
+        active_endpoint, _ = await stack.enter_async_context(scoped_host('--mcp-background'))
+        owned_hosts = stack
+        try:
+            yield {}
+        finally:
+            owned_hosts = window_endpoint = window_process = window_asset = active_endpoint = None
+
+
+server = FastMCP('FormaView', lifespan=host_lifetime, instructions='Open a scoped image or video to obtain an asset_id. Pause before stepping. Use read_texture_pixel directly for stored samples. Conversion requires native preflight and approval.')
 workers = asyncio.Semaphore(2)
 controls = asyncio.Semaphore(4)
 
@@ -77,15 +142,18 @@ def pipe_request(endpoint: str, message: bytes) -> dict[str, Any]:
 
 
 def single_file_tool(**kwargs):
-    return (lambda function: function) if os.environ.get('FORMAVIEW_IMAGE_ENDPOINT') else server.tool(**kwargs)
+    return (lambda function: function) if configured_endpoint or background_scope else server.tool(**kwargs)
 
 
 def batch_tool(**kwargs):
-    return server.tool(**kwargs) if os.environ.get('FORMAVIEW_IMAGE_ENDPOINT') else (lambda function: function)
+    return server.tool(**kwargs) if configured_endpoint or background_scope else (lambda function: function)
 
 
-async def native_request(request: dict[str, Any]) -> dict[str, Any]:
-    endpoint = os.environ.get('FORMAVIEW_IMAGE_ENDPOINT')
+async def native_request(request: dict[str, Any], *, endpoint=None) -> dict[str, Any]:
+    global window_asset
+    if not endpoint and window_endpoint and request.get('asset_id') and request['asset_id']==window_asset:
+        endpoint = window_endpoint
+    endpoint = endpoint or active_endpoint
     if endpoint:
         params = server.get_context().session.client_params
         if params is not None:
@@ -100,7 +168,10 @@ async def native_request(request: dict[str, Any]) -> dict[str, Any]:
         if endpoint:
             communication = asyncio.create_task(asyncio.to_thread(pipe_request, endpoint, message))
             try:
-                return await asyncio.shield(communication)
+                result = await asyncio.shield(communication)
+                if endpoint == window_endpoint and result.get('asset_id'):
+                    window_asset = result['asset_id']
+                return result
             except asyncio.CancelledError:
                 await communication
                 raise
@@ -285,6 +356,118 @@ async def create_model_export_plan(items: list[dict[str, Any]]) -> dict[str, Any
     retry_image_plan and list_image_jobs for the same plan/job IDs. Review losses before submit.
     """
     return await native_request({'version': 1, 'operation': 'create_plan', 'items': items})
+
+
+@server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+async def read_texture_pixel(path: str, x: int, y: int, subresource: int = 0) -> dict[str, Any]:
+    """Read decoded source channels and interpreted values, before display transforms. Coordinates are zero-based relative to the selected data window. Does not change the active preview."""
+    return await native_request(dict(version=1, operation='pixel', input=path, x=x, y=y, subresource=subresource))
+
+
+def desktop_tool(*, read_only=False):
+    annotations = ToolAnnotations(readOnlyHint=read_only, destructiveHint=False, openWorldHint=False)
+    return server.tool(annotations=annotations) if desktop_enabled else (lambda function: function)
+
+
+@desktop_tool()
+async def open_asset(path: str, window: bool = False) -> dict[str, Any]:
+    """Open an authorized video or image. Background sessions open videos paused. Set window=True for a visible player owned by this connection. Attached clients use their existing window."""
+    global window_endpoint, window_process
+    if window and owned_hosts:
+        async with window_lock:
+            if window_process is None or window_process.returncode is not None:
+                window_endpoint, window_process = await owned_hosts.enter_async_context(scoped_host('--mcp-window'))
+            return await native_request(dict(version=1, operation='desktop.open', path=path), endpoint=window_endpoint)
+    return await native_request(dict(version=1, operation='desktop.open', path=path))
+
+
+@desktop_tool(read_only=True)
+async def get_window_state(asset_id: str | None = None) -> dict[str, Any]:
+    """List displays and read player mode, screen ID, topmost, client/frame geometry in Qt logical pixels. Reading never opens a window. Omit ID to inspect the connection's visible window if present."""
+    endpoint = window_endpoint if not asset_id and window_process and window_process.returncode is None else None
+    return await native_request(dict(version=1, operation='desktop.window_state', asset_id=asset_id), endpoint=endpoint)
+
+
+@desktop_tool()
+async def control_player_window(asset_id: str, action: Literal['normal', 'fullscreen', 'mini', 'move', 'resize'],
+                                screen_id: str | None = None, width: int | None = None, height: int | None = None) -> dict[str, Any]:
+    """Set player mode idempotently, move to a screen ID returned by get_window_state, or resize a topmost mini window in logical pixels. Normal restores the pre-mode main window."""
+    return await native_request(dict(version=1, operation='desktop.window_control', asset_id=asset_id,
+                                    action=action, screen_id=screen_id, width=width, height=height))
+
+
+@desktop_tool(read_only=True)
+async def get_playback_state(asset_id: str) -> dict[str, Any]:
+    """Read active video position in seconds, pause, duration, rate and volume. Position is player state, not physical screen presentation."""
+    return await native_request(dict(version=1, operation='desktop.state', asset_id=asset_id))
+
+
+@desktop_tool()
+async def control_video(asset_id: str, action: Literal['play', 'pause', 'seek', 'seek_relative', 'speed', 'volume', 'subtitle_delay_ms'],
+                        value: float | None = None) -> dict[str, Any]:
+    """Play/pause, seek in absolute or signed relative seconds, set speed (0.1–8), volume (0–100), or signed subtitle delay in milliseconds (±60000)."""
+    return await native_request(dict(version=1, operation='desktop.control', asset_id=asset_id, action=action, value=value))
+
+
+@desktop_tool()
+async def set_video_toggle(asset_id: str, name: Literal['mute', 'sub-visibility', 'loop-file'], enabled: bool) -> dict[str, Any]:
+    """Mute, show subtitles without changing the selected track, or repeat the whole file. Supply the desired state."""
+    return await native_request(dict(version=1, operation='desktop.toggle', asset_id=asset_id, name=name, enabled=enabled))
+
+
+@desktop_tool()
+async def video_chapters(asset_id: str, action: Literal['list', 'select'] = 'list', index: int | None = None) -> dict[str, Any]:
+    """List chapter titles and start times, or jump to a zero-based chapter index."""
+    return await native_request(dict(version=1, operation='desktop.chapters', asset_id=asset_id, action=action, index=index))
+
+
+@desktop_tool()
+async def step_video_frame(asset_id: str, direction: Literal['previous', 'next']) -> dict[str, Any]:
+    """Advance or reverse one frame in a paused video and return the observed player position."""
+    return await native_request(dict(version=1, operation='desktop.step', asset_id=asset_id, direction=direction))
+
+
+@desktop_tool()
+async def capture_video_frame(asset_id: str, output: str, subtitles: bool = True) -> dict[str, Any]:
+    """Save the decoded video frame as a new PNG in the authorized output root. Pause first for a reproducible capture. Includes subtitles when requested."""
+    return await native_request(dict(version=1, operation='desktop.capture', asset_id=asset_id, output=output, subtitles=subtitles))
+
+
+@desktop_tool()
+async def video_playlist(asset_id: str, action: Literal['list','select','next','previous'] = 'list',
+                         index: int | None = None, offset: int = 0) -> dict[str, Any]:
+    """Page the current folder playlist (100 entries per page), select a zero-based index or navigate. Switching returns a new asset_id."""
+    return await native_request(dict(version=1, operation='desktop.playlist', asset_id=asset_id, action=action, index=index, offset=offset))
+
+
+@desktop_tool(read_only=True)
+async def list_video_tracks(asset_id: str) -> dict[str, Any]:
+    """List embedded and external audio/subtitle tracks and their player IDs."""
+    return await native_request(dict(version=1, operation='desktop.tracks', asset_id=asset_id))
+
+
+@desktop_tool()
+async def select_video_track(asset_id: str, type: Literal['audio','sub'], id: int) -> dict[str, Any]:
+    """Select a listed track of the given type. ID zero disables that track type."""
+    return await native_request(dict(version=1, operation='desktop.track', asset_id=asset_id, type=type, id=id))
+
+
+@desktop_tool()
+async def load_video_subtitle(asset_id: str, path: str) -> dict[str, Any]:
+    """Load and select an authorized local SRT, ASS, SSA or VTT (up to 16 MiB). Reuses an already loaded track."""
+    return await native_request(dict(version=1, operation='desktop.subtitle', asset_id=asset_id, path=path))
+
+
+@desktop_tool()
+async def video_ab_loop(asset_id: str, action: Literal['set','clear'], a: float | None = None, b: float | None = None) -> dict[str, Any]:
+    """Set A and B in absolute seconds, or clear both loop markers."""
+    return await native_request(dict(version=1, operation='desktop.loop', asset_id=asset_id, action=action, a=a, b=b))
+
+
+@desktop_tool()
+async def set_video_filter(asset_id: str, name: Literal['brightness','contrast','saturation','sharpen'], value: float) -> dict[str, Any]:
+    """Set brightness, contrast or saturation (-100..100 integer), or sharpening (0..2). Zero resets one adjustment; saturation -100 is grayscale."""
+    return await native_request(dict(version=1, operation='desktop.filter', asset_id=asset_id, name=name, value=value))
 
 
 if __name__ == '__main__':

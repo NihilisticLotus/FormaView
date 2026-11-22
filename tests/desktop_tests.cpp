@@ -2,6 +2,7 @@
 #include "window_capture.hpp"
 #include "stress_trace.hpp"
 #include "desktop.hpp"
+#include "video_session.hpp"
 #include "window_chrome.hpp"
 #include "formaview/telemetry.hpp"
 #include "thumbnail.hpp"
@@ -310,7 +311,7 @@ class DesktopTests final : public QObject {
     if (!visible.isEmpty())
       return visible.front();
     for (auto *found : window_->findChildren<QQuickItem *>(name))
-      if (found->isVisible())
+      if (found->isVisible() && found->window() == window_)
         return found;
     return nullptr;
   }
@@ -474,6 +475,371 @@ private slots:
     evidence_["fixture"] = fixture_;
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
+  }
+  void nativeLibraryNavigation() {
+    auto *work = item("workspace");
+    QVERIFY(work);
+    const auto tab = [&](const QString &key) {
+      const auto hits = visualItems(window_->contentItem(), "workspaceTab-" + key);
+      QVERIFY(!hits.isEmpty());
+      auto *button = hits.front();
+#ifdef Q_OS_WIN
+      if (!workflowHeadless()) {
+        const auto scene = button->mapToScene(button->boundingRect().center());
+        POINT p{qRound(scene.x() * window_->devicePixelRatio()), qRound(scene.y() * window_->devicePixelRatio())};
+        const auto hwnd = reinterpret_cast<HWND>(window_->winId());
+        QVERIFY(ClientToScreen(hwnd, &p));
+        QCOMPARE(SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(p.x, p.y)), LRESULT(HTCLIENT));
+      }
+#endif
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        button->mapToScene(button->boundingRect().center()).toPoint());
+      QTRY_COMPARE(work->property("currentPage").toString(), key);
+    };
+    tab("browse");
+    auto *library = item("libraryWorkspace");
+    QVERIFY(library);
+    desktop_->navigate(small_);
+    QTRY_VERIFY(idle());
+    const auto path = small_ + "/唯一图片.png";
+    const auto url = QUrl::fromLocalFile(path);
+    desktop_->addLibraryFiles({url, url});
+    QCOMPARE(desktop_->addedAssets(), QStringList{path});
+    desktop_->toggleFavorite(path);
+    QCOMPARE(desktop_->favoriteAssets(), QStringList{path});
+    QVERIFY(QMetaObject::invokeMethod(library, "choose", Q_ARG(QString, "added")));
+    QTRY_VERIFY(!visualItems(library, "libraryCard").isEmpty());
+    auto *card = visualItems(library, "libraryCard").front();
+    QCOMPARE(card->property("path").toString(), path);
+    auto *thumbnail = card->findChild<QQuickItem *>("libraryThumbnail");
+    QVERIFY(thumbnail);
+    QTRY_COMPARE(thumbnail->property("status").toInt(), 1); // QQuickImage::Ready
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      card->mapToScene(card->boundingRect().center()).toPoint());
+    QTRY_COMPARE(library->property("selectedPath").toString(), path);
+    save("native-library");
+    QVERIFY(QMetaObject::invokeMethod(library, "openSelection"));
+    QTRY_COMPARE(work->property("currentPage").toString(), QString("assets"));
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), path);
+    const auto revision = desktop_->sessionRevision();
+    tab("tasks");
+    auto *query = item("taskSearch");
+    QVERIFY(query);
+    query->setProperty("text", "png");
+    tab("conversion");
+    tab("browse");
+    QVERIFY(QMetaObject::invokeMethod(library, "openSelection"));
+    QTRY_COMPARE(work->property("currentPage").toString(), QString("assets"));
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    tab("tasks");
+    QCOMPARE(query->property("text").toString(), QString("png"));
+    window_->resize(820, 620);
+    tab("browse");
+    QTRY_VERIFY(library->width() <= 820);
+    save("native-library-narrow");
+    desktop_->removeLibraryFile(path);
+    QVERIFY(desktop_->addedAssets().isEmpty());
+    QCOMPARE(desktop_->favoriteAssets(), QStringList{path});
+    Desktop reopened;
+    QCOMPARE(reopened.favoriteAssets(), QStringList{path});
+    desktop_->toggleFavorite(path);
+    window_->resize(1600, 900);
+    if (const auto examples = qEnvironmentVariable("FORMAVIEW_LIBRARY_EXAMPLES"); !examples.isEmpty()) {
+      desktop_->navigate(examples);
+      QVERIFY(QMetaObject::invokeMethod(library, "choose", Q_ARG(QString, "directory")));
+      QTRY_VERIFY(idle() && desktop_->directory() == examples);
+      QTRY_VERIFY(!visualItems(library, "libraryCard").isEmpty());
+      QTest::qWait(400);
+      save("native-directory");
+    }
+    tab("assets");
+  }
+#if defined(FORMAVIEW_IMAGE_UI) && defined(FORMAVIEW_MODEL_UI)
+  void nativeInspectorRealSessions() {
+    const auto path = [](const char *name) { return qEnvironmentVariable(name); };
+    const auto texture = path("FORMAVIEW_REVIEW_TEXTURE");
+    const auto gif = path("FORMAVIEW_REVIEW_GIF");
+    const auto model = path("FORMAVIEW_REVIEW_MODEL");
+    const auto motion = path("FORMAVIEW_REVIEW_MOTION");
+    const auto cache = path("FORMAVIEW_REVIEW_CACHE");
+    if (texture.isEmpty()) QSKIP("Requires the native inspector review fixture set");
+    for (const auto &input : {texture, gif, model, motion, cache}) QVERIFY2(QFileInfo::exists(input), qPrintable(input));
+    auto *workspace = item("workspace");
+    QVERIFY(workspace);
+    const auto switchPage = [&](const QString &key) {
+      auto buttons = visualItems(window_->contentItem(), "workspaceTab-" + key);
+      QVERIFY(!buttons.isEmpty());
+      auto *button = buttons.first();
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        button->mapToScene(button->boundingRect().center()).toPoint());
+      QTRY_COMPARE(workspace->property("currentPage").toString(), key);
+    };
+    QJsonObject reports;
+    const auto roundTrip = [&](const QString &name, const QString &source, auto state) {
+      const auto revision = desktop_->sessionRevision();
+      const auto before = state();
+      switchPage("browse");
+      switchPage("tasks");
+      switchPage("assets");
+      QTRY_VERIFY(item("inspectorPane") && item("inspectorPane")->height() > 300);
+      QCOMPARE(desktop_->sessionRevision(), revision);
+      const auto after = state();
+      QCOMPARE(after, before);
+      reports[name] = QJsonObject{{"file",source},{"before",QJsonObject::fromVariantMap(before)},
+                                  {"after",QJsonObject::fromVariantMap(after)}};
+      save(name);
+    };
+    desktop_->preference("appearance","light");
+    desktop_->openPath(texture);
+    auto *image = qobject_cast<ImageSession *>(desktop_->image());
+    QTRY_VERIFY(image && !image->busy() && item("imageViewport"));
+    auto *imageView = qobject_cast<ImageView *>(item("imageViewport"));
+    QTRY_VERIFY(imageView && imageView->height() > 240 && imageView->imageRect().width() > 10);
+    const auto point = imageView->imageRect().center();
+    // Downsampled previews resolve their source pixel on a worker.
+    imageView->pinAt(point.x(),point.y());
+    QTRY_VERIFY(image->samplePinned() && image->pixel().value("valid").toBool());
+    roundTrip("texture",texture,[&]{ auto result = image->pixel(); result["pinned"] = image->samplePinned(); return result; });
+
+    desktop_->openPath(gif);
+    QTRY_VERIFY_WITH_TIMEOUT(!image->busy() && image->frameCount() > 3,15000);
+    if (image->playing()) image->togglePlay();
+    const int index = image->frameCount()/2;
+    image->seekFrame(index);
+    QTRY_COMPARE(image->frame(),index);
+    roundTrip("gif",gif,[&]{ return QVariantMap{{"frame", image->frame()},{"frames",image->frameCount()},
+                                                 {"delay_ms",image->frameDelay()},{"playing",image->playing()}}; });
+
+    desktop_->openPath(model);
+    auto *scene = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(scene && !scene->busy() && scene->canAttachExternalAnimation(),60000);
+    scene->attachExternalAnimation(motion);
+    QTRY_VERIFY_WITH_TIMEOUT(!scene->externalBusy() && scene->externalInfo().value("driven").toBool(),60000);
+    if (scene->playing()) scene->togglePlay();
+    scene->seek(.5);
+    auto *view = qobject_cast<ModelView *>(item("modelViewport"));
+    QTRY_VERIFY(view && view->height() > 240);
+    view->orbit(42,-16);
+    view->zoomBy(1.18);
+    roundTrip("model-motion",model,[&]{return QVariantMap{{"camera",view->cameraState()},
+        {"external",scene->externalInfo()},{"clip",scene->clipIndex()},{"time",scene->time()}};});
+
+    desktop_->openPath(cache);
+    QTRY_VERIFY_WITH_TIMEOUT(!scene->busy() && scene->cacheInfo().value("samples").toInt() > 7,60000);
+    scene->seekSample(7);
+    QTRY_COMPARE_WITH_TIMEOUT(scene->cacheInfo().value("sample").toInt(),7,30000);
+    QTRY_VERIFY(item("modelGeometryCacheDetails"));
+    roundTrip("alembic",cache,[&]{ const auto info = scene->cacheInfo(); QVariantMap state;
+      for (const auto *key : {"sample","samples","time","points","triangles"}) state[key] = info.value(key);
+      return state;
+    });
+    window_->resize(820,620);
+    QTRY_VERIFY(workspace->width() < 940);
+    QVERIFY(QMetaObject::invokeMethod(workspace,"setFocusMode",Q_ARG(QVariant,true)));
+    auto *rail = item("focusInspectorRail");
+    QVERIFY(rail);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      rail->mapToScene(rail->boundingRect().center()).toPoint());
+    auto *drawer = window_->findChild<QObject *>("compactInspectorDrawer");
+    QVERIFY(drawer);
+    QTRY_VERIFY(drawer->property("opened").toBool() && item("modelGeometryCacheDetails"));
+    QCOMPARE(scene->cacheInfo().value("sample").toInt(),7);
+    save("narrow-cache-inspector");
+    QVERIFY(QMetaObject::invokeMethod(drawer,"close"));
+    QTRY_VERIFY(!drawer->property("visible").toBool());
+    window_->resize(1600,900);
+    evidence_["inspector_sessions"] = reports;
+    desktop_->preference("appearance","dark");
+    QSettings settings;
+    settings.sync();
+    QVERIFY(QFile::copy(settings.fileName(),root_ + "/dark.ini"));
+    desktop_->preference("appearance","light");
+    desktop_->clearAsset();
+  }
+  void nativeWorkspaceRetainsAnimations() {
+    const auto examples = qEnvironmentVariable("FORMAVIEW_LIBRARY_EXAMPLES");
+    const auto modelPath = qEnvironmentVariable("FORMAVIEW_REVIEW_ANIMATED_FBX");
+    if (examples.isEmpty() || modelPath.isEmpty()) QSKIP("Requires GIF and external animation fixtures");
+    auto *workspace = item("workspace");
+    auto navigate = [&](const QString &page) {
+      QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, page)));
+      QTRY_COMPARE(workspace->property("currentPage").toString(), page);
+    };
+    auto *gif = qobject_cast<ImageSession *>(desktop_->image());
+    desktop_->openPath(examples + "/GIF_FrameStudy.gif");
+    QTRY_VERIFY(gif && gif->frameCount() >= 3 && !gif->busy());
+    if (gif->playing()) gif->togglePlay();
+    gif->seekFrame(2);
+    QTRY_COMPARE(gif->frame(), 2);
+    const auto gifRevision = desktop_->sessionRevision();
+    navigate("tasks");
+    navigate("assets");
+    QCOMPARE(gif->frame(), 2);
+    QCOMPARE(desktop_->sessionRevision(), gifRevision);
+
+    auto *model = qobject_cast<ModelSession *>(desktop_->model());
+    desktop_->openPath(modelPath);
+    QTRY_VERIFY_WITH_TIMEOUT(model && !model->busy() && model->canAttachExternalAnimation(), 15000);
+    model->attachExternalAnimation(modelPath);
+    QTRY_VERIFY_WITH_TIMEOUT(!model->externalBusy() && model->externalInfo().value("driven").toBool(), 15000);
+    if (!model->playing()) model->togglePlay();
+    QTRY_VERIFY(model->playing());
+    navigate("browse");
+    QTRY_VERIFY(!model->playing());
+    const auto time = model->time();
+    const auto clip = model->clipIndex();
+    const auto revision = desktop_->sessionRevision();
+    navigate("conversion");
+    navigate("assets");
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    QCOMPARE(model->clipIndex(), clip);
+    QCOMPARE(model->time(), time);
+    QVERIFY(model->externalInfo().value("driven").toBool());
+    desktop_->clearAsset();
+  }
+#endif
+  void videoPlaylistFollowsPlaybackFolder() {
+    QTemporaryDir media(root_ + "/video-playlist-XXXXXX");
+    QVERIFY(media.isValid());
+    const auto base = QDir::fromNativeSeparators(media.path());
+    const auto clips = base + "/clips";
+    const auto other = base + "/other";
+    QVERIFY(QDir().mkpath(clips));
+    QVERIFY(QDir().mkpath(other));
+    const auto first = clips + "/Episode 2.mp4";
+    const auto second = clips + "/Episode 10.mkv";
+    const auto external = other + "/Preview.webm";
+    for (const auto &path : {first, second, external, clips + "/reference.png"}) {
+      QFile file(path);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      QVERIFY(file.write("file model fixture") > 0);
+    }
+    Desktop desktop;
+    auto *list = desktop.videos();
+    desktop.openPath(first);
+    QTRY_COMPARE(desktop.asset().value("path").toString(), first);
+    QTRY_COMPARE(list->rowCount(), 2);
+    QCOMPARE(list->index(0, 0).data(FileList::Path).toString(), first);
+    QCOMPARE(list->index(1, 0).data(FileList::Path).toString(), second);
+
+    desktop.filter("reference", 1, 1);
+    QTRY_VERIFY(!desktop.busy());
+    QCOMPARE(desktop.count(), 1);
+    QCOMPARE(list->rowCount(), 2);
+    desktop.navigate(other);
+    QTRY_VERIFY(!desktop.busy() && desktop.directory() == other);
+    QCOMPARE(list->rowCount(), 2);
+    desktop.adjacentVideo(1);
+    QTRY_COMPARE(desktop.asset().value("path").toString(), second);
+    desktop.openPath(external);
+    QTRY_COMPARE(list->rowCount(), 1);
+    QCOMPARE(list->index(0, 0).data(FileList::Path).toString(), external);
+    desktop.clearAsset();
+    QCOMPARE(list->rowCount(), 0);
+  }
+  void videoViewportAndSeekKeys() {
+    QTemporaryDir media(root_ + "/video-controls-XXXXXX");
+    QVERIFY(media.isValid());
+    // A one-minute, 2 fps H.264 testsrc2 clip with no audio.
+    const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
+    const auto first = media.filePath("01.mp4");
+    QVERIFY(QFile::copy(clip, first));
+    QVERIFY(QFile::copy(clip, media.filePath("02.mp4")));
+    const auto originalSize = window_->size();
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->resize(originalSize);
+    });
+    window_->resize(1280, 800);
+    desktop_->openPath(first);
+    QTRY_COMPARE(desktop_->videos()->rowCount(), 2);
+    QTRY_VERIFY(item("videoViewport") && item("videoGlassControls") && item("videoPlaylist"));
+    auto *surface = item("videoViewport");
+    auto *controls = item("videoGlassControls");
+    auto *playlist = item("videoPlaylist");
+    QTRY_VERIFY(playlist->isVisible() && playlist->width() > 0 && controls->width() > 0);
+    const auto bar = controls->mapRectToScene(controls->boundingRect());
+    QVERIFY(surface->mapRectToScene(surface->boundingRect()).contains(bar));
+    QVERIFY(!bar.intersects(playlist->mapRectToScene(playlist->boundingRect())));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Playback assertions require the optional libmpv runtime");
+    QTRY_VERIFY_WITH_TIMEOUT(session->status().value("duration").toDouble() == 60.0, 10000);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    session->seek(10, false);
+    const auto position = [&] { return session->status().value("time-pos", -1).toDouble(); };
+    QTRY_COMPARE(position(), 10.0);
+    surface->forceActiveFocus();
+    for (int i = 0; i < 3; ++i)
+      QTest::keyClick(window_, Qt::Key_Right);
+    QTRY_COMPARE(position(), 25.0);
+    QTest::keyClick(window_, Qt::Key_Left);
+    QTest::keyClick(window_, Qt::Key_Left);
+    QTest::keyClick(window_, Qt::Key_Right);
+    QTRY_COMPARE(position(), 20.0);
+    session->setOption("volume", 50.);
+    session->setOption("speed", 1.);
+    QTest::keyClick(window_, Qt::Key_Up);
+    QTest::keyClick(window_, Qt::Key_Up);
+    QTest::keyClick(window_, Qt::Key_Down);
+    QTest::keyClick(window_, Qt::Key_BracketRight);
+    QTest::keyClick(window_, Qt::Key_BracketRight);
+    QTest::keyClick(window_, Qt::Key_BracketLeft);
+    // Let observed properties and async readbacks arrive in the same event loop.
+    QTest::qWait(180);
+    QCOMPARE(session->status().value("volume").toDouble(), 55.);
+    QCOMPARE(session->status().value("speed").toDouble(), 1.1);
+    const auto revision = desktop_->sessionRevision();
+    auto *workspace = item("workspace");
+    QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, "browse")));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, "assets")));
+    QCOMPARE(qobject_cast<VideoSession *>(item("videoSession")), session);
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    QCOMPARE(position(), 20.0);
+    QVERIFY(session->status().value("pause").toBool());
+  }
+  void videoReviewAcrossChapterAndSubtitles() {
+    const auto clip = qEnvironmentVariable("FORMAVIEW_CHAPTER_REVIEW_FIXTURE");
+    if (clip.isEmpty())
+      QSKIP("Requires the indexed 4K60 clip with a second chapter at 20 seconds");
+    QVERIFY(QFileInfo::exists(clip));
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(clip);
+    QTRY_VERIFY(item("videoSession"));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    QTRY_COMPARE_WITH_TIMEOUT(session->status().value("chapter-list").toList().size(), 2, 15000);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    const auto position = [&] { return session->status().value("time-pos", -1).toDouble(); };
+    const auto cached = [&] { return session->status().contains("visible-time"); };
+    session->seek(12.5, false);
+    session->step(false);
+    QTRY_VERIFY(std::abs(session->status().value("visible-time", position()).toDouble()
+                         - (12.5 - 1.0 / 60)) < .01);
+    const auto reviewPrevious = [&] {
+      session->seek(8.5, false);
+      if (!QTest::qWaitFor([&] { return std::abs(position() - 8.5) < .01; }, 5000))
+        return false;
+      // Allow the independent decoder to prepare the target GOP.
+      QTest::qWait(1250);
+      session->step(false);
+      return cached();
+    };
+    QVERIFY2(reviewPrevious(), "The test must enter cached-frame review");
+    session->setOption("sub-delay", .25);
+    QVERIFY(!cached());
+    QTRY_VERIFY(std::abs(position() - (8.5 - 1.0 / 60)) < .01);
+    QVERIFY(session->status().value("pause").toBool());
+    QVERIFY(reviewPrevious());
+    session->setOption("chapter", 1);
+    QVERIFY(!cached());
+    QTRY_VERIFY(std::abs(position() - 20.) < .05);
+    session->togglePause();
+    QTRY_VERIFY(position() > 20.1 && position() < 22.);
+    QVERIFY(session->error().isEmpty());
   }
   void iconAlignment() {
     desktop_->preference("thumbnails", false);
@@ -1622,12 +1988,14 @@ private slots:
     QVERIFY(item("modelModeTab2") && !item("modelModeTab2")->isEnabled());
     QVERIFY(item("cacheSkeletonNote"));
     QVERIFY(item("modelGeometryCache"));
+    QTRY_VERIFY(item("cacheMeshReadout"));
     QTRY_COMPARE(item("cacheMeshReadout")->property("label").toString(), QString("/root/sheet"));
     QVERIFY(item("cacheMeshReadout")->property("value").toString().contains(QStringLiteral("固定拓扑")));
     auto *inspector = item("modelInspector");
     inspector->setProperty("tab", 1);
     QTRY_VERIFY(item("modelSkeletonUnavailable"));
-    inspector->setProperty("tab", 0);
+    inspector->setProperty("tab", 3);
+    QTRY_VERIFY(item("cacheTimelineReadout"));
     // Random jumps: statistics and labels follow the presented sample.
     for (const int target : {6, 2, 7, 0, 4}) {
       session->seekSample(target);
@@ -1677,6 +2045,7 @@ private slots:
       QCOMPARE(session->cacheInfo().value("points").toULongLong(), static_cast<qulonglong>(2 * (target + 2)));
       QCOMPARE(session->cacheInfo().value("faces").toULongLong(), static_cast<qulonglong>(target + 1));
     }
+    QTRY_VERIFY(item("cacheMeshReadout"));
     QTRY_VERIFY(item("cacheMeshReadout")->property("value").toString().contains(QStringLiteral("变化拓扑")));
     // Unsupported variants are explained, not shown as success.
     desktop_->select(rowOf("curves.abc"));
@@ -1842,6 +2211,8 @@ private slots:
     QTRY_VERIFY(idle());
   }
   void keyboardMouseDropAndReadOnly() {
+    window_->requestActivate();
+    QTRY_VERIFY(window_->isActive());
     desktop_->navigate(fixture_);
     QTRY_COMPARE(desktop_->count(), 10024);
     QTRY_VERIFY(idle());
@@ -2067,14 +2438,21 @@ private slots:
     ShowWindow(mainWindow, SW_MINIMIZE);
     auto *extra = launch(images[3]);
     QTRY_VERIFY_WITH_TIMEOUT(hwndFor(extra), 15000);
+    QTRY_VERIFY(opened(images[3]));
     auto *sameModel = launch(model);
     QVERIFY(sameModel->waitForFinished(15000));
     QCOMPARE(sameModel->exitCode(), 0);
     profile.setValue("explorer/reuseImageWindow", true);
     profile.setValue("explorer/reuseModelWindow", false);
     profile.sync();
-    auto *extraModel = launch(model);
+    const auto otherModel = run.filePath("other-model/second.obj");
+    QVERIFY(QDir().mkpath(QFileInfo(otherModel).absolutePath()));
+    QVERIFY(QFile::copy(model, otherModel));
+    auto *extraModel = launch(otherModel);
     QTRY_VERIFY_WITH_TIMEOUT(hwndFor(extraModel), 15000);
+    // Wait for this window's scan before using the shared recent-folder
+    // record to verify the last Explorer request.
+    QTRY_VERIFY(opened(otherModel));
     // The older image window stayed minimized while the newer image and model opened.
     // Minimize the newer image too, then observe which one Explorer restores.
     QVERIFY(IsIconic(mainWindow));
@@ -2338,6 +2716,12 @@ private slots:
       return !desktop.isNull() && desktop.copy(crop).save(root_ + "/native-frame-" + name + "-" + state + ".png");
     };
     for (QQuickWindow *w : std::array<QQuickWindow *, 2>{window_, tool}) {
+      // The transient export window stays above its owner and can obscure the
+      // main window's edges even when Windows reports the owner as active.
+      if (w == window_)
+        tool->hide();
+      else
+        tool->show();
       // Keep every sampled edge on screen at higher scale factors.
       const auto area = w->screen()->availableGeometry().adjusted(12, 12, -12, -12);
       w->resize((w->size() + QSize(16, 12)).boundedTo(area.size()));
@@ -2345,6 +2729,16 @@ private slots:
       w->raise();
       w->requestActivate();
       QTRY_VERIFY(w->isActive());
+      // This test samples the physical desktop. Keep its four measured edges
+      // exposed even when another application has a topmost window.
+      const auto hwnd = reinterpret_cast<HWND>(w->winId());
+      const bool wasTopmost = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST;
+      constexpr auto keepBounds = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+      QVERIFY(SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, keepBounds));
+      const auto restoreZOrder = qScopeGuard([&] {
+        if (!wasTopmost && IsWindow(hwnd))
+          SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, keepBounds);
+      });
       QTRY_VERIFY(darkEdge(w));
       QVERIFY(saveNativeFrame(w, "focused"));
       w->showMaximized();
@@ -2362,9 +2756,10 @@ private slots:
       // Focus a small window over the interior. Activating the other large
       // window can cover the edge pixels this assertion needs to sample.
       QWindow focusTarget;
-      focusTarget.setFlags(Qt::Window | Qt::FramelessWindowHint);
+      focusTarget.setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
       focusTarget.setGeometry(QRect(w->geometry().center(), QSize(48, 48)));
       focusTarget.show();
+      focusTarget.raise();
       focusTarget.requestActivate();
       QTRY_VERIFY(focusTarget.isActive() && !w->isActive());
       QTRY_VERIFY(darkEdge(w));
@@ -2488,7 +2883,7 @@ private slots:
     QCOMPARE(hit(caption()), LRESULT{HTCAPTION});
     // Reinstalling after discovery of a preview window is harmless.
     installWindowChrome(window_);
-    QCOMPARE(window_->findChildren<QObject *>("nativeWindowChrome").size(), 1);
+    QCOMPARE(window_->findChildren<QObject *>("nativeWindowChrome", Qt::FindDirectChildrenOnly).size(), 1);
     captionPassed=true;
 #else
     QSKIP("Windows native caption handling");
@@ -3135,11 +3530,22 @@ private slots:
     desktop_->openPath(path);
     QTRY_VERIFY_WITH_TIMEOUT(session->available() && !session->busy() && !session->preparing(),30000);
     QVERIFY2(session->error().isEmpty(),qPrintable(session->error()));
+    QTRY_VERIFY(item("modelPane"));
+    // The same shading choices live inline on wide viewports and in a menu on compact ones.
+    if (auto *inlineChoice = item("modelShadingOption1"); inlineChoice && inlineChoice->isVisible()) {
+      QTest::mouseClick(window_, Qt::LeftButton, {}, inlineChoice->mapToScene(inlineChoice->boundingRect().center()).toPoint());
+      QTRY_COMPARE(item("modelPane")->property("previewMode").toInt(), 1);
+      auto *material = item("modelShadingOption0");
+      QTest::mouseClick(window_, Qt::LeftButton, {}, material->mapToScene(material->boundingRect().center()).toPoint());
+    }
+    const auto initialSize = window_->size();
+    const auto restoreSize = qScopeGuard([&] { window_->resize(initialSize); });
+    window_->resize(1000, 760);
     QTRY_VERIFY(item("modelPreviewMode"));
     auto *button = item("modelPreviewMode");
     auto *menu = button->findChild<QObject *>("modelDisplayMenu");
     QVERIFY(menu);
-    QTRY_COMPARE(menu->property("count").toInt(), 4);
+    QTRY_COMPARE(menu->property("count").toInt(), 5);
     QCOMPARE(button->property("text").toString(), QString());
     QVERIFY(!button->property("hint").toString().isEmpty());
     QVERIFY(button->width() < 48);
@@ -3151,20 +3557,21 @@ private slots:
     QTest::qWait(100);
     const auto camera=view->cameraState();
     int previous = 0;
-    for(int mode: {1,2,3,0}) {
+    for(int mode: {1,4,2,3,0}) {
       button->forceActiveFocus();
       if (mode == 1) QTest::keyClick(window_, Qt::Key_Down);
       else QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
       QTRY_VERIFY(menu->property("opened").toBool());
       QQuickItem *selected = nullptr;
       qreal lastY = -1;
-      for (int index = 0; index < 4; ++index) {
+      for (int index : {0,1,4,2,3}) {
         const auto name = "modelDisplayOption" + QByteArray::number(index);
         auto *option = item(name.constData());
         QVERIFY(option && !option->property("text").toString().isEmpty());
-        const auto y = option->mapToScene({0,0}).y();
-        QVERIFY(y > lastY);
-        lastY = y;
+        QTRY_VERIFY2(option->mapToScene({0,0}).y() > lastY,
+                     qPrintable(QString("mode %1 at %2, previous %3")
+                       .arg(index).arg(option->mapToScene({0,0}).y()).arg(lastY)));
+        lastY = option->mapToScene({0,0}).y();
         QCOMPARE(option->property("checked").toBool(), previous == index);
         if (index == mode) selected = option;
       }
@@ -3178,7 +3585,7 @@ private slots:
       QTRY_VERIFY(!menu->property("opened").toBool());
       previous = mode;
       QTRY_COMPARE(view->wireframeVisible(),mode==3);
-      QTRY_COMPARE(view->shading(),mode==1 || mode==2 ? mode : 0);
+      QTRY_COMPARE(view->shading(),mode==4 ? 3 : mode==3 ? 0 : mode);
       QCOMPARE(session->frameFor(false),original);
       QCOMPARE(view->cameraState(),camera);
       QTest::qWait(250);
@@ -4174,7 +4581,7 @@ private slots:
     const auto language = desktop_->language();
     const auto restore = qScopeGuard([&] {
       workspace->setProperty("settingsVisible", false);
-      for (const auto &key : {"density", "restoreLayout", "defaultFilesVisible", "inspectorMode"})
+      for (const auto &key : {"density", "restoreLayout", "defaultFilesVisible", "inspectorMode", "reuseVideoWindow"})
         desktop_->preference(key, preferences.value(key));
       desktop_->setLanguage(language);
       window_->resize(1600, 900);
@@ -4193,6 +4600,12 @@ private slots:
     QVERIFY(QMetaObject::invokeMethod(settings, "open", Q_ARG(QVariant, "general")));
     QTRY_VERIFY(item("settingsDensityCompact"));
     QVERIFY(!settings->property("dirty").toBool());
+    click("nav-preview");
+    QTRY_VERIFY(item("settingsReuseVideoWindow"));
+    QVERIFY(item("settingsReuseVideoWindow")->property("checked").toBool());
+    click("settingsReuseVideoWindow");
+    click("nav-general");
+    QVERIFY(desktop_->preferences().value("reuseVideoWindow").toBool());
     click("settingsDensityCompact");
     QVERIFY(settings->property("dirty").toBool());
     QCOMPARE(desktop_->preferences().value("density").toString(), QString("standard"));
@@ -4205,11 +4618,19 @@ private slots:
     QVERIFY(settings->property("visible").toBool());
     click("nav-general");
     click("saveGeneralSettings");
+    QVERIFY(!desktop_->preferences().value("reuseVideoWindow").toBool());
+    QCOMPARE(QSettings{}.value("explorer/reuseVideoWindow").toBool(), false);
+    QVERIFY(desktop_->preferences().value("reuseImageWindow").toBool());
+    QVERIFY(desktop_->preferences().value("reuseModelWindow").toBool());
     QCOMPARE(desktop_->preferences().value("density").toString(), QString("compact"));
     QVERIFY(!settings->property("dirty").toBool());
     click("settingsDensityStandard");
+    click("nav-preview");
+    click("settingsReuseVideoWindow");
     click("discardGeneralSettings");
+    QVERIFY(!item("settingsReuseVideoWindow")->property("checked").toBool());
     QCOMPARE(desktop_->preferences().value("density").toString(), QString("compact"));
+    click("nav-general");
     QVERIFY(item("settingsDensityCompact")->property("checked").toBool());
     click("settingsDensityStandard");
     click("saveGeneralSettings");
@@ -6857,6 +7278,14 @@ private slots:
     desktop_->dismissError();
     desktop_->clearAsset();
     captureMatrix("empty");
+    const QString reviewInput = root_ + "/page-review-input";
+    const QString reviewOutput = root_ + "/page-review-output";
+    QVERIFY(QDir().mkpath(reviewInput) && QDir().mkpath(reviewOutput));
+    service->configureScope({{"input_roots", QStringList{reviewInput}},
+                             {"output_roots", QStringList{reviewOutput}},
+                             {"allow_overwrite", false}});
+    QTRY_VERIFY2_WITH_TIMEOUT(!service->busy() && service->error().isEmpty(),
+                              qPrintable(service->error()), 15000);
     auto *settings = window_->findChild<QObject *>("mcpSettingsDialog");
     QVERIFY(settings);
     QVERIFY(QMetaObject::invokeMethod(settings, "open", Q_ARG(QVariant, "permissions")));
@@ -7439,11 +7868,16 @@ private slots:
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     });
     QTRY_VERIFY_WITH_TIMEOUT(GetForegroundWindow() == hwnd, 3000);
+    receivedKeys_.clear();
     window_->installEventFilter(this);
+    const auto removeFilter = qScopeGuard([&] { window_->removeEventFilter(this); });
     QTest::keyClick(window_, Qt::Key_Down);
     QTRY_COMPARE(desktop_->currentIndex(), 1);
     auto *measured =
         static_cast<MeasuredApplication *>(QCoreApplication::instance());
+    measured->events = measured->over100ms = 0;
+    measured->maxEventMs = 0;
+    measured->slowEvents = {};
     measured->measure = true;
     const auto stopMeasurement =
         qScopeGuard([measured] { measured->measure = false; });
@@ -7518,6 +7952,11 @@ private slots:
     for (auto i = 0; i < 160; ++i) {
       if (rescans && i % (160/rescans) == 0)
         desktop_->refresh();
+      // SendInput targets the foreground window. Check its destination before
+      // starting the clock so a focus change cannot send an arrow to another app.
+      if (GetForegroundWindow() != hwnd)
+        window_->requestActivate();
+      QTRY_VERIFY_WITH_TIMEOUT(GetForegroundWindow() == hwnd, 3000);
       previous = desktop_->currentIndex();
       frameReady = false;
       ++sequence;
@@ -7689,6 +8128,7 @@ private slots:
     QTRY_COMPARE(session->path(), fixtures.filePath("external.gltf"));
     QTRY_VERIFY(idle() && desktop_->directory() == fixtures.absolutePath());
     session->setMode(0);
+    QTRY_VERIFY(item("modelViewport"));
     auto *view = qobject_cast<ModelView *>(item("modelViewport"));
     QVERIFY(view);
     view->orbit(27, -13);
@@ -9029,15 +9469,27 @@ private slots:
     QVERIFY(session->frame() && !session->frame()->vertices.empty());
     QTRY_VERIFY(item("modelAnimationBarHost") &&
                 item("modelAnimationBarHost")->isVisible());
+    auto *options = item("animOptions");
+    QTRY_VERIFY(options && options->isVisible());
+    if (!options->property("checked").toBool()) {
+      options->forceActiveFocus(Qt::TabFocusReason);
+      QTest::keyClick(window_, Qt::Key_Space);
+    }
+    QTRY_VERIFY(item("animRootLock"));
     if (session->info().value("psa").toBool()) {
       window_->requestActivate();
       QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+      QSignalSpy toolbarFrame(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!toolbarFrame.isEmpty());
       auto *rootOptions = item("animRootOptions");
       QVERIFY(rootOptions && rootOptions->isEnabled());
+      QSignalSpy optionsClicked(rootOptions, SIGNAL(clicked()));
       QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
           rootOptions->mapToScene({rootOptions->width()/2, rootOptions->height()/2}).toPoint());
+      QCOMPARE(optionsClicked.count(), 1);
       QTRY_VERIFY(item("animDetailsToggle"));
-      auto *rootMenu = window_->findChild<QObject *>("animRootMenu");
+      auto *rootMenu = rootOptions->findChild<QObject *>("animRootMenu");
       QVERIFY(rootMenu);
       QTRY_VERIFY(rootMenu->property("opened").toBool());
       auto *details = item("animDetailsToggle");
@@ -10051,10 +10503,14 @@ private slots:
       QCOMPARE(nativeClips.size(), qsizetype(nativeCount));
       const auto digest = session->sourceDataDigest();
       session->setRootLock(false);
-      const auto nativeTime = (nativeClips.front().toMap().value("start").toDouble()+nativeClips.front().toMap().value("end").toDouble())*.5;
+      const int nativeClip = session->clipIndex();
+      QVERIFY(session->canPlayAnimation());
+      const auto clipInfo = nativeClips.at(nativeClip).toMap();
+      const auto nativeTime = (clipInfo.value("start").toDouble() + clipInfo.value("end").toDouble()) * .5;
       const auto initialRevision = session->frame()->revision;
       session->seek(nativeTime);
-      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > initialRevision, 30000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > initialRevision &&
+                               session->frame()->clip == nativeClip && session->frame()->seconds == nativeTime, 30000);
       const auto nativePose = session->frame();
       // An explicitly attached copy remains an external source after native clips.
       session->attachExternalAnimation(path);
@@ -10065,9 +10521,10 @@ private slots:
       for (qsizetype c=0; c<nativeClips.size(); ++c) QCOMPARE(session->clips()[c], nativeClips[c]);
       QCOMPARE(session->sourceDataDigest(), digest);
       const auto attachedRevision = session->frame()->revision;
-      session->setClipIndex(0);
+      session->setClipIndex(nativeClip);
       session->seek(nativeTime);
-      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > attachedRevision && !session->preparing(), 30000);
+      QTRY_VERIFY_WITH_TIMEOUT(session->frame()->revision > attachedRevision && !session->preparing() &&
+                               session->frame()->clip == nativeClip && session->frame()->seconds == nativeTime, 30000);
       QVERIFY(session->frameError().isEmpty());
       QCOMPARE(session->frame()->vertices.size(), nativePose->vertices.size());
       for (std::size_t v=0; v<nativePose->vertices.size(); ++v) {
@@ -10139,9 +10596,8 @@ private slots:
     QCOMPARE(nativeClips.size(), qsizetype(expectedNative));
     QCOMPARE(session->animated(), expectedNative > 0);
     QVERIFY(session->canAttachExternalAnimation());
-    // Product-surface check: the bar and its attach entry must be visible.
-    QTRY_VERIFY(item("modelAnimationBarHost") &&
-                item("modelAnimationBarHost")->isVisible());
+    // Static skeletons can accept a clip before they have a playable timeline.
+    QTRY_COMPARE(item("modelAnimationBarHost") != nullptr, session->hasPlayableAnimation());
     QTRY_VERIFY(item("animExternalAttach") &&
                 item("animExternalAttach")->isVisible() &&
                 item("animExternalAttach")->isEnabled());
@@ -10170,8 +10626,8 @@ private slots:
           auto *button = item(name);
           QVERIFY(button && button->isVisible());
           const auto point = button->mapToItem(pane, QPointF());
-          QVERIFY(qAbs(point.y() - position.y()) < 1);
-          QVERIFY(point.x() >= position.x() + attach->width() - 1);
+          QVERIFY(point.y() > position.y() + attach->height());
+          QVERIFY(point.x() >= 0);
           QVERIFY2(point.x() + button->width() <= pane->width() + 1,
                    qPrintable(QString("%1 %2 window=%3 pane=%4 right=%5")
                        .arg(language, name).arg(size.width()).arg(pane->width()).arg(point.x() + button->width())));
@@ -10531,8 +10987,8 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!session->busy() && session->inspectable(), 30000);
     QVERIFY(session->canAttachExternalAnimation());
     QCOMPARE(session->externalInfo().value("format").toString(), QString("psa"));
-    QTRY_VERIFY(item("animExternalAttach") && item("animExternalAttach")->isVisible());
-    QVERIFY(item("animExternalAttach")->property("hint").toString().contains("PSA"));
+    QTRY_VERIFY(item("animExternalAttach") && item("animExternalAttach")->isVisible() &&
+                item("animExternalAttach")->property("hint").toString().contains("PSA"));
     auto *dialog = window_->findChild<QObject *>("externalAnimationDialog");
     QVERIFY(dialog);
     QVERIFY(dialog->property("nameFilters").toStringList().join(' ').contains("*.psa"));
@@ -10679,6 +11135,12 @@ private slots:
     session->setSpeed(1);
     session->setLoop(true);
     if (!session->playing()) session->togglePlay();
+    QTRY_VERIFY(item("animOptions"));
+    if (!item("animSpeed")) {
+      auto *options = item("animOptions");
+      options->forceActiveFocus(Qt::TabFocusReason);
+      QTest::keyClick(window_, Qt::Key_Space);
+    }
     QTRY_VERIFY(item("animSpeed"));
     auto *speed = item("animSpeed");
     speed->forceActiveFocus();
@@ -11370,7 +11832,8 @@ private slots:
     QCOMPARE(session->compareResult().value("applicabilityVerdict").toString(),QString("directApplicable"));
     QVERIFY(session->compareResult().value("transformValidation").toMap().value("promotionEnabled").toBool());
     QFile normal(root_+"/r13-fbx-normal-proof.json");QVERIFY(normal.open(QIODevice::WriteOnly));normal.write(QJsonDocument::fromVariant(session->compareResult()).toJson());
-    auto *pane=item("modelPane");QVERIFY(pane);pane->setProperty("showCompare",true);
+    QTRY_VERIFY(item("modelPane"));
+    auto *pane=item("modelPane");pane->setProperty("showCompare",true);
     QTest::qWait(100);QVERIFY(captureWindow(window_).save(root_+"/r13-fbx-normal.png"));
     pane->setProperty("showCompare",false);
     // p35: the conflicting pair publishes a located binding fault; verdict/reason stay as before.
@@ -12138,6 +12601,9 @@ private slots:
         "adapter, "
         "250ms plus screenshots; transient peaks between samples may be "
         "missed; other enumerated adapters are not summed";
+    if (auto *incubator = engine_->incubationController()) {
+      QTRY_VERIFY_WITH_TIMEOUT((incubator->incubateFor(10), incubator->incubatingObjectCount() == 0), 3000);
+    }
     engine_.reset();
     desktop_.reset();
     QCoreApplication::processEvents();
@@ -12162,6 +12628,7 @@ private slots:
   }
 };
 int main(int argc, char **argv) {
+  qmlRegisterType<VideoSession>("FormaView.Video", 1, 0, "VideoSession");
   QQuickStyle::setStyle("Basic");
   if (workflowHeadless() && qEnvironmentVariable("QT_QPA_PLATFORM") != "offscreen") {
     qCritical("Headless workflow tests require QT_QPA_PLATFORM=offscreen");
