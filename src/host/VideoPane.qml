@@ -370,8 +370,6 @@ FocusScope {
                 }
             }
             anchors.fill: parent
-            glassRect: bar.visible && root.mode !== "hdr"
-                ? Qt.rect(bar.x, bar.y, bar.width, bar.height) : Qt.rect(0, 0, 0, 0)
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
@@ -486,6 +484,14 @@ FocusScope {
             readonly property bool keyboardFocus: activeFocus && !!surface.Window.window?.activeFocusItem?.visualFocus
             onInteractingChanged: if (!interacting) root.revealControls()
             visible: root.controlsShown || interacting
+            Loader {
+                anchors.fill: parent
+                active: bar.visible && root.mode !== "hdr" && !!root.stateMap["video-params"] && !video.error
+                sourceComponent: VideoControlGlass {
+                    frame: video
+                    panelOrigin: Qt.point(bar.x, bar.y)
+                }
+            }
             Rectangle {
                 anchors.fill: parent
                 radius: 22

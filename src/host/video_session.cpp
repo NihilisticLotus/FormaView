@@ -3,7 +3,6 @@
 #endif
 #include "video_session.hpp"
 #include "video_statistics.hpp"
-#include "video_glass.hpp"
 #include "video_output.hpp"
 #include <QQmlEngine>
 #include <QScreen>
@@ -131,7 +130,6 @@ public:
   QSize size;
   bool pq=false;
   QSGSimpleTextureNode *overlay = nullptr;
-  VideoGlass *glass = nullptr;
   struct Cached {
     qint64 tick=-1;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> native;
@@ -143,25 +141,6 @@ public:
   quint64 epoch=0;
   void hideReview(){
     if(overlay){removeChildNode(overlay);delete overlay;overlay=nullptr;}
-  }
-  void updateGlass(const QRectF &panel) {
-    if (panel.isEmpty() || pq || !texture()) {
-      if (glass) {
-        removeChildNode(glass);
-        delete glass;
-        glass = nullptr;
-      }
-      return;
-    }
-    const auto *frame = overlay ? overlay : this;
-    if (!glass)
-      glass = new VideoGlass;
-    if (lastChild() != glass) {
-      if (glass->parent())
-        removeChildNode(glass);
-      appendChildNode(glass);
-    }
-    glass->setFrame(panel, frame->rect(), frame->texture());
   }
   void invalidate(){hideReview();history.clear();staging.Reset();}
   void retain(QQuickWindow *win,ID3D11Device *device){
@@ -297,13 +276,6 @@ VideoSession::VideoSession(QQuickItem *parent) : QQuickItem(parent) {
   });
   timer_.setInterval(16);
   connect(&timer_, &QTimer::timeout, this, &VideoSession::events);
-}
-void VideoSession::setGlassRect(const QRectF &bounds) {
-  if (glassRect_ == bounds)
-    return;
-  glassRect_ = bounds;
-  update();
-  emit glassRectChanged();
 }
 void VideoSession::fail(const QString &message) {
   if (error_ != message) {
@@ -1162,7 +1134,6 @@ QSGNode *VideoSession::updatePaintNode(QSGNode *old, UpdatePaintNodeData *) {
   if(node->epoch!=videoEpoch_){node->invalidate();node->epoch=videoEpoch_;}
   node->showReview(win, device, reviewTick_, reviewFrame_.get(), boundingRect(),
                    status_.value("review-caption").toString().isEmpty());
-  node->updateGlass(glassRect_.intersected(boundingRect()));
   mpv_d3d11_fbo fbo{node->target.Get()};
   int blockForDeadline = 0;
   mpv_render_param params[] = {

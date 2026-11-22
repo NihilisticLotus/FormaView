@@ -18,7 +18,6 @@ class VideoSession : public QQuickItem {
   Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
   Q_PROPERTY(QVariantMap playbackInfo READ playbackInfo NOTIFY playbackInfoChanged)
   Q_PROPERTY(QString error READ error NOTIFY errorChanged)
-  Q_PROPERTY(QRectF glassRect READ glassRect WRITE setGlassRect NOTIFY glassRectChanged)
 public:
   explicit VideoSession(QQuickItem *parent = nullptr);
   ~VideoSession() override;
@@ -32,8 +31,6 @@ public:
   bool seekPending() const { return pendingSeekTarget_.has_value(); }
   double indexedStepTarget() const { return requestedStep_; }
   bool optionPending(const QString &name) const { return pendingPlaybackOptions_.contains(name); }
-  QRectF glassRect() const { return glassRect_; }
-  void setGlassRect(const QRectF &bounds);
   void setSource(const QString &path);
   Q_INVOKABLE QByteArray windowPlacement(QQuickWindow *window) const;
   Q_INVOKABLE bool restoreWindowPlacement(QQuickWindow *window,
@@ -55,7 +52,6 @@ signals:
   void errorChanged();
   void screenshotSaved(const QString &path);
   void screenshotFailed(const QString &path, const QString &reason);
-  void glassRectChanged();
 
 protected:
   QSGNode *updatePaintNode(QSGNode *, UpdatePaintNodeData *) override;
@@ -92,7 +88,6 @@ private:
   void requestExactSeek(double seconds);
   std::shared_ptr<VideoEngine> engine_;
   QString source_, error_;
-  QRectF glassRect_;
   QPointer<QQuickWindow> hdrWindow_;
   QVariantMap status_;
   std::unique_ptr<VideoStatistics> statistics_;

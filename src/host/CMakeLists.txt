@@ -56,8 +56,8 @@ if(TARGET formaview_image_conversion)
         endif()
     endforeach()
 endif()
-qt_add_library(formaview_video STATIC video_session.cpp video_session.hpp video_statistics.cpp video_statistics.hpp video_output.cpp video_output.hpp video_glass.cpp video_glass.hpp)
-qt_add_shaders(formaview_video video_glass_shaders PREFIX "/shaders" FILES video_glass.vert video_glass.frag)
+qt_add_library(formaview_video STATIC video_session.cpp video_session.hpp video_statistics.cpp video_statistics.hpp video_output.cpp video_output.hpp)
+qt_add_shaders(formaview_video video_glass_shaders PREFIX "/shaders" FILES video_blur.frag video_glass.frag)
 target_include_directories(formaview_video PRIVATE "${PROJECT_SOURCE_DIR}/third_party/mpv/include")
 find_package(Qt6 6.12.0 EXACT REQUIRED COMPONENTS GuiPrivate)
 target_link_libraries(formaview_video PUBLIC Qt6::Quick PRIVATE d3d11 dxgi gdi32 Qt6::GuiPrivate formaview_options)
@@ -121,7 +121,7 @@ target_compile_definitions(formaview PRIVATE
 set_target_properties(formaview PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 set_source_files_properties(Theme.qml Explain.qml VideoPreferences.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set(desktop_qml FrostEffect.qml FrostRequest.qml PickerBackdrop.qml FrostDialog.qml FrostFileDialog.qml FrostFolderDialog.qml Main.qml GlassPanel.qml VideoPreferences.qml Theme.qml Explain.qml ExplainedText.qml AppIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FolderNavigation.qml LibraryFileGroups.qml LibraryWorkspace.qml FilesPane.qml
-    Inspector.qml VideoPane.qml PlaybackInfo.qml VideoTimeline.qml VideoPlaylist.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
+    Inspector.qml VideoControlGlass.qml VideoPane.qml PlaybackInfo.qml VideoTimeline.qml VideoPlaylist.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml
         AnimationBar.qml CacheTimeline.qml
