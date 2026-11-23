@@ -5,6 +5,10 @@
 ModelRenderState ModelSession::renderState() const {
   ModelRenderState state;
   state.skeletonOverlay = skeletonOverlay_;
+  state.cameraFrustum = cameraFrustum_ && !cameraView_;
+  state.cameraPath = cameraPath_ && !cameraView_;
+  state.cameraIndex = cameraIndex_;
+  state.cameraAspect = state.cameraFrustum ? cameraViewportAspect_ : 1.;
   state.directionMask = directionMask_;
   state.mode = mode_;
   state.mesh = mesh_;
@@ -29,6 +33,7 @@ QByteArray ModelSession::stateKey(const ModelRenderState &state) const {
   QDataStream stream(&bytes, QIODevice::WriteOnly);
   stream << state.skeletonOverlay << state.directionMask << state.mode << state.mesh << state.bone << state.material
          << state.materialOnly << state.isolated << state.collisionMode << state.highlightedNode;
+  stream << state.cameraFrustum << state.cameraPath << state.cameraIndex << state.cameraAspect;
   // Geometry-cache documents differ per timeline sample.
   if (document_ && document_->geometryCache)
     stream << static_cast<quint64>(document_->cacheSample);

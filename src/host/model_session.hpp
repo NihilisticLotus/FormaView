@@ -99,6 +99,9 @@ class ModelSession : public QObject {
   Q_PROPERTY(QVariantMap cacheInfo READ cacheInfo NOTIFY animChanged)
   // Per-mesh metadata changes only when a sample lands, not per clock tick.
   Q_PROPERTY(QVariantList cacheMeshes READ cacheMeshes NOTIFY changed)
+  Q_PROPERTY(bool cameraView READ cameraView WRITE setCameraView NOTIFY cameraControlsChanged)
+  Q_PROPERTY(bool cameraFrustum READ cameraFrustum WRITE setCameraFrustum NOTIFY cameraControlsChanged)
+  Q_PROPERTY(bool cameraPath READ cameraPath WRITE setCameraPath NOTIFY cameraControlsChanged)
   Q_PROPERTY(QStringList cameras READ cameras NOTIFY changed)
   Q_PROPERTY(int cameraIndex READ cameraIndex NOTIFY changed)
   Q_PROPERTY(QVariantMap cameraInfo READ cameraInfo NOTIFY animChanged)
@@ -201,6 +204,16 @@ public:
   QStringList cameras() const;
   int cameraIndex() const { return cameraIndex_; }
   QVariantMap cameraInfo() const;
+  std::optional<formaview::CameraSample> selectedCameraSample() const;
+  std::optional<QMatrix4x4> sourceCameraMatrix(double viewportAspect) const;
+  std::pair<QVector3D, float> cameraFocusBounds() const;
+  void setCameraViewportAspect(double aspect);
+  bool cameraView() const { return cameraView_; }
+  bool cameraFrustum() const { return cameraFrustum_; }
+  bool cameraPath() const { return cameraPath_; }
+  void setCameraView(bool);
+  void setCameraFrustum(bool);
+  void setCameraPath(bool);
   Q_INVOKABLE void selectCamera(int index);
   // Jump to a merged-timeline sample (random access; clamps the index).
   Q_INVOKABLE void seekSample(int index);
@@ -280,6 +293,7 @@ public:
     return uv ? frames_.uv : frames_.model;
   }
 signals:
+  void cameraControlsChanged();
   void changed();
   void animChanged();
   void selectionChanged();
@@ -309,6 +323,7 @@ private:
     std::stop_source stop;
     std::future<TextureResult> future;
     int uv{-1};
+    std::vector<std::array<int, 3>> targets; // mesh, material, mapped UV
   };
   void startPending();
   void openInputs(QString, QString, QString);
@@ -413,7 +428,9 @@ private:
   bool busy_{}, isolated_{}, materialOnly_{};
   bool textureBusy_{};
   QString textureError_;
-  QString textureRequestedPath_, textureStatus_;
+  QString textureRequestedPath_, textureStatus_, textureUVName_;
+  std::vector<std::pair<int, int>> materialTargets(int mesh, int slot) const;
+  std::vector<std::array<int, 3>> textureTargets(int mesh, int slot, int uv) const;
   int textureMesh_{-1}, textureMaterial_{-1}, textureUV_{-1};
   quint64 textureRequest_{};
   std::uint64_t framingRevision_{};
@@ -422,6 +439,8 @@ private:
   int mesh_{}, bone_{}, mode_{}, material_{};
   int clipIndex_{};
   int cameraIndex_{};
+  double cameraViewportAspect_{1.};
+  bool cameraView_{}, cameraFrustum_{}, cameraPath_{};
   double time_{};
   bool playing_{}, loop_{true};
   bool pairMeshVisible_{};

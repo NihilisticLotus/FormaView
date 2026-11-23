@@ -24,8 +24,9 @@ formaview::CameraSample camera_sample(const ufbx_camera &camera,
   out.world = world;
   out.projection = camera.projection_mode == UFBX_PROJECTION_MODE_PERSPECTIVE
                        ? "perspective" : "orthographic";
-  // The FBX projection axis metadata can be absent; do not infer a direction
-  // from a transform alone when ufbx marks the axis set invalid.
+  // ufbx 0.23.1 only populates projection_axes when target-camera conversion
+  // runs. Otherwise retain the documented FBX convention (+X forward, +Y up).
+  // This reader does not request camera-axis conversion or infer axes from pose.
   const auto axis = [](ufbx_coordinate_axis value) -> const char * {
     switch (value) {
     case UFBX_COORDINATE_AXIS_POSITIVE_X: return "+X";
@@ -40,7 +41,7 @@ formaview::CameraSample camera_sample(const ufbx_camera &camera,
   out.axes = ufbx_coordinate_axes_valid(camera.projection_axes)
       ? std::string(axis(static_cast<ufbx_coordinate_axis>(camera.projection_axes.front ^ 1))) +
             " forward, " + axis(camera.projection_axes.up) + " up"
-      : "unknown";
+      : "+X forward, +Y up";
   const auto positive = [](double value) {
     return std::isfinite(value) && value > 0;
   };
@@ -56,6 +57,11 @@ formaview::CameraSample camera_sample(const ufbx_camera &camera,
     out.has_fov_x = positive(out.fov_x_deg) && out.fov_x_deg < 180;
     out.has_fov_y = positive(out.fov_y_deg) && out.fov_y_deg < 180;
   }
+  out.aspect = camera.aspect_ratio;
+  out.has_aspect = positive(out.aspect);
+  out.span_x = camera.orthographic_size.x;
+  out.span_y = camera.orthographic_size.y;
+  out.has_span = out.projection == "orthographic" && positive(out.span_x) && positive(out.span_y);
   out.near_plane = camera.near_plane;
   out.far_plane = camera.far_plane;
   out.has_near = positive(out.near_plane);
@@ -157,6 +163,7 @@ ufbx_matrix effective_local(const ufbx_node &node,
 std::string str(ufbx_string s) { return {s.data, s.length}; }
 FbxMaterial material_value(const ufbx_material &material) {
   FbxMaterial value;
+  value.source_id = "material/" + std::to_string(material.element_id);
   value.name = str(material.name);
   const auto &map = material.pbr.base_color;
   if (map.has_value)

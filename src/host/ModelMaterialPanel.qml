@@ -36,6 +36,7 @@ ColumnLayout {
     }
     Readout { Layout.fillWidth: true; label: Theme.t("当前网格", "Current mesh", "目前網格"); value: root.material.mesh || "—" }
     Readout { Layout.fillWidth: true; label: Theme.t("源基础颜色贴图", "Source base colour texture", "來源基礎色貼圖"); value: root.session.textureReference || Theme.t("未提供", "Not provided", "未提供") }
+    Readout { objectName: "modelSharedMaterials"; Layout.fillWidth: true; label: Theme.t("共享此源材质的网格", "Meshes sharing this source material", "共用此來源材質的網格"); value: (root.material.sharedMeshes || []).join("\n") }
     Readout { objectName: "modelTexturePath"; Layout.fillWidth: true; label: Theme.t("已验证贴图", "Validated texture", "已驗證貼圖"); value: root.session.texturePath || "—" }
     Choice {
         objectName: "modelTextureUV"; Layout.fillWidth: true
@@ -46,7 +47,7 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true; visible: !root.material.canAssociate
         color: Theme.muted; wrapMode: Text.Wrap; font.pixelSize: Theme.noteText
-        text: Theme.t("当前网格没有可用的所选 UV 集，无法关联二维贴图。", "This mesh has no usable selected UV set for a texture.", "目前網格沒有可用的所選 UV 集，無法關聯二維貼圖。")
+        text: Theme.t("所选 UV 集必须在所有共享网格上有效，才能关联贴图。", "The selected UV set must be usable on every sharing mesh.", "所選 UV 集必須在所有共用網格上有效，才能關聯貼圖。")
     }
     Choice {
         objectName: "modelWorkspaceTexture"; Layout.fillWidth: true
@@ -112,6 +113,6 @@ ColumnLayout {
     }
     Label {
         Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; font.pixelSize: Theme.noteText
-        text: Theme.t("关联仅作用于当前网格的材质槽。清除后恢复源贴图与参数，不修改源文件。", "Association affects this mesh's material slot only. Clearing restores the source texture and parameters; source files stay unchanged.", "關聯僅作用於目前網格的材質槽。清除後恢復來源貼圖與參數，不修改來源檔案。")
+        text: Theme.t("关联和清除会同步所有使用同一源材质的网格；同名但不同来源的材质互不影响。不修改源文件。", "Association and clearing apply to every mesh using this source material. Distinct materials with the same name stay independent. Source files stay unchanged.", "關聯及清除會同步所有使用同一來源材質的網格；同名但不同來源的材質互不影響。不修改來源檔案。")
     }
 }

@@ -9606,6 +9606,159 @@ private slots:
       QFAIL(error.what());
     }
   }
+  void modelSourceCameraAndSharedMaterial() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto sample = requireFixture("FORMAVIEW_CAMERA_MATERIAL_SAMPLE", true);
+    if (sample.isEmpty()) QSKIP("Requires the prototype camera/material scene");
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(sample);
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && modelPanelsReady(), 30000);
+    QCOMPARE(session->cameras().size(), 2);
+    QVERIFY(!session->cameraView() && !session->cameraPath() && !session->cameraFrustum());
+    QVERIFY(session->cameraInfo().value("valid").toBool());
+    QVERIFY(!session->cameraInfo().value("focalMm").isValid());
+    auto *view = qobject_cast<ModelView *>(item("modelViewport")); QVERIFY(view);
+    view->orbit(18, 8);
+    const auto free = view->cameraState();
+    QVERIFY(item("modelCameraView"));
+    auto *scroll = item("modelSceneScroll"); QVERIFY(scroll);
+    auto *flick = scroll->property("contentItem").value<QQuickItem *>(); QVERIFY(flick);
+    const auto controlPosition = item("modelCameraView")->mapToItem(scroll, QPointF(0,0));
+    flick->setProperty("contentY", controlPosition.y()-scroll->height()*.7);
+    QTest::qWait(50);
+    QVERIFY(QMetaObject::invokeMethod(item("modelCameraView"), "clicked"));
+    QTRY_VERIFY(session->cameraView());
+    QTRY_VERIFY(std::abs(view->width()/view->height()-16./9.) < .001);
+    auto projection = session->sourceCameraMatrix(2.);
+    QVERIFY(projection);
+    const auto doc = session->documentSnapshot();
+    const auto point = (QVector3D(.5,.5,0)-doc->center)/doc->radius;
+    const auto projected = projection->map(point);
+    QVERIFY(std::abs(projected.x()) < .001 && std::abs(projected.y()) < .001);
+    view->orbit(30, 30); view->panBy(40, 40); view->zoomBy(2);
+    QCOMPARE(view->cameraState(), free);
+    session->selectCamera(1);
+    QTRY_VERIFY(std::abs(view->width()/view->height()-1.) < .001);
+    QCOMPARE(session->cameraInfo().value("projection").toString(), "orthographic");
+    projection = session->sourceCameraMatrix(1.); QVERIFY(projection);
+    const auto right = projection->map((QVector3D(2.5,.5,0)-doc->center)/doc->radius);
+    QVERIFY(std::abs(right.x()-1.) < .001); // xmag=2 means four source units wide.
+    QVERIFY(QMetaObject::invokeMethod(item("modelCameraView"), "clicked"));
+    QTRY_VERIFY(!session->cameraView());
+    QCOMPARE(view->cameraState(), free);
+    session->selectCamera(0);
+    session->setClipIndex(1);
+    session->seek(0);
+    const auto before = session->cameraInfo().value("position");
+    session->seek(1);
+    QVERIFY(session->cameraInfo().value("position") != before);
+    QVERIFY(session->cameraInfo().value("pathMoving").toBool());
+    QVERIFY(session->cameraInfo().value("pathCount").toInt() > 1);
+    session->setCameraFrustum(true);
+    session->setCameraPath(true);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->renderedStateCurrent(), 10000);
+    QVERIFY(session->renderStateForTest().cameraFrustum && session->renderStateForTest().cameraPath);
+    QVERIFY(QMetaObject::invokeMethod(item("modelFrameCamera"), "clicked"));
+    QTest::qWait(100);
+    QVERIFY(window_->grabWindow().save(root_ + "/source-camera-free.png"));
+    session->setCameraView(true);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && session->renderedStateCurrent(), 10000);
+    QVERIFY(!session->renderStateForTest().cameraFrustum && !session->renderStateForTest().cameraPath);
+    QTest::qWait(100);
+    QVERIFY(window_->grabWindow().save(root_ + "/source-camera-view.png"));
+    session->setCameraView(false);
+    session->selectMesh(0);
+    QCOMPARE(session->materialInfo().value("sharedMeshes").toStringList().size(), 2);
+    const auto image = small_ + "/唯一图片.png";
+    session->associateTexture(image);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), image);
+    session->selectMesh(1);
+    QCOMPARE(session->texturePath(), image);
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "ready");
+    session->removeTexture();
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    QVERIFY(!session->canClearTexture());
+    session->selectMesh(0); QVERIFY(!session->canClearTexture());
+    session->associateTexture(image);
+    session->selectMesh(1);
+    session->cancelTexture();
+    QTest::qWait(100);
+    QVERIFY(!session->canClearTexture());
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "cancelled");
+    session->retryTexture();
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), image);
+    session->selectMesh(0); QCOMPARE(session->texturePath(), image);
+    session->selectMesh(2); QVERIFY(!session->canClearTexture());
+    QFile input(sample); QVERIFY(input.open(QIODevice::ReadOnly));
+    const auto sourceBytes = input.readAll(); input.close();
+    auto fixture = QJsonDocument::fromJson(sourceBytes).object();
+    auto materials = fixture["materials"].toArray();
+    auto independent = materials[1].toObject();
+    independent["name"] = materials[0].toObject()["name"]; materials[1] = independent;
+    fixture["materials"] = materials;
+    auto meshes = fixture["meshes"].toArray(); auto mesh = meshes[0].toObject();
+    auto primitives = mesh["primitives"].toArray();
+    auto missing = primitives[1].toObject(); auto attributes = missing["attributes"].toObject();
+    attributes.remove("TEXCOORD_0"); missing["attributes"] = attributes; primitives[1] = missing;
+    mesh["primitives"] = primitives; meshes[0] = mesh; fixture["meshes"] = meshes;
+    const auto path = root_ + "/shared-material-missing-uv.gltf";
+    QFile output(path); QVERIFY(output.open(QIODevice::WriteOnly)); output.write(QJsonDocument(fixture).toJson()); output.close();
+    desktop_->openPath(path);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && session->inspectable() && modelPanelsReady(), 30000);
+    QVERIFY(!session->cameraView() && !session->cameraPath() && !session->cameraFrustum());
+    session->selectMesh(0); session->selectUV(0);
+    QVERIFY(!session->materialInfo().value("canAssociate").toBool());
+    session->associateTexture(image);
+    QVERIFY(!session->textureBusy() && !session->canClearTexture());
+    session->selectUV(1);
+    QVERIFY(session->materialInfo().value("canAssociate").toBool());
+    session->associateTexture(image);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    session->selectMesh(1); QCOMPARE(session->texturePath(), image);
+    const auto links = session->renderStateForTest().textures;
+    QCOMPARE(links[0].at(0).uv, 1);
+    QCOMPARE(links[1].at(0).uv, 0); // TEXCOORD_1 occupies index 0 in this mesh.
+    session->selectMesh(2);
+    QCOMPARE(session->materials()[0], materials[0].toObject()["name"].toString());
+    QVERIFY(!session->canClearTexture());
+    QCOMPARE(session->materialInfo().value("sharedMeshes").toStringList().size(), 1);
+    QVERIFY(QMetaObject::invokeMethod(item("modelInspectorTab2"), "clicked"));
+    session->selectMesh(1);
+    QTest::qWait(100);
+    QVERIFY(window_->grabWindow().save(root_ + "/shared-material.png"));
+    QVERIFY(input.open(QIODevice::ReadOnly)); QCOMPARE(input.readAll(), sourceBytes);
+    auto optionalCamera = QJsonDocument::fromJson(sourceBytes).object();
+    auto cameras = optionalCamera["cameras"].toArray();
+    auto camera = cameras[0].toObject(); auto perspective = camera["perspective"].toObject();
+    perspective.remove("aspectRatio"); perspective.remove("zfar");
+    camera["perspective"] = perspective; cameras[0] = camera; optionalCamera["cameras"] = cameras;
+    const auto optionalPath = root_ + "/camera-optional-projection.gltf";
+    QFile optionalFile(optionalPath); QVERIFY(optionalFile.open(QIODevice::WriteOnly));
+    optionalFile.write(QJsonDocument(optionalCamera).toJson()); optionalFile.close();
+    desktop_->openPath(optionalPath);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == optionalPath && session->inspectable(), 30000);
+    QVERIFY(!session->cameraInfo().value("aspect").isValid());
+    QVERIFY(session->cameraInfo().value("infiniteFar").toBool());
+    const auto narrow = session->sourceCameraMatrix(1.), wide = session->sourceCameraMatrix(2.);
+    QVERIFY(narrow && wide);
+    QVERIFY(std::abs((*narrow)(0,0) - 2*(*wide)(0,0)) < .001);
+    session->setCameraView(true); QVERIFY(session->cameraView());
+    auto nodes = optionalCamera["nodes"].toArray(); auto invalid = nodes[1].toObject();
+    invalid["scale"] = QJsonArray{0,0,0}; nodes[1] = invalid; optionalCamera["nodes"] = nodes;
+    const auto invalidPath = root_ + "/camera-singular.gltf";
+    QFile invalidFile(invalidPath); QVERIFY(invalidFile.open(QIODevice::WriteOnly));
+    invalidFile.write(QJsonDocument(optionalCamera).toJson()); invalidFile.close();
+    desktop_->openPath(invalidPath);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == invalidPath && session->inspectable(), 30000);
+    QVERIFY(!session->sourceCameraMatrix(1.));
+    session->setCameraView(true); QVERIFY(!session->cameraView());
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
   void modelMaterialWorkflow() {
 #ifdef FORMAVIEW_MODEL_UI
     const auto sample = requireFixture("FORMAVIEW_MULTI_UV_SAMPLE", true);
@@ -9623,13 +9776,14 @@ private slots:
     const QJsonObject colorTexture{{"index", 0}, {"texCoord", 1},
       {"extensions", QJsonObject{{"KHR_texture_transform", uvTransform}}}};
     const QJsonObject pbr{{"baseColorTexture", colorTexture}};
-    fixture["materials"] = QJsonArray{QJsonObject{{"name", "Source <material>"}, {"pbrMetallicRoughness", pbr}}};
+    const QJsonObject sourceMaterial{{"name", "Source <material>"}, {"pbrMetallicRoughness", pbr}};
+    fixture["materials"] = QJsonArray{sourceMaterial, sourceMaterial, sourceMaterial};
     fixture["extensionsUsed"] = QJsonArray{"KHR_texture_transform"};
     auto meshes = fixture["meshes"].toArray();
     for (int i = 0; i < meshes.size(); ++i) {
       auto mesh = meshes[i].toObject(); auto primitives = mesh["primitives"].toArray();
       for (int j = 0; j < primitives.size(); ++j) {
-        auto primitive = primitives[j].toObject(); primitive["material"] = 0; primitives[j] = primitive;
+        auto primitive = primitives[j].toObject(); primitive["material"] = j; primitives[j] = primitive;
       }
       mesh["primitives"] = primitives; meshes[i] = mesh;
     }

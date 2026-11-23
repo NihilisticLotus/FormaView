@@ -109,7 +109,7 @@ void appendDirections(render::Frame &frame, std::vector<render::Vertex> &lines,
   appendTriangleDirections(frame, lines, p, rest, uv, normals, tangents, mask, posed, mesh.morphAnimated);
 }
 void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
-                          int clip, double seconds) {
+                          int clip, double seconds, const ModelRenderState &state) {
   if (document.cameras.empty()) return;
   const auto samples = document.cameraAt && clip >= 0
       ? document.cameraAt(static_cast<std::size_t>(clip), seconds)
@@ -162,6 +162,7 @@ void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
     return Basis{*forward, right, QVector3D::crossProduct(right, *forward).normalized()};
   };
   for (std::size_t i = 0; i < samples.size(); ++i) {
+    if (state.cameraIndex >= 0 && i != state.cameraIndex) continue;
     const auto &camera = samples[i];
     const auto origin = normalized(camera.world);
     const auto orientation = basis(camera.axes);
@@ -181,15 +182,17 @@ void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
              u.lengthSquared() > 1e-10F &&
              QVector3D::crossProduct(r,u).lengthSquared() > 1e-10F;
     };
+    if (state.cameraFrustum) {
     if (!transformedBasisValid()) {
       marker();
     } else {
       const auto &[forward, right, up] = *orientation;
       const auto tip = normalized(camera.world, forward * extent);
       line(origin,tip,tint);
-      if (camera.has_fov_x && camera.has_fov_y) {
-      const float halfX = std::tan(float(camera.fov_x_deg) * .00872664626F) * extent;
-      const float halfY = std::tan(float(camera.fov_y_deg) * .00872664626F) * extent;
+      if (camera.has_fov_y || camera.has_span) {
+      const float halfY = camera.has_span ? float(camera.span_y/2) : std::tan(float(camera.fov_y_deg) * .00872664626F) * extent;
+      const float halfX = camera.has_span ? float(camera.span_x/2) : camera.has_fov_x
+          ? std::tan(float(camera.fov_x_deg) * .00872664626F) * extent : halfY * float(state.cameraAspect);
       if (std::isfinite(halfX) && std::isfinite(halfY) &&
           halfX > extent*1e-5F && halfY > extent*1e-5F &&
           halfX < extent*20 && halfY < extent*20) {
@@ -198,7 +201,7 @@ void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
           const auto local = forward*extent + right*halfX*(c==0||c==3?-1:1)
                                          + up*halfY*(c<2?-1:1);
           corners[c] = normalized(camera.world, local);
-          line(origin,corners[c],tint);
+          line(camera.has_span ? normalized(camera.world, local-forward*extent) : origin,corners[c],tint);
         }
         for (int c = 0; c < 4; ++c) line(corners[c],corners[(c+1)%4],tint);
       }
@@ -207,7 +210,8 @@ void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
         line(tip,normalized(camera.world,forward*extent+up*extent*.12F),tint);
       }
     }
-    if (!document.cameraTrails.empty()) {
+    }
+    if (state.cameraPath && !document.cameraTrails.empty()) {
       const auto trailClip = std::min<std::size_t>(std::max(clip,0),document.cameraTrails.size()-1);
       if (i < document.cameraTrails[trailClip].size()) {
         const auto &trail = document.cameraTrails[trailClip][i];
@@ -223,6 +227,7 @@ void appendCameraGeometry(render::Frame &frame, const ModelDocument &document,
   } else {
     const auto position = frame.guides.end() - frame.selectionVertices;
     frame.guides.insert(position,lines.begin(),lines.end());
+    frame.directionVertices += static_cast<std::uint32_t>(lines.size());
   }
 }
 void checkUv(const QPointF &uv) {
@@ -639,9 +644,9 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
       }
     }
   }
-  if (mode != 1) appendCameraGeometry(*f, document, state.clip, state.time);
+  if (mode != 1) appendCameraGeometry(*f, document, state.clip, state.time, state);
   if (!directions.empty()) {
-    f->directionVertices = static_cast<std::uint32_t>(directions.size());
+    f->directionVertices += static_cast<std::uint32_t>(directions.size());
     f->guides.insert(f->guides.end() - f->selectionVertices, directions.begin(), directions.end());
   }
   return f;

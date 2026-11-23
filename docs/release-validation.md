@@ -2,6 +2,22 @@
 
 本文规定 Windows 安装包在版本交付前必须满足的安装、升级、降级和用户数据兼容门槛。脚本模拟、版本号伪装或安装器自身接受覆盖，均不能替代真实程序与数据的双向验收。
 
+## v0.2 第四阶段 · 源相机与共享材质（2026-11-23）
+
+本轮补齐 HTML 原型的源相机视图、透视/正交画幅、视锥与轨迹独立开关、框选相机与模型，以及按源材质 ID 跨网格关联/清除贴图。桌面端使用原型同一份 Camera_Material_Study.gltf 验证；原型已有对应功能，本轮未改变其设计。glTF 未提供的焦距保持“未提供”，缺省画幅跟随视口，无限远裁剪与奇异变换分别处理。同名材质不会被合并；共享网格缺少共同有效 UV 时不执行部分关联，UV 数组顺序不同时按通道名称映射。
+
+实际截图确认了自由视图的橙色视锥、蓝色轨迹、源相机画幅留边、控制面板和共享网格列表。复查修复了两处边界：ufbx 未填 projection_axes 时采用其文档规定的 FBX 原生 +X 前向、+Y 向上；混合场景相机辅助线不再受世界坐标轴开关控制。源相机视图的画幅变化也不会使辅助线缓存状态失配。
+
+Windows 11、Qt 6.12.0 Release、D3D11 下验证结果：
+
+- GPU 与强制 CPU 桌面组各 7 项通过（含初始化与清理），0 失败、0 跳过。五个功能用例为 modelSourceCameraAndSharedMaterial、modelMaterialWorkflow、modelAnimationInspectorControls、modelGpuSwitchPlaybackStress、modelPanelIncubationCanBeCancelled。两组分别以 Cheering.fbx 和 RobotExpressive.glb 驱动动画回归，各执行 24 次混合模型打开。
+- 新用例验证源相机投影中心、正交宽度、画幅比例、父节点动画、退出后自由取景保留、共享贴图取消/重试/清除、同名材质隔离、不同 UV 排序、文档切换复位、源文件字节不变、缺省画幅、无限远和奇异变换。
+- camera_preview、model_state、model_state_uv_budget、model_render 四组 CTest 全部通过。FBX SDK 生成的实例样例验证两个网格共享同一源材质、第三个实例采用同名独立材质；FBX 正交相机和 Alembic/FBX 纯相机、混合场景均通过。model_state 中残留的旧碰撞橙色填充断言同步到既有线框契约。
+- AddressSanitizer 的 camera_preview 通过，无内存错误报告；Clang UBSan trap 的 skeletal reading/pose 两组通过。UBSan 覆盖核心读取/姿态，不代表 Windows Qt 桌面端已完成全量 UBSan 检查。
+- HTML 原型 camera-inspection、model-workflows、model-display、model-data 共 19 项测试通过。主程序与测试目标均成功构建。
+
+含源相机的场景使用现有 CPU 帧构建路径，普通骨骼场景仍启用 GPU 蒙皮，GPU 日志确认 RTX 5090 D 上的实际蒙皮。验证日志与截图保存在仓库外 asset-preview-planning/development/verification/Source-Camera-Shared-Material-20261123/，最终桌面组为 camera-material-verified-gpu 和 camera-material-verified-cpu。本轮未构建或提交安装包；此记录不替代 v0.2 正式发布的安装兼容验收。
+
 ## v0.2 第四阶段 · 材质与片段交互（2026-11-23）
 
 本轮继续对照 HTML 原型，补充材质检查器的工作区图片关联、源 UV 仿射变换、贴图读取取消与失败重试。切换动画片段会暂停并回到所选片段起点，时间轴与动画检查器行为一致。

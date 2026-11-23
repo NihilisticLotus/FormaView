@@ -420,6 +420,46 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
           QVariantList{node.rotation[0], node.rotation[1], node.rotation[2],
                        node.rotation[3]};
     result->nodes.back() = std::move(metadata);
+    if (node.camera && active.contains(&node)) {
+      CameraInfo camera;
+      camera.node = static_cast<std::uint32_t>(ni);
+      camera.name = name(node.name).toStdString();
+      if (camera.name.empty()) camera.name = "Camera " + std::to_string(ni);
+      camera.path = id.toStdString();
+      for (auto *parent = node.parent; parent; parent = parent->parent)
+        camera.path = "node/" + std::to_string(parent - raw->nodes) + "/" + camera.path;
+      auto &sample = camera.sample;
+      for (int row = 0; row < 4; ++row)
+        for (int col = 0; col < 4; ++col) sample.world[row*4+col] = worlds[ni](row,col);
+      sample.axes = "-Z forward, +Y up";
+      const auto positive = [](double value) { return std::isfinite(value) && value > 0; };
+      if (node.camera->type == cgltf_camera_type_perspective) {
+        const auto &p = node.camera->data.perspective;
+        sample.projection = "perspective";
+        sample.fov_y_deg = p.yfov * 180. / 3.141592653589793;
+        sample.has_fov_y = positive(p.yfov) && p.yfov < 3.141592653589793;
+        sample.aspect = p.aspect_ratio;
+        sample.has_aspect = p.has_aspect_ratio && positive(p.aspect_ratio);
+        if (sample.has_aspect && sample.has_fov_y) {
+          sample.fov_x_deg = 2 * std::atan(std::tan(p.yfov/2) * p.aspect_ratio) * 180. / 3.141592653589793;
+          sample.has_fov_x = true;
+        }
+        sample.near_plane = p.znear; sample.far_plane = p.zfar;
+        sample.infinite_far = !p.has_zfar;
+        sample.has_near = positive(p.znear);
+        sample.has_far = p.has_zfar && positive(p.zfar) && p.zfar > p.znear;
+      } else if (node.camera->type == cgltf_camera_type_orthographic) {
+        const auto &o = node.camera->data.orthographic;
+        sample.projection = "orthographic";
+        sample.span_x = 2 * o.xmag; sample.span_y = 2 * o.ymag;
+        sample.has_span = positive(o.xmag) && positive(o.ymag);
+        sample.aspect = o.xmag / o.ymag; sample.has_aspect = sample.has_span && positive(sample.aspect);
+        sample.near_plane = o.znear; sample.far_plane = o.zfar;
+        sample.has_near = std::isfinite(o.znear) && o.znear >= 0;
+        sample.has_far = positive(o.zfar) && o.zfar > o.znear;
+      }
+      result->cameras.push_back(std::move(camera));
+    }
     if (!node.mesh || !active.contains(&node))
       continue;
     if (node.has_mesh_gpu_instancing)
@@ -750,6 +790,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
       m.references.append("");
       m.texturePaths.append("");
       m.textures.resize(1);
+      m.materialIds.append(primitive.material ? QString("gltf/material/%1").arg(primitive.material - raw->materials) : QString{});
       m.materialUv.push_back(0);
       m.uvTransforms.push_back({0, 0, 1, 1, 0});
       m.alphaModes.push_back(0);
@@ -1168,6 +1209,32 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
       }
       for (const auto &warning : anims->warnings)
         result->warnings.append(QString::fromStdString(warning));
+    }
+  }
+  if (!result->cameras.empty()) {
+    result->cameraOnly = result->meshes.empty();
+    if (result->cameraOnly) result->skeletonOnly = false;
+    result->cameraAt = [cameras = result->cameras, worldAt = result->worldAt](std::size_t clip, double seconds) {
+      const auto worlds = worldAt ? worldAt(clip, seconds) : std::vector<Matrix4>{};
+      std::vector<CameraSample> samples;
+      for (const auto &camera : cameras) {
+        auto sample = camera.sample;
+        if (camera.node < worlds.size()) sample.world = worlds[camera.node];
+        samples.push_back(sample);
+      }
+      return samples;
+    };
+    result->cameraTrails.resize(std::max<std::size_t>(1, result->animationClips.size()));
+    for (std::size_t c = 0; c < result->cameraTrails.size(); ++c) {
+      const auto clip = result->animationClips.empty() ? ModelAnimationClip{} : result->animationClips[c];
+      const int count = clip.playable() ? std::min(241., std::max(2., std::ceil((clip.end-clip.start)*30)+1)) : 1;
+      budget.reserve(result->cameras.size() * count * sizeof(Matrix4));
+      auto &paths = result->cameraTrails[c]; paths.resize(result->cameras.size());
+      for (int i = 0; i < count; ++i) {
+        check(stop);
+        const auto samples = result->cameraAt(c, count == 1 ? clip.start : clip.start+(clip.end-clip.start)*i/(count-1));
+        for (std::size_t ci = 0; ci < samples.size(); ++ci) paths[ci].push_back(samples[ci].world);
+      }
     }
   }
   // Snapshot only bounded transform metadata. Do not retain cgltf pointers or

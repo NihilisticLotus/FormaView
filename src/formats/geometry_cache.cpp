@@ -128,6 +128,10 @@ formaview::CameraSample camera_value(G::ICamera camera,
                                       (2 * result.focal_mm)) * radToDeg;
     result.has_fov_y = valid(result.fov_y_deg) && result.fov_y_deg < 180;
   }
+  if (result.has_aperture_x && result.has_aperture_y) {
+    result.aspect = result.aperture_x_mm / result.aperture_y_mm;
+    result.has_aspect = valid(result.aspect);
+  }
   result.near_plane = source.getNearClippingPlane();
   result.far_plane = source.getFarClippingPlane();
   result.has_near = valid(result.near_plane);

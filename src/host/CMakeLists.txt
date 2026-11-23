@@ -125,7 +125,7 @@ set(desktop_qml FrostEffect.qml FrostRequest.qml PickerBackdrop.qml FrostDialog.
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml
         AnimationBar.qml AnimationClipChoice.qml AnimationSpeedField.qml CacheTimeline.qml
-        ModelPane.qml ModelMaterialPanel.qml ModelInspector.qml ModelSkeletonPane.qml ModelBindingDetails.qml ModelViewport.qml ModelPointPanel.qml ModelLodPanel.qml ModelMatrix.qml ModelSourceDetails.qml)
+        ModelPane.qml ModelCameraPanel.qml ModelMaterialPanel.qml ModelInspector.qml ModelSkeletonPane.qml ModelBindingDetails.qml ModelViewport.qml ModelPointPanel.qml ModelLodPanel.qml ModelMatrix.qml ModelSourceDetails.qml)
 endif()
 if(TARGET formaview_image_conversion)
     list(APPEND desktop_qml ImagePane.qml ImageInspector.qml PixelPanel.qml ExposureSpinBox.qml ConversionWorkspace.qml QuickExportWindow.qml ConversionSettings.qml ConversionSources.qml AppToolWindow.qml ConversionNaming.qml ModelExportSettings.qml ConversionInputs.qml ConversionOverrides.qml ConversionResults.qml PreflightFilters.qml ConversionItemRow.qml ConversionItemDetails.qml ImageJobsPane.qml McpSettings.qml)

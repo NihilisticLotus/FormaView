@@ -585,9 +585,9 @@ int main(int argc, char **argv) {
     test(std::all_of(session.frame()->vertices.begin(),
                      session.frame()->vertices.end(),
                      [](const auto &v) {
-                       return v.r == 1 && std::abs(v.g - .3F) < 1e-6F;
+                       return v.alphaMode == -3.F && std::abs(v.r+v.g+v.b-1.F) < 1e-6F;
                      }),
-         "collision geometry has explicit display tint");
+         "LOD collision geometry uses the dedicated wire display");
     session.restoreClassification();
     session.setCollisionMode(0);
     wait();

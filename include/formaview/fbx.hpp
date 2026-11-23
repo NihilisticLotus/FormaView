@@ -6,6 +6,7 @@
 
 namespace formaview::skeletal {
 struct FbxMaterial {
+  std::string source_id; // Parser material identity; names are not unique.
   std::string name, colour_texture, colour_resolved, colour_uv;
   std::shared_ptr<const std::vector<std::byte>> colour_content;
   std::array<double, 6> colour_uv_transform{1, 0, 0, 0, 1, 0};

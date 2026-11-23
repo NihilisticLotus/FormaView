@@ -15,6 +15,7 @@ Rectangle {
     signal inspectSection(string section)
     property string section: "model"
     function selectSection(key, mode) {
+        if (key !== "model") session.cameraView = false
         section = key
         session.setMode(mode)
         session.setSkeletonOverlay(key === "skeleton" || key === "binding")
@@ -60,6 +61,7 @@ Rectangle {
     function addExternalAnimation(): void {
         if (root.session.canAttachExternalAnimation && !root.session.busy && !root.session.externalBusy) externalDialog.present()
     }
+    function frameSourceCamera(): void { modelViewport.frameSourceCamera() }
     function fit(selected: bool): void {
         if (root.narrow && root.session.mode===1 && root.showUV && root.uvViewport) root.uvViewport.fit(selected)
         else modelViewport.fit(selected)

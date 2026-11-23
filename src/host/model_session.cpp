@@ -753,6 +753,7 @@ std::shared_ptr<ModelDocument> readModelDocument(const QString &path,
                                           : data.nodes.at(node).materials;
         for (const auto &mat : sourceMaterials) {
           m.materials.append(text(mat.name));
+          m.materialIds.append(text(mat.source_id));
           m.references.append(text(mat.colour_texture));
         }
         if (m.materials.isEmpty()) {
@@ -1474,6 +1475,7 @@ void ModelSession::reset(bool opening) {
   time_ = 0;
   clipIndex_ = 0;
   cameraIndex_ = 0;
+  cameraView_ = cameraFrustum_ = cameraPath_ = false;
   renderedState_ = {};
   frameCache_.clear();
   cachedBytes_ = 0;
@@ -1518,6 +1520,7 @@ void ModelSession::reset(bool opening) {
   selectedNode_.clear();
   error_.clear();
   clearSelection();
+  emit cameraControlsChanged();
   emit animChanged();
   emit frameChanged();
   emit changed();
@@ -1715,8 +1718,8 @@ void ModelSession::poll() {
       textureError_ = r.error;
       textureStatus_ = r.pixels ? QStringLiteral("ready") : QStringLiteral("error");
       if (r.pixels) {
-        textureLinks_.at(static_cast<std::size_t>(job->mesh))[job->material] = {
-            std::move(r.pixels), r.path, job->uv};
+        for (const auto &target : job->targets)
+          textureLinks_.at(target[0])[target[1]] = {r.pixels, r.path, target[2]};
         rebuild();
       }
       emit changed();
@@ -3131,21 +3134,114 @@ void ModelSession::selectCamera(int index) {
       static_cast<std::size_t>(index) >= document_->cameras.size() ||
       cameraIndex_ == index) return;
   cameraIndex_ = index;
+  rebuild();
+  emit cameraControlsChanged();
   emit changed();
   emit animChanged();
 }
-QVariantMap ModelSession::cameraInfo() const {
-  if (!document_ || document_->cameras.empty() || cameraIndex_ < 0 ||
-      static_cast<std::size_t>(cameraIndex_) >= document_->cameras.size()) return {};
-  const auto &camera = document_->cameras[static_cast<std::size_t>(cameraIndex_)];
-  auto sample = camera.sample;
+std::optional<CameraSample> ModelSession::selectedCameraSample() const {
+  if (!document_ || cameraIndex_ < 0 || cameraIndex_ >= document_->cameras.size()) return {};
+  auto sample = document_->cameras[cameraIndex_].sample;
   if (document_->cameraAt && document_->animated() && clipIndex_ >= 0) {
     try {
-      const auto values = document_->cameraAt(static_cast<std::size_t>(clipIndex_), time_);
-      if (static_cast<std::size_t>(cameraIndex_) < values.size())
-        sample = values[static_cast<std::size_t>(cameraIndex_)];
-    } catch (...) { return {{"name",QString::fromStdString(camera.name)},
-                           {"status",QStringLiteral("sample unavailable")}}; }
+      const auto samples = document_->cameraAt(clipIndex_, time_);
+      if (cameraIndex_ >= samples.size()) return {};
+      sample = samples[cameraIndex_];
+    } catch (...) { return {}; }
+  }
+  return sample;
+}
+std::optional<QMatrix4x4> ModelSession::sourceCameraMatrix(double viewportAspect) const {
+  const auto sampled = selectedCameraSample();
+  if (!sampled || !document_ || !std::isfinite(viewportAspect) || viewportAspect <= 0) return {};
+  const auto &s = *sampled;
+  QMatrix4x4 world;
+  for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) {
+    const auto v = s.world[r*4+c];
+    if (!std::isfinite(v)) return {};
+    world(r,c) = float(v);
+  }
+  if (std::abs(world.determinant()) < 1e-12F) return {};
+  const auto axis = [](const QString &key) -> QVector3D {
+    if (key == "+X") return {1,0,0}; if (key == "-X") return {-1,0,0};
+    if (key == "+Y") return {0,1,0}; if (key == "-Y") return {0,-1,0};
+    if (key == "+Z") return {0,0,1}; if (key == "-Z") return {0,0,-1};
+    return {};
+  };
+  const auto axes = QString::fromStdString(s.axes).split(" forward, ");
+  if (axes.size() != 2 || !axes[1].endsWith(" up")) return {};
+  const auto forward = document_->displayBasis.mapVector(world.mapVector(axis(axes[0]))).normalized();
+  const auto up = document_->displayBasis.mapVector(world.mapVector(axis(axes[1].chopped(3)))).normalized();
+  if (QVector3D::crossProduct(forward, up).lengthSquared() < 1e-8F) return {};
+  const double radius = std::max(double(document_->radius), 1e-6);
+  const auto position = (document_->displayBasis.map(world.map(QVector3D{}))-document_->center)/float(radius);
+  const double aspect = s.has_aspect ? s.aspect : viewportAspect;
+  if (!std::isfinite(aspect) || aspect <= 0) return {};
+  const double near = s.near_plane/radius, far = s.far_plane/radius;
+  if (!s.has_near || !std::isfinite(near) || near < 0 ||
+      (!s.infinite_far && (!s.has_far || !std::isfinite(far) || far <= near))) return {};
+  QMatrix4x4 projection, view;
+  if (s.projection == "perspective") {
+    if (!s.has_fov_y || s.fov_y_deg <= 0 || s.fov_y_deg >= 180 || near <= 0) return {};
+    if (s.infinite_far) {
+      const double y = 1 / std::tan(s.fov_y_deg * 3.141592653589793 / 360);
+      projection.fill(0); projection(0,0)=float(y/aspect); projection(1,1)=float(y);
+      projection(2,2)=-1; projection(2,3)=float(-2*near); projection(3,2)=-1;
+    } else projection.perspective(float(s.fov_y_deg), float(aspect), float(near), float(far));
+  } else if (s.projection == "orthographic") {
+    if (!s.has_span || s.span_x <= 0 || s.span_y <= 0) return {};
+    projection.ortho(float(-s.span_x/(2*radius)), float(s.span_x/(2*radius)),
+                     float(-s.span_y/(2*radius)), float(s.span_y/(2*radius)), float(near), float(far));
+  } else return {};
+  view.lookAt(position, position+forward, up);
+  const auto result = projection*view;
+  for (int i=0; i<16; ++i) if (!std::isfinite(result.constData()[i])) return {};
+  return result;
+}
+std::pair<QVector3D, float> ModelSession::cameraFocusBounds() const {
+  auto [center, radius] = focusBounds(false);
+  const auto sample = selectedCameraSample();
+  if (!sample || !document_) return {center, radius};
+  const auto &m = sample->world;
+  const auto p = (document_->displayBasis.map(QVector3D(float(m[3]),float(m[7]),float(m[11])))-document_->center)/document_->radius;
+  const auto delta = p-center; const auto distance = delta.length();
+  if (distance <= radius) return {center, radius};
+  const float combined = (distance + radius) / 2;
+  return {center + delta*((combined-radius)/distance), combined};
+}
+void ModelSession::setCameraViewportAspect(double aspect) {
+  if (!std::isfinite(aspect) || aspect <= 0 || std::abs(aspect-cameraViewportAspect_) < 1e-6) return;
+  cameraViewportAspect_ = aspect;
+  if (cameraFrustum_ && !cameraView_) rebuild();
+}
+void ModelSession::setCameraView(bool value) {
+  if (cameraView_ == value || (value && !sourceCameraMatrix(1.6))) return;
+  cameraView_ = value;
+  if (value) setMode(0);
+  rebuild(); emit cameraControlsChanged();
+}
+void ModelSession::setCameraFrustum(bool value) {
+  if (cameraFrustum_ == value) return;
+  cameraFrustum_ = value; rebuild(); emit cameraControlsChanged();
+}
+void ModelSession::setCameraPath(bool value) {
+  if (cameraPath_ == value) return;
+  cameraPath_ = value; rebuild(); emit cameraControlsChanged();
+}
+QVariantMap ModelSession::cameraInfo() const {
+  const auto sampled = selectedCameraSample();
+  if (!sampled) return {};
+  const auto &sample = *sampled;
+  const auto &camera = document_->cameras[cameraIndex_];
+  std::size_t pathCount = 0;
+  bool moving = false;
+  if (!document_->cameraTrails.empty()) {
+    const auto &paths = document_->cameraTrails[std::min<std::size_t>(std::max(clipIndex_,0), document_->cameraTrails.size()-1)];
+    if (cameraIndex_ < paths.size()) {
+      const auto &path = paths[cameraIndex_]; pathCount = path.size();
+      for (const auto &point : path) for (int c : {3,7,11})
+        if (!path.empty() && std::abs(point[c]-path.front()[c]) > 1e-7) moving = true;
+    }
   }
   const auto number = [](bool valid, double value) -> QVariant {
     return valid ? QVariant(value) : QVariant{};
@@ -3154,6 +3250,10 @@ QVariantMap ModelSession::cameraInfo() const {
   return {{"name", QString::fromStdString(camera.name)},
           {"path", QString::fromStdString(camera.path)},
           {"projection", QString::fromStdString(sample.projection)},
+          {"valid", sourceCameraMatrix(1.6).has_value()},
+          {"aspect", number(sample.has_aspect,sample.aspect)},
+          {"spanX", number(sample.has_span,sample.span_x)}, {"spanY", number(sample.has_span,sample.span_y)},
+          {"infiniteFar", sample.infinite_far}, {"pathCount", qulonglong(pathCount)}, {"pathMoving", moving},
           {"axes", QString::fromStdString(sample.axes)},
           {"position", QString("%1, %2, %3").arg(m[3],0,'g',6)
                          .arg(m[7],0,'g',6).arg(m[11],0,'g',6)},
@@ -3165,7 +3265,7 @@ QVariantMap ModelSession::cameraInfo() const {
           {"near", number(sample.has_near,sample.near_plane)},
           {"far", number(sample.has_far,sample.far_plane)},
           {"fovSource", document_->geometryCache ? QStringLiteral("derived from filmback / focal length")
-                                                  : QStringLiteral("ufbx evaluated camera")},
+                                                  : document_->coordinates.startsWith("glTF") ? QStringLiteral("glTF source projection") : QStringLiteral("ufbx evaluated camera")},
           {"time", document_->geometryCache ? document_->geometryCache->times()[document_->cacheSample] : time_},
           {"unit", document_->geometryCache ? QStringLiteral("ABC source units unspecified; clipping in centimetres")
                                             : document_->coordinates}};
@@ -3538,7 +3638,8 @@ void ModelSession::removeTexture() {
   textureBusy_ = false;
   textureStatus_.clear();
   textureRequestedPath_.clear();
-  textureLinks_.at(static_cast<std::size_t>(mesh_)).erase(material_);
+  for (const auto &[mesh, slot] : materialTargets(mesh_, material_))
+    textureLinks_.at(mesh).erase(slot);
   textureError_.clear();
   rebuild();
   emit changed();
@@ -3546,10 +3647,9 @@ void ModelSession::removeTexture() {
 void ModelSession::associateTexture(const QString &input) {
   if (!selectedMesh() || busy_)
     return;
-  if (uvSets().isEmpty() ||
-      document_->meshes.at(static_cast<std::size_t>(mesh_))
-          .invalidUVs.at(static_cast<std::size_t>(uvIndex()))) {
-    textureError_ = "This mesh has no usable UV set for a texture preview";
+  const auto targets = textureTargets(mesh_, material_, uvIndex());
+  if (targets.empty()) {
+    textureError_ = "The selected UV set must be usable on every mesh sharing this source material";
     emit changed();
     return;
   }
@@ -3566,6 +3666,7 @@ void ModelSession::associateTexture(const QString &input) {
   textureMesh_ = mesh_;
   textureMaterial_ = material_;
   textureUV_ = uvIndex();
+  textureUVName_ = uvSets().value(textureUV_);
   textureStatus_ = QStringLiteral("loading");
   std::stop_source stop;
   const auto token = stop.get_token();
@@ -3582,11 +3683,37 @@ void ModelSession::associateTexture(const QString &input) {
   textureBusy_ = true;
   textureError_.clear();
   textureJobs_.push_back({generation_, ++textureRequest_, mesh_, material_,
-                          std::move(stop), std::move(future), uvIndex()});
+                          std::move(stop), std::move(future), uvIndex(), targets});
   emit changed();
 }
+std::vector<std::pair<int, int>> ModelSession::materialTargets(int mesh, int slot) const {
+  if (!document_ || mesh < 0 || mesh >= document_->meshes.size() ||
+      slot < 0 || slot >= document_->meshes[mesh].materials.size()) return {};
+  const auto id = document_->meshes[mesh].materialIds.value(slot);
+  if (id.isEmpty()) return {{mesh, slot}};
+  std::vector<std::pair<int, int>> targets;
+  for (int mi = 0; mi < document_->meshes.size(); ++mi)
+    for (int si = 0; si < document_->meshes[mi].materialIds.size(); ++si)
+      if (document_->meshes[mi].materialIds[si] == id) targets.emplace_back(mi, si);
+  return targets;
+}
+std::vector<std::array<int, 3>> ModelSession::textureTargets(int mesh, int slot, int uv) const {
+  const auto targets = materialTargets(mesh, slot);
+  if (targets.empty() || uv < 0 || uv >= document_->meshes[mesh].uvNames.size()) return {};
+  const auto name = document_->meshes[mesh].uvNames[uv];
+  std::vector<std::array<int, 3>> result;
+  for (const auto &[mi, si] : targets) {
+    const auto &target = document_->meshes[mi];
+    const int mapped = target.uvNames.indexOf(name);
+    if (mapped < 0 || mapped >= target.invalidUVs.size() || target.invalidUVs[mapped] ||
+        mapped >= target.uvs.size()) return {};
+    result.push_back({mi, si, mapped});
+  }
+  return result;
+}
 QVariantMap ModelSession::textureRequestInfo() const {
-  if (textureMesh_ != mesh_ || textureMaterial_ != material_ || textureRequestedPath_.isEmpty()) return {};
+  const auto targets = materialTargets(textureMesh_, textureMaterial_);
+  if (textureRequestedPath_.isEmpty() || std::find(targets.begin(), targets.end(), std::pair{mesh_, material_}) == targets.end()) return {};
   return {{"path", textureRequestedPath_}, {"status", textureStatus_}, {"uv", textureUV_}};
 }
 void ModelSession::cancelTexture() {
@@ -3603,7 +3730,8 @@ void ModelSession::retryTexture() {
       (textureStatus_ != "error" && textureStatus_ != "cancelled")) return;
   // Retry the captured UV, even if the user inspected another channel meanwhile.
   const auto path = textureRequestedPath_;
-  const auto uv = textureUV_;
+  const auto uv = uvSets().indexOf(textureUVName_);
+  if (uv < 0) return;
   selectUV(uv);
   associateTexture(path);
 }
@@ -3620,12 +3748,14 @@ QVariantMap ModelSession::materialInfo() const {
     transform = {std::cos(t[4])*t[2], -std::sin(t[4])*t[3], t[0],
                  std::sin(t[4])*t[2], std::cos(t[4])*t[3], t[1]};
   }
-  const auto selectedUV = uvIndex();
-  const bool usable = selectedUV >= 0 && static_cast<std::size_t>(selectedUV) < mesh->invalidUVs.size() &&
-                      !mesh->invalidUVs[selectedUV] && static_cast<std::size_t>(selectedUV) < mesh->uvs.size();
+  const bool usable = !textureTargets(mesh_, material_, uvIndex()).empty();
+  QStringList sharedMeshes;
+  for (const auto &[mi, si] : materialTargets(mesh_, material_))
+    if (!sharedMeshes.contains(document_->meshes[mi].name)) sharedMeshes.append(document_->meshes[mi].name);
   return {{"mesh", mesh->name}, {"name", mesh->materials[material_]},
           {"sourceUV", mesh->uvNames.value(uv)}, {"uvTransform", transform},
-          {"canAssociate", usable}, {"sessionLinked", canClearTexture()}};
+          {"canAssociate", usable}, {"sessionLinked", canClearTexture()},
+          {"sharedMeshes", sharedMeshes}, {"sourceId", mesh->materialIds.value(material_)}};
 }
 ModelPickHit pickModelDocument(const ModelDocument &document, const ModelRenderState &state,
     const formaview::render::Frame *pose, const QMatrix4x4 &view, QPointF normalized, bool uvView, std::stop_token stop) {

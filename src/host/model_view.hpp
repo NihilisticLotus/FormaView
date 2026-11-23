@@ -78,6 +78,7 @@ public:
   Q_INVOKABLE void panBy(double dx, double dy);
   Q_INVOKABLE void zoomBy(double factor);
   Q_INVOKABLE void fit(bool selected = false);
+  Q_INVOKABLE void frameSourceCamera();
   Q_INVOKABLE void pickAt(double x, double y);
   Q_INVOKABLE QVariantMap cameraState() const {
     return {{"yaw", yaw_},

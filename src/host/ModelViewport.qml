@@ -13,17 +13,23 @@ FocusScope {
     property var initialCamera: ({})
     property bool ready: false
     signal cameraSaved(var state)
+    function frameSourceCamera(): void { viewport.frameSourceCamera() }
     function fit(selected: bool): void { viewport.fit(selected) }
     Component.onCompleted: { viewport.restoreCamera(root.initialCamera); root.ready=true }
+    readonly property bool sourceView: !uv && !!session.cameraView
+    readonly property real sourceAspect: sourceView ? Number(session.cameraInfo.aspect || 0) : 0
+    Rectangle { anchors.fill: parent; color: "#101419"; visible: root.sourceView }
     ModelView {
         id: viewport
         objectName: root.uv ? "uvViewport" : "modelViewport"
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: root.sourceAspect > 0 ? Math.min(root.width, root.height * root.sourceAspect) : root.width
+        height: root.sourceAspect > 0 ? Math.min(root.height, root.width / root.sourceAspect) : root.height
         session: root.session
         backdrop: root.uv ? "#202b34" : Theme.light ? "#e7ebef" : "#24272b"
         representation: root.uv ? 1 : 0
-        showGrid: !root.uv && root.showGrid
-        showAxes: !root.uv && root.showAxes
+        showGrid: !root.uv && !root.sourceView && root.showGrid
+        showAxes: !root.uv && !root.sourceView && root.showAxes
         wireframe: !root.uv && root.wireframe
         shadingMode: root.uv ? 0 : root.shadingMode
         onCameraChanged: state => { if (root.ready) root.cameraSaved(state) }
@@ -31,7 +37,8 @@ FocusScope {
         Accessible.role: Accessible.Pane
         Accessible.name: root.uv ? Theme.t("UV 预览", "UV preview", "UV 預覽") : Theme.t("模型预览", "Model preview", "模型預覽")
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_F) { viewport.fit(true); event.accepted = true }
+            if (event.key === Qt.Key_Escape && root.sourceView) { root.session.cameraView = false; event.accepted = true }
+            else if (event.key === Qt.Key_F) { viewport.fit(true); event.accepted = true }
             else if (event.key === Qt.Key_Home) { viewport.fit(); event.accepted = true }
             else if (event.key === Qt.Key_Space && !root.uv && root.session && root.session.canPlayAnimation) { root.session.togglePlay(); event.accepted = true }
         }

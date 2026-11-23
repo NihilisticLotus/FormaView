@@ -38,6 +38,8 @@ void ModelView::setSession(ModelSession *value) {
   };
   if (session_) {
     connect(session_, &ModelSession::frameChanged, this, &ModelView::refresh);
+    connect(session_, &ModelSession::cameraControlsChanged, this, &ModelView::camera);
+    connect(session_, &ModelSession::animChanged, this, [this] { if (session_->cameraView()) camera(); });
     connect(session_, &ModelSession::documentChanged, this, [this] {
       presented_->store({}); submitted_->store({});
       saved_[0] = {};
@@ -69,7 +71,7 @@ void ModelView::refresh() {
     distance_ = state.distance;
   }
   if (session_ && frame) framingRevision_ = session_->framingRevision();
-  if (automatic_ && needsFit && session_ && session_->available() && frame)
+  if (automatic_ && needsFit && session_ && session_->available() && frame && !session_->cameraView())
     fit(fitSelected_);
   else
     camera();
@@ -77,6 +79,14 @@ void ModelView::refresh() {
 void ModelView::camera() {
   const auto aspect =
       static_cast<float>(std::max(width(), 1.0) / std::max(height(), 1.0));
+  if (!uvMode_ && session_) session_->setCameraViewportAspect(aspect);
+  if (!uvMode_ && session_ && session_->cameraView()) {
+    if (const auto matrix = session_->sourceCameraMatrix(aspect)) {
+      matrix_ = *matrix; setViewMatrix(matrix_); return;
+    }
+    // Invalid animated source samples must not retain a stale camera view.
+    session_->setCameraView(false);
+  }
   QMatrix4x4 projection, view;
   if (uvMode_) {
     const float span = static_cast<float>(distance_ / 3.2 * 1.15);
@@ -97,13 +107,13 @@ void ModelView::camera() {
 }
 void ModelView::geometryChange(const QRectF &n, const QRectF &o) {
   Item::geometryChange(n, o);
-  if (automatic_ && session_ && session_->available())
+  if (automatic_ && session_ && session_->available() && !session_->cameraView())
     fit(fitSelected_);
   else
     camera();
 }
 void ModelView::orbit(double dx, double dy) {
-  if (uvMode_)
+  if (uvMode_ || (session_ && session_->cameraView()))
     return;
   automatic_ = false;
   yaw_ -= dx * .4;
@@ -111,6 +121,7 @@ void ModelView::orbit(double dx, double dy) {
   camera();
 }
 void ModelView::panBy(double dx, double dy) {
+  if (!uvMode_ && session_ && session_->cameraView()) return;
   automatic_ = false;
   bool ok = false;
   const auto inv = matrix_.inverted(&ok);
@@ -125,6 +136,7 @@ void ModelView::panBy(double dx, double dy) {
   camera();
 }
 void ModelView::zoomBy(double factor) {
+  if (!uvMode_ && session_ && session_->cameraView()) return;
   if (!std::isfinite(factor) || factor <= 0)
     return;
   automatic_ = false;
@@ -132,6 +144,7 @@ void ModelView::zoomBy(double factor) {
   camera();
 }
 void ModelView::fit(bool selected) {
+  if (!uvMode_ && session_) session_->setCameraView(false);
   automatic_ = true;
   fitSelected_ = selected;
   target_ = {};
@@ -155,6 +168,16 @@ void ModelView::fit(bool selected) {
                              std::max(1.0, 1.0 / aspect) * 3.2 / 1.15,
                          .002);
   }
+  camera();
+}
+void ModelView::frameSourceCamera() {
+  if (!session_ || uvMode_) return;
+  session_->setCameraView(false);
+  const auto [center, radius] = session_->cameraFocusBounds();
+  automatic_ = false; target_ = center; yaw_ = homeYaw; pitch_ = homePitch;
+  const double aspect = std::max(width(),1.) / std::max(height(),1.);
+  const double half = std::min(qDegreesToRadians(verticalFov/2), std::atan(std::tan(qDegreesToRadians(verticalFov/2))*aspect));
+  distance_ = std::max(double(radius)*1.1/std::sin(half), .002);
   camera();
 }
 void ModelView::pickAt(double x, double y) {

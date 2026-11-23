@@ -87,6 +87,7 @@ struct ModelMesh {
   std::vector<float> alphaCutoffs;
   std::vector<ModelSkin> skins;
   QStringList materials, references, texturePaths;
+  QStringList materialIds; // Document-scoped source identity; empty means unshared.
   std::vector<int> materialUv;
   std::vector<std::array<float, 5>>
       uvTransforms; // offset U/V, scale U/V, rotation.
@@ -279,6 +280,9 @@ struct ModelTextureLink {
   int uv{-1};
 };
 struct ModelRenderState {
+  bool cameraFrustum{true}, cameraPath{true};
+  double cameraAspect{1.}; // Viewport fallback for cameras without a source aspect.
+  int cameraIndex{-1}; // -1 retains all-camera diagnostic rendering.
   bool skeletonOverlay{};
   int directionMask{}; // 1 normal, 2 tangent
   QString highlightedNode;

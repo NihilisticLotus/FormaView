@@ -124,7 +124,10 @@ QString writeFbx(const QString &directory, bool mesh) {
   rig->AddChild(cameraNode);
   scene->GetRootNode()->AddChild(rig);
   auto *second = FbxNode::Create(scene, "static");
-  second->SetNodeAttribute(FbxCamera::Create(scene, "staticLens"));
+  auto *ortho = FbxCamera::Create(scene, "staticLens");
+  ortho->ProjectionType.Set(FbxCamera::eOrthogonal);
+  ortho->OrthoZoom.Set(4);
+  second->SetNodeAttribute(ortho);
   scene->GetRootNode()->AddChild(second);
   if (mesh) {
     auto *geometry = FbxMesh::Create(scene, "triangle");
@@ -136,7 +139,16 @@ QString writeFbx(const QString &directory, bool mesh) {
     geometry->AddPolygon(2); geometry->EndPolygon();
     auto *node = FbxNode::Create(scene,"mesh");
     node->SetNodeAttribute(geometry);
+    auto *shared = FbxSurfaceLambert::Create(scene, "same name");
+    auto *independent = FbxSurfaceLambert::Create(scene, "same name");
+    node->AddMaterial(shared);
     scene->GetRootNode()->AddChild(node);
+    for (int i = 0; i < 2; ++i) {
+      auto *instance = FbxNode::Create(scene, i == 0 ? "shared instance" : "independent instance");
+      instance->SetNodeAttribute(geometry);
+      instance->AddMaterial(i == 0 ? shared : independent);
+      scene->GetRootNode()->AddChild(instance);
+    }
   }
   auto *stack = FbxAnimStack::Create(scene,"camera movement");
   auto *layer = FbxAnimLayer::Create(scene,"base");
@@ -174,12 +186,24 @@ void checkDocument(const QString &path, bool mixed, bool abc) {
   need(first.projection == "perspective" && first.has_fov_x && first.has_focal,
        "Perspective optics");
   need(closeEnough(first.focal_mm,40), "Focal length 40 mm");
+  need(first.has_aspect && first.aspect > 0, "Source camera aspect available");
   if (abc) {
     need(closeEnough(first.fov_x_deg,48.46), "ABC FOV derived from 36 mm / 40 mm");
     need(first.axes == "-Z forward, +Y up", "ABC camera local axes");
   } else {
-    need(first.axes == "+X forward, +Y up" || first.axes == "unknown",
-         "FBX camera local axes explicitly known or unavailable");
+    need(first.axes == "+X forward, +Y up",
+         "FBX native camera local axes");
+    const auto &ortho = document->cameras[1].sample;
+    need(ortho.projection == "orthographic" && ortho.has_span && ortho.span_x > 0 && ortho.span_y > 0,
+         "FBX orthographic source extents");
+    if (mixed) {
+      need(document->meshes.size() == 3, "FBX material instances");
+      const auto &meshes = document->meshes;
+      need(!meshes[0].materialIds.value(0).isEmpty() &&
+           meshes[0].materialIds.value(0) == meshes[1].materialIds.value(0) &&
+           meshes[0].materialIds.value(0) != meshes[2].materialIds.value(0),
+           "FBX shared source identity preserves per-node material overrides");
+    }
     need(document->cameraAt && document->cameraAt(0,1).size()==2,
          "FBX camera evaluator");
     need(closeEnough(document->cameraAt(0,1)[0].focal_mm,50),
@@ -191,12 +215,19 @@ void checkDocument(const QString &path, bool mixed, bool abc) {
   session.open(path);
   wait(session);
   need(session.cameras().size() == 2 && session.inspectable(), "Camera session ready");
+  need(!session.cameraView() && !session.cameraFrustum() && !session.cameraPath(), "Source camera controls default off");
+  need(session.sourceCameraMatrix(1.6).has_value(), "Valid source camera projection");
+  session.setCameraView(true); need(session.cameraView(), "Enter source camera");
+  session.setCameraView(false);
+  session.setCameraFrustum(true); session.setCameraPath(true); wait(session);
   need(session.frame() && (!session.frame()->vertices.empty() || mixed),
        "Camera-only line frame");
   need(!session.frame()->guides.empty(), "Camera guides");
+  if (mixed) need(session.frame()->directionVertices > 0, "Camera guides draw independently of world axes");
   session.selectCamera(1);
   need(session.cameraInfo().value("name").toString()==QStringLiteral("static"),
        "Camera selection");
+  need(session.sourceCameraMatrix(1.6).has_value(), "Selected source camera projection");
   if (abc) {
     session.seekSample(2);
     QElapsedTimer deadline; deadline.start();

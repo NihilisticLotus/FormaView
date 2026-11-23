@@ -12,6 +12,8 @@ struct CameraSample {
   double focal_mm{}, aperture_x_mm{}, aperture_y_mm{};
   double fov_x_deg{}, fov_y_deg{};
   double near_plane{}, far_plane{};
+  double aspect{}, span_x{}, span_y{};
+  bool has_aspect{}, has_span{}, infinite_far{};
   bool has_focal{}, has_aperture_x{}, has_aperture_y{};
   bool has_fov_x{}, has_fov_y{}, has_near{}, has_far{};
 };
