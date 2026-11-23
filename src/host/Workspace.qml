@@ -298,7 +298,7 @@ Item {
                         id: selectTab
                         anchors.fill: parent
                         text: tab.label; quiet: true; checked: root.openedPath === tab.modelData; hint: tab.modelData
-                        iconName: /\.(fbx|abc|gltf|glb|obj|psk|pskx|psa)$/i.test(tab.modelData) ? "model" : "file"
+                        fileKind: root.controller.fileKindForPath(tab.modelData) || "file"
                         onClicked: {
                             if (tab.modelData !== root.openedPath || root.controller.requested !== tab.modelData)
                                 root.controller.openPath(tab.modelData)

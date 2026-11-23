@@ -260,9 +260,8 @@ def make_fixture(fixture, app_id, profile, namespace):
     source = source.replace("OutputBaseFilename=FormaView-{#PackageVersion}-Windows-x64-Setup", "OutputBaseFilename=wizard-fixture")
     assoc = read(engine / "associations.iss").replace(r"Software\FormaView", "Software\\" + namespace)
     assoc = assoc.replace("FormaView.Local", namespace)
-    icon_match = re.search(r"formaview-file-icon-[0-9a-f]{64}\.ico", assoc)
-    assert icon_match, "generated association source must reference the content-addressed file icon"
-    file_icon_name = icon_match.group(0)
+    file_icon_names = sorted(set(re.findall(r"formaview-file-(?:(?:image|video|model)-)?icon-[0-9a-f]{64}\.ico", assoc)))
+    assert file_icon_names, "generated association source must reference content-addressed file icons"
     data = read(engine / "uninstall-data.iss")
     data = data.replace(r"Software\FormaView\Installer", profile)
     data = data.replace(r"Software\FormaView\FormaView", "Software\\" + namespace + r"\Settings")
@@ -271,9 +270,10 @@ def make_fixture(fixture, app_id, profile, namespace):
         (fixture / name).write_bytes((engine / name).read_bytes())
     (fixture / "upgrade-policy.iss").write_bytes((engine / "upgrade-policy.iss").read_bytes())
     (fixture / "formaview.ico").write_bytes((meta / "formaview.ico").read_bytes())
-    (fixture / file_icon_name).write_bytes((meta / file_icon_name).read_bytes())
+    for name in file_icon_names:
+        (fixture / name).write_bytes((meta / name).read_bytes())
     (fixture / "installation.ini").write_bytes(f"[Install]\r\nAppId={app_id}\r\nVersion=0.1.0\r\n".encode())
-    fixture_files = ("installation.ini", file_icon_name, "owned-files.txt")
+    fixture_files = ("installation.ini", *file_icon_names, "owned-files.txt")
     (fixture / "owned-files.txt").write_bytes(
         ("\ufeff" + "\r\n".join(fixture_files) + "\r\n").encode("utf-8"))
     write(fixture / "associations.iss", assoc)

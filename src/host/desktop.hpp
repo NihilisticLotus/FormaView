@@ -118,6 +118,7 @@ public:
   void setLanguage(const QString &);
   static QString reuseKeyForFile(const QString &path);
   static QString assetKind(const QString &path);
+  Q_INVOKABLE QString fileKindForPath(const QString &path) const { return assetKind(path); }
   QVariantMap preferences() const { return preferences_; }
   QStringList addedAssets() const { return addedAssets_; }
   QStringList favoriteAssets() const { return favoriteAssets_; }

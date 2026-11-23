@@ -31,6 +31,9 @@ end;
 function ProgId(I: Integer): string;
 begin Result := 'FormaView.Local' + Extensions[I]; end;
 
+function FormatIconFilename(I: Integer): string;
+begin Result := 'formaview.ico'; end;
+
 function FormatDescription(I: Integer): string;
 begin
   case I of
@@ -195,7 +198,7 @@ begin
   ClassKey := 'Software\Classes\' + ProgId(I);
   Command := '"' + ExpandConstant('{app}\formaview.exe') + '" --open "%1"';
   IconKey := ClassKey + '\DefaultIcon';
-  NewIcon := '"' + ExpandConstant('{app}\@@FILE_ICON_FILENAME@@') + '",0';
+  NewIcon := '"' + ExpandConstant('{app}\') + FormatIconFilename(I) + '",0';
   Result := PutOwned(Id + 'description', ClassKey, '', 'FormaView ' + Extensions[I]) and
     PutOwned(Id + 'icon', IconKey, '', NewIcon) and
     PutOwned(Id + 'command', ClassKey + '\shell\open\command', '', Command) and

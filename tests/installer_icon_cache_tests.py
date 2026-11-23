@@ -1,49 +1,66 @@
-"""Regression checks for content-addressed Windows file-association icons."""
+"""Check file-category mapping and the unchanged association ownership boundary."""
 import hashlib
 import importlib.util
 from pathlib import Path
 import re
 
-
 REPO = Path(__file__).resolve().parents[1]
-BUILD_PATH = REPO / "tools/installer-ui/build.py"
-ASSOCIATIONS_PATH = REPO / "tools/installer-ui/templates/0.1.0/associations.iss"
-ICON_PATH = REPO / "src/host/icons/formaview.ico"
 
 
 def load_build():
-    spec = importlib.util.spec_from_file_location("formaview_installer_build", BUILD_PATH)
+    spec = importlib.util.spec_from_file_location("installer_build", REPO / "tools/installer-ui/build.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def icon_map(source, extensions):
+    catalog = source.split("function FormatIconFilename", 1)[1].split("function ExtensionList", 1)[0]
+    cases = dict((int(i), name) for i, name in re.findall(r"(\d+): Result := '([^']+)'", catalog))
+    assert len(cases) == len(extensions)
+    assert "Result := 'formaview.ico'" in catalog  # Unknown indices use the brand fallback.
+    return {extension: cases[i] for i, extension in enumerate(extensions)}
+
+
 def main():
     build = load_build()
-    digest = hashlib.sha256(ICON_PATH.read_bytes()).hexdigest()
-    filename = f"formaview-file-icon-{digest}.ico"
-    generated = build.association_source(filename)
-    template = ASSOCIATIONS_PATH.read_text(encoding="utf-8-sig")
-    build_source = BUILD_PATH.read_text(encoding="utf-8-sig")
-
-    assert "@@FILE_ICON_FILENAME@@" not in generated
-    assert f"{{app}}\\{filename}" in generated
-    assert "DefaultIcon" in generated
-    assert "SHChangeNotify($08000000, 0, 0, 0)" in generated
-    assert re.search(r"file_icon_name\s*=\s*f\"formaview-file-icon-\{sha\(icon\)\}\.ico\"", build_source)
-    assert 'for name in ("runtime-manifest.json", "formaview.ico", file_icon_name,' in build_source
-
-    # An owned value may move to the new content-addressed path only while the
-    # registry still equals the ledger's previous data. External changes win.
-    assert "RegQueryStringValue(HKCU64, RecordKey, 'Data', PreviousData)" in template
-    assert "not SameValue(Key, Name, PreviousData) then exit" in template
-    assert "RegWriteStringValue(HKCU64, RecordKey, 'Data', Data)" in template
-    assert "NewIcon := '" in template and "@@FILE_ICON_FILENAME@@" in template
-
-    verify_source = (REPO / "tools/installer-ui/verify.py").read_text(encoding="utf-8-sig")
-    assert "generated association source must reference the content-addressed file icon" in verify_source
-    assert "(fixture / file_icon_name).write_bytes" in verify_source
-    print(f"PASS content-addressed association icon {filename}")
+    names = build.file_icon_names()
+    assert len(set(names.values())) == 3
+    for kind, path in build.file_icon_sources().items():
+        assert names[kind] == f"formaview-file-{kind}-icon-{hashlib.sha256(path.read_bytes()).hexdigest()}.ico"
+    for video in (False, True):
+        generated, exts = build.association_source(names, has_video=video)
+        mapping = icon_map(generated, exts)
+        expected = {}
+        for group, formats in build.FORMAT_GROUPS.items():
+            if group == "视频" and not video:
+                continue
+            expected.update({"." + ext: names[build.FILE_ICON_KINDS[group]] for ext, _ in formats})
+        assert mapping == expected
+        assert (".flv" in mapping) == video
+        assert len(mapping) == (36 if video else 25)
+        assert mapping[".psa"] == names["model"]
+        assert "UserChoice" not in generated
+        assert "SHChangeNotify($08000000, 0, 0, 0)" in generated
+        assert "FormatIconFilename(I)" in generated
+        assert "not SameValue(Key, Name, PreviousData) then exit" in generated
+        assert "RegQueryStringValue(InstallRootKey, RecordKey, 'Data', PreviousData)" in generated
+        assert "RegWriteStringValue(InstallRootKey, RecordKey, 'Data', Data)" in generated
+        changed = dict(names, image="formaview-file-image-icon-" + "a" * 64 + ".ico")
+        next_source, next_exts = build.association_source(changed, video)
+        next_map = icon_map(next_source, next_exts)
+        for ext in mapping:
+            assert next_map[ext] == (changed["image"] if mapping[ext] == names["image"] else mapping[ext])
+    try:
+        build.association_source(dict(names, image="../unsafe.ico"), True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unsafe filename accepted")
+    verify = (REPO / "tools/installer-ui/verify.py").read_text(encoding="utf-8-sig")
+    assert "for name in file_icon_names:" in verify
+    assert 'fixture_files = ("installation.ini", *file_icon_names, "owned-files.txt")' in verify
+    print("PASS 36/25 extension mappings, three hashes, scoped updates, ownership guards and Shell notification")
 
 
 if __name__ == "__main__":

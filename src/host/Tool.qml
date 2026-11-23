@@ -9,6 +9,7 @@ Button {
     property bool primary: false
     property string hint: ""
     property string iconName: ""
+    property string fileKind: ""
     property real iconRotation: 0
     implicitHeight: control.form ? Theme.formControlHeight : Theme.controlHeight
     implicitWidth: Math.max(32, implicitContentWidth + leftPadding + rightPadding)
@@ -18,7 +19,8 @@ Button {
     rightPadding: leftPadding
     contentItem: RowLayout {
         spacing: 8
-        AppIcon { visible: !!control.iconName; name: control.iconName; rotation: control.iconRotation; variant: !control.enabled ? "disabled" : control.primary ? "on-action" : "normal"; Layout.preferredWidth: 18; Layout.preferredHeight: 18 }
+        FileTypeIcon { visible: !!control.fileKind; kind: control.fileKind; size: 24; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+        AppIcon { visible: !control.fileKind && !!control.iconName; name: control.iconName; rotation: control.iconRotation; variant: !control.enabled ? "disabled" : control.primary ? "on-action" : "normal"; Layout.preferredWidth: 18; Layout.preferredHeight: 18 }
         Text { visible: !!control.text; text: control.text; font: control.font; color: !control.enabled ? Theme.tertiary : control.primary ? "#ffffff" : Theme.text; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; Layout.fillWidth: true }
     }
     background: Rectangle {

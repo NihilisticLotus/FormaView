@@ -44,7 +44,7 @@ ColumnLayout {
             Accessible.name: text
             contentItem: RowLayout {
                 spacing: 6
-                AppIcon { name: paths.icon; size: 14 }
+                FileTypeIcon { kind: paths.icon; folder: paths.directories; size: 20 }
                 Label { Layout.fillWidth: true; text: row.text; elide: Text.ElideMiddle; color: Theme.text; font.pixelSize: Theme.compactText }
             }
             background: Rectangle { radius: Theme.radius; color: row.visualFocus || row.hovered ? Theme.hover : root.selectedPath === row.modelData ? Theme.selection : "transparent" }
@@ -83,7 +83,7 @@ ColumnLayout {
             }
             PathList {
                 visible: groupHeader.checked; model: group.paths; directories: false
-                icon: group.modelData === "model" ? "model" : group.modelData === "image" ? "image-file" : group.modelData === "video" ? "animation-play" : "file"
+                icon: group.modelData
             }
         }
     }

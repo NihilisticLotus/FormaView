@@ -250,16 +250,36 @@ FORMAT_GROUPS = {
 COMMON_FORMATS = set("png jpg jpeg bmp tga dds fbx obj gltf glb psk pskx psa mp4 mkv mov".split())
 
 
-def association_source(file_icon_name, has_video):
+FILE_ICON_KINDS = {"视频": "video", "图片": "image", "模型与缓存": "model", "动画与骨架": "model"}
+
+
+def file_icon_sources():
+    root = REPO / "src/host/icons/file-types"
+    return {kind: root / f"formaview-{kind}.ico" for kind in ("image", "video", "model")}
+
+
+def file_icon_names():
+    return {kind: f"formaview-file-{kind}-icon-{sha(path)}.ico"
+            for kind, path in file_icon_sources().items()}
+
+
+def association_source(file_icons, has_video):
+    if set(file_icons) != {"image", "video", "model"} or any(
+            not re.fullmatch(r"formaview-file-" + kind + r"-icon-[0-9a-f]{64}\.ico", filename)
+            for kind, filename in file_icons.items()):
+        raise ValueError("Expected one content-addressed icon filename per file category")
     groups = {k: v for k, v in FORMAT_GROUPS.items() if has_video or k != "视频"}
     formats = [item for items in groups.values() for item in items]
     exts = ["." + ext for ext, _ in formats]
     assert len(exts) == len(set(exts))
     common = ["." + ext for ext, _ in formats if ext in COMMON_FORMATS]
     group_labels = []
+    icon_cases = []
     first = 0
     for name, items in groups.items():
         group_labels.append(f"      {first}: Group := '{name}（{len(items)}）';")
+        for i in range(first, first + len(items)):
+            icon_cases.append(f"    {i}: Result := '{file_icons[FILE_ICON_KINDS[name]]}';")
         first += len(items)
 
     previous = read(BASE / "associations.iss")
@@ -268,7 +288,16 @@ def association_source(file_icon_name, has_video):
     prefix = prefix.replace("Extensions, Defaults:", "Extensions:")
     quoted = ", ".join(f"'{ext}'" for ext in exts)
     descriptions = "\n".join(f"    {i}: Result := '{label}';" for i, (_, label) in enumerate(formats))
-    catalog = f"""function ExtensionList: TArrayOfString;
+    icon_catalog = "\n".join(icon_cases)
+    catalog = f"""function FormatIconFilename(I: Integer): string;
+begin
+  Result := 'formaview.ico';
+  case I of
+{icon_catalog}
+  end;
+end;
+
+function ExtensionList: TArrayOfString;
 begin Result := [{quoted}]; end;
 
 function FormatDescription(I: Integer): string;
@@ -279,7 +308,7 @@ begin
 end;
 
 """
-    prefix = prefix[:prefix.index("function FormatDescription")] + catalog + prefix[prefix.index("function DefaultDescription"):]
+    prefix = prefix[:prefix.index("function FormatIconFilename")] + catalog + prefix[prefix.index("function DefaultDescription"):]
     start = prefix.index("  All := [")
     prefix = prefix[:start] + "  All := ExtensionList;" + prefix[prefix.index("];", start) + 2:]
     prefix = replace(prefix, "  Id := QueryAssociation(Extensions[I], 20);",
@@ -287,7 +316,6 @@ end;
     Result := '需在 Windows 中按账户确认'; exit;
   end;
   Id := QueryAssociation(Extensions[I], 20);""")
-    prefix = replace(prefix, "@@FILE_ICON_FILENAME@@", file_icon_name)
     wizard = read(HERE / "wizard-code.iss")
     wizard = replace(wizard, "@@COMMON_FORMATS@@", ",".join(common))
     wizard = replace(wizard, "@@COMMON_COUNT@@", str(len(common)))
@@ -337,15 +365,16 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
             raise ValueError("A newer runtime needs recorded bidirectional data compatibility with 0.1.0")
     icon = REPO / "src/host/icons/formaview.ico"
     (metadata / "formaview.ico").write_bytes(icon.read_bytes())
-    file_icon_name = f"formaview-file-icon-{sha(icon)}.ico"
-    (metadata / file_icon_name).write_bytes(icon.read_bytes())
+    file_icons = file_icon_names()
+    for kind, path in file_icon_sources().items():
+        (metadata / file_icons[kind]).write_bytes(path.read_bytes())
     (metadata / "installation.ini").write_bytes(f"[Install]\r\nAppId={IDENTITY}\r\nVersion={version}\r\n".encode())
     commit = installer_commit or d["sourceCommit"]
     if development and not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Development installers need a full build commit")
     label = f"{version} 开发测试版（{commit[:7]}）" if development else version
     write(metadata / "安装使用说明.txt", GUIDE.format(version=label))
-    for name in ("runtime-manifest.json", "formaview.ico", file_icon_name, "installation.ini", "安装使用说明.txt"):
+    for name in ("runtime-manifest.json", "formaview.ico", *file_icons.values(), "installation.ini", "安装使用说明.txt"):
         sources[name] = metadata / name
     names = sorted(set(sources) | {"owned-files.txt", "sha256.json"})
     assert not any("image-journal" in n or n.endswith("desktop-history.json") for n in names)
@@ -383,7 +412,7 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
     write(engine / "FormaView.iss", setup)
     write(engine / "upgrade-policy.iss", read(HERE / "upgrade-policy.iss"))
     write(engine / "uninstall-data.iss", read(HERE / "uninstall-data.iss"))
-    assoc, exts = association_source(file_icon_name, has_video="libmpv-2.dll" in sources)
+    assoc, exts = association_source(file_icons, has_video="libmpv-2.dll" in sources)
     assert "UserChoice" not in assoc and '--open "%1"' in assoc
     write(engine / "associations.iss", assoc)
     render_art(engine, icon)
@@ -407,7 +436,7 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
                 machineDefaultDirectory=r"%ProgramFiles%\FormaView", sameScopeUpgrade=True, previewExtensions=exts,
                 shipsTaskHistory=False, mcpAdapterIncluded=True, stagesDuplicateRuntime=False,
                 optionalUninstallSettingsAndHistory=True, uninstallDefaultKeepsBoth=True,
-                fileIconFilename=file_icon_name, fileIconSha256=sha(icon),
+                fileIcons={kind: dict(filename=name, sha256=sha(metadata / name)) for kind, name in file_icons.items()},
                 productVersion=version, versionSource="verified runtime PE resources",
                 supportsInPlaceVersionChanges=True, profileContract="formaview-user-state-v1",
                 retainsRetiredPayloadFilesOutsideLoadPaths=True)

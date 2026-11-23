@@ -121,10 +121,7 @@ Item {
                         readonly property bool folder: root.directoryView && !!model.isDirectory
                         readonly property string name: root.basename(path)
                         readonly property string extension: folder ? "" : (name.includes(".") ? name.split(".").pop().toUpperCase() : "")
-                        readonly property string kind: root.directoryView ? (model.fileKind || "") :
-                            /^(PNG|JPE?G|BMP|TGA|WEBP|GIF|DDS|EXR|HDR|TIFF?|ICO)$/.test(extension) ? "image" :
-                            /^(MP4|MKV|WEBM|MOV|AVI|M4V|TS|M2TS|MPG|MPEG|FLV)$/.test(extension) ? "video" :
-                            /^(GLB|GLTF|OBJ|FBX|PSKX?|VRM|ABC)$/.test(extension) ? "model" : ""
+                        readonly property string kind: root.directoryView ? (model.fileKind || "") : root.controller.fileKindForPath(path)
                         readonly property bool imageFile: kind === "image"
                         objectName: "libraryCard"; width: grid.cellWidth-6; height: grid.cellHeight-6
                         Accessible.name: name; text: name; padding: 8
@@ -136,7 +133,7 @@ Item {
                             spacing: 6
                             Rectangle {
                                 visible: !root.listMode; Layout.fillWidth: true; Layout.fillHeight: true; radius: 9; clip: true; color: Theme.thumbnail
-                                AppIcon { anchors.centerIn: parent; visible: thumb.status !== Image.Ready; size: 27; name: card.folder ? "folder" : card.imageFile ? "image-file" : card.kind === "model" || card.kind === "cache" ? "model" : card.kind === "video" ? "animation-play" : "file"; variant: "muted" }
+                                FileTypeIcon { objectName: "libraryFallback"; anchors.centerIn: parent; visible: thumb.status !== Image.Ready; size: 64; kind: card.kind; folder: card.folder }
                                 Image { id: thumb; anchors.fill: parent; fillMode: Image.PreserveAspectFit; asynchronous: true; sourceSize: Qt.size(240,180)
                                     objectName: "libraryThumbnail"
                                     source: !root.listMode && card.imageFile ? root.thumbnailUrl(card.path, (card.model.fileModified || 0) + "-" + (card.model.fileBytes || 0)) : ""
@@ -144,7 +141,11 @@ Item {
                                 }
                             }
                             Label { visible: !root.listMode && !!card.extension; text: card.extension; color: Theme.muted; font.pixelSize: 10 }
-                            Label { Layout.fillWidth: true; text: card.name; color: Theme.text; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                FileTypeIcon { objectName: "libraryTypeIcon"; visible: root.listMode; kind: card.kind; folder: card.folder; size: 24 }
+                                Label { Layout.fillWidth: true; text: card.name; color: Theme.text; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter }
+                            }
                         }
                     }
                     Keys.onReturnPressed: { if(currentItem) {root.selectCard(currentItem); root.openSelection()} }

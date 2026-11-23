@@ -514,6 +514,9 @@ private slots:
     auto *thumbnail = card->findChild<QQuickItem *>("libraryThumbnail");
     QVERIFY(thumbnail);
     QTRY_COMPARE(thumbnail->property("status").toInt(), 1); // QQuickImage::Ready
+    auto *fallback = card->findChild<QQuickItem *>("libraryFallback");
+    QVERIFY(fallback);
+    QTRY_VERIFY(!fallback->isVisible());
     QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
                       card->mapToScene(card->boundingRect().center()).toPoint());
     QTRY_COMPARE(library->property("selectedPath").toString(), path);
@@ -8012,6 +8015,49 @@ private slots:
     if (mode == "thumbnails") save("file-scroll-and-divider");
   }
 
+  void fileTypeIconsWorkflow() {
+    const auto restore = qScopeGuard([&] { desktop_->filter("", 0, 0); desktop_->preference("fileViewMode", "list"); QMetaObject::invokeMethod(item("workspaceTab-assets"), "clicked"); });
+    const auto folder = root_ + "/category-icons";
+    QVERIFY(QDir().mkpath(folder + "/directory"));
+    const QStringList files{"image.png", "video.flv", "model.fbx", "motion.psa", "unknown.xyz"};
+    for (const auto &name : files) {
+      QFile file(folder + "/" + name); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("placeholder");
+    }
+    desktop_->navigate(folder);
+    QTRY_VERIFY(idle() && desktop_->directory() == folder);
+    desktop_->filter("",5,0);
+    QTRY_COMPARE(desktop_->count(), 6);
+    QTRY_VERIFY(idle());
+    QMetaObject::invokeMethod(item("workspaceTab-assets"), "clicked"); desktop_->preference("fileViewMode", "list");
+    const QMap<QString, QString> expected{{"image.png","image"}, {"video.flv","video"}, {"model.fbx","model"}, {"motion.psa","model"}, {"unknown.xyz",""}, {"directory",""}};
+    const auto entryFor = [&](const QString &name) -> QQuickItem * {
+      for (auto *entry : visualItems(window_->contentItem(),"fileDelegate"))
+        if (entry->property("fileName").toString() == name) return entry;
+      return nullptr;
+    };
+    for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+      QTRY_VERIFY(entryFor(it.key()));
+      auto *icon = entryFor(it.key())->findChild<QQuickItem *>("fileTypeIcon"); QVERIFY(icon);
+      QCOMPARE(icon->property("category").toString(), it.value());
+      if (!it.value().isEmpty()) {
+        auto *raster = icon->findChild<QQuickItem *>("fileTypeRaster"); QVERIFY(raster);
+        QTRY_COMPARE(raster->property("status").toInt(), 1);
+        QVERIFY(icon->property("rasterSize").toInt() >= icon->property("size").toInt()*window_->devicePixelRatio());
+      }
+    }
+    save("file-category-list");
+    QVERIFY(QMetaObject::invokeMethod(item("workspaceTab-browse"), "clicked"));
+    auto *library = item("libraryWorkspace"); QVERIFY(library);
+    QVERIFY(QMetaObject::invokeMethod(library,"choose",Q_ARG(QString,"directory")));
+    QTRY_VERIFY(visualItems(library,"libraryCard").size() == 6);
+    for (auto *card : visualItems(library,"libraryCard")) {
+      auto *fallback = card->findChild<QQuickItem *>("libraryFallback"); QVERIFY(fallback);
+      QCOMPARE(fallback->property("category").toString(), expected.value(card->property("name").toString()));
+      QTRY_VERIFY(fallback->isVisible());
+    }
+    QTest::qWait(100);
+    save("file-category-grid");
+  }
   void imageThumbnailsWorkflow() {
     const auto restoreList = qScopeGuard([&] { desktop_->preference("thumbnails", false); });
     const auto folder = root_ + "/thumbnail-ui";
@@ -8039,7 +8085,7 @@ private slots:
     QTRY_VERIFY(delegate("02 broken.png"));
     const auto failed = visualItems(delegate("02 broken.png"), "thumbnailFallback");
     QVERIFY(!failed.empty());
-    QTRY_VERIFY(failed.front()->isVisible() && failed.front()->property("name") == "image-file");
+    QTRY_VERIFY(failed.front()->isVisible() && failed.front()->property("category") == "image");
     auto models = visualItems(delegate("03 model.obj"),"fileThumbnail"); QVERIFY(!models.empty());
     QCOMPARE(models.front()->property("source").toUrl(),QUrl{});
     if (!workflowHeadless()) save("thumbnails-ready-and-failed");

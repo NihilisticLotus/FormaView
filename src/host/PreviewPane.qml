@@ -43,7 +43,7 @@ Rectangle {
             Layout.fillWidth: true; implicitHeight: 39; color: "transparent"
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8; anchors.topMargin: 2; anchors.bottomMargin: 2
-                AppIcon { name: root.modelActive ? "model" : "image-file"; size: 16; variant: "muted" }
+                FileTypeIcon { kind: root.modelActive ? "model" : "image"; size: 24 }
                 Label { Layout.fillWidth: true; font.pixelSize: Theme.compactText; font.bold: true; elide: Text.ElideMiddle; color: Theme.text; text: root.controller.asset.name || Theme.t("预览", "Preview", "預覽") }
                 Item {
                     id: modelHeaderSlot
