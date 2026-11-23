@@ -2,6 +2,14 @@
 
 本文规定 Windows 安装包在版本交付前必须满足的安装、升级、降级和用户数据兼容门槛。脚本模拟、版本号伪装或安装器自身接受覆盖，均不能替代真实程序与数据的双向验收。
 
+## v0.2 第四阶段 · 材质与片段交互（2026-11-23）
+
+本轮继续对照 HTML 原型，补充材质检查器的工作区图片关联、源 UV 仿射变换、贴图读取取消与失败重试。切换动画片段会暂停并回到所选片段起点，时间轴与动画检查器行为一致。
+
+Windows 11、Qt 6.12.0 Release 下，D3D11 GPU 与强制 CPU 两组桌面测试各 6 项通过（含初始化、清理），0 失败、0 跳过。四个功能用例为 modelMaterialWorkflow、modelAnimationInspectorControls、modelGpuSwitchPlaybackStress、modelPanelIncubationCanBeCancelled。GPU 组使用 Cheering.fbx，CPU 组使用原型 RobotExpressive.glb；两组压力测试各执行 24 次混合模型打开，穿插 PSK/PSA 和静态、动画 glTF。新增材质测试基于原型 MultiUV_TestPlane.gltf 构造嵌入贴图及 UV 变换，验证失败/取消保留、原 UV 重试、清除恢复、关闭后的迟到结果隔离以及源文件字节不变。实际截图检查了英文材质面板和动画界面。
+
+日志、截图和诊断资料保存在仓库外 asset-preview-planning/development/verification/Material-Animation-Inspect-20261123/。恢复旧片段选择行为后，新增暂停断言失败；恢复修复后重新验证。主程序和桌面测试构建通过。本轮没有构建或提交安装包，也未把第四阶段标为全部完成；源相机控制与跨网格共享材质关联的差异记录在 docs/model-preview-modes.md。
+
 ## v0.2 第四阶段 · GPU 切换复查与原型对齐（2026-11-23）
 
 本轮处理工作区任务发布重入，以及模型替换时检查器异步创建被取消的问题。后者在 Windows 11、Qt 6.12.0、D3D11、RTX 5090 D 上取得 `QQmlIncubatorPrivate::incubate` 重复释放的现场转储。旧逻辑的受控加载回归出现两次 active 变化，且真实模型切换会销毁原检查器；修复后保留实例，关闭文件仍能取消创建。GPU 蒙皮未禁用。

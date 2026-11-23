@@ -69,6 +69,8 @@ class ModelSession : public QObject {
   Q_PROPERTY(QString textureReference READ textureReference NOTIFY changed)
   Q_PROPERTY(QString textureError READ textureError NOTIFY changed)
   Q_PROPERTY(bool textureBusy READ textureBusy NOTIFY changed)
+  Q_PROPERTY(QVariantMap textureRequestInfo READ textureRequestInfo NOTIFY changed)
+  Q_PROPERTY(QVariantMap materialInfo READ materialInfo NOTIFY changed)
   Q_PROPERTY(bool animated READ animated NOTIFY changed)
   Q_PROPERTY(bool hasPlayableAnimation READ hasPlayableAnimation NOTIFY changed)
   Q_PROPERTY(bool canPlayAnimation READ canPlayAnimation NOTIFY animChanged)
@@ -167,6 +169,8 @@ public:
   QString textureError() const { return textureError_; }
   bool canClearTexture() const;
   bool textureBusy() const { return textureBusy_; }
+  QVariantMap textureRequestInfo() const;
+  QVariantMap materialInfo() const;
   bool animated() const { return document_ && document_->animated(); }
   bool hasPlayableAnimation() const {
     return document_ && document_->firstPlayableAnimation() >= 0;
@@ -232,6 +236,8 @@ public:
   Q_INVOKABLE void selectMaterial(int);
   Q_INVOKABLE void associateTexture(const QString &);
   Q_INVOKABLE void removeTexture();
+  Q_INVOKABLE void cancelTexture();
+  Q_INVOKABLE void retryTexture();
   Q_INVOKABLE void open(const QString &);
   Q_INVOKABLE void setAnimationReference(const QString &reference);
   Q_INVOKABLE void setAnimationCompanion(const QString &companion);
@@ -407,6 +413,8 @@ private:
   bool busy_{}, isolated_{}, materialOnly_{};
   bool textureBusy_{};
   QString textureError_;
+  QString textureRequestedPath_, textureStatus_;
+  int textureMesh_{-1}, textureMaterial_{-1}, textureUV_{-1};
   quint64 textureRequest_{};
   std::uint64_t framingRevision_{};
   bool skeletonOverlay_{};

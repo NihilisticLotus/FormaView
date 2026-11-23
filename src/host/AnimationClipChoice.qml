@@ -19,5 +19,8 @@ Choice {
     Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
     ToolTip.visible: hovered && count > 0
     ToolTip.text: noteAt(currentIndex) ? currentText + "\n" + noteAt(currentIndex) : currentText
-    onActivated: index => session.setClipIndex(index)
+    onActivated: index => {
+        if (session.playing) session.togglePlay()
+        session.setClipIndex(index)
+    }
 }

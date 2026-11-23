@@ -346,20 +346,15 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true
             visible: root.tab===2
             contentWidth: availableWidth
-            ColumnLayout {
-                width: materialScroll.availableWidth; spacing: 10
-                Label { text: Theme.t("基础颜色 · 会话关联", "Base colour · session association", "基礎顏色 · 工作階段關聯"); color: Theme.text; font.bold: true }
-                Choice { Layout.fillWidth: true; model: root.session.materials; currentIndex: root.session.materialIndex; onActivated: root.session.selectMaterial(currentIndex); Accessible.name: Theme.t("材质槽", "Material slot", "材質槽") }
-                Readout { Layout.fillWidth: true; label: Theme.t("源引用", "Source reference", "來源參照"); value: root.session.textureReference || "—" }
-                Readout { Layout.fillWidth: true; label: Theme.t("已验证贴图", "Validated texture", "已驗證貼圖"); value: root.session.texturePath || "—" }
-                Choice { Layout.fillWidth: true; model: root.session.uvSets; currentIndex: root.session.uvIndex; enabled: count>0; onActivated: root.session.selectUV(currentIndex); Accessible.name: Theme.t("会话关联使用的UV集", "UV set for session association", "工作階段關聯使用的UV集") }
-                Tool { Layout.fillWidth: true; text: root.session.textureBusy ? Theme.t("读取中…", "Reading…", "讀取中…") : Theme.t("定位贴图…", "Locate texture…", "定位貼圖…"); enabled: root.session.available&&!root.session.textureBusy; onClicked: textureDialog.present() }
-                Tool { Layout.fillWidth: true; text: Theme.t("清除会话关联", "Clear session association", "清除工作階段關聯"); enabled: root.session.canClearTexture; onClicked: root.session.removeTexture() }
-                ExplainedText { objectName: "modelTextureError"; Layout.fillWidth: true; kind: "error"; raw: root.session.textureError }
-                Label { Layout.fillWidth: true; color: Theme.muted; wrapMode: Text.Wrap; font.pixelSize: Theme.noteText; text: Theme.t("定位后仍须真实解码；只改变本次显示，不保存或覆盖源模型、材质或贴图。", "Located images must decode successfully. Associations only affect this session and never overwrite source models, materials or textures.", "定位後仍須實際解碼；僅改變本次顯示，不儲存或覆寫來源模型、材質或貼圖。") }
+            ModelMaterialPanel {
+                id: materialPanel
+                objectName: "modelMaterialPanel"
+                width: materialScroll.availableWidth
+                controller: root.controller; session: root.session; modelPane: root.modelPane
+                onLocateTexture: textureDialog.present()
             }
         }
         ModelPointPanel { Layout.fillWidth: true; visible: (root.tab===0 || root.session.mode===2) && !root.session.info.cameraOnly; session: root.session }
     }
-    FrostFileDialog { parentWindow: root.Window.window; id: textureDialog; title: Theme.t("选择基础颜色贴图", "Choose a base colour texture", "選取基礎顏色貼圖"); onAccepted: root.session.associateTexture(selectedFile.toString()) }
+    FrostFileDialog { parentWindow: root.Window.window; id: textureDialog; title: Theme.t("选择基础颜色贴图", "Choose a base colour texture", "選取基礎顏色貼圖"); onAccepted: materialPanel.associate(selectedFile.toString()) }
 }

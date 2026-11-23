@@ -1069,6 +1069,15 @@ private slots:
     click("modelSection_animation");
     QTRY_VERIFY(item("motionSpeed") && item("motionClipChoice"));
     QTRY_COMPARE(item("motionClipChoice")->property("currentIndex").toInt(), session->clipIndex());
+    for (const auto *name : {"motionClipChoice", "animClip"}) {
+      const int clip = session->clipIndex();
+      if (!session->playing()) session->togglePlay();
+      QTRY_VERIFY(session->playing());
+      QTRY_VERIFY(session->time() > session->clipInfo().value("start").toDouble());
+      QVERIFY(QMetaObject::invokeMethod(item(name), "activated", Q_ARG(int, clip)));
+      QTRY_VERIFY(!session->playing());
+      QTRY_COMPARE(session->time(), session->clipInfo().value("start").toDouble());
+    }
     QTRY_VERIFY(item("motionGroundGrid"));
     click("motionGroundGrid");
     QTRY_VERIFY(item("modelGroundGrid")->property("checked").toBool());
@@ -9596,6 +9605,115 @@ private slots:
     } catch (const std::exception &error) {
       QFAIL(error.what());
     }
+  }
+  void modelMaterialWorkflow() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto sample = requireFixture("FORMAVIEW_MULTI_UV_SAMPLE", true);
+    if (sample.isEmpty()) QSKIP("Requires the prototype multi-UV sample");
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); desktop_->setLanguage("zh-CN"); });
+    QFile input(sample); QVERIFY(input.open(QIODevice::ReadOnly));
+    auto fixture = QJsonDocument::fromJson(input.readAll()).object();
+    input.close();
+    QImage source(8, 8, QImage::Format_RGBA8888); source.fill(Qt::red);
+    QByteArray png; QBuffer buffer(&png); QVERIFY(buffer.open(QIODevice::WriteOnly));
+    QVERIFY(source.save(&buffer, "PNG"));
+    fixture["images"] = QJsonArray{QJsonObject{{"uri", "data:image/png;base64," + QString::fromLatin1(png.toBase64())}}};
+    fixture["textures"] = QJsonArray{QJsonObject{{"source", 0}}};
+    const QJsonObject uvTransform{{"offset", QJsonArray{.25, .5}}, {"scale", QJsonArray{2, 3}}};
+    const QJsonObject colorTexture{{"index", 0}, {"texCoord", 1},
+      {"extensions", QJsonObject{{"KHR_texture_transform", uvTransform}}}};
+    const QJsonObject pbr{{"baseColorTexture", colorTexture}};
+    fixture["materials"] = QJsonArray{QJsonObject{{"name", "Source <material>"}, {"pbrMetallicRoughness", pbr}}};
+    fixture["extensionsUsed"] = QJsonArray{"KHR_texture_transform"};
+    auto meshes = fixture["meshes"].toArray();
+    for (int i = 0; i < meshes.size(); ++i) {
+      auto mesh = meshes[i].toObject(); auto primitives = mesh["primitives"].toArray();
+      for (int j = 0; j < primitives.size(); ++j) {
+        auto primitive = primitives[j].toObject(); primitive["material"] = 0; primitives[j] = primitive;
+      }
+      mesh["primitives"] = primitives; meshes[i] = mesh;
+    }
+    fixture["meshes"] = meshes;
+    const auto path = root_ + "/material-workflow.gltf";
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    const auto bytes = QJsonDocument(fixture).toJson();
+    QCOMPARE(file.write(bytes), bytes.size()); file.close();
+    desktop_->openPath(path);
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable() && modelPanelsReady(), 30000);
+    QVERIFY(session->uvSets().size() >= 2);
+    const auto info = session->materialInfo();
+    QCOMPARE(info.value("sourceUV").toString(), session->uvSets()[1]);
+    const auto transform = info.value("uvTransform").toList();
+    QCOMPARE(transform.size(), 6);
+    QCOMPARE(transform[0].toDouble(), 2.);
+    QCOMPARE(transform[2].toDouble(), .25);
+    QCOMPARE(transform[4].toDouble(), 3.);
+    QCOMPARE(transform[5].toDouble(), .5);
+    const auto sourceTexture = session->texturePath();
+    QVERIFY(!sourceTexture.isEmpty());
+
+    auto *inspector = item("modelInspector"); QVERIFY(inspector);
+    QVERIFY(QMetaObject::invokeMethod(item("modelInspectorTab2"), "clicked"));
+    QTRY_VERIFY(item("modelMaterialPanel") && item("modelApplyWorkspaceTexture"));
+    desktop_->addLibraryFiles({QUrl::fromLocalFile(small_ + "/唯一图片.png")});
+    item("modelMaterialPanel")->setProperty("selectedImage", small_ + "/唯一图片.png");
+    QTRY_VERIFY(item("modelApplyWorkspaceTexture")->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(item("modelApplyWorkspaceTexture"), "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), small_ + "/唯一图片.png");
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "ready");
+    QVERIFY(session->canClearTexture());
+    const auto linked = session->texturePath();
+    const auto invalid = root_ + "/retry-texture.png";
+    QFile broken(invalid); QVERIFY(broken.open(QIODevice::WriteOnly)); broken.write("not an image"); broken.close();
+    session->associateTexture(invalid);
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy(), 10000);
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "error");
+    QCOMPARE(session->texturePath(), linked);
+    QTRY_VERIFY(item("modelRetryTexture"));
+    source.fill(Qt::green); QVERIFY(source.save(invalid, "PNG"));
+    session->selectUV(1); // Retry must retain the request's original channel 0.
+    QVERIFY(QMetaObject::invokeMethod(item("modelRetryTexture"), "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), invalid);
+    QCOMPARE(session->uvIndex(), 0);
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "ready");
+    session->associateTexture(small_ + "/唯一图片.png");
+    QVERIFY(session->textureBusy());
+    QTRY_VERIFY(item("modelCancelTexture"));
+    QVERIFY(QMetaObject::invokeMethod(item("modelCancelTexture"), "clicked"));
+    QVERIFY(!session->textureBusy());
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "cancelled");
+    QTest::qWait(200); // The queued decode result must not replace the retained texture.
+    QCOMPARE(session->texturePath(), invalid);
+    session->setMode(1);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    session->setMode(0);
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    QCOMPARE(session->textureRequestInfo().value("status").toString(), "cancelled");
+    session->retryTexture();
+    QTRY_VERIFY_WITH_TIMEOUT(!session->textureBusy() && session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), linked);
+    item("modelSourceTextureUV")->setProperty("checked", true);
+    desktop_->setLanguage("en");
+    QTest::qWait(150);
+    QVERIFY(window_->grabWindow().save(root_ + "/material-inspector.png"));
+    QVERIFY(QMetaObject::invokeMethod(item("modelClearTexture"), "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(session->inspectable(), 10000);
+    QCOMPARE(session->texturePath(), sourceTexture);
+    QVERIFY(!session->canClearTexture());
+    QCOMPARE(session->materialInfo().value("uvTransform"), info.value("uvTransform"));
+    QFile unchanged(path); QVERIFY(unchanged.open(QIODevice::ReadOnly)); QCOMPARE(unchanged.readAll(), bytes);
+    session->associateTexture(invalid);
+    desktop_->clearAsset();
+    QTRY_VERIFY(!session->available());
+    QTest::qWait(200);
+    QVERIFY(session->textureRequestInfo().isEmpty());
+    QVERIFY(!session->textureBusy());
+#else
+    QSKIP("Model UI is disabled");
+#endif
   }
   void modelPreviewIntegration() {
     try {

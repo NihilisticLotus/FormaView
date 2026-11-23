@@ -1495,6 +1495,9 @@ void ModelSession::reset(bool opening) {
   ++textureRequest_;
   textureBusy_ = false;
   textureError_.clear();
+  textureRequestedPath_.clear();
+  textureStatus_.clear();
+  textureMesh_ = textureMaterial_ = textureUV_ = -1;
   for (auto &j : textureJobs_)
     j.stop.request_stop();
   for (auto &j : jobs_)
@@ -1710,6 +1713,7 @@ void ModelSession::poll() {
         document_) {
       textureBusy_ = false;
       textureError_ = r.error;
+      textureStatus_ = r.pixels ? QStringLiteral("ready") : QStringLiteral("error");
       if (r.pixels) {
         textureLinks_.at(static_cast<std::size_t>(job->mesh))[job->material] = {
             std::move(r.pixels), r.path, job->uv};
@@ -3530,14 +3534,17 @@ void ModelSession::removeTexture() {
       static_cast<std::size_t>(mesh_) >= textureLinks_.size())
     return;
   ++textureRequest_;
+  for (auto &job : textureJobs_) job.stop.request_stop();
   textureBusy_ = false;
+  textureStatus_.clear();
+  textureRequestedPath_.clear();
   textureLinks_.at(static_cast<std::size_t>(mesh_)).erase(material_);
   textureError_.clear();
   rebuild();
   emit changed();
 }
 void ModelSession::associateTexture(const QString &input) {
-  if (!document_ || busy_)
+  if (!selectedMesh() || busy_)
     return;
   if (uvSets().isEmpty() ||
       document_->meshes.at(static_cast<std::size_t>(mesh_))
@@ -3555,6 +3562,11 @@ void ModelSession::associateTexture(const QString &input) {
     j.stop.request_stop();
   const QUrl url(input);
   const QString path = url.isLocalFile() ? url.toLocalFile() : input;
+  textureRequestedPath_ = path;
+  textureMesh_ = mesh_;
+  textureMaterial_ = material_;
+  textureUV_ = uvIndex();
+  textureStatus_ = QStringLiteral("loading");
   std::stop_source stop;
   const auto token = stop.get_token();
   auto future = std::async(std::launch::async, [path, token] {
@@ -3572,6 +3584,48 @@ void ModelSession::associateTexture(const QString &input) {
   textureJobs_.push_back({generation_, ++textureRequest_, mesh_, material_,
                           std::move(stop), std::move(future), uvIndex()});
   emit changed();
+}
+QVariantMap ModelSession::textureRequestInfo() const {
+  if (textureMesh_ != mesh_ || textureMaterial_ != material_ || textureRequestedPath_.isEmpty()) return {};
+  return {{"path", textureRequestedPath_}, {"status", textureStatus_}, {"uv", textureUV_}};
+}
+void ModelSession::cancelTexture() {
+  if (!textureBusy_) return;
+  ++textureRequest_;
+  for (auto &job : textureJobs_) job.stop.request_stop();
+  textureBusy_ = false;
+  textureError_.clear();
+  textureStatus_ = QStringLiteral("cancelled");
+  emit changed();
+}
+void ModelSession::retryTexture() {
+  if (textureBusy_ || textureRequestInfo().isEmpty() ||
+      (textureStatus_ != "error" && textureStatus_ != "cancelled")) return;
+  // Retry the captured UV, even if the user inspected another channel meanwhile.
+  const auto path = textureRequestedPath_;
+  const auto uv = textureUV_;
+  selectUV(uv);
+  associateTexture(path);
+}
+QVariantMap ModelSession::materialInfo() const {
+  const auto *mesh = selectedMesh();
+  if (!mesh || material_ < 0 || material_ >= mesh->materials.size()) return {};
+  const auto slot = static_cast<std::size_t>(material_);
+  const auto uv = slot < mesh->materialUv.size() ? mesh->materialUv[slot] : -1;
+  QVariantList transform;
+  if (slot < mesh->uvAffine.size()) {
+    for (auto value : mesh->uvAffine[slot]) transform.append(value);
+  } else if (slot < mesh->uvTransforms.size()) {
+    const auto &t = mesh->uvTransforms[slot];
+    transform = {std::cos(t[4])*t[2], -std::sin(t[4])*t[3], t[0],
+                 std::sin(t[4])*t[2], std::cos(t[4])*t[3], t[1]};
+  }
+  const auto selectedUV = uvIndex();
+  const bool usable = selectedUV >= 0 && static_cast<std::size_t>(selectedUV) < mesh->invalidUVs.size() &&
+                      !mesh->invalidUVs[selectedUV] && static_cast<std::size_t>(selectedUV) < mesh->uvs.size();
+  return {{"mesh", mesh->name}, {"name", mesh->materials[material_]},
+          {"sourceUV", mesh->uvNames.value(uv)}, {"uvTransform", transform},
+          {"canAssociate", usable}, {"sessionLinked", canClearTexture()}};
 }
 ModelPickHit pickModelDocument(const ModelDocument &document, const ModelRenderState &state,
     const formaview::render::Frame *pose, const QMatrix4x4 &view, QPointF normalized, bool uvView, std::stop_token stop) {
