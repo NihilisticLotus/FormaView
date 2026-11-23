@@ -330,9 +330,11 @@ FocusScope {
             case Qt.Key_Right:
                 video.seek(VideoPreferences.forward, true);
                 break;
+            case Qt.Key_D:
             case Qt.Key_Comma:
                 video.step(false);
                 break;
+            case Qt.Key_F:
             case Qt.Key_Period:
                 video.step(true);
                 break;
@@ -548,7 +550,7 @@ FocusScope {
                             visible: !bar.compact
                             quiet: true
                             iconName: root.paused ? "animation-step-back" : "return"
-                            hint: root.paused ? qsTr("上一帧 (,)") : qsTr("回退 %1 秒").arg(VideoPreferences.backward)
+                            hint: root.paused ? qsTr("上一帧 (D / ,)") : qsTr("回退 %1 秒").arg(VideoPreferences.backward)
                             onClicked: root.paused ? video.step(false) : video.seek(-VideoPreferences.backward, true)
                         }
                         Tool {
@@ -576,7 +578,7 @@ FocusScope {
                             quiet: true
                             iconName: root.paused ? "animation-step-forward" : "return"
                             iconRotation: root.paused ? 0 : 180
-                            hint: root.paused ? qsTr("下一帧 (.)") : qsTr("快进 %1 秒").arg(VideoPreferences.forward)
+                            hint: root.paused ? qsTr("下一帧 (F / .)") : qsTr("快进 %1 秒").arg(VideoPreferences.forward)
                             onClicked: root.paused ? video.step(true) : video.seek(VideoPreferences.forward, true)
                         }
                     }

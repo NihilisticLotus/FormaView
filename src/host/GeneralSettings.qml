@@ -199,7 +199,7 @@ Item {
                 SettingsGroup {
                     visible: root.section === "keys"; title: Theme.t("工作区与播放","Workspace and playback","工作區與播放")
                     Repeater {
-                        model: [[Theme.t("打开文件","Open file","開啟檔案"),"Ctrl + O"],[Theme.t("目录地址","Folder address","目錄位址"),"Ctrl + L"],[Theme.t("播放 / 暂停","Play / pause","播放 / 暫停"),"Space"],[Theme.t("上一帧 / 下一帧","Previous / next frame","上一幀 / 下一幀"),",  /  ."],[Theme.t("调整音量","Volume","調整音量"),"↑  /  ↓"]]
+                        model: [[Theme.t("打开文件","Open file","開啟檔案"),"Ctrl + O"],[Theme.t("目录地址","Folder address","目錄位址"),"Ctrl + L"],[Theme.t("播放 / 暂停","Play / pause","播放 / 暫停"),"Space"],[Theme.t("上一帧 / 下一帧","Previous / next frame","上一幀 / 下一幀"),"D / F   ·   , / ."],[Theme.t("调整音量","Volume","調整音量"),"↑  /  ↓"]]
                         delegate: SettingsRow {
                             required property var modelData
                             label: modelData[0]

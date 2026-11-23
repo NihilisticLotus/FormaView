@@ -827,10 +827,14 @@ private slots:
       QTRY_VERIFY_WITH_TIMEOUT(!session->seekPending() && std::abs(position() - target) < .02, 5000);
     }
     const auto paused = position();
-    session->step(true);
+    auto *viewport = item("videoViewport");
+    QVERIFY(viewport);
+    viewport->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_F);
     QTRY_VERIFY(std::abs(position() - paused - 1. / 60) < .003);
-    session->step(false);
+    QTest::keyClick(window_, Qt::Key_D);
     QTRY_VERIFY(std::abs(position() - paused) < .003);
+    QVERIFY(session->status().value("pause").toBool());
     session->togglePause();
     QTRY_VERIFY(!session->status().value("pause").toBool() && position() > paused + .05);
     const auto playingTarget = std::floor(duration / 10);
