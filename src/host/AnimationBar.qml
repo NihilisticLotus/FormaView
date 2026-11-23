@@ -70,19 +70,11 @@ Rectangle {
                 onClicked: root.session.togglePlay()
                 Accessible.name: root.session.playing ? Theme.t("暂停动画", "Pause animation", "暫停動畫") : Theme.t("播放动画", "Play animation", "播放動畫")
             }
-            Choice {
-                id: clipChoice
+            AnimationClipChoice {
                 objectName: "animClip"
+                session: root.session
                 Layout.preferredWidth: Math.min(138, Math.max(62, root.width * 0.2)); Layout.minimumWidth: 42
                 height: root.controlHeight
-                model: root.session.clips
-                textRole: "name"
-                currentIndex: root.session.clipIndex
-                enabled: root.session.hasPlayableAnimation
-                onActivated: index => root.session.setClipIndex(index)
-                ToolTip.visible: hovered && currentText.length > 0
-                ToolTip.text: clipChoice.currentText
-                Accessible.name: Theme.t("动画片段", "Animation clip", "動畫片段")
             }
             Slider {
                 id: scrubber

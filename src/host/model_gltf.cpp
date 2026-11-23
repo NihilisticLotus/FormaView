@@ -9,6 +9,9 @@
 #include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QUrl>
 #include <algorithm>
 #include <cgltf.h>
@@ -222,6 +225,46 @@ const cgltf_accessor *attribute(const cgltf_attribute *attributes,
   t.rotation = q;
   return t;
 }
+struct NodeLod {
+  int group{-1}, level{};
+  bool ambiguous{};
+  void merge(NodeLod other) {
+    if (group < 0) *this = other;
+    else if (group != other.group || level != other.level || other.ambiguous) ambiguous = true;
+  }
+};
+
+// Only the active scene contributes meshes. A node assignment covers all
+// primitives below it; an overlapping assignment cannot establish ownership.
+std::map<std::size_t, NodeLod> sceneLods(const cgltf_data &data,
+    const std::set<const cgltf_node *> &active, const std::vector<std::size_t> &order,
+    std::stop_token stop) {
+  std::map<std::size_t, NodeLod> members;
+  for (const auto *node : active) {
+    check(stop);
+    for (std::size_t e = 0; e < node->extensions_count; ++e) {
+      const auto &extension = node->extensions[e];
+      if (std::string_view(extension.name) != "MSFT_lod") continue;
+      const auto ids = QJsonDocument::fromJson(extension.data).object().value("ids").toArray();
+      if (ids.isEmpty() || std::any_of(ids.begin(), ids.end(), [&](const QJsonValue &id) {
+            return id.toInt(-1) < 0 || static_cast<std::size_t>(id.toInt()) >= data.nodes_count;
+          })) continue;
+      const auto group = static_cast<int>(node - data.nodes);
+      members[group].merge({group, 0});
+      int level = 0;
+      for (const auto id : ids) members[id.toInt()].merge({group, ++level});
+    }
+  }
+  if (members.empty()) return members;
+  for (const auto i : order) {
+    check(stop);
+    const auto *parent = data.nodes[i].parent;
+    if (!parent) continue;
+    const auto inherited = members.find(parent - data.nodes);
+    if (inherited != members.end()) members[i].merge(inherited->second);
+  }
+  return members;
+}
 } // namespace
 
 std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
@@ -345,6 +388,7 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
     for (std::size_t c = 0; c < node->children_count; ++c)
       pending.push_back(node->children[c]);
   }
+  const auto lodMembers = sceneLods(*raw, active, order, stop);
   std::size_t vertexBudget = 0;
   std::set<const cgltf_node *> jointNodes;
   for (std::size_t i = 0; i < raw->skins_count; ++i)
@@ -407,6 +451,17 @@ std::shared_ptr<ModelDocument> readGltfModel(const QString &path,
                  .arg(pi)
                  .arg(ni);
       m.nodeId = id;
+      if (const auto it = lodMembers.find(ni); it != lodMembers.end()) {
+        const auto member = it->second;
+        if (member.ambiguous) {
+          m.classificationEvidence = QStringLiteral("MSFT_lod · ambiguous node membership");
+        } else {
+          const auto groupName = name(raw->nodes[member.group].name);
+          m.classification.group = QString("%1 [node/%2]").arg(groupName.isEmpty() ? "LOD" : groupName).arg(member.group);
+          m.classification.level = member.level;
+          m.classificationEvidence = QStringLiteral("MSFT_lod");
+        }
+      }
       m.name =
           name(node.name) + QString(" [%1 · primitive/%2]").arg(id).arg(pi);
       m.uvTopOrigin = true;

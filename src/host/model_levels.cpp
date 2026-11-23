@@ -12,17 +12,39 @@ QStringList ModelSession::lodGroups() const {
     result.append(group);
   return result;
 }
+QVariantMap ModelSession::lodSummary() const {
+  const auto &state = renderedState_;
+  if (!document_ || !inspectable() || state.visible.size() != document_->meshes.size() ||
+      state.classes.size() != state.visible.size()) return {};
+  qulonglong surface = 0, collision = 0;
+  for (std::size_t i = 0; i < state.visible.size(); ++i) {
+    if (!state.visible[i] || (state.isolated && static_cast<int>(i) != state.mesh)) continue;
+    auto &triangles = state.classes[i].collision ? collision : surface;
+    triangles += document_->meshes[i].triangles.size() / 3;
+  }
+  return {{"surface", surface}, {"collision", collision}};
+}
 QVariantList ModelSession::lodLevels() const {
   const auto groups = lodGroups();
   if (lodGroup_ < 0 || lodGroup_ >= groups.size())
     return {};
   const auto &group = groups[lodGroup_];
-  std::map<int, std::pair<qulonglong, qulonglong>> counts;
+  struct LevelCounts {
+    qulonglong points{}, triangles{}, collisionTriangles{};
+    int meshes{}, collisionMeshes{};
+  };
+  std::map<int, LevelCounts> counts;
   for (std::size_t i = 0; i < classes_.size(); ++i)
-    if (classes_[i].group == group && !classes_[i].collision) {
+    if (classes_[i].group == group) {
       auto &count = counts[classes_[i].level];
-      count.first += document_->meshes[i].points.size();
-      count.second += document_->meshes[i].triangles.size() / 3;
+      if (classes_[i].collision) {
+        ++count.collisionMeshes;
+        count.collisionTriangles += document_->meshes[i].triangles.size() / 3;
+        continue;
+      }
+      ++count.meshes;
+      count.points += document_->meshes[i].points.size();
+      count.triangles += document_->meshes[i].triangles.size() / 3;
     }
   QVariantList result;
   for (const auto &[level, count] : counts) {
@@ -30,8 +52,11 @@ QVariantList ModelSession::lodLevels() const {
     const auto request = levels_.find(group);
     result.append(QVariantMap{
         {"level", level},
-        {"points", count.first},
-        {"triangles", count.second},
+        {"points", count.points},
+        {"triangles", count.triangles},
+        {"meshes", count.meshes},
+        {"collisionMeshes", count.collisionMeshes},
+        {"collisionTriangles", count.collisionTriangles},
         {"current",
          current != renderedState_.levels.end() && current->second == level},
         {"requested", request != levels_.end() && request->second == level}});
@@ -43,7 +68,12 @@ QVariantMap ModelSession::classification() const {
     return {};
   const auto &item = classes_.at(static_cast<std::size_t>(mesh_));
   const auto &source = document_->meshes.at(static_cast<std::size_t>(mesh_));
-  return {{"group", item.group},
+  const auto level = levels_.find(item.group);
+  const bool hiddenByLevel = !item.group.isEmpty() &&
+      (level == levels_.end() || level->second != item.level);
+  const bool hiddenByCollision = item.collision ? collisionMode_ == 0 : collisionMode_ == 2;
+  return {{"hiddenByLevel", hiddenByLevel}, {"hiddenByCollision", hiddenByCollision},
+          {"group", item.group},
           {"level", item.level},
           {"collision", item.collision},
           {"evidence", source.classificationEvidence},
@@ -75,6 +105,16 @@ void ModelSession::chooseVisibleMesh() {
   bone_ = material_ = 0;
   updateSkeleton();
 }
+void ModelSession::revealSelectedMesh() {
+  if (!selectedMesh() || !inspectable() || static_cast<std::size_t>(mesh_) >= classes_.size()) return;
+  const auto &selected = classes_[mesh_];
+  if (!selected.group.isEmpty()) levels_[selected.group] = selected.level;
+  if ((selected.collision && collisionMode_ == 0) || (!selected.collision && collisionMode_ == 2))
+    collisionMode_ = 1;
+  clearSelection();
+  rebuild();
+  emit changed();
+}
 void ModelSession::showAvailableMeshes() {
   if (!document_ || classes_.empty()) return;
   isolated_ = false;
@@ -102,7 +142,7 @@ void ModelSession::requestLod(int level) {
     return;
   const auto &group = groups[lodGroup_];
   if (std::none_of(classes_.begin(), classes_.end(), [&](const auto &item) {
-        return item.group == group && item.level == level && !item.collision;
+        return item.group == group && item.level == level;
       }))
     return;
   levels_[group] = level;

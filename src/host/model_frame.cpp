@@ -598,10 +598,19 @@ std::shared_ptr<const render::Frame> build(const ModelDocument &document,
           f->vertices.push_back(
               vertex(m.triangles[t + static_cast<std::size_t>((e + 1) % 3)]));
         }
-      } else
-        for (int e = 0; e < 3; ++e)
-          f->vertices.push_back(
-              vertex(m.triangles[t + static_cast<std::size_t>(e)]));
+      } else {
+        for (int e = 0; e < 3; ++e) {
+          auto v = vertex(m.triangles[t + static_cast<std::size_t>(e)]);
+          if (state.mode == 3 && collision) {
+            // The inspection wire uses interpolated triangle coordinates in
+            // the unused material tint. Keep source UVs and source RGB intact.
+            v.r = e == 0; v.g = e == 1; v.b = e == 2;
+            v.alphaMode = -3.F;
+            v.alpha = static_cast<int>(mi) == state.mesh ? 1.F : .72F;
+          }
+          f->vertices.push_back(v);
+        }
+      }
       if (state.directionMask && mode != 1 && (f->sourceTriangles - 1) % stride == 0)
         appendDirections(*f, directions, m, t, first, state.uvs[mi], state.directionMask, pose != nullptr);
       if (mode == 0) {

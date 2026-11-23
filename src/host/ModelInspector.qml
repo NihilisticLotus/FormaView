@@ -10,8 +10,10 @@ Item {
     objectName: "modelInspector"
     signal activateAnimationSection()
     signal addExternalAnimation()
+    property Item modelPane
     required property var controller
     readonly property var session: controller.model
+    readonly property string activeClipPath: session.clips[session.clipIndex]?.sourcePath || ""
     readonly property var camera: session.cameraInfo
     function cameraValue(value, unit): string {
         return value === undefined || value === null || !isFinite(Number(value))
@@ -20,6 +22,7 @@ Item {
     }
     function inspectSection(section) {
         tab = section === "animation" ? 4 : ["weights","binding","skeleton"].includes(section) ? 1 : 0
+        if (section === "lod") sceneScroll.contentItem.contentY = sceneScroll.contentItem.originY
         if (tab === 1) skeletonPane.showBindingDetails(section === "binding")
     }
     property int tab: session.geometryCache ? 3 : 0
@@ -72,6 +75,11 @@ Item {
             ColumnLayout {
                 objectName: "modelSceneColumn"
                 width: sceneScroll.availableWidth; spacing: 10
+                Loader {
+                    objectName: "modelLodDetails"
+                    Layout.fillWidth: true; active: root.session.mode===3; visible: active
+                    sourceComponent: Component { ModelLodPanel { session: root.session; onFocusMesh: root.modelPane?.fit(true) } }
+                }
                 Label { text: Theme.t("模型信息","Model information","模型資訊"); font.bold: true; color: Theme.text }
                 Repeater {
                     model: [[Theme.t("网格","Meshes","網格"),root.session.meshes.length],
@@ -85,8 +93,8 @@ Item {
                         Label { text: String(modelData[1]); color: Theme.text; elide: Text.ElideMiddle; Layout.maximumWidth: 180 }
                     }
                 }
-                Readout { Layout.fillWidth: true; visible: !!root.session.externalInfo.driven
-                    label: Theme.t("外部动作","External animation","外部動作"); value: (root.session.externalInfo.path || "").split("/").pop() }
+                Readout { Layout.fillWidth: true; visible: !!root.activeClipPath
+                    label: Theme.t("外部动作","External animation","外部動作"); value: root.activeClipPath }
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.line }
                 Label { text: Theme.t("场景结构", "Scene structure", "場景結構"); color: Theme.text; font.bold: true }
                 TreeView {
@@ -143,11 +151,6 @@ Item {
                 OptionCheck { text: Theme.t("仅显示当前网格", "Isolate this mesh", "僅顯示目前網格"); checked: root.session.isolated; onToggled: root.session.setIsolated(checked) }
                 SectionHeader { id: sourceNode; objectName: "modelNodeMatrices"; Layout.fillWidth: true; text: Theme.t("节点与默认矩阵", "Node and default matrices", "節點與預設矩陣") }
                 Loader { objectName: "modelNodeDetails"; Layout.fillWidth: true; active: sourceNode.checked; visible: active; sourceComponent: Component { ModelSourceDetails { source: root.session.sourceNode } } }
-                Loader {
-                    objectName: "modelLodDetails"
-                    Layout.fillWidth: true; active: root.session.mode===3; visible: active
-                    sourceComponent: Component { ModelLodPanel { session: root.session } }
-                }
                 SectionHeader { id: statistics; objectName: "modelStatistics"; Layout.fillWidth: true; text: Theme.t("统计与来源", "Statistics and source", "統計與來源") }
                 ColumnLayout {
                     Layout.fillWidth: true; visible: statistics.checked
@@ -195,7 +198,7 @@ Item {
                             readonly property var modelData: cacheDetails.meshRows[index] || ({})
                             objectName: "cacheMeshReadout"
                             Layout.fillWidth: true
-                            label: modelData.path
+                            label: modelData.path || ""
                             value: (modelData.topology === "varying" ? Theme.t("变化拓扑", "Varying topology", "變化拓撲") : modelData.topology === "static" ? Theme.t("静态", "Static", "靜態") : Theme.t("固定拓扑", "Fixed topology", "固定拓撲"))
                                    + " · " + Theme.t("采样 %1（当前 %2）", "%1 samples (current %2)", "取樣 %1（目前 %2）").arg(modelData.samples).arg(modelData.sample)
                                    + " · UV " + (modelData.uv ? Theme.t("有", "yes", "有") : Theme.t("无", "no", "無"))
@@ -233,13 +236,11 @@ Item {
                     }
                     Readout {
                         Layout.fillWidth: true; inlineValue: true
-                        label: root.session.externalInfo.driven
-                               ? Theme.t("已配对文件", "Paired file", "已配對檔案")
-                               : Theme.t("动作来源", "Animation source", "動作來源")
-                        value: root.session.externalInfo.driven ? root.session.externalInfo.path || "—"
-                               : root.session.hasPlayableAnimation
+                        objectName: "motionClipSource"
+                        label: Theme.t("当前片段来源", "Active clip source", "目前片段來源")
+                        value: root.activeClipPath || (motionInspector.currentClip.name !== undefined
                                ? Theme.t("模型内置片段", "Embedded clips", "模型內建片段")
-                               : Theme.t("尚未配对", "No paired file", "尚未配對")
+                               : Theme.t("尚未配对", "No paired file", "尚未配對"))
                     }
                     ExplainedText {
                         Layout.fillWidth: true
@@ -262,15 +263,12 @@ Item {
                         onClicked: root.session.detachExternalAnimation()
                     }
                 }
-                Label { text: Theme.t("动画片段","Animation clips","動畫片段"); font.bold: true; color: Theme.text }
-                Choice {
-                    objectName: "motionClipChoice"
-                    Layout.fillWidth: true; model: root.session.clips; textRole: "name"
-                    currentIndex: root.session.clipIndex; enabled: count > 0
-                    displayText: count ? currentText : Theme.t("无动画片段","No animation clips","無動畫片段")
-                    Accessible.name: Theme.t("当前动作","Active clip","目前動作")
-                    onActivated: index => root.session.setClipIndex(index)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { Layout.fillWidth: true; text: Theme.t("动画片段","Animation clips","動畫片段"); font.bold: true; color: Theme.text }
+                    Label { text: root.session.clips.length; color: Theme.muted }
                 }
+                AnimationClipChoice { objectName: "motionClipChoice"; session: root.session; Layout.fillWidth: true }
                 ColumnLayout {
                     visible: motionInspector.currentClip.start !== undefined
                     Layout.fillWidth: true; spacing: 8
@@ -282,6 +280,12 @@ Item {
                         Label { Layout.fillWidth: true; color: Theme.text; text: Theme.t("播放速度","Playback speed","播放速度") }
                         AnimationSpeedField { objectName: "motionSpeed"; session: root.session; Layout.preferredWidth: 72 }
                         Label { text: "×"; color: Theme.muted }
+                    }
+                    OptionCheck {
+                        objectName: "motionGroundGrid"; visible: !!root.modelPane
+                        text: Theme.t("地面网格", "Ground grid", "地面網格")
+                        checked: root.modelPane?.showGrid ?? false
+                        onToggled: if (root.modelPane) root.modelPane.showGrid = checked
                     }
                     OptionCheck { text: Theme.t("循环播放","Loop playback","循環播放"); checked: root.session.loop; enabled: root.session.canPlayAnimation; onToggled: root.session.setLoop(checked) }
                     Label { visible: motionInspector.roots.length > 0; text: Theme.t("根运动","Root motion","根運動"); font.bold: true; color: Theme.text }

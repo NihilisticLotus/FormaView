@@ -2730,7 +2730,9 @@ void ModelSession::applyExternalActor(std::shared_ptr<ModelDocument> source,
     auto entry = source->animationClips[i];
     entry.source = sourceIndex;
     d.animationClips.push_back(entry);
-    d.clips.push_back(source->clips.at(static_cast<int>(i)));
+    auto description = source->clips.at(static_cast<int>(i)).toMap();
+    description.insert("sourcePath", path);
+    d.clips.push_back(description);
   }
   const auto sources = d.externalActorSources;
   const auto clips = d.animationClips;
@@ -2852,6 +2854,7 @@ void ModelSession::applyExternalDrive(
     document_->animationClips.push_back(entry);
     document_->clips.push_back(QVariantMap{
         {"name", entry.name},
+        {"sourcePath", path},
         {"start", entry.start},
         {"end", entry.end},
         {"fps", entry.fps},

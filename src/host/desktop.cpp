@@ -19,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
@@ -1062,7 +1063,7 @@ void Desktop::publish(Job &job) {
         history_.removeFirst();
       historyAt_ = static_cast<int>(history_.size()) - 1;
     }
-    // Submitting work here would invalidate jobs_ while poll iterates it.
+    // A newer navigation can supersede this scan before its filter is submitted.
     filtering_ = true;
     ++filterRevision_;
     const auto scanRevision = job.revision;
@@ -1142,16 +1143,22 @@ void Desktop::publish(Job &job) {
   emit changed();
 }
 void Desktop::poll() {
+  if (polling_) return;
+  QScopedValueRollback guard(polling_, true);
   auto rows = QVariantList{};
   auto active = 0;
-  for (auto &job : jobs_) {
-    const auto snap = job.handle.snapshot();
+  const auto count = jobs_.size();
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto snap = jobs_[i].handle.snapshot();
     const auto terminal = formaview::is_terminal(snap.state);
-    if (terminal && !job.consumed) {
-      job.consumed = true;
-      publish(job);
-      std::vector<FileEntry>{}.swap(job.result->entries);
+    if (terminal && !jobs_[i].consumed) {
+      jobs_[i].consumed = true;
+      // Publication can synchronously open the next asset and grow jobs_.
+      auto completed = jobs_[i];
+      publish(completed);
+      std::vector<FileEntry>{}.swap(completed.result->entries);
     }
+    const auto &job = jobs_[i];
     if (job.operation == "folders")
       continue;
     if (!terminal)

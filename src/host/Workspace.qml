@@ -411,7 +411,7 @@ Item {
                         Qt.callLater(() => inspector.forceActiveFocus())
                     }
                 }
-                Inspector { id: inspector; onActivateAnimationSection: preview.modelPane?.selectSection("animation", 0); onAddExternalAnimation: preview.addExternalAnimation(); Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? Theme.narrowInspectorWidth : Theme.inspectorWidth; visible: root.inspectorVisible && !root.videoWorkspace; controller: root.controller }
+                Inspector { id: inspector; modelPane: preview.modelPane; onActivateAnimationSection: preview.modelPane?.selectSection("animation", 0); onAddExternalAnimation: preview.addExternalAnimation(); Layout.fillHeight: true; Layout.preferredWidth: root.narrow ? Theme.narrowInspectorWidth : Theme.inspectorWidth; visible: root.inspectorVisible && !root.videoWorkspace; controller: root.controller }
             }
             TasksPane { anchors.fill: parent; visible: root.tasksVisible && !root.conversionVisible; controller: root.controller; onBack: root.navigate("assets"); onNewConversion: root.showConversion(0, "", true); onRetryImageJob: id => { if (quickExportLoader.item && quickExportLoader.item.visible) { quickExportLoader.item.raise(); quickExportLoader.item.requestActivate(); return } root.controller.imageJobs.retry(id); root.openConversion(1) } }
             Loader { id: conversionLoader; anchors.fill: parent; visible: root.conversionVisible }
@@ -449,7 +449,7 @@ Item {
         contentItem: Loader {
             active: compactInspector.visible
             onLoaded: if (compactInspector.requestedSection) item.inspectSection(compactInspector.requestedSection)
-            sourceComponent: Component { Inspector { controller: root.controller; onActivateAnimationSection: preview.modelPane?.selectSection("animation", 0); onAddExternalAnimation: preview.addExternalAnimation() } }
+            sourceComponent: Component { Inspector { controller: root.controller; modelPane: preview.modelPane; onActivateAnimationSection: preview.modelPane?.selectSection("animation", 0); onAddExternalAnimation: preview.addExternalAnimation() } }
         }
     }
     Drawer {

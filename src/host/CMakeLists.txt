@@ -124,7 +124,7 @@ set(desktop_qml FrostEffect.qml FrostRequest.qml PickerBackdrop.qml FrostDialog.
     Inspector.qml VideoControlGlass.qml VideoPane.qml PlaybackInfo.qml VideoTimeline.qml VideoPlaylist.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml
-        AnimationBar.qml AnimationSpeedField.qml CacheTimeline.qml
+        AnimationBar.qml AnimationClipChoice.qml AnimationSpeedField.qml CacheTimeline.qml
         ModelPane.qml ModelInspector.qml ModelSkeletonPane.qml ModelBindingDetails.qml ModelViewport.qml ModelPointPanel.qml ModelLodPanel.qml ModelMatrix.qml ModelSourceDetails.qml)
 endif()
 if(TARGET formaview_image_conversion)

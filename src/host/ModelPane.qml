@@ -116,7 +116,7 @@ Rectangle {
                     Tool {
                         objectName: "animExternalAttach"; height: 30; quiet: true; iconName: "external"
                         visible: root.session.canAttachExternalAnimation || root.session.externalInfo.driven === true
-                        hint: Theme.t("添加外部动画…","Add external animation…","新增外部動畫…")
+                        hint: externalDialog.title
                         enabled: !root.session.busy && !root.session.externalBusy
                         onClicked: root.addExternalAnimation()
                     }

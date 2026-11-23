@@ -23,6 +23,14 @@ vec3 studioLight(vec3 normal) {
     return sky + key * vec3(.57,.55,.51) + fill * vec3(.24,.28,.34);
 }
 void main(){
+    if(surfaceCoverage.y < -2.5) {
+        vec3 distanceToEdge = surfaceTint / max(fwidth(surfaceTint), vec3(1e-5));
+        float edge = min(distanceToEdge.x, min(distanceToEdge.y, distanceToEdge.z));
+        if (edge > 1.1) discard;
+        color = vec4(mix(vec3(.07,.48,.56), vec3(.15,.91,.94), surfaceCoverage.x),
+                     surfaceCoverage.x * (1.0 - smoothstep(.45, 1.1, edge)));
+        return;
+    }
     if(surfaceCoverage.y < -1.5) { color=vec4(surfaceTint,1); return; }
     if(options.w>1.5) {
         if(options.w>4.5) {

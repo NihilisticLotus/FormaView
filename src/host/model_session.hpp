@@ -36,6 +36,7 @@ class ModelSession : public QObject {
   Q_PROPERTY(QStringList warnings READ warnings NOTIFY changed)
   Q_PROPERTY(QVariantList resources READ resources NOTIFY changed)
   Q_PROPERTY(QStringList lodGroups READ lodGroups NOTIFY changed)
+  Q_PROPERTY(QVariantMap lodSummary READ lodSummary NOTIFY changed)
   Q_PROPERTY(QVariantList lodLevels READ lodLevels NOTIFY changed)
   Q_PROPERTY(int lodGroupIndex READ lodGroupIndex NOTIFY changed)
   Q_PROPERTY(int collisionMode READ collisionMode NOTIFY changed)
@@ -104,6 +105,7 @@ public:
   ~ModelSession() override;
   QStringList lodGroups() const;
   QVariantList lodLevels() const;
+  QVariantMap lodSummary() const;
   int lodGroupIndex() const { return lodGroup_; }
   int collisionMode() const { return collisionMode_; }
   QVariantMap classification() const;
@@ -122,6 +124,7 @@ public:
   Q_INVOKABLE void selectSkeletonIndex(const QModelIndex &);
   Q_INVOKABLE void clearSkeletonSelection();
   Q_INVOKABLE void showAvailableMeshes();
+  Q_INVOKABLE void revealSelectedMesh();
   QStringList warnings() const {
     return document_ ? document_->warnings : QStringList{};
   }

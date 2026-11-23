@@ -5,6 +5,7 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 GlassPanel {
     id: root
+    property Item modelPane
     required property var controller
     property string locatingId: ""
     readonly property int resourceCount: controller.resourceIssues.length
@@ -13,7 +14,10 @@ GlassPanel {
     objectName: "inspectorPane"
     radius: Theme.groupRadius
     readonly property bool imageActive: !!controller.image && controller.image.available
-    readonly property bool modelActive: !!controller.model && controller.model.available
+    // Keep the same inspector while a replacement model is loading or failed.
+    // Tearing down an incubating tree for the transient empty document also
+    // cancels nested loaders while their parent is completing.
+    readonly property bool modelActive: !!controller.model && (controller.model.available || controller.model.busy || !!controller.model.error)
     signal activateAnimationSection()
     signal addExternalAnimation()
     property string pendingModelSection: ""
@@ -54,8 +58,8 @@ GlassPanel {
         anchors.fill: parent; anchors.margins: 12
         asynchronous: true
         active: root.modelActive; visible: active && !root.showInfo
-        onActiveChanged: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }
-        Component.onCompleted: { if (active) setSource("ModelInspector.qml", {controller: root.controller}) }
+        onActiveChanged: { if (active) setSource("ModelInspector.qml", {controller: root.controller, modelPane: Qt.binding(() => root.modelPane)}) }
+        Component.onCompleted: { if (active) setSource("ModelInspector.qml", {controller: root.controller, modelPane: Qt.binding(() => root.modelPane)}) }
     }
     Loader {
         anchors.fill: parent; anchors.margins: 12

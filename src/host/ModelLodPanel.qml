@@ -6,10 +6,32 @@ import QtQuick.Layouts
 Item {
     id: root
     required property var session
+    signal focusMesh()
+    readonly property var summary: session.lodSummary
+    readonly property var selected: session.classification
+    readonly property bool hiddenMesh: !!selected.hiddenByLevel || !!selected.hiddenByCollision
+    readonly property var levels: session.lodLevels
+    readonly property real firstTriangles: levels.length ? levels[0].triangles : 0
     implicitHeight: content.implicitHeight
     ColumnLayout {
     id: content
     width: root.width; spacing: 8
+    Label { text: Theme.t("LOD 与碰撞", "LOD and collision", "LOD 與碰撞"); color: Theme.text; font.bold: true }
+    Readout {
+        Layout.fillWidth: true; inlineValue: true
+        label: Theme.t("当前显示", "Visible meshes", "目前顯示")
+        value: root.summary.surface === undefined ? "—" : root.session.info.visibleMeshes + " / " + root.session.info.meshCount
+    }
+    Readout {
+        Layout.fillWidth: true; inlineValue: true
+        label: Theme.t("表面三角形", "Surface triangles", "表面三角形")
+        value: root.summary.surface === undefined ? "—" : Number(root.summary.surface).toLocaleString(Qt.locale(), "f", 0)
+    }
+    Readout {
+        Layout.fillWidth: true; inlineValue: true
+        label: Theme.t("碰撞三角形", "Collision triangles", "碰撞三角形")
+        value: root.summary.collision === undefined ? "—" : Number(root.summary.collision).toLocaleString(Qt.locale(), "f", 0)
+    }
     Choice {
         objectName: "modelLodGroupChoice"
         Layout.fillWidth: true
@@ -19,12 +41,33 @@ Item {
         Accessible.name: Theme.t("LOD 组", "LOD group", "LOD 組")
     }
     Repeater {
-        model: root.session.lodLevels
+        model: root.levels
         delegate: Tool {
+            id: levelRow
             required property var modelData
             objectName: "modelLodLevel"+modelData.level
             Layout.fillWidth: true
-            text: "LOD "+modelData.level+" · "+modelData.triangles+Theme.t(" 三角形", " triangles", " 三角形")+(modelData.current ? Theme.t(" · 当前", " · current", " · 目前") : "")+(modelData.requested&&!modelData.current ? Theme.t(" · 请求中", " · requested", " · 請求中") : "")
+            readonly property string levelName: "LOD " + modelData.level
+                + (modelData.current ? Theme.t(" · 当前", " · current", " · 目前") : modelData.requested ? Theme.t(" · 请求中", " · requested", " · 請求中") : "")
+            readonly property string faceCount: Theme.t("%1 三角形", "%1 triangles", "%1 三角形").arg(Number(modelData.triangles).toLocaleString(Qt.locale(), "f", 0))
+            readonly property string partCount: Theme.t("%1 个部件", "%1 parts", "%1 個部件").arg(modelData.meshes)
+                + (root.firstTriangles ? Theme.t(" · 首级面数的 %1%", " · %1% of first level", " · 首級面數的 %1%").arg(Math.round(modelData.triangles * 100 / root.firstTriangles)) : "")
+            readonly property string collisionCount: modelData.collisionMeshes ? Theme.t("碰撞部件 %1，%2 三角形", "%1 collision parts, %2 triangles", "碰撞部件 %1，%2 三角形")
+                .arg(modelData.collisionMeshes).arg(modelData.collisionTriangles) : ""
+            text: levelName + " · " + faceCount
+            Accessible.description: partCount + " " + collisionCount
+            implicitHeight: implicitContentHeight + topPadding + bottomPadding
+            topPadding: 6; bottomPadding: 6
+            contentItem: ColumnLayout {
+                spacing: 2
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { Layout.fillWidth: true; text: levelRow.levelName; font.bold: true; font.pixelSize: Theme.compactText; color: Theme.text }
+                    Label { text: levelRow.faceCount; font.pixelSize: Theme.noteText; color: Theme.text }
+                }
+                Label { Layout.fillWidth: true; text: levelRow.partCount; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.Wrap }
+                Label { Layout.fillWidth: true; visible: !!text; text: levelRow.collisionCount; font.pixelSize: Theme.noteText; color: Theme.muted; wrapMode: Text.Wrap }
+            }
             checked: modelData.current
             onClicked: root.session.requestLod(modelData.level)
         }
@@ -36,7 +79,25 @@ Item {
         currentIndex: root.session.collisionMode; onActivated: root.session.setCollisionMode(currentIndex)
         Accessible.name: Theme.t("碰撞显示", "Collision display", "碰撞顯示")
     }
-    Readout { Layout.fillWidth: true; label: Theme.t("当前网格", "This mesh", "目前網格"); value: root.session.meshes[root.session.meshIndex] || "—" }
+    Label { text: Theme.t("网格归类", "Mesh classification", "網格歸類"); font.bold: true; color: Theme.text }
+    Choice {
+        objectName: "modelLodMesh"; Layout.fillWidth: true
+        model: root.session.meshes; currentIndex: root.session.meshIndex; enabled: count > 0
+        Accessible.name: Theme.t("归类网格", "Mesh to classify", "歸類網格")
+        onActivated: index => root.session.selectMesh(index)
+    }
+    Label {
+        Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.muted
+        visible: root.hiddenMesh
+        text: [root.selected.hiddenByLevel ? Theme.t("当前显示的是其他 LOD 等级。", "A different LOD is displayed.", "目前顯示的是其他 LOD 等級。") : "",
+               root.selected.hiddenByCollision ? Theme.t("当前碰撞筛选隐藏了此网格。", "The collision filter hides this mesh.", "目前碰撞篩選隱藏了此網格。") : ""].filter(Boolean).join(" ")
+    }
+    Tool {
+        objectName: "modelLodMeshAction"; Layout.fillWidth: true
+        enabled: root.session.inspectable && root.session.meshIndex >= 0 && root.session.meshes.length > 0
+        text: root.hiddenMesh ? Theme.t("显示此网格", "Show this mesh", "顯示此網格") : Theme.t("聚焦此网格", "Frame this mesh", "聚焦此網格")
+        onClicked: { if (root.hiddenMesh) root.session.revealSelectedMesh(); else root.focusMesh() }
+    }
     Label {
         Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: Theme.muted; textFormat: Text.PlainText
         text: root.session.classification.evidence || Theme.t("源文件未提供已识别的显式 LOD 关联。", "No recognized explicit LOD association in this source.", "來源檔案未提供已識別的顯式 LOD 關聯。")

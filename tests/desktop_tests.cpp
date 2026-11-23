@@ -937,6 +937,28 @@ private slots:
     QSKIP("Model UI is disabled");
 #endif
   }
+  void modelSwitchDuringAssetPublication() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto folder = requireFixture("FORMAVIEW_PLAYBACK_FIXTURES", true);
+    if (folder.isEmpty()) QSKIP("Requires the animated and static glTF playback fixtures");
+    const QDir samples(folder);
+    const QStringList paths{samples.filePath("animated.gltf"), samples.filePath("static.gltf")};
+    Desktop browser;
+    int opened = 0;
+    const auto connection = connect(&browser, &Desktop::changed, this, [&] {
+      if (opened == 20 || browser.asset().value("path").toString() != paths[opened % 2]) return;
+      if (++opened < 20) browser.openPath(paths[opened % 2]);
+    });
+    const auto cleanup = qScopeGuard([&] { disconnect(connection); });
+    browser.openPath(paths.first());
+    QTRY_COMPARE_WITH_TIMEOUT(opened, 20, 30000);
+    auto *model = qobject_cast<ModelSession *>(browser.model());
+    QTRY_VERIFY_WITH_TIMEOUT(model->path() == paths.last() && model->inspectable(), 30000);
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
+
   void modelSwitchDuringDocumentNotification() {
 #ifdef FORMAVIEW_MODEL_UI
     if (qEnvironmentVariableIsEmpty("FORMAVIEW_PLAYBACK_FIXTURES"))
@@ -957,6 +979,60 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(landed, 20, 15000);
     QTRY_VERIFY(session.inspectable());
     session.clear();
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
+  void modelGpuSwitchPlaybackStress() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto fbx = requireFixture("FORMAVIEW_REVIEW_ANIMATED_MODEL", true);
+    const auto psk = requireFixture("FORMAVIEW_PSK_TARGET", true);
+    const auto psa = requireFixture("FORMAVIEW_PSK_PSA", true);
+    const auto folder = requireFixture("FORMAVIEW_PLAYBACK_FIXTURES", true);
+    if (fbx.isEmpty() || psk.isEmpty() || psa.isEmpty() || folder.isEmpty())
+      QSKIP("Requires real animated FBX, PSK/PSA and glTF playback fixtures");
+    const bool gpu = qEnvironmentVariable("FORMAVIEW_SKINNING") != "cpu";
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    const auto cleanup = qScopeGuard([&] { desktop_->clearAsset(); });
+    const QStringList paths{fbx, QDir(folder).filePath("static.gltf"),
+                            psk, QDir(folder).filePath("animated.gltf")};
+    QPointer<QQuickItem> inspector;
+    for (int cycle = 0; cycle < 6; ++cycle) {
+      for (const auto &path : paths) {
+        desktop_->openPath(path);
+        QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && session->inspectable() && modelPanelsReady(), 30000);
+        if (cycle == 0 && path == paths.front()) inspector = item("modelInspector");
+        QVERIFY(inspector);
+        QCOMPARE(item("modelInspector"), inspector.data());
+        if (path == psk) {
+          session->attachExternalAnimation(psa);
+          QTRY_VERIFY_WITH_TIMEOUT(!session->externalBusy() && session->canPlayAnimation(), 30000);
+        }
+        if (session->canPlayAnimation()) {
+          QTRY_VERIFY_WITH_TIMEOUT(session->frame() && !session->preparing(), 30000);
+          if (gpu) {
+            QTRY_VERIFY_WITH_TIMEOUT(session->frame()->geometry && session->frame()->geometry->skin, 30000);
+          } else {
+            QVERIFY(!session->frame()->geometry);
+          }
+          session->setLoop(true);
+          session->seek(0);
+          if (!session->playing()) session->togglePlay();
+          QTRY_VERIFY_WITH_TIMEOUT(session->time() > .05, 15000);
+          QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+          window_->update();
+          QTRY_VERIFY(presented.size() >= 3);
+          QVERIFY2(session->frameError().isEmpty(), qPrintable(session->frameError()));
+          if (gpu) QVERIFY(session->frame()->geometry && session->frame()->geometry->skin);
+          // Open the next asset while this animation is still playing.
+        } else {
+          QVERIFY(!session->playing());
+        }
+        qInfo() << "switch/playback" << cycle << QFileInfo(path).fileName() << (gpu ? "GPU" : "CPU");
+      }
+    }
+    evidence_["model_switch_playback"] = QJsonObject{{"openings", 24}, {"gpu", gpu},
+      {"samples", QJsonArray::fromStringList(paths)}, {"externalAnimation", psa}};
 #else
     QSKIP("Model UI is disabled");
 #endif
@@ -992,7 +1068,13 @@ private slots:
     }
     click("modelSection_animation");
     QTRY_VERIFY(item("motionSpeed") && item("motionClipChoice"));
-    QCOMPARE(item("motionClipChoice")->property("currentIndex").toInt(), session->clipIndex());
+    QTRY_COMPARE(item("motionClipChoice")->property("currentIndex").toInt(), session->clipIndex());
+    QTRY_VERIFY(item("motionGroundGrid"));
+    click("motionGroundGrid");
+    QTRY_VERIFY(item("modelGroundGrid")->property("checked").toBool());
+    click("modelGroundGrid");
+    QTRY_VERIFY(!item("motionGroundGrid")->property("checked").toBool());
+    QTRY_COMPARE(item("motionClipChoice")->property("currentIndex").toInt(), session->clipIndex());
     auto *speed = item("motionSpeed");
     speed->forceActiveFocus();
     QTest::keyClick(window_, Qt::Key_A, Qt::ControlModifier);
@@ -1027,6 +1109,15 @@ private slots:
     session->setCollisionMode(2);
     QTRY_VERIFY(session->inspectable());
     if (session->info().value("visibleMeshes").toInt() == 0) {
+      const int hiddenMesh = session->meshIndex();
+      QVERIFY(session->classification().value("hiddenByCollision").toBool());
+      click("modelLodMeshAction");
+      QTRY_VERIFY(session->inspectable() && session->info().value("visibleMeshes").toInt() > 0);
+      QCOMPARE(session->meshIndex(), hiddenMesh);
+      QCOMPARE(session->collisionMode(), 1);
+      QVERIFY(!session->classification().value("hiddenByCollision").toBool());
+      session->setCollisionMode(2);
+      QTRY_VERIFY(session->inspectable());
       click("modelShowAvailableMeshes");
       QTRY_VERIFY(session->inspectable() && session->info().value("visibleMeshes").toInt() > 0);
     }
@@ -8794,6 +8885,103 @@ private slots:
       QFAIL(error.what());
     }
   }
+  void modelGltfLodPreview() {
+#ifdef FORMAVIEW_MODEL_UI
+    const auto path = requireFixture("FORMAVIEW_GLTF_LOD_SAMPLE", true);
+    if (path.isEmpty()) QSKIP("Requires the prototype LOD_Collision_Study.gltf");
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    desktop_->openPath(path);
+    auto *session = qobject_cast<ModelSession *>(desktop_->model());
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == path && session->inspectable() && modelPanelsReady(), 30000);
+    QCOMPARE(session->meshes().size(), 5);
+    QCOMPARE(session->lodGroups(), QStringList{"Body_LOD0 [node/0]"});
+    const auto levels = session->lodLevels();
+    QCOMPARE(levels.size(), 3);
+    QTRY_COMPARE(session->info().value("visibleTriangles").toInt(), 1068);
+    auto *lodTab = item("modelModeTab3");
+    QVERIFY(lodTab);
+    QSignalSpy presented(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!presented.isEmpty());
+    QTest::mouseClick(window_, Qt::LeftButton, {}, lodTab->mapToScene(lodTab->boundingRect().center()).toPoint());
+    QTRY_VERIFY(item("modelLodLevel2"));
+    for (int level = 0; level < levels.size(); ++level) {
+      const int triangles[] = {960, 224, 48};
+      QCOMPARE(levels[level].toMap().value("meshes").toInt(), 1);
+      QCOMPARE(levels[level].toMap().value("triangles").toInt(), triangles[level]);
+      auto *button = item(qPrintable(QString("modelLodLevel%1").arg(level)));
+      QVERIFY(button && button->isEnabled());
+      QTest::mouseClick(window_, Qt::LeftButton, {}, button->mapToScene(button->boundingRect().center()).toPoint());
+      QTRY_COMPARE(session->info().value("visibleTriangles").toInt(), triangles[level] + 108);
+    }
+    session->selectMesh(0);
+    QTRY_VERIFY(session->inspectable() && session->classification().value("hiddenByLevel").toBool());
+    auto *action = item("modelLodMeshAction");
+    QVERIFY(action);
+    QTest::mouseClick(window_, Qt::LeftButton, {}, action->mapToScene(action->boundingRect().center()).toPoint());
+    QTRY_COMPARE(session->info().value("visibleTriangles").toInt(), 1068);
+    QCOMPARE(session->meshIndex(), 0);
+    QCOMPARE(session->collisionMode(), 0);
+    QCOMPARE(session->lodSummary().value("surface").toInt(), 1068);
+    QCOMPARE(session->lodSummary().value("collision").toInt(), 0);
+    session->selectMesh(3);
+    QVERIFY(!session->classification().value("collision").toBool());
+    QVERIFY(!session->classification().value("candidate").toString().isEmpty());
+    session->classifyMesh({}, 0, true);
+    session->setCollisionMode(1);
+    QTRY_VERIFY(session->inspectable());
+    QTRY_COMPARE(session->lodSummary().value("surface").toInt(), 1056);
+    QCOMPARE(session->lodSummary().value("collision").toInt(), 12);
+    const auto &vertices = session->frame()->vertices;
+    QCOMPARE(std::count_if(vertices.begin(), vertices.end(), [](const auto &v) {
+      return v.alphaMode == -3.F && v.r + v.g + v.b == 1.F;
+    }), 36);
+    save("prototype-lod-preview");
+    session->selectMesh(3);
+    session->classifyMesh(session->lodGroups().first(), 3, true);
+    session->requestLod(3);
+    QTRY_VERIFY(session->inspectable());
+    const auto collisionLevel = session->lodLevels().last().toMap();
+    QCOMPARE(collisionLevel.value("collisionMeshes").toInt(), 1);
+    QCOMPARE(collisionLevel.value("collisionTriangles").toInt(), 12);
+    QVERIFY(collisionLevel.value("current").toBool());
+    QCOMPARE(session->lodSummary().value("surface").toInt(), 96);
+    QCOMPARE(session->lodSummary().value("collision").toInt(), 12);
+
+    // A branch inherits its parent's membership, while conflicting references
+    // must not make the same mesh disappear under an arbitrary LOD filter.
+    QFile sample(path);
+    QVERIFY(sample.open(QIODevice::ReadOnly));
+    auto gltf = QJsonDocument::fromJson(sample.readAll()).object();
+    auto nodes = gltf.value("nodes").toArray();
+    auto high = nodes[0].toObject();
+    high["children"] = QJsonArray{4};
+    nodes[0] = high;
+    gltf["scenes"] = QJsonArray{QJsonObject{{"nodes", QJsonArray{0, 1, 2, 3}}}};
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const auto variant = temp.filePath("membership.gltf");
+    for (const bool conflicting : {false, true}) {
+      if (conflicting) {
+        auto other = nodes[3].toObject();
+        other["extensions"] = QJsonObject{{"MSFT_lod", QJsonObject{{"ids", QJsonArray{4}}}}};
+        nodes[3] = other;
+      }
+      gltf["nodes"] = nodes;
+      QFile file(variant);
+      QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+      const auto json = QJsonDocument(gltf).toJson();
+      QCOMPARE(file.write(json), json.size());
+      file.close();
+      const auto doc = readModelDocument(variant, {});
+      const auto &child = doc->meshes.at(4);
+      QCOMPARE(child.classification.group.isEmpty(), conflicting);
+      if (!conflicting) QCOMPARE(child.classification.group, doc->meshes[0].classification.group);
+    }
+#else
+    QSKIP("Model UI is disabled");
+#endif
+  }
   void modelLodNativeFlow() {
     try {
     QTest::failOnWarning(QRegularExpression(".*(ReferenceError|TypeError|Binding loop detected|invalid context).*"));
@@ -9288,6 +9476,14 @@ private slots:
     QTRY_COMPARE(inspectorLoader->property("status").toInt(),2);
     QVERIFY(controlled.incubatingObjectCount()>0);
     QVERIFY(!item("modelViewport") && !item("modelInspector"));
+    // A replacement model must not cancel and recreate an unfinished inspector.
+    // GPU preparation can finish before its nested QML loaders have completed.
+    QSignalSpy inspectorActive(inspectorLoader, SIGNAL(activeChanged()));
+    const auto animated = QDir(requireFixture("FORMAVIEW_PLAYBACK_FIXTURES")).filePath("animated.gltf");
+    desktop_->openPath(animated);
+    QTRY_VERIFY_WITH_TIMEOUT(session->path() == animated && session->inspectable(), 30000);
+    QCOMPARE(inspectorActive.size(), 0);
+    QCOMPARE(inspectorLoader->property("status").toInt(), 2);
     desktop_->clearAsset();
     QTRY_COMPARE(controlled.incubatingObjectCount(),0);
     QCOMPARE(paneLoader->property("status").toInt(),0); // Loader.Null
@@ -10674,7 +10870,11 @@ private slots:
       QVERIFY2(session->externalInfo().value("driven").toBool(), qPrintable(session->externalInfo().value("notice").toString()));
       QCOMPARE(session->clips().size(), qsizetype(nativeCount*2));
       QCOMPARE(session->clipIndex(), int(nativeCount));
-      for (qsizetype c=0; c<nativeClips.size(); ++c) QCOMPARE(session->clips()[c], nativeClips[c]);
+      for (qsizetype c=0; c<nativeClips.size(); ++c) {
+        QCOMPARE(session->clips()[c], nativeClips[c]);
+        QVERIFY(!session->clips()[c].toMap().contains("sourcePath"));
+      }
+      QCOMPARE(session->clips().last().toMap().value("sourcePath").toString(), path);
       QCOMPARE(session->sourceDataDigest(), digest);
       const auto attachedRevision = session->frame()->revision;
       session->setClipIndex(nativeClip);
@@ -11173,7 +11373,22 @@ private slots:
     QVERIFY(count >= 2);
     QTRY_VERIFY(item("animClip"));
     QTRY_COMPARE(item("animClip")->property("currentIndex").toInt(), session->clipIndex());
-    QCOMPARE(item("animClip")->property("currentText").toString(), session->clipInfo().value("name").toString());
+    auto *animationTab = item("modelSection_animation");
+    QVERIFY(animationTab);
+    QTest::mouseClick(window_, Qt::LeftButton, {}, animationTab->mapToScene(animationTab->boundingRect().center()).toPoint());
+    QTRY_VERIFY(item("motionClipSource"));
+    const auto verifySource = [&](int index, const QFileInfo &source) {
+      session->setClipIndex(index);
+      QTRY_COMPARE(item("animClip")->property("currentIndex").toInt(), index);
+      QCOMPARE(session->clips()[index].toMap().value("sourcePath").toString(), source.absoluteFilePath());
+      QTRY_COMPARE(item("motionClipSource")->property("value").toString(), source.absoluteFilePath());
+      QTRY_VERIFY(item("animClip")->property("displayText").toString().endsWith(source.fileName()));
+      QCOMPARE(item("animClip")->property("currentText").toString(), session->clipInfo().value("name").toString());
+    };
+    const auto originalIndex = session->clipIndex();
+    verifySource(0, psa);
+    verifySource(count - 1, psa2);
+    session->setClipIndex(originalIndex);
     QCOMPARE(session->info().value("sha256"), hash);
     QCOMPARE(session->bones(), bones);
     QCOMPARE(session->bindings(), bindings);

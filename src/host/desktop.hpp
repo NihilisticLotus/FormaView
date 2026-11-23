@@ -229,5 +229,5 @@ private:
   quint64 directoryRevision_{}, filterRevision_{}, assetRevision_{},
       sessionRevision_{}, resourceRevision_{}, folderRevision_{};
   double scroll_{};
-  bool scanning_{}, filtering_{};
+  bool scanning_{}, filtering_{}, polling_{};
 };
