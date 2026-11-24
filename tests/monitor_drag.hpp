@@ -28,7 +28,14 @@ inline bool click(HWND hwnd, POINT pt) {
   if (GetForegroundWindow() != hwnd || WindowFromPoint(pt) != hwnd ||
       !SetCursorPos(pt.x, pt.y))
     return false;
-  return mouseButton(MOUSEEVENTF_LEFTDOWN) && mouseButton(MOUSEEVENTF_LEFTUP);
+  // Let the GUI handle the move before pressing. Back-to-back injection
+  // can coalesce movement with the first click after the native drag loop.
+  QTest::qWait(35);
+  if (GetForegroundWindow() != hwnd || WindowFromPoint(pt) != hwnd ||
+      !mouseButton(MOUSEEVENTF_LEFTDOWN))
+    return false;
+  QTest::qWait(35);
+  return mouseButton(MOUSEEVENTF_LEFTUP);
 }
 
 // Exercise Windows' native move loop. The mouse must be released by another

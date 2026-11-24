@@ -378,6 +378,23 @@ class DesktopTests final : public QObject {
     auto captures=evidence_["captures"].toArray(); captures.append(capture); evidence_["captures"]=captures;
     sampleGpu();
   }
+#ifdef Q_OS_WIN
+  static HWND nativeDialog() {
+    HWND result = nullptr;
+    EnumWindows([](HWND handle, LPARAM context) -> BOOL {
+      DWORD process = 0;
+      GetWindowThreadProcessId(handle, &process);
+      wchar_t name[32]{};
+      if (process == GetCurrentProcessId() && IsWindowVisible(handle) &&
+          GetClassNameW(handle, name, 32) && QString::fromWCharArray(name) == "#32770") {
+        *reinterpret_cast<HWND *>(context) = handle;
+        return FALSE;
+      }
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&result));
+    return result;
+  }
+#endif
 private slots:
   void initTestCase() {
     root_ = QDir::fromNativeSeparators(
@@ -509,6 +526,9 @@ private slots:
       QTRY_COMPARE(window_->screen(), dest);
       QTRY_COMPARE(qRound(window_->devicePixelRatio() * 96), int(GetDpiForWindow(hwnd)));
       QCOMPARE(window_->devicePixelRatio(), dest->devicePixelRatio());
+      QSignalSpy frames(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!frames.isEmpty());
     };
     const auto clickAt = [&](QQuickItem *control, qreal fraction = .5) {
       if (!control || !control->isVisible() || !control->isEnabled()) return false;
@@ -557,6 +577,22 @@ private slots:
       save(QString("settings-%1dpi").arg(GetDpiForWindow(hwnd)));
       QVERIFY(clickAt(item("closeSettings")));
       QTRY_VERIFY(!item("closeSettings"));
+      QTest::keyClick(window_, Qt::Key_O, Qt::ControlModifier);
+      QTRY_VERIFY_WITH_TIMEOUT(nativeDialog() != nullptr, 10000);
+      const auto picker = nativeDialog();
+      QVERIFY(picker);
+      {
+        const auto cancel = qScopeGuard([&] { PostMessageW(picker, WM_COMMAND, IDCANCEL, 0); });
+        QCOMPARE(GetAncestor(picker, GA_ROOTOWNER), hwnd);
+        QTRY_COMPARE(MonitorFromWindow(picker, MONITOR_DEFAULTTONULL), monitorFor(screen));
+        QTRY_COMPARE(GetDpiForWindow(picker), GetDpiForWindow(hwnd));
+        RECT rect{};
+        QVERIFY(GetWindowRect(picker, &rect));
+        qInfo() << "native picker" << GetDpiForWindow(picker) << rect.left << rect.top
+                << rect.right << rect.bottom;
+      }
+      QTRY_VERIFY(!IsWindow(picker));
+      QTRY_COMPARE(GetForegroundWindow(), hwnd);
     }
     const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
     desktop_->openPath(clip);
@@ -566,6 +602,22 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(session->status().value("duration").toDouble(), 60., 10000);
     session->setOption("pause", "yes");
     QTRY_VERIFY(session->status().value("pause").toBool());
+    const auto toggleFull = [&](bool enter) {
+      QVERIFY(clickAt(item("videoFullscreenButton")));
+      QTRY_COMPARE(window_->visibility(), enter ? QWindow::FullScreen : QWindow::Windowed);
+      QSignalSpy frames(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QTRY_VERIFY(!frames.isEmpty());
+      QTRY_COMPARE(GetForegroundWindow(), hwnd);
+    };
+    const auto checkTransport = [&](double target) {
+      QVERIFY(clickAt(item("videoPlayToggle")));
+      QTRY_VERIFY(!session->status().value("pause").toBool());
+      QVERIFY(clickAt(item("videoPlayToggle")));
+      QTRY_VERIFY(session->status().value("pause").toBool());
+      QVERIFY(clickAt(item("videoSeekTrack"), target / 60.));
+      QTRY_COMPARE(session->status().value("time-pos").toDouble(), target);
+    };
     for (auto *screen : {*other, source}) {
       move(screen);
       if (QTest::currentTestFailed()) return;
@@ -604,6 +656,57 @@ private slots:
       QVERIFY(monitor_drag::click(hwnd, first));
       QTRY_VERIFY(!menu->property("visible").toBool());
       QTRY_VERIFY(std::abs(session->status().value("speed").toDouble() - (outbound ? 1.1 : 1.2)) < .001);
+      const auto normal = window_->geometry();
+      toggleFull(true);
+      if (QTest::currentTestFailed()) return;
+      QTRY_COMPARE(window_->geometry(), screen->geometry());
+      checkTransport(30.);
+      if (QTest::currentTestFailed()) return;
+      save(QString("fullscreen-%1dpi").arg(GetDpiForWindow(hwnd)));
+      toggleFull(false);
+      if (QTest::currentTestFailed()) return;
+      QTRY_COMPARE(window_->geometry(), normal);
+      checkTransport(15.);
+      if (QTest::currentTestFailed()) return;
+    }
+    // An external operator removes the secondary output only in this opt-in
+    // case. The test itself never changes the desktop display configuration.
+    if (qEnvironmentVariableIsSet("FORMAVIEW_TEST_REMOVE_SECONDARY")) {
+      QCOMPARE(source, QGuiApplication::primaryScreen());
+      move(*other);
+      if (QTest::currentTestFailed()) return;
+      auto *surface = item("videoViewport");
+      QVERIFY(surface);
+      const auto pt = monitor_drag::screenPoint(hwnd, surface->mapToScene(surface->boundingRect().center()));
+      QVERIFY(SetCursorPos(pt.x, pt.y));
+      const bool removeInFull = qEnvironmentVariable("FORMAVIEW_TEST_REMOVE_SECONDARY") != "windowed";
+      const auto normalSize = window_->size();
+      if (removeInFull) {
+        QTRY_VERIFY(item("videoFullscreenButton"));
+        toggleFull(true);
+        if (QTest::currentTestFailed()) return;
+      }
+      QCOMPARE(window_->screen(), *other);
+      QFile ready(root_ + "/ready-to-remove-secondary");
+      QVERIFY(ready.open(QIODevice::WriteOnly | QIODevice::Truncate));
+      ready.close();
+      QTRY_COMPARE_WITH_TIMEOUT(QGuiApplication::screens().size(), 1, 60000);
+      QTRY_COMPARE(window_->screen(), source);
+      QTRY_COMPARE(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL), monitorFor(source));
+      if (removeInFull)
+        QTRY_COMPARE(window_->geometry(), source->geometry());
+      auto center = monitor_drag::screenPoint(hwnd, surface->mapToScene(surface->boundingRect().center()));
+      QVERIFY(SetCursorPos(center.x, center.y));
+      if (removeInFull) {
+        QTRY_VERIFY(item("videoFullscreenButton"));
+        toggleFull(false);
+        if (QTest::currentTestFailed()) return;
+      }
+      QTRY_VERIFY(source->availableGeometry().contains(window_->geometry()));
+      QCOMPARE(window_->size(), normalSize);
+      checkTransport(30.);
+      if (QTest::currentTestFailed()) return;
+      save("restored-on-primary");
     }
 #else
     QSKIP("Requires a Windows desktop");
@@ -5695,23 +5798,6 @@ private slots:
     const auto folder = root_ + "/输出 空格 #100%";
     QVERIFY(QDir().mkpath(folder));
     const auto expected = QUrl::fromLocalFile(folder);
-#ifdef Q_OS_WIN
-    const auto nativeDialog = []() -> HWND {
-      HWND result = nullptr;
-      EnumWindows([](HWND handle, LPARAM context) -> BOOL {
-        DWORD process = 0;
-        GetWindowThreadProcessId(handle, &process);
-        wchar_t name[32]{};
-        if (process == GetCurrentProcessId() && IsWindowVisible(handle) &&
-            GetClassNameW(handle, name, 32) && QString::fromWCharArray(name) == "#32770") {
-          *reinterpret_cast<HWND *>(context) = handle;
-          return FALSE;
-        }
-        return TRUE;
-      }, reinterpret_cast<LPARAM>(&result));
-      return result;
-    };
-#endif
     QCOMPARE(desktop_->existingFolderUrl(folder), expected);
     QCOMPARE(desktop_->existingFolderUrl(folder + "/未创建/子目录"), expected);
     QCOMPARE(desktop_->existingFolderUrl(QDir::toNativeSeparators(folder)), expected);

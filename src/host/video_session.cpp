@@ -35,6 +35,11 @@
 #include <wrl/client.h>
 
 namespace {
+struct SavedWindowPlacement {
+  WINDOWPLACEMENT native{sizeof(WINDOWPLACEMENT)};
+  HMONITOR monitor{};
+  UINT dpi{};
+};
 Q_LOGGING_CATEGORY(seekTrace, "formaview.video.seek", QtInfoMsg)
 void traceSeek(const char *phase, double target) {
   if (seekTrace().isDebugEnabled())
@@ -595,21 +600,42 @@ void VideoSession::reviewReady() {
 #endif
 }
 QByteArray VideoSession::windowPlacement(QQuickWindow *window) const {
-  WINDOWPLACEMENT placement{};
-  placement.length = sizeof(placement);
-  if (!window || !window->handle() ||
-      !GetWindowPlacement(reinterpret_cast<HWND>(window->winId()), &placement))
+  if (!window || !window->handle())
     return {};
-  return QByteArray(reinterpret_cast<const char *>(&placement), sizeof(placement));
+  const auto hwnd = reinterpret_cast<HWND>(window->winId());
+  SavedWindowPlacement saved{};
+  if (!GetWindowPlacement(hwnd, &saved.native))
+    return {};
+  saved.monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  saved.dpi = GetDpiForWindow(hwnd);
+  return QByteArray(reinterpret_cast<const char *>(&saved), sizeof(saved));
 }
 
 bool VideoSession::restoreWindowPlacement(QQuickWindow *window,
                                           const QByteArray &saved) const {
-  WINDOWPLACEMENT placement{};
+  SavedWindowPlacement placement{};
   if (!window || !window->handle() || saved.size() != sizeof(placement))
     return false;
   std::memcpy(&placement, saved.constData(), sizeof(placement));
-  return SetWindowPlacement(reinterpret_cast<HWND>(window->winId()), &placement);
+  const auto hwnd = reinterpret_cast<HWND>(window->winId());
+  MONITORINFO monitor{sizeof(MONITORINFO)};
+  if (!GetMonitorInfoW(placement.monitor, &monitor)) {
+    const auto current = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    const auto dpi = GetDpiForWindow(hwnd);
+    if (!dpi || !placement.dpi || !GetMonitorInfoW(current, &monitor))
+      return false;
+    auto &rect = placement.native.rcNormalPosition;
+    const LONG workWidth = monitor.rcWork.right - monitor.rcWork.left;
+    const LONG workHeight = monitor.rcWork.bottom - monitor.rcWork.top;
+    const LONG width = qMin<LONG>(workWidth, MulDiv(rect.right - rect.left, dpi, placement.dpi));
+    const LONG height = qMin<LONG>(workHeight, MulDiv(rect.bottom - rect.top, dpi, placement.dpi));
+    // WINDOWPLACEMENT uses workspace coordinates, excluding the taskbar offset.
+    const LONG left = monitor.rcMonitor.left + (workWidth - width) / 2;
+    const LONG top = monitor.rcMonitor.top + (workHeight - height) / 2;
+    rect = {left, top, left + width, top + height};
+    placement.native.ptMaxPosition = {-1, -1};
+  }
+  return SetWindowPlacement(hwnd, &placement.native);
 }
 
 QQuickWindow *VideoSession::prepareHdrWindow(){

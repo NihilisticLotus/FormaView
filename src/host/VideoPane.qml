@@ -128,6 +128,14 @@ FocusScope {
                     w.showMaximized();
             }
             mode = "normal";
+            if (next === "normal") {
+                // The expanded native title bar is recreated when the frame
+                // flags return. Activate the playback window after that turn.
+                Qt.callLater(() => {
+                    if (root.mode === "normal" && w.visible)
+                        w.requestActivate();
+                });
+            }
         }
         if (next !== "normal") {
             host = w;
