@@ -191,9 +191,27 @@ begin
   RegDeleteKeyIfEmpty(HKCU64, Ledger);
 end;
 
+function KeepExistingHandler(I: Integer): Boolean;
+var Effective, Legacy, Command: string;
+begin
+  Result := False;
+  if IsAdminInstallMode then exit;
+  Effective := QueryAssociation(Extensions[I], 20);
+  if CompareText(Effective, ProgId(I)) = 0 then exit;
+  Result := (Effective <> '') and (CompareText(Effective, 'Unknown') <> 0);
+  if Result then exit;
+  { Windows can resolve two OpenWith candidates to the app picker even
+    when the extension's legacy class still has a working open command. }
+  Result := RegQueryStringValue(HKCR, Extensions[I], '', Legacy) and
+    (Legacy <> '') and (CompareText(Legacy, ProgId(I)) <> 0) and
+    RegQueryStringValue(HKCR, Legacy + '\shell\open\command', '', Command) and (Command <> '');
+end;
+
 function RegisterExtension(I: Integer): Boolean;
 var Id, ClassKey, Command, IconKey, NewIcon: string;
+    PreserveHandler: Boolean;
 begin
+  PreserveHandler := KeepExistingHandler(I);
   Id := Copy(Extensions[I], 2, 20) + '_';
   ClassKey := 'Software\Classes\' + ProgId(I);
   Command := '"' + ExpandConstant('{app}\formaview.exe') + '" --open "%1"';
@@ -202,8 +220,11 @@ begin
   Result := PutOwned(Id + 'description', ClassKey, '', 'FormaView ' + Extensions[I]) and
     PutOwned(Id + 'icon', IconKey, '', NewIcon) and
     PutOwned(Id + 'command', ClassKey + '\shell\open\command', '', Command) and
-    PutOwned(Id + 'openwith', 'Software\Classes\' + Extensions[I] + '\OpenWithProgids', ProgId(I), '') and
     PutOwned(Id + 'capability', Caps + '\FileAssociations', Extensions[I], ProgId(I));
+  if Result then begin
+    if PreserveHandler then RemoveOwned(Id + 'openwith')
+    else Result := PutOwned(Id + 'openwith', 'Software\Classes\' + Extensions[I] + '\OpenWithProgids', ProgId(I), '');
+  end;
   if not Result then RemoveOwned(Id);
 end;
 
