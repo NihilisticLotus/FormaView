@@ -196,15 +196,12 @@ var Effective, Legacy, Command: string;
 begin
   Result := False;
   if IsAdminInstallMode then exit;
+  if not RegQueryStringValue(HKCR, Extensions[I], '', Legacy) or
+     (Legacy = '') or (CompareText(Legacy, ProgId(I)) = 0) then exit;
+  if not RegQueryStringValue(HKCR, Legacy + '\shell\open\command', '', Command) or (Command = '') then exit;
   Effective := QueryAssociation(Extensions[I], 20);
-  if CompareText(Effective, ProgId(I)) = 0 then exit;
-  Result := (Effective <> '') and (CompareText(Effective, 'Unknown') <> 0);
-  if Result then exit;
-  { Windows can resolve two OpenWith candidates to the app picker even
-    when the extension's legacy class still has a working open command. }
-  Result := RegQueryStringValue(HKCR, Extensions[I], '', Legacy) and
-    (Legacy <> '') and (CompareText(Legacy, ProgId(I)) <> 0) and
-    RegQueryStringValue(HKCR, Legacy + '\shell\open\command', '', Command) and (Command <> '');
+  { A previously advertised second handler can already resolve to the picker. }
+  Result := (CompareText(Effective, Legacy) = 0) or (CompareText(Effective, 'Unknown') = 0) or (Effective = '');
 end;
 
 function RegisterExtension(I: Integer): Boolean;
@@ -219,11 +216,15 @@ begin
   NewIcon := '"' + ExpandConstant('{app}\') + FormatIconFilename(I) + '",0';
   Result := PutOwned(Id + 'description', ClassKey, '', 'FormaView ' + Extensions[I]) and
     PutOwned(Id + 'icon', IconKey, '', NewIcon) and
-    PutOwned(Id + 'command', ClassKey + '\shell\open\command', '', Command) and
-    PutOwned(Id + 'capability', Caps + '\FileAssociations', Extensions[I], ProgId(I));
+    PutOwned(Id + 'command', ClassKey + '\shell\open\command', '', Command);
   if Result then begin
-    if PreserveHandler then RemoveOwned(Id + 'openwith')
-    else Result := PutOwned(Id + 'openwith', 'Software\Classes\' + Extensions[I] + '\OpenWithProgids', ProgId(I), '');
+    if PreserveHandler then begin
+      { Either advertisement alone can make ShellExecute show an app picker. }
+      RemoveOwned(Id + 'openwith');
+      RemoveOwned(Id + 'capability');
+    end else Result :=
+      PutOwned(Id + 'openwith', 'Software\Classes\' + Extensions[I] + '\OpenWithProgids', ProgId(I), '') and
+      PutOwned(Id + 'capability', Caps + '\FileAssociations', Extensions[I], ProgId(I));
   end;
   if not Result then RemoveOwned(Id);
 end;

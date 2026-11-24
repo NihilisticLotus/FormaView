@@ -58,6 +58,8 @@ begin
       Status := '注册未完成'; FailedCount := FailedCount + 1;
     end else if ConfirmedDefault(I) then begin
       Status := '已设为默认应用'; Done := Done + 1;
+    end else if KeepExistingHandler(I) then begin
+      Status := '已保留原打开方式；如要更换，请右键文件并选择其他应用。';
     end else begin
       Status := '已注册，请在 Windows 设置中确认'; Pending := Pending + 1;
     end;

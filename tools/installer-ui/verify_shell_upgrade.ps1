@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if ($env:USERNAME -ne 'WDAGUtilityAccount' -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -or
-    $principal.User.Value -notlike '*-504' -or (whoami /groups) -match 'S-1-5-32-544') {
+    $principal.Identity.User.Value -notlike '*-504' -or (whoami /groups) -match 'S-1-5-32-544') {
     throw 'Use the ordinary, non-Administrators Sandbox account'
 }
 $install = Join-Path $env:LOCALAPPDATA 'Programs\FormaView'
