@@ -15,6 +15,13 @@ Item {
         if (!openedAssets.includes(openedPath)) openedAssets = openedAssets.concat([openedPath])
         Qt.callLater(() => assetTabs.positionViewAtIndex(openedAssets.indexOf(openedPath), ListView.Contain))
     }
+    function cycleAssetTab(offset: int): void {
+        const count = openedAssets.length
+        if (count < 2) return
+        let index = openedAssets.indexOf(controller.requested)
+        if (index < 0) index = openedAssets.indexOf(openedPath)
+        controller.openPath(openedAssets[(index + offset + count) % count])
+    }
     function closeAssetTab(path: string): void {
         const index = openedAssets.indexOf(path)
         if (index < 0) return
@@ -115,6 +122,11 @@ Item {
     onFocusModeChanged: { if (drawer.visible) drawer.close(); Qt.callLater(() => { if (!root.tasksVisible) preview.focusLayoutControl() }) }
     onNarrowChanged: { if (narrow && hasFocusWithin(files)) returnFileFocus(); else if (!narrow && !videoWorkspace && drawer.visible) drawer.close() }
     function editing(): bool { const item = root.Window.window.activeFocusItem; return !!item && (item.hasOwnProperty("inputMethodComposing") || item.hasOwnProperty("selectByMouse")) }
+    readonly property bool tabShortcutsEnabled: currentPage === "assets" && !!openedPath && !editing()
+        && !drawer.visible && !compactInspector.visible && !(root.Window.window?.frostDepth > 0)
+    Shortcut { sequence: "Ctrl+W"; enabled: root.tabShortcutsEnabled; autoRepeat: false; onActivated: root.closeAssetTab(root.openedPath) }
+    Shortcut { sequence: "Ctrl+Tab"; enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(1) }
+    Shortcut { sequence: "Ctrl+Shift+Tab"; enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(-1) }
     Shortcut { sequence: "Ctrl+O"; enabled: !root.settingsVisible; onActivated: fileDialog.present() }
     Shortcut { sequence: "Ctrl+L"; enabled: !root.settingsVisible; onActivated: root.openAddress() }
     Shortcut { sequence: "Alt+Left"; enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.history(-1) }

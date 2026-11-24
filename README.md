@@ -21,6 +21,8 @@
 
 模型预览提供五种显示模式。「骨骼」与「绑定」可查看模型上的父子骨骼连线，「LOD / 碰撞」显示可见网格数、三角形数与碰撞模式。在「动画」检查器中可选择片段、调整速度和根运动，或为兼容模型添加外部动作。播放中拖动时间轴或逐帧会定格在所选姿态。[模型预览](docs/model-preview-modes.md) · [动画播放与配对入口](docs/animation-availability.md)
 
+检查多个文件时，用 **Ctrl+Tab** 切到下一个已打开的文件，**Ctrl+Shift+Tab** 切回上一个，**Ctrl+W** 关闭当前文件。分屏浏览时，底部会显示选中素材的路径，悬停在素材上可查看完整路径。[桌面便利性与适配调研](docs/usability-compatibility.md)
+
 ## 视频开发版
 
 v0.2.0 Windows x64 开发测试版支持本地 FLV、MP4、M4V、MOV、MKV、WebM、AVI、TS、M2TS、MPG 和 MPEG。安装时可在“文件关联 → 视频”勾选需要的扩展名，再到 Windows 的“默认应用”中确认。

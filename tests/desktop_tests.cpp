@@ -476,6 +476,28 @@ private slots:
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
   }
+  void inspectFileTabShortcuts() {
+    auto *work = item("workspace");
+    QVERIFY(work);
+    window_->resize(820, 620);
+    const auto restore = qScopeGuard([&] { window_->resize(1600, 900); });
+    const auto first = fixture_ + "/图片0.png";
+    const auto second = small_ + "/唯一图片.png";
+    for (const auto &path : {first, second}) {
+      desktop_->openPath(path);
+      QTRY_COMPARE(work->property("openedPath").toString(), path);
+    }
+    work->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_Tab, Qt::ControlModifier);
+    QTRY_COMPARE(work->property("openedPath").toString(), first);
+    QTest::keyClick(window_, Qt::Key_Tab, Qt::ShiftModifier | Qt::ControlModifier);
+    QTRY_COMPARE(work->property("openedPath").toString(), second);
+    QTest::keyClick(window_, Qt::Key_W, Qt::ControlModifier);
+    QTRY_COMPARE(work->property("openedPath").toString(), first);
+    QTest::keyClick(window_, Qt::Key_W, Qt::ControlModifier);
+    QTRY_COMPARE(work->property("currentPage").toString(), QString("browse"));
+    QVERIFY(window_->isVisible());
+  }
   void nativeLibraryNavigation() {
     auto *work = item("workspace");
     QVERIFY(work);
@@ -537,8 +559,15 @@ private slots:
     tab("tasks");
     QCOMPARE(query->property("text").toString(), QString("png"));
     window_->resize(820, 620);
+    // Hit-test the tab in the first frame laid out at the new client size.
+    QSignalSpy resizedFrame(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!resizedFrame.isEmpty());
     tab("browse");
     QTRY_VERIFY(library->width() <= 820);
+    auto *summary = item("librarySelectionSummary");
+    QVERIFY(summary);
+    QTRY_COMPARE(summary->property("text").toString(), path);
     save("native-library-narrow");
     desktop_->removeLibraryFile(path);
     QVERIFY(desktop_->addedAssets().isEmpty());

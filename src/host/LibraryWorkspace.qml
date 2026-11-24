@@ -124,7 +124,10 @@ Item {
                         readonly property string kind: root.directoryView ? (model.fileKind || "") : root.controller.fileKindForPath(path)
                         readonly property bool imageFile: kind === "image"
                         objectName: "libraryCard"; width: grid.cellWidth-6; height: grid.cellHeight-6
-                        Accessible.name: name; text: name; padding: 8
+                        Accessible.name: name; Accessible.description: card.path; text: name; padding: 8
+                        ToolTip.visible: hovered || visualFocus
+                        ToolTip.delay: 600
+                        ToolTip.text: card.path
                         onClicked: { grid.currentIndex=index; root.selectCard(card) }
                         onDoubleClicked: { root.selectCard(card); root.openSelection() }
                         Keys.onReturnPressed: { root.selectCard(card); root.openSelection() }
@@ -173,7 +176,11 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { Layout.fillWidth: true; text: grid.count + Theme.t(" 个项目"," items"," 個項目"); color: Theme.muted }
+                    Label {
+                        objectName: "librarySelectionSummary"; Layout.fillWidth: true; Layout.minimumWidth: 0
+                        text: !inspector.visible && root.selectedPath ? root.selectedPath : grid.count + Theme.t(" 个项目"," items"," 個項目")
+                        color: Theme.muted; elide: Text.ElideMiddle
+                    }
                     Tool { objectName: "libraryFavorite"; enabled: !!root.selectedPath && !root.selectedFolder; checked: root.controller.favoriteAssets.includes(root.selectedPath); text: checked ? Theme.t("取消收藏","Unfavorite","取消收藏") : Theme.t("收藏","Favorite","收藏"); onClicked: root.controller.toggleFavorite(root.selectedPath) }
                     Tool { visible: root.collection === "added"; enabled: !!root.selectedPath; text: Theme.t("移出列表","Remove","移出清單"); onClicked: { root.controller.removeLibraryFile(root.selectedPath); root.selectedPath="" } }
                     Tool { objectName: "libraryInspect"; primary: true; enabled: !!root.selectedPath; text: root.selectedFolder ? Theme.t("打开目录","Open folder","開啟目錄") : Theme.t("打开检查","Inspect","開啟檢查"); onClicked: root.openSelection() }
@@ -181,7 +188,7 @@ Item {
             }
         }
         Surface {
-            visible: root.width >= 1080; Layout.preferredWidth: 238; Layout.fillHeight: true
+            id: inspector; visible: root.width >= 1080; Layout.preferredWidth: 238; Layout.fillHeight: true
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 18; spacing: 14
                 Label { text: Theme.t("检查器","Inspector","檢查器"); font.bold: true; font.pixelSize: 16; color: Theme.text }
