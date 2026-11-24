@@ -143,6 +143,7 @@ constexpr int reviewProducerPreflightWaitMs = reviewPreflightWaitMs + 5000;
 #include <windows.h>
 #include <dwmapi.h>
 #include <wrl/client.h>
+#include "monitor_drag.hpp"
 #endif
 
 class MeasuredApplication final : public QGuiApplication {
@@ -475,6 +476,138 @@ private slots:
     evidence_["fixture"] = fixture_;
     evidence_["source"] = "generated directory; 10000 OBJ marker files, 24 "
                           "PNGs; not model compatibility evidence";
+  }
+  void mixedDpiWorkspaceDrag() {
+#ifdef Q_OS_WIN
+    if (!qEnvironmentVariableIsSet("FORMAVIEW_TEST_MONITOR_DRAG"))
+      QSKIP("Opt-in foreground test requiring two monitors at different native scales");
+    const auto screens = QGuiApplication::screens();
+    auto *source = window_->screen();
+    const auto other = std::find_if(screens.cbegin(), screens.cend(), [source](QScreen *s) {
+      return !qFuzzyCompare(s->devicePixelRatio(), source->devicePixelRatio());
+    });
+    QVERIFY2(other != screens.cend(), "Set different Windows scales before running this test");
+    const auto monitorFor = [](QScreen *s) {
+      const auto p = s->geometry().topLeft() + QPoint(10, 10);
+      return MonitorFromPoint({p.x(), p.y()}, MONITOR_DEFAULTTONULL);
+    };
+    const auto hwnd = reinterpret_cast<HWND>(window_->winId());
+    const auto original = window_->geometry();
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->setGeometry(original);
+      SetCursorPos(cursor.x, cursor.y);
+    });
+    window_->resize(1200, 740);
+    window_->raise();
+    window_->requestActivate();
+    QTRY_COMPARE(GetForegroundWindow(), hwnd);
+    const auto move = [&](QScreen *dest) {
+      QVERIFY(monitor_drag::dragTo(hwnd, monitorFor(dest)));
+      QTRY_COMPARE(window_->screen(), dest);
+      QTRY_COMPARE(qRound(window_->devicePixelRatio() * 96), int(GetDpiForWindow(hwnd)));
+      QCOMPARE(window_->devicePixelRatio(), dest->devicePixelRatio());
+    };
+    const auto clickAt = [&](QQuickItem *control, qreal fraction = .5) {
+      if (!control || !control->isVisible() || !control->isEnabled()) return false;
+      const auto scene = control->mapToScene({control->width() * fraction, control->height() / 2});
+      qInfo() << "native click" << control->objectName() << scene << window_->geometry()
+              << GetDpiForWindow(hwnd) << window_->screen()->name();
+      return monitor_drag::click(hwnd, monitor_drag::screenPoint(hwnd, scene));
+    };
+    QTemporaryDir media(root_ + "/displays-XXXXXX");
+    QVERIFY(media.isValid());
+    for (const auto &name : {"one.png", "two.png", "three.png"})
+      QVERIFY(QFile::copy(small_ + "/唯一图片.png", media.filePath(name)));
+    desktop_->navigate(media.path());
+    QTRY_VERIFY(idle());
+    auto *library = item("libraryWorkspace");
+    QVERIFY(library);
+    library->setProperty("listMode", true);
+    const auto card = [&](const QString &name) -> QQuickItem * {
+      for (auto *row : visualItems(library, "libraryCard"))
+        if (row->property("path").toString() == media.filePath(name)) return row;
+      return nullptr;
+    };
+    QTRY_VERIFY(card("two.png"));
+    QSignalSpy libraryFrame(window_, &QQuickWindow::frameSwapped);
+    window_->update();
+    QTRY_VERIFY(!libraryFrame.isEmpty());
+    save("browse-before-drag");
+    QVERIFY(clickAt(card("two.png")));
+    QTRY_COMPARE(library->property("selectedPath").toString(), media.filePath("two.png"));
+    for (auto *screen : {*other, source}) {
+      move(screen);
+      if (QTest::currentTestFailed()) return;
+      QCOMPARE(library->property("selectedPath").toString(), media.filePath("two.png"));
+      QVERIFY(clickAt(card("three.png")));
+      QTRY_COMPARE(library->property("selectedPath").toString(), media.filePath("three.png"));
+      QVERIFY(clickAt(card("two.png")));
+      QTRY_COMPARE(library->property("selectedPath").toString(), media.filePath("two.png"));
+      QVERIFY(clickAt(item("workspaceSettings")));
+      QTRY_VERIFY(item("closeSettings"));
+      auto *popup = window_->findChild<QObject *>("settingsModal");
+      QVERIFY(popup);
+      auto *panel = popup->property("background").value<QQuickItem *>();
+      QVERIFY(panel);
+      const auto bounds = panel->mapRectToScene(panel->boundingRect());
+      QVERIFY(QLineF(bounds.center(), window_->contentItem()->boundingRect().center()).length() < 3);
+      save(QString("settings-%1dpi").arg(GetDpiForWindow(hwnd)));
+      QVERIFY(clickAt(item("closeSettings")));
+      QTRY_VERIFY(!item("closeSettings"));
+    }
+    const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
+    desktop_->openPath(clip);
+    QTRY_VERIFY(item("videoSession"));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    QTRY_COMPARE_WITH_TIMEOUT(session->status().value("duration").toDouble(), 60., 10000);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    for (auto *screen : {*other, source}) {
+      move(screen);
+      if (QTest::currentTestFailed()) return;
+      auto *surface = item("videoViewport");
+      QVERIFY(surface);
+      const auto pt = monitor_drag::screenPoint(hwnd, surface->mapToScene(surface->boundingRect().center()));
+      QVERIFY(SetCursorPos(pt.x, pt.y));
+      QTRY_VERIFY(item("videoPlayToggle"));
+      QVERIFY(clickAt(item("videoPlayToggle")));
+      QTRY_VERIFY(!session->status().value("pause").toBool());
+      QVERIFY(clickAt(item("videoPlayToggle")));
+      QTRY_VERIFY(session->status().value("pause").toBool());
+      const bool outbound = screen == *other;
+      auto *slider = item("videoTimeline");
+      QVERIFY(slider);
+      QSignalSpy seeks(slider->parentItem(), SIGNAL(seekRequested(double)));
+      QVERIFY(seeks.isValid());
+      QVERIFY(clickAt(item("videoSeekTrack"), outbound ? .25 : .75));
+      QTRY_VERIFY(!seeks.isEmpty());
+      const double target = outbound ? 15. : 45.;
+      QVERIFY(std::abs(seeks.last().first().toDouble() - target) <= .11);
+      QTRY_COMPARE(session->status().value("time-pos").toDouble(), target);
+      auto *trigger = item("videoRateButton");
+      QVERIFY(clickAt(trigger));
+      auto *menu = window_->findChild<QObject *>("videoRateMenu");
+      QVERIFY(menu);
+      QTRY_VERIFY(menu->property("opened").toBool());
+      auto *bg = menu->property("background").value<QQuickItem *>();
+      QVERIFY(bg);
+      const auto bounds = bg->mapRectToScene(bg->boundingRect());
+      const auto anchor = trigger->mapRectToScene(trigger->boundingRect());
+      QVERIFY(window_->contentItem()->boundingRect().contains(bounds));
+      QVERIFY(bounds.bottom() < anchor.top() && std::abs(bounds.right() - anchor.right()) < 2);
+      save(QString("video-menu-%1dpi").arg(GetDpiForWindow(hwnd)));
+      const auto first = monitor_drag::screenPoint(hwnd, {bounds.center().x(), bounds.top() + 20});
+      QVERIFY(monitor_drag::click(hwnd, first));
+      QTRY_VERIFY(!menu->property("visible").toBool());
+      QTRY_VERIFY(std::abs(session->status().value("speed").toDouble() - (outbound ? 1.1 : 1.2)) < .001);
+    }
+#else
+    QSKIP("Requires a Windows desktop");
+#endif
   }
   void inspectFileTabShortcuts() {
     auto *work = item("workspace");

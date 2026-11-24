@@ -14,6 +14,7 @@ Item {
 
     readonly property bool interacting: scrub.pressed || dragActive
     readonly property real shownPosition: scrub.engaged ? scrub.value : position
+    readonly property int thumbSize: 15
     property bool dragActive: false
     implicitHeight: 34
 
@@ -45,8 +46,9 @@ Item {
         onMoved: if (!engaged) root.seekRequested(value)
         background: Rectangle {
             id: track
-            x: scrub.leftPadding
-            width: scrub.availableWidth
+            objectName: "videoSeekTrack"
+            x: scrub.leftPadding + root.thumbSize / 2
+            width: Math.max(0, scrub.availableWidth - root.thumbSize)
             y: Math.round(scrub.height / 2) - 2
             height: 4
             radius: 2
@@ -67,9 +69,9 @@ Item {
             }
         }
         handle: Rectangle {
-            implicitWidth: 15
-            implicitHeight: 15
-            x: scrub.leftPadding + scrub.availableWidth * scrub.visualPosition - width / 2
+            implicitWidth: root.thumbSize
+            implicitHeight: root.thumbSize
+            x: track.x + track.width * scrub.visualPosition - width / 2
             y: scrub.height / 2 - height / 2
             radius: width / 2
             color: "#ffad67"
@@ -97,7 +99,7 @@ Item {
             font.family: "Consolas"
             color: Theme.text
             text: root.formatTime(scrub.pressed ? scrub.value :
-                Math.max(0, Math.min(1, (hover.point.position.x - scrub.leftPadding) / Math.max(1, scrub.availableWidth))) * root.duration)
+                Math.max(0, Math.min(1, (hover.point.position.x - track.x) / Math.max(1, track.width))) * root.duration)
         }
     }
     Repeater {
@@ -110,7 +112,7 @@ Item {
             z: pressedHandler.pressed ? 4 : 3
             width: 22
             height: 20
-            x: scrub.leftPadding + scrub.availableWidth * Math.max(0, value) / scrub.to - width / 2
+            x: track.x + track.width * Math.max(0, value) / scrub.to - width / 2
             y: scrub.height / 2 + 2
             activeFocusOnTab: visible
             Accessible.role: Accessible.Button
@@ -146,7 +148,7 @@ Item {
                     if (!pressed)
                         return
                     const localPoint = pressedHandler.mapToItem(scrub, mouse.x, mouse.y)
-                    root.endpointMoved(endpoint.modelData, (localPoint.x - scrub.leftPadding) * root.duration / Math.max(1, scrub.availableWidth))
+                    root.endpointMoved(endpoint.modelData, (localPoint.x - track.x) * root.duration / Math.max(1, track.width))
                 }
                 onReleased: root.dragActive = false
                 onCanceled: root.dragActive = false

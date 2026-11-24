@@ -682,6 +682,7 @@ FocusScope {
                             onClicked: rates.open()
                             PlaybackMenu {
                                 id: rates
+                                objectName: "videoRateMenu"
                                 dock: bar
                                 trigger: rateButton
                                 menuWidth: 146
