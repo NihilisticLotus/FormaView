@@ -36,7 +36,7 @@ py -3 -B tests/file_type_icon_tests.py
 py -3 -B tests/installer_icon_cache_tests.py
 ```
 
-脚本从相邻主图重建 PNG、ICO 和 manifest.json。安装器名称直接取当前 ICO 内容哈希。图标层、Alpha 和哈希测试以及编译不等同于 Explorer 实际安装验收：隔离环境仍需检查旧共享图标 → 新三类图标的升级、外部修改保留、不同 DPI 和卸载。此次开发不修改本机注册表，不覆盖已安装版本。
+脚本从相邻主图重建 PNG、ICO 和 manifest.json。安装器名称直接取当前 ICO 内容哈希。2026-11-25 已在 Windows 11 沙盒的普通权限账户中，从 v0.1.2 原位升级验证了 Explorer 的三类图标，检查了第三方默认程序在升级和卸载后的实际打开行为。多屏 DPI 的缓存切换另行验证。[升级验收记录](usability-compatibility.md#windows-普通账户升级)
 
 ## 回归检查
 
