@@ -6,9 +6,22 @@ extern "C" {
 }
 #include <QSet>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <windows.h>
 namespace {
+struct ThumbnailBudget {
+  std::stop_token stop;
+  std::chrono::steady_clock::time_point deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+  bool expired() const {
+    return stop.stop_requested() || std::chrono::steady_clock::now() >= deadline;
+  }
+  static int interrupt(void *opaque) {
+    return static_cast<const ThumbnailBudget *>(opaque)->expired();
+  }
+};
 struct Decoder {
   AVFormatContext *media = nullptr;
   AVCodecContext *codec = nullptr;
@@ -22,12 +35,31 @@ struct Decoder {
     avcodec_free_context(&codec);
     avformat_close_input(&media);
   }
-  int open(const QString &file) {
-    if (!pkt || !raw ||
-        avformat_open_input(&media, file.toUtf8().constData(), nullptr,
-                            nullptr) < 0)
+  int open(const QString &file, ThumbnailBudget *budget = nullptr) {
+    if (!pkt || !raw)
+      return -1;
+    AVDictionary *options = nullptr;
+    if (budget) {
+      media = avformat_alloc_context();
+      if (!media)
+        return -1;
+      media->interrupt_callback = {ThumbnailBudget::interrupt, budget};
+      media->probesize = 512 * 1024;
+      media->max_analyze_duration = AV_TIME_BASE / 2;
+      av_dict_set(&options, "protocol_whitelist", "file", 0);
+      av_dict_set(&options, "format_whitelist",
+                  "mov,matroska,avi,mpegts,mpeg,mpegvideo,flv", 0);
+    }
+    const int opened = avformat_open_input(&media, file.toUtf8().constData(),
+                                           nullptr, &options);
+    av_dict_free(&options);
+    if (opened < 0)
       return -1;
     int i = av_find_best_stream(media, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (budget && (i < 0 || media->streams[i]->codecpar->width <= 0)) {
+      avformat_find_stream_info(media, nullptr);
+      i = av_find_best_stream(media, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    }
     if (i < 0)
       return -1;
     auto *par = media->streams[i]->codecpar;
@@ -37,7 +69,9 @@ struct Decoder {
     codec = avcodec_alloc_context3(impl);
     if (!codec || avcodec_parameters_to_context(codec, par) < 0)
       return -1;
-    codec->thread_count = 10;
+    codec->thread_count = budget ? 1 : 10;
+    if (budget)
+      codec->max_pixels = 8192LL * 4320;
     return avcodec_open2(codec, impl, nullptr) < 0 ? -1 : i;
   }
   QImage image(QSize bounds) {
@@ -67,6 +101,34 @@ struct Decoder {
   }
 };
 } // namespace
+
+QImage videoThumbnail(const QString &file, QSize bounds, std::stop_token stop) {
+  ThumbnailBudget budget{stop};
+  Decoder decoder;
+  const int stream = decoder.open(file, &budget);
+  if (stream < 0)
+    return {};
+  // Stop at the first decoded picture. No full-file index or playback session
+  // is needed, including for multi-gigabyte recordings.
+  for (int n = 0; n < 512 && !budget.expired(); ++n) {
+    if (decoder.media->pb && decoder.media->pb->bytes_read > 16 * 1024 * 1024)
+      break;
+    const int read = av_read_frame(decoder.media, decoder.pkt);
+    if (read < 0 && read != AVERROR_EOF)
+      break;
+    if (read == AVERROR_EOF || decoder.pkt->stream_index == stream) {
+      const int sent = avcodec_send_packet(
+          decoder.codec, read == AVERROR_EOF ? nullptr : decoder.pkt);
+      if (sent == 0 && avcodec_receive_frame(decoder.codec, decoder.raw) == 0)
+        return decoder.image(bounds);
+    }
+    av_packet_unref(decoder.pkt);
+    if (read == AVERROR_EOF)
+      break;
+  }
+  return {};
+}
+
 struct VideoReviewFrame {
   VideoSignature signature{};
   QSize original,display;

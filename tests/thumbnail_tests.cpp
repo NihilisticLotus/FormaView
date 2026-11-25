@@ -27,9 +27,9 @@ QByteArray hash(const QString &path) {
   return QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256);
 }
 QImage load(ThumbnailProvider &provider, const QString &path,
-            QString *error = nullptr) {
+            QString *error = nullptr, const QString &prefix = {}) {
   const auto response = std::unique_ptr<QQuickImageResponse>(
-      provider.requestImageResponse(id(path), QSize(8192, 8192)));
+      provider.requestImageResponse(prefix + id(path), QSize(8192, 8192)));
   QSignalSpy done(response.get(), &QQuickImageResponse::finished);
   if (!done.wait(10000)) {
     if (error)
@@ -126,6 +126,40 @@ bool pngFixture(const QString &path, int type, bool interlace,
 class ThumbnailTests final : public QObject {
   Q_OBJECT
 private slots:
+  void videoPosters() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const auto path = temp.filePath(QStringLiteral("片段 #1 %.mp4"));
+    QVERIFY(QFile::copy(QFINDTESTDATA("fixtures/seek-clock.mp4"), path));
+    ThumbnailProvider provider;
+    QString error;
+    const auto poster = load(provider, path, &error, "video/");
+#ifdef FORMAVIEW_VIDEO_THUMBNAILS
+    QVERIFY2(!poster.isNull(), qPrintable(error));
+    QVERIFY(poster.width() <= 160 && poster.height() <= 120);
+    QCOMPARE(poster.width() * 9, poster.height() * 16);
+    QVERIFY(poster.pixelColor(poster.width() / 4, poster.height() / 2) !=
+            poster.pixelColor(poster.width() * 3 / 4, poster.height() / 2));
+    const int cost = provider.cacheKiB();
+    QVERIFY(cost > 0);
+    QCOMPARE(load(provider, path, &error, "video/"), poster);
+    QCOMPARE(provider.cacheKiB(), cost);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadWrite));
+    QVERIFY(file.resize(128LL * 1024 * 1024 + 1));
+    file.close();
+    QCOMPARE(load(provider, path, &error, "video/"), poster);
+#else
+    QVERIFY(poster.isNull());
+    QCOMPARE(error, QStringLiteral("Video thumbnail unavailable"));
+#endif
+    QFile broken(path);
+    QVERIFY(broken.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(broken.write("not a video"), 11);
+    broken.close();
+    QVERIFY(load(provider, path, &error, "video/").isNull());
+    QCOMPARE(error, QStringLiteral("Video thumbnail unavailable"));
+  }
   void pngMatrix() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());

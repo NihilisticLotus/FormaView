@@ -1,4 +1,7 @@
 #include "thumbnail.hpp"
+#ifdef FORMAVIEW_VIDEO_THUMBNAILS
+#include "video_frames.hpp"
+#endif
 #ifdef FORMAVIEW_IMAGE_UI
 #include "formaview/image_batch.hpp"
 #include "formaview/image_conversion.hpp"
@@ -310,7 +313,15 @@ Result documentThumbnail(const QString &path, std::stop_token stop) {
   return {std::move(image), {}};
 }
 #endif
-Result decode(const QString &path, std::stop_token stop) {
+Result decode(const QString &path, bool video, std::stop_token stop) {
+  if (video) {
+#ifdef FORMAVIEW_VIDEO_THUMBNAILS
+    auto image = videoThumbnail(path, {width, height}, stop);
+    if (!image.isNull())
+      return {std::move(image), {}};
+#endif
+    return {{}, "Video thumbnail unavailable"};
+  }
 #ifdef FORMAVIEW_IMAGE_UI
   const formaview::imaging::ImageAdmission admission(false, stop);
 #endif
@@ -396,27 +407,28 @@ struct ThumbnailProvider::Impl {
         if (stop.stop_requested())
           result.error = "Thumbnail cancelled";
         else {
+          const bool video = work.id.startsWith(u"video/");
           const auto encoded = QByteArray::fromBase64(
-              work.id.section('?', 0, 0).toLatin1(),
+              work.id.section('?', 0, 0).mid(video ? 6 : 0).toLatin1(),
               QByteArray::Base64UrlEncoding |
                   QByteArray::AbortOnBase64DecodingErrors);
           const auto path =
               QString::fromUtf8(QByteArray::fromPercentEncoding(encoded));
           const QFileInfo file(path);
           if (path.isEmpty() || !file.isAbsolute() || !file.isFile() ||
-              file.size() > maxInput)
+              (!video && file.size() > maxInput))
             result.error =
                 "Image unavailable or exceeds thumbnail input budget";
           else {
             const auto before = stamp(file);
-            const auto key = path + '\n' + before;
+            const auto key = (video ? QStringLiteral("video/") : QString{}) + path + '\n' + before;
             {
               std::lock_guard lock(mutex);
               if (const auto *image = cache.object(key))
                 result.image = *image;
             }
             if (result.image.isNull()) {
-              result = decode(path, stop);
+              result = decode(path, video, stop);
               if (before != stamp(QFileInfo(path)))
                 result = {{}, "Image changed while loading"};
               if (!result.image.isNull() && !stop.stop_requested()) {

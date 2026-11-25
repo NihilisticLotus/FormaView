@@ -17,6 +17,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QLibrary>
 #include <QLoggingCategory>
 #include <QQuickWindow>
@@ -270,6 +271,15 @@ public:
 
 VideoSession::VideoSession(QQuickItem *parent) : QQuickItem(parent) {
   setFlag(ItemHasContents);
+  auto watchPlaybackWindow = [this](QQuickWindow *next) {
+    if (shortcutWindow_)
+      shortcutWindow_->removeEventFilter(this);
+    shortcutWindow_ = next;
+    if (next)
+      next->installEventFilter(this);
+  };
+  connect(this, &QQuickItem::windowChanged, this, watchPlaybackWindow);
+  watchPlaybackWindow(window());
   alignmentTimer_.setSingleShot(true);
   alignmentTimer_.setInterval(180);
   connect(&alignmentTimer_, &QTimer::timeout, this, &VideoSession::alignReview);
@@ -283,6 +293,21 @@ VideoSession::VideoSession(QQuickItem *parent) : QQuickItem(parent) {
   });
   timer_.setInterval(16);
   connect(&timer_, &QTimer::timeout, this, &VideoSession::events);
+}
+bool VideoSession::eventFilter(QObject *watched, QEvent *event) {
+  if (watched == shortcutWindow_ && playbackSpaceEnabled_ &&
+      (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress ||
+       event->type() == QEvent::KeyRelease)) {
+    auto *key = static_cast<QKeyEvent *>(event);
+    if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
+      // Handle Space before a focused transport button can turn it into a click on release.
+      if (event->type() == QEvent::KeyPress && !key->isAutoRepeat())
+        togglePause();
+      key->accept();
+      return true;
+    }
+  }
+  return QQuickItem::eventFilter(watched, event);
 }
 void VideoSession::fail(const QString &message) {
   if (error_ != message) {
@@ -300,7 +325,14 @@ static QString resumeKey(const QString &path) {
              QCryptographicHash::hash(identity, QCryptographicHash::Sha256)
                  .toHex());
 }
-VideoSession::~VideoSession() {releaseSession();if(hdrWindow_)hdrWindow_->deleteLater();}
+VideoSession::~VideoSession() {
+  disconnect(this, &QQuickItem::windowChanged, this, nullptr);
+  if (shortcutWindow_)
+    shortcutWindow_->removeEventFilter(this);
+  releaseSession();
+  if (hdrWindow_)
+    hdrWindow_->deleteLater();
+}
 void VideoSession::releaseSession() {
   prefetchTimer_.stop();
   prefetchDeferred_ = false;
@@ -668,6 +700,13 @@ void VideoSession::togglePause() {
     resumeAfterAlign_ = true;
     alignmentTimer_.stop();
     alignReview();
+    return;
+  }
+  if (status_.value("eof-reached").toBool() && !pendingSeekTarget_) {
+    // keep-open retains the final frame. Rewind the same session so speed,
+    // selected tracks and subtitles also apply to the replay.
+    seek(0., false);
+    command({"set", "pause", "no"});
     return;
   }
   command({"cycle", "pause"});

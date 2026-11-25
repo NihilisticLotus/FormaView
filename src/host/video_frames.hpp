@@ -5,6 +5,9 @@
 #include <array>
 #include <map>
 #include <thread>
+#include <stop_token>
+
+QImage videoThumbnail(const QString &file, QSize bounds, std::stop_token stop);
 
 // Software review of the certified SDR stream. Every cached image carries
 // AVFrame::best_effort_timestamp from the decoder which produced its pixels.

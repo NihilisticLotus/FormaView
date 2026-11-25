@@ -1072,6 +1072,120 @@ private slots:
     QCOMPARE(position(), 20.0);
     QVERIFY(session->status().value("pause").toBool());
   }
+  void videoReplayAndSpaceAfterControlClick() {
+    QTemporaryDir media(root_ + "/video-replay-XXXXXX");
+    QVERIFY(media.isValid());
+    const auto path = media.filePath("only.mp4");
+    QVERIFY(QFile::copy(QFINDTESTDATA("fixtures/seek-clock.mp4"), path));
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->resize(original);
+    });
+    window_->resize(1500, 800);
+    desktop_->openPath(path);
+    QTRY_COMPARE(desktop_->videos()->rowCount(), 1);
+    QTRY_VERIFY(item("videoSession"));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Playback assertions require the optional libmpv runtime");
+    QTRY_COMPARE_WITH_TIMEOUT(session->status().value("duration").toDouble(), 60., 10000);
+    const auto state = [&](const char *key) { return session->status().value(key).toBool(); };
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(state("pause"));
+    session->seek(58., false);
+    QTRY_VERIFY(!session->seekPending() && session->status().value("time-pos").toDouble() == 58.);
+    session->setOption("pause", "no");
+    QTRY_VERIFY(!state("pause"));
+    QTRY_VERIFY2_WITH_TIMEOUT(state("eof-reached"),
+        qPrintable(QString("position=%1 paused=%2 loop=%3").arg(session->status().value("time-pos").toDouble())
+                   .arg(state("pause")).arg(session->status().value("loop-file").toString())), 8000);
+    if (!window_->flags().testFlag(Qt::WindowDoesNotAcceptFocus)) {
+      window_->requestActivate();
+      QTRY_COMPARE(QGuiApplication::focusWindow(), window_);
+    }
+    QCOMPARE(window_->property("frostDepth").toInt(), 0);
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(!state("pause") && !state("eof-reached") &&
+                session->status().value("time-pos").toDouble() > 0. &&
+                session->status().value("time-pos").toDouble() < 5.);
+    const auto click = [&](QQuickItem *control) {
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene(control->boundingRect().center()).toPoint());
+    };
+    auto *pane = item("videoPlayerPane");
+    QVERIFY(pane && QMetaObject::invokeMethod(pane, "revealControls"));
+    auto *mute = item("videoMuteButton");
+    QVERIFY(mute);
+    const bool muted = state("mute");
+    click(mute);
+    QTRY_COMPARE(state("mute"), !muted);
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(state("pause"));
+    QCOMPARE(state("mute"), !muted);
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTRY_VERIFY(!state("pause"));
+    QCOMPARE(state("mute"), !muted);
+    auto *surface = item("videoViewport");
+    QVERIFY(surface);
+    surface->forceActiveFocus();
+    QTest::keyClick(window_, Qt::Key_G, Qt::ControlModifier);
+    QTRY_VERIFY(window_->property("frostDepth").toInt() > 0);
+    QVERIFY(!session->property("playbackSpaceEnabled").toBool());
+    QTest::keyClick(window_, Qt::Key_Space);
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_VERIFY(session->property("playbackSpaceEnabled").toBool());
+    QVERIFY(!state("pause"));
+  }
+  void videoPlaylistViews() {
+    QTemporaryDir media(root_ + "/video-list-XXXXXX");
+    QVERIFY(media.isValid());
+    const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
+    QStringList paths;
+    for (int i = 1; i <= 18; ++i) {
+      paths << media.filePath(QStringLiteral("片段 %1.mp4").arg(i, 2, 10, QChar('0')));
+      QVERIFY(QFile::copy(clip, paths.last()));
+    }
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->resize(original);
+    });
+    window_->resize(1500, 800);
+    desktop_->openPath(paths.first());
+    QTRY_COMPARE(desktop_->videos()->rowCount(), paths.size());
+    const auto click = [&](QQuickItem *control) {
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene(control->boundingRect().center()).toPoint());
+    };
+    QTRY_VERIFY(item("videoPlaylistViewToggle") && item("videoPlaylistEntry"));
+    auto *toggle = item("videoPlaylistViewToggle");
+    auto *entry = item("videoPlaylistEntry");
+    QVERIFY(toggle && entry);
+    const auto compactHeight = entry->height();
+    QVERIFY(compactHeight < 40);
+    click(toggle);
+    QTRY_VERIFY(item("videoPlaylistThumbnail"));
+#ifdef FORMAVIEW_VIDEO_THUMBNAILS
+    QTRY_COMPARE_WITH_TIMEOUT(item("videoPlaylistThumbnail")->property("status").toInt(), 1, 10000);
+#endif
+    QCOMPARE(desktop_->asset().value("path").toString(), paths.first());
+    const auto entries = visualItems(item("videoPlaylistItems"), "videoPlaylistEntry");
+    auto second = std::find_if(entries.cbegin(), entries.cend(), [&](auto *row) {
+      return row->property("filePath").toString() == paths[1];
+    });
+    QVERIFY(second != entries.cend());
+    click(*second);
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), paths[1]);
+    if (QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll")) {
+      QTRY_VERIFY(item("videoPlayerPane")->property("position").toDouble() > 0.);
+    }
+    save("video-playlist-thumbnails");
+    click(toggle);
+    QTRY_VERIFY(item("videoPlaylistEntry") && item("videoPlaylistEntry")->height() == compactHeight);
+    QCOMPARE(desktop_->asset().value("path").toString(), paths[1]);
+  }
   void videoLongFlvSeekAndStep() {
     const auto path = qEnvironmentVariable("FORMAVIEW_LONG_FLV_FIXTURE");
     if (path.isEmpty()) QSKIP("Requires a long local AVC FLV recording at 60 fps");

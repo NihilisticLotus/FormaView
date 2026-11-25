@@ -48,6 +48,14 @@ FocusScope {
     function focusPlayback() {
         surface.forceActiveFocus()
     }
+    function textOrPopupFocused(): bool {
+        const overlay = surface.Overlay.overlay
+        for (let item = surface.Window.window?.activeFocusItem; item; item = item.parent) {
+            if (item === overlay || item instanceof TextInput || item instanceof TextEdit)
+                return true
+        }
+        return false
+    }
     function setEndpoint(point, seconds) {
         const minimum = 0.001
         if (point === "A")
@@ -322,10 +330,6 @@ FocusScope {
             if (e.modifiers !== Qt.NoModifier)
                 return;
             switch (e.key) {
-            case Qt.Key_Space:
-                e.accepted = true
-                if (!e.isAutoRepeat) video.togglePause()
-                return
             case Qt.Key_Up:
                 root.volume(5);
                 break;
@@ -373,6 +377,10 @@ FocusScope {
             id: video
             objectName: "videoSession"
             source: root.source
+            playbackSpaceEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
+                                  && !(surface.Window.window?.frostDepth > 0)
+                                  && !more.visible && !rates.visible && !settings.visible
+                                  && !jump.visible && !folder.visible && !subDialog.visible
             onSourceChanged: {
                 if (root.mode === "hdr") {
                     root.mode = root.modeBeforeHdr;

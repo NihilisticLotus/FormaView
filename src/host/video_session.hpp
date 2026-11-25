@@ -18,6 +18,7 @@ class VideoSession : public QQuickItem {
   Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
   Q_PROPERTY(QVariantMap playbackInfo READ playbackInfo NOTIFY playbackInfoChanged)
   Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+  Q_PROPERTY(bool playbackSpaceEnabled MEMBER playbackSpaceEnabled_)
 public:
   explicit VideoSession(QQuickItem *parent = nullptr);
   ~VideoSession() override;
@@ -54,6 +55,7 @@ signals:
   void screenshotFailed(const QString &path, const QString &reason);
 
 protected:
+  bool eventFilter(QObject *watched, QEvent *event) override;
   QSGNode *updatePaintNode(QSGNode *, UpdatePaintNodeData *) override;
 
 private:
@@ -64,6 +66,8 @@ private:
   void alignReview();
   void reviewReady();
   void loadVideo();
+  bool playbackSpaceEnabled_ = false;
+  QPointer<QQuickWindow> shortcutWindow_;
   bool background_ = false;
   std::unique_ptr<QWindow> backgroundTarget_;
   QTimer alignmentTimer_;

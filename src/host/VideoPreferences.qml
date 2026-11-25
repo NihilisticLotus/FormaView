@@ -4,4 +4,5 @@ Settings {
     category: "Video"
     property int backward: 5
     property int forward: 5
+    property bool playlistThumbnails: false
 }
