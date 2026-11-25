@@ -35,6 +35,7 @@ public:
   QHash<int, QByteArray> roleNames() const override;
   void replace(std::vector<FileEntry> entries);
   void append(std::vector<FileEntry> entries);
+  void removeAt(int row);
   void select(int row, int modifiers);
   void restoreSelection(const QSet<QString> &paths);
   const FileEntry *at(int row) const;
@@ -156,6 +157,7 @@ public:
   Q_INVOKABLE void adjacentVideo(int direction);
   Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
   Q_INVOKABLE bool appendVideoUrls(const QList<QUrl> &urls);
+  Q_INVOKABLE void removePlaylistVideo(const QString &path);
   Q_INVOKABLE void cancel(const QString &id);
   Q_INVOKABLE void retry(const QString &id);
   Q_INVOKABLE void copy(const QString &text);
@@ -208,7 +210,7 @@ private:
   void poll();
   void saveDirectory();
   void publish(Job &);
-  void refreshVideoPlaylist();
+  void refreshVideoPlaylist(bool assetOpened = false);
   FileList files_;
   FileList videos_;
   QString videoDirectory_;

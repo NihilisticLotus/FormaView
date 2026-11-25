@@ -1291,6 +1291,101 @@ private slots:
     QTRY_COMPARE(desktop_->asset().value("path").toString(), sibling);
     QTRY_COMPARE(list->rowCount(), 3);
   }
+  void videoPlaylistRemoveSelection() {
+    QTemporaryDir dir(root_ + "/playlist-remove-XXXXXX");
+    QVERIFY(dir.isValid());
+    const auto first = dir.filePath("1.mp4"), second = dir.filePath("2.mp4"), third = dir.filePath("3.mp4");
+    const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
+    for (const auto &file : {first, second, third}) QVERIFY(QFile::copy(clip, file));
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); window_->resize(original); });
+    window_->resize(1280, 800);
+    desktop_->openPath(first);
+    auto *list = desktop_->videos();
+    QTRY_COMPARE(list->rowCount(), 3);
+    QTRY_VERIFY(item("videoPlaylistItems"));
+    QTRY_VERIFY(visualItems(item("videoPlaylistItems"), "videoPlaylistEntry").size() == 3);
+    const auto point = [&](const QString &path) {
+      for (auto *entry : visualItems(item("videoPlaylistItems"), "videoPlaylistEntry"))
+        if (entry->property("filePath") == path)
+          return entry->mapToScene(entry->boundingRect().center()).toPoint();
+      return QPoint(-1,-1);
+    };
+    const auto revision = desktop_->sessionRevision();
+    QTest::mouseClick(window_, Qt::RightButton, Qt::NoModifier, point(second));
+    auto *menu = window_->findChild<QObject *>("playlistContextMenu");
+    QTRY_VERIFY(menu && menu->property("visible").toBool());
+    QCOMPARE(menu->property("targetPath").toString(), second);
+    QVERIFY(window_->findChild<QObject *>("playlistRevealFile"));
+    auto *remove = item("playlistRemoveFile");
+    QVERIFY(remove);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      remove->mapToScene(remove->boundingRect().center()).toPoint());
+    QTRY_COMPARE(list->rowCount(), 2);
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    desktop_->refresh();
+    QTRY_VERIFY(!desktop_->busy());
+    QCOMPARE(list->rowCount(), 2);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point(first));
+    QTest::keyClick(window_, Qt::Key_Delete);
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), third);
+    QCOMPARE(list->rowCount(), 1);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier, point(third));
+    QTest::keyClick(window_, Qt::Key_Delete);
+    QTRY_VERIFY(desktop_->asset().isEmpty());
+    QCOMPARE(list->rowCount(), 0);
+    for (const auto &file : {first, second, third}) QVERIFY(QFileInfo::exists(file));
+  }
+  void videoEmbeddedSubtitleSelection() {
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Requires the video runtime");
+    const auto sample = qEnvironmentVariable("FORMAVIEW_SUBTITLE_TEST_VIDEO");
+    const auto path = sample.isEmpty() ? QFINDTESTDATA("fixtures/subtitle-choice.mkv") : sample;
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); window_->resize(original); });
+    window_->resize(1280, 800);
+    desktop_->setLanguage("zh-CN");
+    desktop_->openPath(path);
+    QTRY_VERIFY(item("videoSession"));
+    auto *s = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(s);
+    const auto selected = [&]() -> QVariantMap {
+      for (const auto &value : s->status().value("track-list").toList()) {
+        const auto t = value.toMap();
+        if (t.value("type") == "sub" && t.value("selected").toBool()) return t;
+      }
+      return {};
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(selected().value("title").toString().contains("简"), 15000);
+    s->setOption("pause", "yes");
+    QTRY_VERIFY(s->status().value("pause").toBool());
+    s->seek(10, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && !s->status().value("sub-text").toString().isEmpty(), 15000);
+    item("videoPlayerPane")->setProperty("controlsShown", false);
+    const auto frame = [&]() {
+      const auto whole = window_->grabWindow();
+      auto *view = item("videoViewport");
+      const auto area = view->mapRectToScene(view->boundingRect());
+      const auto scale = whole.width() / double(window_->width());
+      return whole.copy(QRectF(area.x()*scale, (area.y()+area.height()*.5)*scale,
+                               area.width()*scale, area.height()*.5*scale).toRect());
+    };
+    QTest::qWait(250);
+    const auto withText = frame();
+    QVERIFY(!withText.isNull());
+    s->toggleSubtitles();
+    QTRY_COMPARE(s->status().value("sub-visibility").toBool(), false);
+    QTest::qWait(250);
+    const auto withoutText = frame();
+    QVERIFY2(withText != withoutText, "Hiding subtitles must change the paused video pixels");
+    s->toggleSubtitles();
+    QTRY_VERIFY(s->status().value("sub-visibility").toBool());
+    QTRY_COMPARE(frame(), withText);
+    s->setOption("sid", "no");
+    QTRY_VERIFY(selected().isEmpty());
+    s->toggleSubtitles();
+    QTRY_VERIFY(selected().value("title").toString().contains("简"));
+  }
   void videoPlaylistViews() {
     QTemporaryDir media(root_ + "/video-list-XXXXXX");
     QVERIFY(media.isValid());
@@ -1330,6 +1425,8 @@ private slots:
     });
     QVERIFY(second != entries.cend());
     click(*second);
+    QCOMPARE(desktop_->asset().value("path").toString(), paths.first());
+    QTest::keyClick(window_, Qt::Key_Return);
     QTRY_COMPARE(desktop_->asset().value("path").toString(), paths[1]);
     if (QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll")) {
       QTRY_VERIFY(item("videoPlayerPane")->property("position").toDouble() > 0.);

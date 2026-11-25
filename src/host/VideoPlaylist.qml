@@ -5,7 +5,9 @@ import QtQuick.Layouts
 
 Rectangle {
     id: root
-    required property var model
+    required property var controller
+    readonly property bool listFocused: items.activeFocus
+    readonly property bool menuOpen: contextMenu.visible
     required property string currentPath
     required property string currentDuration
     signal openVideo(string path)
@@ -13,6 +15,31 @@ Rectangle {
     objectName: "videoPlaylist"
     color: Theme.sidebar
     clip: true
+
+    AppPopupMenu {
+        id: contextMenu
+        objectName: "playlistContextMenu"
+        property string targetPath
+        AppMenuItem {
+            text: Theme.t("播放", "Play", "播放")
+            onTriggered: root.openVideo(contextMenu.targetPath)
+        }
+        AppMenuItem {
+            objectName: "playlistRevealFile"
+            text: Theme.t("在文件资源管理器中显示", "Show in File Explorer", "在檔案總管中顯示")
+            onTriggered: root.controller.reveal(contextMenu.targetPath)
+        }
+        AppMenuItem {
+            text: Theme.t("复制文件路径", "Copy file path", "複製檔案路徑")
+            onTriggered: root.controller.copy(contextMenu.targetPath)
+        }
+        MenuSeparator {}
+        AppMenuItem {
+            objectName: "playlistRemoveFile"
+            text: Theme.t("从播放列表移除", "Remove from playlist", "從播放清單移除") + "    Del"
+            onTriggered: root.controller.removePlaylistVideo(contextMenu.targetPath)
+        }
+    }
 
     function thumbnailUrl(path: string, modified: real, bytes: real): string {
         const encoded = String(Qt.btoa(Array.from(encodeURIComponent(path), c => c.charCodeAt(0))))
@@ -66,7 +93,15 @@ Rectangle {
             objectName: "videoPlaylistItems"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            model: root.model
+            model: root.controller?.videos ?? null
+            activeFocusOnTab: true
+            keyNavigationEnabled: true
+            Keys.onDeletePressed: event => {
+                if (!event.isAutoRepeat && currentItem) root.controller.removePlaylistVideo(currentItem.filePath)
+                event.accepted = true
+            }
+            Keys.onReturnPressed: if (currentItem) root.openVideo(currentItem.filePath)
+            Keys.onEnterPressed: if (currentItem) root.openVideo(currentItem.filePath)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
@@ -74,6 +109,7 @@ Rectangle {
                 id: entry
                 objectName: "videoPlaylistEntry"
                 required property string fileName
+                required property int index
                 required property string filePath
                 required property real fileModified
                 required property real fileBytes
@@ -81,19 +117,33 @@ Rectangle {
                 height: VideoPreferences.playlistThumbnails ? 44 : 32
                 horizontalPadding: 8
                 verticalPadding: 2
-                highlighted: filePath === root.currentPath
+                readonly property bool playing: filePath === root.currentPath
+                highlighted: items.activeFocus || contextMenu.visible ? ListView.isCurrentItem : playing
                 Accessible.name: fileName
                 Accessible.selectable: true
                 Accessible.selected: highlighted
                 ToolTip.visible: hovered && title.truncated
                 ToolTip.text: fileName
                 ToolTip.delay: 600
-                onClicked: root.openVideo(filePath)
+                onClicked: {
+                    items.currentIndex = index
+                    items.forceActiveFocus()
+                }
+                onDoubleClicked: root.openVideo(filePath)
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: point => {
+                        items.currentIndex = entry.index
+                        items.forceActiveFocus()
+                        contextMenu.targetPath = entry.filePath
+                        contextMenu.popup(entry, point.position.x, point.position.y)
+                    }
+                }
                 background: Rectangle {
                     color: entry.highlighted ? Theme.selection : entry.hovered ? Theme.raised : "transparent"
                     border.color: entry.visualFocus ? Theme.accent : "transparent"
                     Rectangle {
-                        visible: entry.highlighted
+                        visible: entry.playing
                         width: 3
                         height: parent.height
                         color: Theme.accent
@@ -131,7 +181,7 @@ Rectangle {
                         elide: Text.ElideRight
                     }
                     Label {
-                        visible: entry.highlighted && !!root.currentDuration
+                        visible: entry.playing && !!root.currentDuration
                         text: root.currentDuration
                         color: Theme.muted
                         font.family: "Consolas"

@@ -10,7 +10,7 @@ FocusScope {
     id: root
     objectName: "videoPlayerPane"
     property string source
-    property var playlistModel
+    property var playlistController
     signal openVideo(string path)
     signal openAdjacent(int direction)
     signal closeVideo()
@@ -199,7 +199,7 @@ FocusScope {
     onSourceChanged: {
         if (source) Qt.callLater(() => {
             if (root?.visible) {
-                root.focusPlayback()
+                if (!playlist.listFocused) root.focusPlayback()
                 root.revealControls()
             }
         })
@@ -296,13 +296,14 @@ FocusScope {
         anchors.bottom: parent.bottom
         width: root.playlistVisible ? Math.max(220, Math.min(300, root.width * 0.21)) : 0
         visible: root.playlistVisible
-        model: root.playlistModel
+        controller: root.playlistController
         currentPath: root.source
         currentDuration: root.duration > 0 ? root.format(root.duration).slice(0, -4) : ""
         onOpenVideo: path => {
             if (path !== root.source)
                 root.openVideo(path)
-            root.focusPlayback()
+            else if (root.paused)
+                video.togglePause()
         }
         onCollapse: {
             prefs.playlistOpen = false
@@ -334,6 +335,9 @@ FocusScope {
             source: root.source
             playbackBindings: {
                 const bindings = KeyBindings.mapping("video")
+                if (playlist.listFocused) {
+                    for (const key of ["Up", "Down", "Del", "Return", "Enter"]) delete bindings[key]
+                }
                 if (KeyBindings.binding("info") === "Tab" && ((root.mode === "normal" && !surface.activeFocus) || bar.keyboardFocus))
                     delete bindings[KeyBindings.binding("info")]
                 return bindings
@@ -354,7 +358,7 @@ FocusScope {
                 case "normalSpeed": video.setOption("speed", 1); break
                 case "shot": root.shot(); break
                 case "mute": video.setOption("mute", root.stateMap.mute ? "no" : "yes"); return
-                case "captions": video.setOption("sub-visibility", root.stateMap["sub-visibility"] === false ? "yes" : "no"); return
+                case "captions": video.toggleSubtitles(); return
                 case "full": root.changeMode(root.mode === "normal" ? "full" : "normal"); return
                 case "mini": root.changeMode("mini"); return
                 case "prevVideo": root.openAdjacent(-1); return
@@ -369,7 +373,7 @@ FocusScope {
             }
             playbackKeysEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
                                   && !(surface.Window.window?.frostDepth > 0)
-                                  && !more.visible && !rates.visible && !settings.visible
+                                  && !more.visible && !rates.visible && !settings.visible && !playlist.menuOpen
                                   && !jump.visible && !folder.visible && !subDialog.visible
             onSourceChanged: {
                 if (root.mode === "hdr") {
@@ -674,8 +678,9 @@ FocusScope {
                             leftPadding: bar.narrowMini ? 7 : 12
                             hint: qsTr("显示 / 隐藏字幕") + KeyBindings.hint("captions")
                             checkable: true
-                            checked: root.subtitles.length > 0 && root.stateMap["sub-visibility"] !== false
-                            onClicked: video.setOption("sub-visibility", checked ? "yes" : "no")
+                            enabled: root.subtitles.length > 0
+                            checked: root.subtitles.some(t => t.selected) && root.stateMap["sub-visibility"] !== false
+                            onClicked: video.toggleSubtitles()
                         }
                         Tool {
                             quiet: true
@@ -825,7 +830,10 @@ FocusScope {
                         Layout.fillWidth: true
                         model: [qsTr("关闭")].concat(root.subtitles.map(t => (t.title || t.lang || qsTr("字幕")) + " " + t.id))
                         currentIndex: root.subtitles.findIndex(t => t.selected) + 1
-                        onActivated: i => video.setOption("sid", i === 0 ? "no" : root.subtitles[i - 1].id)
+                        onActivated: i => {
+                            video.setOption("sid", i === 0 ? "no" : root.subtitles[i - 1].id)
+                            if (i > 0) video.setOption("sub-visibility", "yes")
+                        }
                     }
                     RowLayout {
                         Label {

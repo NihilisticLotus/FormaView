@@ -26,6 +26,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
+#ifdef Q_OS_WIN
+#include <shlobj.h>
+#endif
 
 namespace {
 QString localPath(const QString &input) {
@@ -150,6 +153,11 @@ void FileList::append(std::vector<FileEntry> entries) {
   entries_.insert(entries_.end(), std::make_move_iterator(entries.begin()),
                   std::make_move_iterator(entries.end()));
   endInsertRows();
+}
+void FileList::removeAt(int row) {
+  beginRemoveRows({}, row, row);
+  entries_.erase(entries_.begin() + row);
+  endRemoveRows();
 }
 int FileList::indexOf(const QString &path) const {
   const auto it = std::find_if(entries_.begin(), entries_.end(),
@@ -800,12 +808,28 @@ void Desktop::adjacentVideo(int direction) {
   if (const auto *entry = videos_.at(current + direction))
     openPath(entry->path);
 }
-void Desktop::refreshVideoPlaylist() {
+void Desktop::removePlaylistVideo(const QString &path) {
+  const int row = videos_.indexOf(path);
+  if (row < 0) return;
+  manualVideoPlaylist_ = true;
+  videos_.removeAt(row);
+  const auto current = asset_.value("path").toString();
+  if (!videos_.rowCount()) {
+    clearAsset();
+  } else if (path == current || (path == requested_ && videos_.indexOf(current) < 0)) {
+    openPath(videos_.at(std::min(row, videos_.rowCount() - 1))->path);
+  } else if (path == requested_) {
+    ++assetRevision_;
+    requested_ = current;
+    emit changed();
+  }
+}
+void Desktop::refreshVideoPlaylist(bool assetOpened) {
   const auto path = asset_.value("kind") == QStringLiteral("video")
                         ? asset_.value("path").toString()
                         : QString{};
   const auto folder = path.isEmpty() ? QString{} : QFileInfo(path).absolutePath();
-  if (manualVideoPlaylist_ && !path.isEmpty() && videos_.indexOf(path) >= 0)
+  if (manualVideoPlaylist_ && !path.isEmpty() && (!assetOpened || videos_.indexOf(path) >= 0))
     return;
   if (manualVideoPlaylist_ || folder != videoDirectory_) {
     manualVideoPlaylist_ = false;
@@ -915,6 +939,15 @@ void Desktop::copy(const QString &text) {
   QGuiApplication::clipboard()->setText(text);
 }
 void Desktop::reveal(const QString &path) {
+  if (path.isEmpty()) return;
+#ifdef Q_OS_WIN
+  const auto native = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath()).toStdWString();
+  if (const auto item = ILCreateFromPathW(native.c_str())) {
+    const auto result = SHOpenFolderAndSelectItems(item, 0, nullptr, 0);
+    ILFree(item);
+    if (SUCCEEDED(result)) return;
+  }
+#endif
   QDesktopServices::openUrl(
       QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 }
@@ -1145,7 +1178,7 @@ void Desktop::publish(Job &job) {
     asset_ = job.result->asset;
     if (manualVideoPlaylist_ || asset_.value("kind") != QStringLiteral("video") ||
         QFileInfo(job.path).absolutePath() != videoDirectory_)
-      refreshVideoPlaylist();
+      refreshVideoPlaylist(true);
 #ifdef FORMAVIEW_MODEL_UI
     // M07: standalone animation sources (PSA, animation-only FBX) preview in
     // the model workspace as skeleton documents.

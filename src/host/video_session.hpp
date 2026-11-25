@@ -40,6 +40,7 @@ public:
   Q_INVOKABLE QQuickWindow *prepareHdrWindow();
   Q_INVOKABLE void leaveHdr();
   Q_INVOKABLE void togglePause();
+  Q_INVOKABLE void toggleSubtitles();
   Q_INVOKABLE void seek(double seconds, bool relative);
   Q_INVOKABLE void step(bool forward);
   Q_INVOKABLE void setOption(const QString &name, const QVariant &value);

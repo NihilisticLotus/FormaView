@@ -34,6 +34,7 @@
 #include <mpv/client.h>
 #include <mpv/render_d3d11.h>
 #include <mutex>
+#include <tuple>
 #include <wrl/client.h>
 
 namespace {
@@ -106,6 +107,37 @@ QVariant variant(const mpv_node &node) {
     return {};
   }
 }
+int preferredSubtitle(const QVariantList &tracks) {
+  const auto language = QSettings().value("language", "zh-CN").toString();
+  int bestId = 0;
+  std::tuple<bool, bool, bool, bool, bool> bestRank{};
+  for (const auto &value : tracks) {
+    const auto t = value.toMap();
+    if (t.value("type") != "sub") continue;
+    const auto id = t.value("id").toInt();
+    if (t.value("external").toBool() && t.value("selected").toBool()) return id;
+    const auto lang = t.value("lang").toString().toLower();
+    const auto base = lang.section('-', 0, 0);
+    const auto title = t.value("title").toString().toLower();
+    const bool chinese = base == "zh" || base == "chi" || base == "zho";
+    const bool matchesLanguage = language == "en" ? (base == "eng" || base == "en") : chinese;
+    bool matchesScript = false;
+    if (chinese && matchesLanguage) {
+      const bool traditional = lang.contains("hant") || lang.endsWith("-tw") ||
+          lang.endsWith("-hk") || title.contains("繁") || title.contains("traditional");
+      const bool simplified = lang.contains("hans") || lang.endsWith("-cn") ||
+          title.contains("简") || title.contains("簡") || title.contains("simplified");
+      matchesScript = language == "zh-TW" ? traditional : simplified;
+    }
+    const auto rank = std::tuple{matchesLanguage, !t.value("forced").toBool(), matchesScript,
+                                 t.value("selected").toBool(), t.value("default").toBool()};
+    if (!bestId || rank > bestRank) {
+      bestRank = rank;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
 } // namespace
 
 struct VideoEngine {
@@ -122,6 +154,7 @@ struct VideoEngine {
   Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
   mpv_handle *handle = nullptr;
   bool loaded = false;
+  bool chooseSubtitle = true;
   std::mutex callbackLock;
   VideoSession *view = nullptr;
   ~VideoEngine() {
@@ -415,6 +448,7 @@ void VideoSession::openSession(const QString &path, bool switchingWindow, bool h
     return;
   }
   auto e = std::make_shared<VideoEngine>();
+  e->chooseSubtitle = !switchingWindow;
   e->view = this;
   e->handle = api().create();
   if (!e->handle) {
@@ -862,6 +896,7 @@ void VideoSession::step(bool forward) {
   command({forward ? "frame-step" : "frame-back-step"});
 }
 void VideoSession::setOption(const QString &name, const QVariant &value) {
+  if (name == "sid" && engine_) engine_->chooseSubtitle = false;
   if (name == "pause" && value.toString() == "yes")
     resumeAfterAlign_ = false;
   static const QStringList allowed = {
@@ -948,6 +983,20 @@ void VideoSession::setOption(const QString &name, const QVariant &value) {
   if (allowed.contains(name))
     command({"set", name.toUtf8(), value.toString().toUtf8()});
 }
+void VideoSession::toggleSubtitles() {
+  const auto tracks = status_.value("track-list").toList();
+  for (const auto &value : tracks) {
+    const auto track = value.toMap();
+    if (track.value("type") == "sub" && track.value("selected").toBool()) {
+      setOption("sub-visibility", status_.value("sub-visibility", true).toBool() ? "no" : "yes");
+      return;
+    }
+  }
+  if (const auto id = preferredSubtitle(tracks)) {
+    setOption("sid", id);
+    setOption("sub-visibility", "yes");
+  }
+}
 void VideoSession::loop(double a, double b) {
   if (std::isfinite(a) && std::isfinite(b) && a >= 0 && b > a) {
     command({"set", "ab-loop-a", QByteArray::number(a, 'f', 6)});
@@ -960,8 +1009,8 @@ void VideoSession::clearLoop() {
 }
 void VideoSession::addSubtitle(const QUrl &url) {
   if (url.isLocalFile()) {
-    if (reviewTick_ >= 0)
-      seek(status_.value("visible-time").toDouble(), false);
+    if (engine_) engine_->chooseSubtitle = false;
+    setOption("sub-visibility", "yes");
     command({"sub-add", url.toLocalFile().toUtf8(), "select"});
   }
 }
@@ -1053,6 +1102,10 @@ void VideoSession::events() {
       auto v = p->format == MPV_FORMAT_NODE && p->data
                    ? variant(*static_cast<mpv_node *>(p->data))
                    : QVariant();
+      if (engine_->chooseSubtitle && qstrcmp(p->name, "track-list") == 0) {
+        if (const auto id = preferredSubtitle(v.toList()))
+          setOption("sid", id);
+      }
       if (status_.value(p->name) != v) {
         status_.insert(p->name, v);
         changed = true;

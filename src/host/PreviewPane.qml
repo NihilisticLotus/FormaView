@@ -100,7 +100,7 @@ Rectangle {
             source: active ? "VideoPane.qml" : ""
             onLoaded: {
                 item.source = Qt.binding(() => root.controller.asset.path || "")
-                item.playlistModel = root.controller.videos
+                item.playlistController = root.controller
                 item.openVideo.connect(path => root.controller.openPath(path))
                 item.openAdjacent.connect(direction => root.controller.adjacentVideo(direction))
                 item.closeVideo.connect(() => root.closeCurrentFile())
