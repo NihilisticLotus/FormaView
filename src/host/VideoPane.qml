@@ -33,6 +33,15 @@ FocusScope {
     property bool controlsShown: true
     readonly property bool playlistVisible: mode === "normal" && prefs.playlistOpen && width >= 700
     readonly property var audioTracks: video.tracks.filter(t => t.type === "audio")
+    readonly property int audioIndex: audioTracks.findIndex(t => t.selected) + 1
+    readonly property var audioLabels: [qsTr("关闭音轨")].concat(audioTracks.map(t =>
+        [t.id, t.title, t.lang, t.codec, t["demux-channel-count"] ? qsTr("%1 声道").arg(t["demux-channel-count"]) : ""]
+            .filter(v => v).join(" · ")))
+    function chooseAudio(index) {
+        if (index >= 0 && index <= audioTracks.length)
+            video.setOption("aid", index === 0 ? "no" : audioTracks[index - 1].id)
+    }
+    readonly property bool simple: prefs.simpleControls && (mode === "normal" || mode === "full")
     readonly property var subtitles: video.tracks.filter(t => t.type === "sub")
     readonly property int subtitleIndex: stateMap["sub-visibility"] === false ? 0 : subtitles.findIndex(t => t.selected) + 1
     readonly property var subtitleLabels: [qsTr("关闭字幕")].concat(subtitles.map(t => {
@@ -105,6 +114,9 @@ FocusScope {
             showNotice(qsTr("请先在较早位置设置 A"));
     }
     function changeMode(next) {
+        setWindowMode(next, true)
+    }
+    function setWindowMode(next, showControls) {
         if (mode === next)
             next = "normal";
         const w = host || root.Window.window;
@@ -198,7 +210,7 @@ FocusScope {
                 w.show();
             }
         }
-        revealControls();
+        if (showControls) revealControls();
         surface.forceActiveFocus();
     }
     function subtitleDrop(urls) {
@@ -235,6 +247,7 @@ FocusScope {
         property int miniWidth: 720
         property int miniHeight: 440
         property bool playlistOpen: true
+        property bool simpleControls: false
     }
     component PlaybackMenu: Menu {
         id: popup
@@ -362,16 +375,16 @@ FocusScope {
                 case "volumeDown": root.volume(-5); break
                 case "seekBack": video.seek(-VideoPreferences.backward, true); break
                 case "seekForward": video.seek(VideoPreferences.forward, true); break
-                case "prevFrame": video.step(false); break
-                case "nextFrame": video.step(true); break
+                case "prevFrame": video.step(false); return
+                case "nextFrame": video.step(true); return
                 case "slower": root.rate(-0.1); break
                 case "faster": root.rate(0.1); break
                 case "normalSpeed": video.setOption("speed", 1); break
                 case "shot": root.shot(); break
                 case "mute": video.setOption("mute", root.stateMap.mute ? "no" : "yes"); return
                 case "captions": video.toggleSubtitles(); return
-                case "full": root.changeMode(root.mode === "normal" ? "full" : "normal"); return
-                case "mini": root.changeMode("mini"); return
+                case "full": root.setWindowMode(root.mode === "normal" ? "full" : "normal", !root.paused); return
+                case "mini": root.setWindowMode("mini", !root.paused); return
                 case "prevVideo": root.openAdjacent(-1); return
                 case "nextVideo": root.openAdjacent(1); return
                 case "playSettings": settings.open(); return
@@ -380,11 +393,11 @@ FocusScope {
                 case "markB": root.markB(); break
                 case "clearAB": root.clearSegment(); break
                 }
-                root.revealControls()
+                if (!root.paused) root.revealControls()
             }
             playbackKeysEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
                                   && !(surface.Window.window?.frostDepth > 0)
-                                  && !more.visible && !rates.visible && !subtitleMenu.visible && !settings.visible && !playlist.menuOpen
+                                  && !more.visible && !rates.visible && !subtitleMenu.visible && !audioMenu.visible && !settings.visible && !playlist.menuOpen
                                   && !jump.visible && !folder.visible && !subDialog.visible
             onSourceChanged: {
                 if (root.mode === "hdr") {
@@ -393,10 +406,11 @@ FocusScope {
                 }
             }
             anchors.fill: parent
+            anchors.bottomMargin: root.simple ? bar.height : 0
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: Math.max(18, parent.height * 0.09, bar.visible ? bar.height + 22 : 0)
+                anchors.bottomMargin: Math.max(18, parent.height * 0.09, !root.simple && bar.visible ? bar.height + 22 : 0)
                 width: parent.width * 0.9
                 text: root.stateMap["review-caption"] || ""
                 visible: text.length > 0
@@ -495,21 +509,22 @@ FocusScope {
         FocusScope {
             id: bar
             objectName: "videoGlassControls"
-            readonly property real inset: Math.min(16, surface.width * 0.03)
+            readonly property real inset: root.simple ? 0 : Math.min(16, surface.width * 0.03)
             readonly property bool compact: width < 640
             readonly property bool narrowMini: root.mode === "mini" && width < 860
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.margins: inset
-            height: rows.implicitHeight + (compact ? 14 : 22)
-            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || more.visible || rates.visible || subtitleMenu.visible
+            height: root.simple ? Math.max(timeline.implicitHeight, Theme.controlHeight) + 4
+                                : rows.implicitHeight + (compact ? 14 : 22)
+            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || more.visible || rates.visible || subtitleMenu.visible || audioMenu.visible
             readonly property bool keyboardFocus: activeFocus && !!surface.Window.window?.activeFocusItem?.visualFocus
             onInteractingChanged: if (!interacting) root.revealControls()
             visible: root.controlsShown || interacting
             Loader {
                 anchors.fill: parent
-                active: bar.visible && root.mode !== "hdr" && !!root.stateMap["video-params"] && !video.error
+                active: bar.visible && !root.simple && root.mode !== "hdr" && !!root.stateMap["video-params"] && !video.error
                 sourceComponent: VideoControlGlass {
                     frame: video
                     panelOrigin: Qt.point(bar.x, bar.y)
@@ -517,24 +532,33 @@ FocusScope {
             }
             Rectangle {
                 anchors.fill: parent
-                radius: 22
-                color: "#e5292b32"
-                border.color: "#7a7d83"
-                visible: root.mode === "hdr" || !root.stateMap["video-params"] || !!video.error
+                radius: root.simple ? 0 : 22
+                color: root.simple ? Theme.panel : "#e5292b32"
+                border.color: root.simple ? "transparent" : "#7a7d83"
+                visible: root.simple || root.mode === "hdr" || !root.stateMap["video-params"] || !!video.error
             }
             MouseArea {
                 id: dockBackground
                 anchors.fill: parent
                 onPressed: root.revealControls()
             }
-            ColumnLayout {
+            GridLayout {
                 id: rows
+                columns: root.simple ? 6 : 1
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: bar.compact ? 8 : 16
                 anchors.rightMargin: bar.compact ? 8 : 16
-                spacing: bar.compact ? 2 : 5
+                rowSpacing: bar.compact ? 2 : 5
+                columnSpacing: 4
+                Tool {
+                    visible: root.simple
+                    quiet: true
+                    hint: qsTr("播放 / 暂停")
+                    iconName: root.paused ? "animation-play" : "animation-pause"
+                    onClicked: { video.togglePause(); root.focusPlayback() }
+                }
                 VideoTimeline {
                     id: timeline
                     Layout.fillWidth: true
@@ -548,6 +572,7 @@ FocusScope {
                 }
                 Item {
                     id: actions
+                    visible: !root.simple
                     Layout.fillWidth: true
                     implicitHeight: bar.compact ? 33 : 44
                     Label {
@@ -634,7 +659,7 @@ FocusScope {
                         Slider {
                             id: volumeSlider
                             objectName: "videoVolume"
-                            visible: bar.width >= 860 || (bar.narrowMini && bar.width >= 440)
+                            visible: bar.width >= 970 || (bar.narrowMini && bar.width >= 440 && bar.width < 780)
                             Layout.preferredWidth: bar.narrowMini ? (bar.compact || bar.width >= 690 ? 52 : 40) : 72
                             Accessible.name: qsTr("音量")
                             from: 0
@@ -681,6 +706,16 @@ FocusScope {
                                 color: "#ffad67"
                                 border.color: volumeSlider.visualFocus ? "white" : "transparent"
                             }
+                        }
+                        Tool {
+                            id: audioButton
+                            objectName: "videoAudioTrackButton"
+                            visible: bar.width >= 780
+                            enabled: root.audioTracks.length > 0
+                            quiet: true
+                            text: qsTr("音轨")
+                            hint: qsTr("选择音轨")
+                            onClicked: audioMenu.open()
                         }
                         Tool {
                             quiet: true
@@ -740,35 +775,95 @@ FocusScope {
                         }
                     }
                 }
+                Label {
+                    visible: root.simple && bar.width >= 480
+                    text: root.format(timeline.shownPosition).slice(0, -4) + " / " + root.format(root.duration).slice(0, -4)
+                    color: Theme.text
+                }
+                Tool {
+                    id: simpleAudio
+                    objectName: "videoSimpleAudioButton"
+                    visible: root.simple
+                    enabled: root.audioTracks.length > 0
+                    text: qsTr("音轨")
+                    hint: qsTr("选择音轨")
+                    quiet: true
+                    onClicked: audioMenu.open()
+                }
+                Tool {
+                    id: simpleSub
+                    visible: root.simple
+                    enabled: root.subtitles.length > 0
+                    text: "CC"
+                    hint: qsTr("选择字幕轨道")
+                    quiet: true
+                    onClicked: subtitleMenu.open()
+                }
+                Tool {
+                    id: simpleMore
+                    objectName: "videoSimpleMenuButton"
+                    visible: root.simple
+                    quiet: true
+                    iconName: "more"
+                    hint: qsTr("播放选项")
+                    onClicked: more.open()
+                }
             }
         }
-        PlaybackMenu {
-            id: subtitleMenu
-            dock: bar
-            trigger: subtitleButton.visible ? subtitleButton : menuButton
+        component TrackMenu: PlaybackMenu {
+            id: trackMenu
+            required property var labels
+            required property int selectedIndex
+            required property string rowPrefix
+            signal chosen(int index)
             menuWidth: 300
             height: Math.min(implicitHeight, 320, Math.max(80, dock.y - 16))
             onOpened: {
-                currentIndex = root.subtitleIndex
+                currentIndex = selectedIndex
                 contentItem.positionViewAtIndex(currentIndex, ListView.Contain)
             }
             Instantiator {
-                model: root.subtitleLabels.length
+                model: trackMenu.labels.length
                 delegate: PlaybackMenuItem {
                     required property int index
-                    objectName: "videoSubtitleRow" + index
-                    text: (index === root.subtitleIndex ? "✓   " : "     ") + root.subtitleLabels[index]
-                    Accessible.name: root.subtitleLabels[index]
+                    height: implicitHeight
+                    objectName: trackMenu.rowPrefix + index
+                    text: (index === trackMenu.selectedIndex ? "✓   " : "     ") + trackMenu.labels[index]
+                    Accessible.name: trackMenu.labels[index]
                     Accessible.checkable: true
-                    Accessible.checked: index === root.subtitleIndex
-                    onTriggered: root.chooseSubtitle(index)
+                    Accessible.checked: index === trackMenu.selectedIndex
+                    onTriggered: trackMenu.chosen(index)
                 }
-                onObjectAdded: (index, row) => subtitleMenu.insertItem(index, row)
-                onObjectRemoved: (index, row) => subtitleMenu.removeItem(row)
+                onObjectAdded: (index, row) => trackMenu.insertItem(index, row)
+                onObjectRemoved: (index, row) => trackMenu.removeItem(row)
             }
+        }
+        TrackMenu {
+            id: subtitleMenu
+            dock: bar
+            trigger: root.simple ? simpleSub : subtitleButton.visible ? subtitleButton : menuButton
+            labels: root.subtitleLabels
+            selectedIndex: root.subtitleIndex
+            rowPrefix: "videoSubtitleRow"
+            onChosen: index => root.chooseSubtitle(index)
+        }
+        TrackMenu {
+            id: audioMenu
+            dock: bar
+            trigger: root.simple ? simpleAudio : audioButton.visible ? audioButton : menuButton
+            labels: root.audioLabels
+            selectedIndex: root.audioIndex
+            rowPrefix: "videoAudioRow"
+            onChosen: index => root.chooseAudio(index)
         }
         PlaybackMenu {
             id: more
+            PlaybackMenuItem {
+                objectName: "videoSimpleModeAction"
+                visible: root.mode === "normal" || root.mode === "full"
+                text: root.simple ? qsTr("返回标准界面") : qsTr("简易界面")
+                onTriggered: { prefs.simpleControls = !prefs.simpleControls; root.focusPlayback() }
+            }
             PlaybackMenuItem {
                 text: qsTr("播放信息") + KeyBindings.hint("info")
                 checkable: true
@@ -778,7 +873,12 @@ FocusScope {
             PlaybackMenuItem {text:qsTr("HDR10 全屏输出");visible:["pq","hlg"].includes(root.stateMap["video-params"]?.gamma);onTriggered:root.changeMode("hdr")}
             PlaybackMenuItem{text:qsTr("跳转到时间…") + KeyBindings.hint("jump");onTriggered:jump.open()}
             dock: bar
-            trigger: menuButton
+            trigger: root.simple ? simpleMore : menuButton
+            PlaybackMenuItem {
+                text: qsTr("选择音轨…")
+                enabled: root.audioTracks.length > 0
+                onTriggered: Qt.callLater(() => audioMenu.open())
+            }
             PlaybackMenuItem {
                 text: qsTr("截图") + KeyBindings.hint("shot")
                 onTriggered: root.shot()
@@ -864,15 +964,10 @@ FocusScope {
                     }
                     Choice {
                         Layout.fillWidth: true
-                        model: root.audioTracks
-                        textRole: "title"
-                        displayText: currentIndex >= 0 ? String(root.audioTracks[currentIndex]?.lang || qsTr("音轨")) + " " + String(root.audioTracks[currentIndex]?.id) : "—"
-                        currentIndex: root.audioTracks.findIndex(t => t.selected)
-                        delegate: ItemDelegate {
-                            required property var modelData
-                            text: (modelData.title || modelData.lang || qsTr("音轨")) + " " + modelData.id
-                        }
-                        onActivated: i => video.setOption("aid", root.audioTracks[i].id)
+                        labels: root.audioLabels
+                        enabled: root.audioTracks.length > 0
+                        currentIndex: root.audioIndex
+                        onActivated: i => root.chooseAudio(i)
                     }
                     Label {
                         text: qsTr("字幕")

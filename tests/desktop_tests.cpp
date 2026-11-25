@@ -1336,6 +1336,85 @@ private slots:
     QCOMPARE(list->rowCount(), 0);
     for (const auto &file : {first, second, third}) QVERIFY(QFileInfo::exists(file));
   }
+  void videoAudioTracksAndSimpleControls() {
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Requires the video runtime");
+    const auto sample = qEnvironmentVariable("FORMAVIEW_AUDIO_TEST_VIDEO");
+    const auto path = sample.isEmpty() ? QFINDTESTDATA("fixtures/audio-choice.mkv") : sample;
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); window_->resize(original); });
+    window_->resize(1280, 800);
+    desktop_->openPath(path);
+    QTRY_VERIFY(item("videoSession"));
+    auto *s = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(s);
+    auto *pane = item("videoPlayerPane");
+    const auto selected = [&] { return pane->property("audioIndex").toInt(); };
+    const auto playing = [&] { return !s->status().value("pause", true).toBool(); };
+    const auto position = [&] { return s->status().value("time-pos").toDouble(); };
+    const auto click = [&](const char *name) {
+      auto *control = item(name);
+      QVERIFY2(control && control->isEnabled(), name);
+      QSignalSpy rendered(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QVERIFY(rendered.wait(3000));
+      QVERIFY(control->height() > 0 && control->width() > 0);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene(control->boundingRect().center()).toPoint());
+    };
+    QTRY_COMPARE_WITH_TIMEOUT(selected(), 1, 15000);
+    const auto tracks = s->tracks();
+    const int trackCount = int(std::count_if(tracks.cbegin(), tracks.cend(),
+      [](const QVariant &t) { return t.toMap().value("type") == "audio"; }));
+    if (sample.isEmpty()) QCOMPARE(trackCount, 2);
+    s->setOption("pause", "no");
+    QTRY_VERIFY_WITH_TIMEOUT(playing() && position() > 0.15, 15000);
+    const auto selectTrack = [&](int index, const char *trigger) {
+      QMetaObject::invokeMethod(pane, "revealControls");
+      click(trigger);
+      const auto row = "videoAudioRow" + QByteArray::number(index);
+      QTRY_VERIFY(item(row.constData()));
+      click(row.constData());
+      QTRY_COMPARE(selected(), index);
+      QVERIFY(playing());
+      const double before = position();
+      QTRY_VERIFY_WITH_TIMEOUT(position() > before + 0.25, 5000);
+      if (index) QTRY_VERIFY_WITH_TIMEOUT(!s->status().value("audio-out-params").toMap().isEmpty(), 5000);
+    };
+    selectTrack(trackCount > 1 ? 2 : 0, "videoAudioTrackButton");
+    QMetaObject::invokeMethod(pane, "revealControls");
+    click("videoMenuButton");
+    QTRY_VERIFY(item("videoSimpleModeAction"));
+    click("videoSimpleModeAction");
+    QTRY_VERIFY(pane->property("simple").toBool());
+    QCOMPARE(pane->property("mode").toString(), "normal");
+    QCOMPARE(window_->size(), QSize(1280, 800));
+    auto *bar = item("videoGlassControls");
+    QVERIFY(bar && bar->height() <= 48);
+    const auto videoRect = [&] { return s->mapRectToScene(s->boundingRect()); };
+    QVERIFY(videoRect().bottom() <= bar->mapToScene(QPointF()).y() + 0.01);
+    selectTrack(1, "videoSimpleAudioButton");
+    s->setOption("pause", "yes");
+    QTRY_VERIFY(!playing());
+    QTRY_VERIFY_WITH_TIMEOUT(!bar->isVisible(), 3000);
+    const auto pausedRect = videoRect();
+    item("videoViewport")->forceActiveFocus();
+    for (const auto key : {Qt::Key_F, Qt::Key_D, Qt::Key_Right, Qt::Key_Q, Qt::Key_W}) {
+      QTest::keyClick(window_, key);
+      QCoreApplication::processEvents();
+      QVERIFY(!bar->isVisible());
+    }
+    QCOMPARE(videoRect(), pausedRect);
+    QMetaObject::invokeMethod(pane, "revealControls");
+    click("videoSimpleMenuButton");
+    QTRY_VERIFY(item("videoSimpleModeAction"));
+    click("videoSimpleModeAction");
+    QTRY_VERIFY(!pane->property("simple").toBool());
+    QVERIFY(videoRect().height() > pausedRect.height());
+    pane->setProperty("controlsShown", false);
+    QTest::keyClick(window_, Qt::Key_F);
+    QVERIFY(!bar->isVisible());
+  }
   void videoEmbeddedSubtitleSelection() {
     if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
       QSKIP("Requires the video runtime");
@@ -1387,6 +1466,10 @@ private slots:
     QTRY_VERIFY(selected().value("title").toString().contains("简"));
 
     const auto click = [&](QQuickItem *control) {
+      QSignalSpy rendered(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QVERIFY(rendered.wait(3000));
+      QVERIFY(control->height() > 0 && control->width() > 0);
       QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
                         control->mapToScene(control->boundingRect().center()).toPoint());
     };
