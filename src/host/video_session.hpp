@@ -18,7 +18,8 @@ class VideoSession : public QQuickItem {
   Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
   Q_PROPERTY(QVariantMap playbackInfo READ playbackInfo NOTIFY playbackInfoChanged)
   Q_PROPERTY(QString error READ error NOTIFY errorChanged)
-  Q_PROPERTY(bool playbackSpaceEnabled MEMBER playbackSpaceEnabled_)
+  Q_PROPERTY(bool playbackKeysEnabled MEMBER playbackKeysEnabled_)
+  Q_PROPERTY(QVariantMap playbackBindings MEMBER playbackBindings_)
 public:
   explicit VideoSession(QQuickItem *parent = nullptr);
   ~VideoSession() override;
@@ -47,6 +48,7 @@ public:
   Q_INVOKABLE void loop(double first, double last);
   Q_INVOKABLE void clearLoop();
 signals:
+  void shortcutPressed(const QString &action);
   void sourceChanged();
   void statusChanged();
   void playbackInfoChanged();
@@ -66,7 +68,8 @@ private:
   void alignReview();
   void reviewReady();
   void loadVideo();
-  bool playbackSpaceEnabled_ = false;
+  bool playbackKeysEnabled_ = false;
+  QVariantMap playbackBindings_;
   QPointer<QQuickWindow> shortcutWindow_;
   bool background_ = false;
   std::unique_ptr<QWindow> backgroundTarget_;

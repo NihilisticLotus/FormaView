@@ -75,6 +75,11 @@ FocusScope {
         notice = s;
         messageTimer.restart();
     }
+    function clearSegment() {
+        video.clearLoop()
+        a = -1
+        b = -1
+    }
     function markA() {
         a = position;
         b = -1;
@@ -317,67 +322,51 @@ FocusScope {
         z: root.mode === "normal" ? 0 : 10000
         color: "#101114"
         focus: true
-        Shortcut {
-            sequence: "Tab"
-            autoRepeat: false
-            enabled: surface.visible && (root.mode !== "normal" || surface.activeFocus)
-                     && !bar.keyboardFocus && !more.visible && !rates.visible && !settings.visible
-                     && !jump.visible && !folder.visible && !subDialog.visible
-            onActivated: root.infoShown = !root.infoShown
-        }
-        Keys.onPressed: e => {
-            if(e.key===Qt.Key_G && e.modifiers===Qt.ControlModifier){jump.open();e.accepted=true;return}
-            if (e.modifiers !== Qt.NoModifier)
-                return;
-            switch (e.key) {
-            case Qt.Key_Up:
-                root.volume(5);
-                break;
-            case Qt.Key_Down:
-                root.volume(-5);
-                break;
-            case Qt.Key_Left:
-                video.seek(-VideoPreferences.backward, true);
-                break;
-            case Qt.Key_Right:
-                video.seek(VideoPreferences.forward, true);
-                break;
-            case Qt.Key_D:
-            case Qt.Key_Comma:
-                video.step(false);
-                break;
-            case Qt.Key_F:
-            case Qt.Key_Period:
-                video.step(true);
-                break;
-            case Qt.Key_BracketLeft:
-                root.rate(-0.1);
-                break;
-            case Qt.Key_BracketRight:
-                root.rate(0.1);
-                break;
-            case Qt.Key_1:
-                video.setOption("speed", 1);
-                break;
-            case Qt.Key_S:
-                root.shot();
-                break;
-            case Qt.Key_Escape:
-                if (root.mode === "normal")
-                    return;
-                root.changeMode("normal");
-                break;
-            default:
-                return;
-            }
-            e.accepted = true;
-            root.revealControls();
+        Keys.onEscapePressed: event => {
+            if (root.mode === "normal") { event.accepted = false; return }
+            root.changeMode("normal")
+            event.accepted = true
         }
         VideoSession {
             id: video
             objectName: "videoSession"
             source: root.source
-            playbackSpaceEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
+            playbackBindings: {
+                const bindings = KeyBindings.mapping("video")
+                if (KeyBindings.binding("info") === "Tab" && ((root.mode === "normal" && !surface.activeFocus) || bar.keyboardFocus))
+                    delete bindings[KeyBindings.binding("info")]
+                return bindings
+            }
+            onShortcutPressed: action => {
+                switch (action) {
+                case "play": video.togglePause(); return
+                case "info": root.infoShown = !root.infoShown; return
+                case "jump": jump.open(); return
+                case "volumeUp": root.volume(5); break
+                case "volumeDown": root.volume(-5); break
+                case "seekBack": video.seek(-VideoPreferences.backward, true); break
+                case "seekForward": video.seek(VideoPreferences.forward, true); break
+                case "prevFrame": video.step(false); break
+                case "nextFrame": video.step(true); break
+                case "slower": root.rate(-0.1); break
+                case "faster": root.rate(0.1); break
+                case "normalSpeed": video.setOption("speed", 1); break
+                case "shot": root.shot(); break
+                case "mute": video.setOption("mute", root.stateMap.mute ? "no" : "yes"); return
+                case "captions": video.setOption("sub-visibility", root.stateMap["sub-visibility"] === false ? "yes" : "no"); return
+                case "full": root.changeMode(root.mode === "normal" ? "full" : "normal"); return
+                case "mini": root.changeMode("mini"); return
+                case "prevVideo": root.openAdjacent(-1); return
+                case "nextVideo": root.openAdjacent(1); return
+                case "playSettings": settings.open(); return
+                case "loadSub": subDialog.present(); return
+                case "markA": root.markA(); break
+                case "markB": root.markB(); break
+                case "clearAB": root.clearSegment(); break
+                }
+                root.revealControls()
+            }
+            playbackKeysEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
                                   && !(surface.Window.window?.frostDepth > 0)
                                   && !more.visible && !rates.visible && !settings.visible
                                   && !jump.visible && !folder.visible && !subDialog.visible
@@ -566,7 +555,7 @@ FocusScope {
                             visible: !bar.compact
                             quiet: true
                             iconName: root.paused ? "animation-step-back" : "return"
-                            hint: root.paused ? qsTr("上一帧 (D / ,)") : qsTr("回退 %1 秒").arg(VideoPreferences.backward)
+                            hint: root.paused ? qsTr("上一帧") + KeyBindings.hint("prevFrame") : qsTr("回退 %1 秒").arg(VideoPreferences.backward)
                             onClicked: root.paused ? video.step(false) : video.seek(-VideoPreferences.backward, true)
                         }
                         Tool {
@@ -581,7 +570,7 @@ FocusScope {
                                     size: 20
                                 }
                             }
-                            hint: qsTr("播放 / 暂停")
+                            hint: qsTr("播放 / 暂停") + KeyBindings.hint("play")
                             background: Rectangle {
                                 radius: 11
                                 color: parent.down ? "#60ffffff" : parent.hovered ? "#50ffffff" : "#37ffffff"
@@ -594,7 +583,7 @@ FocusScope {
                             quiet: true
                             iconName: root.paused ? "animation-step-forward" : "return"
                             iconRotation: root.paused ? 0 : 180
-                            hint: root.paused ? qsTr("下一帧 (F / .)") : qsTr("快进 %1 秒").arg(VideoPreferences.forward)
+                            hint: root.paused ? qsTr("下一帧") + KeyBindings.hint("nextFrame") : qsTr("快进 %1 秒").arg(VideoPreferences.forward)
                             onClicked: root.paused ? video.step(true) : video.seek(VideoPreferences.forward, true)
                         }
                     }
@@ -615,7 +604,7 @@ FocusScope {
                             quiet: true
                             iconName: "picture-in-picture"
                             checked: root.mode === "mini"
-                            hint: root.mode === "mini" ? qsTr("返回主窗") : qsTr("置顶小窗")
+                            hint: (root.mode === "mini" ? qsTr("返回主窗") : qsTr("置顶小窗")) + KeyBindings.hint("mini")
                             onClicked: root.changeMode("mini")
                         }
                         Tool {
@@ -623,7 +612,7 @@ FocusScope {
                             visible: bar.width >= 360
                             quiet: true
                             iconName: root.stateMap.mute || root.stateMap.volume === 0 ? "volume-muted" : "volume"
-                            hint: root.stateMap.mute ? qsTr("取消静音") : qsTr("静音")
+                            hint: (root.stateMap.mute ? qsTr("取消静音") : qsTr("静音")) + KeyBindings.hint("mute")
                             onClicked: video.setOption("mute", root.stateMap.mute ? "no" : "yes")
                         }
                         Slider {
@@ -682,7 +671,7 @@ FocusScope {
                             visible: !bar.compact
                             text: "CC"
                             leftPadding: bar.narrowMini ? 7 : 12
-                            hint: qsTr("显示 / 隐藏字幕")
+                            hint: qsTr("显示 / 隐藏字幕") + KeyBindings.hint("captions")
                             checkable: true
                             checked: root.subtitles.length > 0 && root.stateMap["sub-visibility"] !== false
                             onClicked: video.setOption("sub-visibility", checked ? "yes" : "no")
@@ -719,7 +708,7 @@ FocusScope {
                             objectName: "videoFullscreenButton"
                             quiet: true
                             iconName: root.mode === "normal" ? "fullscreen" : "restore"
-                            hint: qsTr("全屏 / 返回")
+                            hint: qsTr("全屏 / 返回") + KeyBindings.hint("full")
                             onClicked: root.changeMode(root.mode === "normal" ? "full" : "normal")
                         }
                     }
@@ -729,54 +718,50 @@ FocusScope {
         PlaybackMenu {
             id: more
             PlaybackMenuItem {
-                text: qsTr("播放信息") + "    Tab"
+                text: qsTr("播放信息") + KeyBindings.hint("info")
                 checkable: true
                 checked: root.infoShown
                 onTriggered: { root.infoShown = !root.infoShown; root.focusPlayback() }
             }
             PlaybackMenuItem {text:qsTr("HDR10 全屏输出");visible:["pq","hlg"].includes(root.stateMap["video-params"]?.gamma);onTriggered:root.changeMode("hdr")}
-            PlaybackMenuItem{text:qsTr("跳转到时间…  Ctrl+G");onTriggered:jump.open()}
+            PlaybackMenuItem{text:qsTr("跳转到时间…") + KeyBindings.hint("jump");onTriggered:jump.open()}
             dock: bar
             trigger: menuButton
             PlaybackMenuItem {
-                text: qsTr("截图")
+                text: qsTr("截图") + KeyBindings.hint("shot")
                 onTriggered: root.shot()
             }
             PlaybackMenuItem {
-                text: qsTr("外挂字幕…")
+                text: qsTr("外挂字幕…") + KeyBindings.hint("loadSub")
                 onTriggered: subDialog.present()
             }
             PlaybackMenuItem {
-                text: qsTr("设 A  ·  ") + (root.a >= 0 ? root.format(root.a) : "—")
+                text: qsTr("设 A  ·  ") + (root.a >= 0 ? root.format(root.a) : "—") + KeyBindings.hint("markA")
                 onTriggered: root.markA()
             }
             PlaybackMenuItem {
-                text: qsTr("设 B  ·  ") + (root.b >= 0 ? root.format(root.b) : "—")
+                text: qsTr("设 B  ·  ") + (root.b >= 0 ? root.format(root.b) : "—") + KeyBindings.hint("markB")
                 onTriggered: root.markB()
             }
             PlaybackMenuItem {
-                text: qsTr("清除 A–B")
+                text: qsTr("清除片段循环") + KeyBindings.hint("clearAB")
                 enabled: root.a >= 0
-                onTriggered: {
-                    video.clearLoop();
-                    root.a = -1;
-                    root.b = -1;
-                }
+                onTriggered: root.clearSegment()
             }
             PlaybackMenuItem {
-                text: root.mode === "mini" ? qsTr("返回主窗") : qsTr("置顶小窗")
+                text: (root.mode === "mini" ? qsTr("返回主窗") : qsTr("置顶小窗")) + KeyBindings.hint("mini")
                 onTriggered: root.changeMode("mini")
             }
             PlaybackMenuItem {
-                text: qsTr("上一个视频")
+                text: qsTr("上一个视频") + KeyBindings.hint("prevVideo")
                 onTriggered: root.openAdjacent(-1)
             }
             PlaybackMenuItem {
-                text: qsTr("下一个视频")
+                text: qsTr("下一个视频") + KeyBindings.hint("nextVideo")
                 onTriggered: root.openAdjacent(1)
             }
             PlaybackMenuItem {
-                text: qsTr("播放设置…")
+                text: qsTr("播放设置…") + KeyBindings.hint("playSettings")
                 onTriggered: settings.open()
             }
             PlaybackMenuItem {
@@ -787,17 +772,30 @@ FocusScope {
         }
         FrostDialog {
             id: settings
+            objectName: "videoPlaybackSettings"
             title: qsTr("播放设置")
             anchors.centerIn: parent
             modal: true
-            width: Math.min(440, surface.width)
-            height: Math.min(530, surface.height)
-            standardButtons: Dialog.Close
+            width: Math.min(480, surface.width - 24)
+            height: Math.min(600, surface.height - 24)
+            padding: 20
+            background: GlassPanel { color: Theme.light ? "#e5ebf0" : "#283948"; border.color: Theme.line }
+            header: Label {
+                text: settings.title; color: Theme.text; font.pixelSize: Theme.formHeading; font.bold: true
+                leftPadding: 20; topPadding: 16; bottomPadding: 8
+            }
+            footer: RowLayout {
+                Item { Layout.fillWidth: true }
+                Tool {
+                    Layout.rightMargin: 18; Layout.bottomMargin: 14
+                    text: Theme.t("关闭", "Close", "關閉"); onClicked: settings.close()
+                }
+            }
             contentItem: ScrollView {
                 clip: true
                 ColumnLayout {
                     width: settings.availableWidth - 16
-                    ComboBox {
+                    Choice {
                         visible: count > 0
                         Layout.fillWidth: true
                         model: (root.stateMap["chapter-list"] || []).map((c, i) => c.title || qsTr("章节 ") + (i + 1))
@@ -807,7 +805,7 @@ FocusScope {
                     Label {
                         text: qsTr("音轨")
                     }
-                    ComboBox {
+                    Choice {
                         Layout.fillWidth: true
                         model: root.audioTracks
                         textRole: "title"
@@ -822,7 +820,7 @@ FocusScope {
                     Label {
                         text: qsTr("字幕")
                     }
-                    ComboBox {
+                    Choice {
                         Layout.fillWidth: true
                         model: [qsTr("关闭")].concat(root.subtitles.map(t => (t.title || t.lang || qsTr("字幕")) + " " + t.id))
                         currentIndex: root.subtitles.findIndex(t => t.selected) + 1
@@ -832,7 +830,7 @@ FocusScope {
                         Label {
                             text: qsTr("字幕延迟（毫秒）")
                         }
-                        SpinBox {
+                        NumberField {
                             from: -60000
                             to: 60000
                             stepSize: 100
@@ -845,33 +843,33 @@ FocusScope {
                         Label {
                             text: qsTr("回退 / 快进（秒）")
                         }
-                        SpinBox {
+                        NumberField {
                             from: 1
                             to: 600
                             value: VideoPreferences.backward
                             onValueModified: VideoPreferences.backward = value
                         }
-                        SpinBox {
+                        NumberField {
                             from: 1
                             to: 600
                             value: VideoPreferences.forward
                             onValueModified: VideoPreferences.forward = value
                         }
                     }
-                    CheckBox {
+                    OptionCheck {
                         text: qsTr("截图包含字幕")
                         checked: prefs.captions
                         onToggled: prefs.captions = checked
                     }
-                    Button {
+                    Tool {
                         text: qsTr("选择截图目录…")
                         onClicked: folder.present()
                     }
-                    CheckBox {
+                    OptionCheck {
                         text: qsTr("单文件循环")
                         onToggled: video.setOption("loop-file", checked ? "inf" : "no")
                     }
-                    CheckBox {
+                    OptionCheck {
                         text: qsTr("原始大小")
                         onToggled: video.setOption("video-unscaled", checked ? "yes" : "no")
                     }
@@ -900,19 +898,19 @@ FocusScope {
                             }
                         }
                     }
-                    CheckBox {
+                    OptionCheck {
                         id: grayscale
                         text: qsTr("灰度")
                         onToggled: video.setOption("saturation", checked ? -100 : 0)
                     }
-                    Button {
+                    Tool {
                         text: qsTr("重置全部滤镜")
                         onClicked: {
                             grayscale.checked = false
                             for (let i=0; i<filterRows.count; ++i) filterRows.itemAt(i).reset()
                         }
                     }
-                    CheckBox {
+                    OptionCheck {
                         text: qsTr("HDMI 杜比直通")
                         onToggled: video.setOption("audio-spdif", checked ? "ac3,eac3,truehd" : "")
                     }

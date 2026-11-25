@@ -37,7 +37,9 @@ FocusScope {
         Overlay.modal: Rectangle { color: Theme.light ? "#57404b56" : "#740a1019" }
         background: GlassPanel { color: Theme.light ? "#e0e3eaf0" : "#ef273847" }
         Shortcut {
-            sequence: "Ctrl+L"; enabled: panel.opened && !unsaved.visible
+            sequence: KeyBindings.binding("address"); enabled: panel.opened && !unsaved.visible
+                && !(root.Window.window?.activeFocusItem instanceof TextInput)
+                && !(root.Window.window?.activeFocusItem instanceof TextEdit)
             onActivated: root.leave(() => root.addressRequested())
         }
         contentItem: FocusScope {

@@ -37,10 +37,11 @@ FocusScope {
         Accessible.role: Accessible.Pane
         Accessible.name: root.uv ? Theme.t("UV 预览", "UV preview", "UV 預覽") : Theme.t("模型预览", "Model preview", "模型預覽")
         Keys.onPressed: event => {
+            const action = KeyBindings.action("model", event)
             if (event.key === Qt.Key_Escape && root.sourceView) { root.session.cameraView = false; event.accepted = true }
-            else if (event.key === Qt.Key_F) { viewport.fit(true); event.accepted = true }
-            else if (event.key === Qt.Key_Home) { viewport.fit(); event.accepted = true }
-            else if (event.key === Qt.Key_Space && !root.uv && root.session && root.session.canPlayAnimation) { root.session.togglePlay(); event.accepted = true }
+            else if (action === "focus") { viewport.fit(true); event.accepted = true }
+            else if (action === "frameAll") { viewport.fit(); event.accepted = true }
+            else if (action === "anim" && !root.uv && root.session && root.session.canPlayAnimation) { root.session.togglePlay(); event.accepted = true }
         }
         MouseArea {
             anchors.fill: parent

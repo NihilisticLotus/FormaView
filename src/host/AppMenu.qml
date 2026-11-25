@@ -60,7 +60,7 @@ MenuBar {
         id: animationMenu
         title: Theme.t("动画", "Animation", "動畫")
         readonly property bool hasModel: !!root.controller.model
-        AppMenuItem { objectName: "menuAnimationPlay"; text: Theme.t("播放 / 暂停（空格）", "Play / Pause (Space)", "播放 / 暫停（空白鍵）"); enabled: animationMenu.hasModel && root.controller.model.canPlayAnimation; onTriggered: root.controller.model.togglePlay() }
+        AppMenuItem { objectName: "menuAnimationPlay"; text: Theme.t("播放 / 暂停", "Play / pause", "播放 / 暫停") + KeyBindings.hint("anim"); enabled: animationMenu.hasModel && root.controller.model.canPlayAnimation; onTriggered: root.controller.model.togglePlay() }
         AppMenuItem { text: Theme.t("上一帧", "Previous frame", "上一格"); enabled: animationMenu.hasModel && root.controller.model.canPlayAnimation; onTriggered: root.controller.model.stepFrame(-1) }
         AppMenuItem { text: Theme.t("下一帧", "Next frame", "下一格"); enabled: animationMenu.hasModel && root.controller.model.canPlayAnimation; onTriggered: root.controller.model.stepFrame(1) }
         MenuSeparator {}

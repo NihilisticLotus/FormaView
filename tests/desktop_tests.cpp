@@ -1132,11 +1132,83 @@ private slots:
     surface->forceActiveFocus();
     QTest::keyClick(window_, Qt::Key_G, Qt::ControlModifier);
     QTRY_VERIFY(window_->property("frostDepth").toInt() > 0);
-    QVERIFY(!session->property("playbackSpaceEnabled").toBool());
+    QVERIFY(!session->property("playbackKeysEnabled").toBool());
     QTest::keyClick(window_, Qt::Key_Space);
     QTest::keyClick(window_, Qt::Key_Escape);
-    QTRY_VERIFY(session->property("playbackSpaceEnabled").toBool());
+    QTRY_VERIFY(session->property("playbackKeysEnabled").toBool());
     QVERIFY(!state("pause"));
+  }
+  void videoLoopShortcutSettings() {
+    QTemporaryDir media(root_ + "/video-loop-XXXXXX");
+    QVERIFY(media.isValid());
+    const auto path = media.filePath("loop.mp4");
+    QVERIFY(QFile::copy(QFINDTESTDATA("fixtures/seek-clock.mp4"), path));
+    desktop_->openPath(path);
+    const auto restore = qScopeGuard([&] { desktop_->clearAsset(); });
+    QTRY_VERIFY(item("videoSession"));
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    auto *pane = item("videoPlayerPane");
+    QVERIFY(session && pane);
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Requires libmpv");
+    QTRY_COMPARE(session->status().value("duration").toDouble(), 60.);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    session->seek(10., false);
+    QTRY_COMPARE(pane->property("position").toDouble(), 10.);
+    QTest::keyClick(window_, Qt::Key_Q);
+    QCOMPARE(pane->property("a").toDouble(), 10.);
+    session->seek(12., false);
+    QTRY_COMPARE(pane->property("position").toDouble(), 12.);
+    QTest::keyClick(window_, Qt::Key_E);
+    QCOMPARE(pane->property("b").toDouble(), 12.);
+    session->seek(11., false);
+    QTRY_COMPARE(pane->property("position").toDouble(), 11.);
+    session->setOption("pause", "no");
+    QTRY_VERIFY(pane->property("position").toDouble() < 11.);
+    QTest::keyClick(window_, Qt::Key_W);
+    QTRY_VERIFY(pane->property("position").toDouble() > 12.);
+    session->setOption("pause", "yes");
+    QTRY_VERIFY(session->status().value("pause").toBool());
+    session->seek(12., false);
+    QTRY_COMPARE(pane->property("position").toDouble(), 12.);
+    QCOMPARE(pane->property("a").toDouble(), -1.);
+    QCOMPARE(pane->property("b").toDouble(), -1.);
+    QTest::keyClick(window_, Qt::Key_Period);
+    QTest::qWait(180);
+    QCOMPARE(pane->property("position").toDouble(), 12.);
+    QTest::keyClick(window_, Qt::Key_Comma);
+    QTest::qWait(180);
+    QCOMPARE(pane->property("position").toDouble(), 12.);
+
+    auto *dialog = window_->findChild<QObject *>("mcpSettingsDialog");
+    QVERIFY(dialog);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, "keys")));
+    QTRY_VERIFY(item("shortcut-markA"));
+    auto *binding = item("shortcut-markA");
+    QVERIFY(QMetaObject::invokeMethod(binding, "clicked"));
+    QTest::keyClick(window_, Qt::Key_E);
+    QVERIFY(binding->property("recording").toBool());
+    QVERIFY(!dialog->property("dirty").toBool());
+    QTest::keyClick(window_, Qt::Key_K);
+    QCOMPARE(binding->property("text").toString(), QString("K"));
+    QVERIFY(QMetaObject::invokeMethod(item("saveGeneralSettings"), "clicked"));
+    QTRY_COMPARE(QSettings{}.value("Keyboard/overrides").toMap().value("markA").toString(), QString("K"));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+    QTest::keyClick(window_, Qt::Key_Q);
+    QCOMPARE(pane->property("a").toDouble(), -1.);
+    QTest::keyClick(window_, Qt::Key_K);
+    QCOMPARE(pane->property("a").toDouble(), 12.);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, "keys")));
+    QVERIFY(QMetaObject::invokeMethod(item("resetShortcutDefaults"), "clicked"));
+    QVERIFY(QMetaObject::invokeMethod(item("saveGeneralSettings"), "clicked"));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    auto *settings = window_->findChild<QObject *>("videoPlaybackSettings");
+    QVERIFY(settings && QMetaObject::invokeMethod(settings, "open"));
+    QTRY_VERIFY(settings->property("opened").toBool());
+    save("video-playback-settings");
+    QVERIFY(QMetaObject::invokeMethod(settings, "close"));
   }
   void videoPlaylistViews() {
     QTemporaryDir media(root_ + "/video-list-XXXXXX");
@@ -3872,10 +3944,12 @@ private slots:
     }
   }
   void drawerHistoryShortcuts() {
-    window_->resize(1280, 800);
+    window_->resize(960, 800);
     auto *workspace = item("workspace");
     QVERIFY(workspace);
     workspace->setProperty("focusMode", false);
+    QVERIFY(QMetaObject::invokeMethod(workspace, "navigate", Q_ARG(QVariant, "assets")));
+    QTRY_VERIFY(workspace->property("narrow").toBool());
     const auto parent = root_ + "/drawer-history";
     const auto child = parent + "/child";
     QVERIFY(QDir().mkpath(child));

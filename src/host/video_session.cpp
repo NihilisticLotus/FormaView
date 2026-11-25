@@ -18,6 +18,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLibrary>
 #include <QLoggingCategory>
 #include <QQuickWindow>
@@ -295,14 +296,19 @@ VideoSession::VideoSession(QQuickItem *parent) : QQuickItem(parent) {
   connect(&timer_, &QTimer::timeout, this, &VideoSession::events);
 }
 bool VideoSession::eventFilter(QObject *watched, QEvent *event) {
-  if (watched == shortcutWindow_ && playbackSpaceEnabled_ &&
+  if (watched == shortcutWindow_ && playbackKeysEnabled_ &&
       (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress ||
        event->type() == QEvent::KeyRelease)) {
     auto *key = static_cast<QKeyEvent *>(event);
-    if (key->key() == Qt::Key_Space && key->modifiers() == Qt::NoModifier) {
-      // Handle Space before a focused transport button can turn it into a click on release.
-      if (event->type() == QEvent::KeyPress && !key->isAutoRepeat())
-        togglePause();
+    const auto combination = key->key() == Qt::Key_Backtab
+        ? QKeyCombination(key->modifiers() | Qt::ShiftModifier, Qt::Key_Tab) : key->keyCombination();
+    const auto sequence = QKeySequence(combination).toString(QKeySequence::PortableText);
+    const auto action = playbackBindings_.value(sequence).toString();
+    if (!action.isEmpty()) {
+      const bool repeatable = action == "seekBack" || action == "seekForward" ||
+          action == "volumeUp" || action == "volumeDown" || action == "slower" || action == "faster";
+      if (event->type() == QEvent::KeyPress && (!key->isAutoRepeat() || repeatable))
+        emit shortcutPressed(action);
       key->accept();
       return true;
     }

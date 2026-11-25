@@ -101,17 +101,17 @@ RowLayout {
     onVisibleChanged: if (!visible) { childrenPopup.close(); ancestorsMenu.close(); drivesPopup.close(); editing = false }
     Tool {
         objectName: "folderBack"; iconName: "return"; enabled: root.controller.canBack
-        hint: Theme.t("返回 · Alt+左", "Back · Alt+Left", "返回 · Alt+左")
+        hint: Theme.t("返回", "Back", "返回") + KeyBindings.hint("back")
         onClicked: { root.beforeNavigate(); root.controller.history(-1) }
     }
     Tool {
         objectName: "folderForward"; iconName: "return"; iconRotation: 180; enabled: root.controller.canForward
-        hint: Theme.t("前进 · Alt+右", "Forward · Alt+Right", "前進 · Alt+右")
+        hint: Theme.t("前进", "Forward", "前進") + KeyBindings.hint("forward")
         onClicked: { root.beforeNavigate(); root.controller.history(1) }
     }
     Tool {
         objectName: "folderUp"; iconName: "return"; iconRotation: 90; enabled: root.crumbs.length > 1
-        hint: Theme.t("上级目录 · Alt+上", "Parent · Alt+Up", "上層目錄 · Alt+上")
+        hint: Theme.t("上级目录", "Parent", "上層目錄") + KeyBindings.hint("parent")
         onClicked: { root.beforeNavigate(); root.controller.parentDirectory() }
     }
     Tool {
@@ -197,7 +197,7 @@ RowLayout {
                 id: editLocation; objectName: "editLocation"
                 Layout.fillWidth: true; Layout.minimumWidth: root.crumbs.length ? 12 : 80
                 quiet: true; text: root.crumbs.length ? "" : Theme.t("输入目录路径", "Enter folder path", "輸入目錄路徑")
-                hint: Theme.t("编辑完整路径 · Ctrl+L", "Edit full path · Ctrl+L", "編輯完整路徑 · Ctrl+L")
+                hint: Theme.t("编辑完整路径", "Edit full path", "編輯完整路徑") + KeyBindings.hint("address")
                 onClicked: root.addressFocus()
             }
         }

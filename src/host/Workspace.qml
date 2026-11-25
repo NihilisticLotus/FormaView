@@ -123,15 +123,15 @@ Item {
     onNarrowChanged: { if (narrow && hasFocusWithin(files)) returnFileFocus(); else if (!narrow && !videoWorkspace && drawer.visible) drawer.close() }
     function editing(): bool { const item = root.Window.window.activeFocusItem; return !!item && (item.hasOwnProperty("inputMethodComposing") || item.hasOwnProperty("selectByMouse")) }
     readonly property bool tabShortcutsEnabled: currentPage === "assets" && !!openedPath && !editing()
-        && !drawer.visible && !compactInspector.visible && !(root.Window.window?.frostDepth > 0)
-    Shortcut { sequence: "Ctrl+W"; enabled: root.tabShortcutsEnabled; autoRepeat: false; onActivated: root.closeAssetTab(root.openedPath) }
-    Shortcut { sequence: "Ctrl+Tab"; enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(1) }
-    Shortcut { sequence: "Ctrl+Shift+Tab"; enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(-1) }
-    Shortcut { sequence: "Ctrl+O"; enabled: !root.settingsVisible; onActivated: fileDialog.present() }
-    Shortcut { sequence: "Ctrl+L"; enabled: !root.settingsVisible; onActivated: root.openAddress() }
-    Shortcut { sequence: "Alt+Left"; enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.history(-1) }
-    Shortcut { sequence: "Alt+Right"; enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.history(1) }
-    Shortcut { sequence: "Alt+Up"; enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.parentDirectory() }
+        && !root.settingsVisible && !drawer.visible && !compactInspector.visible && !(root.Window.window?.frostDepth > 0)
+    Shortcut { sequence: KeyBindings.binding("close"); enabled: root.tabShortcutsEnabled; autoRepeat: false; onActivated: root.closeAssetTab(root.openedPath) }
+    Shortcut { sequence: KeyBindings.binding("nextTab"); enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(1) }
+    Shortcut { sequence: KeyBindings.binding("prevTab"); enabled: root.tabShortcutsEnabled && root.openedAssets.length > 1; onActivated: root.cycleAssetTab(-1) }
+    Shortcut { sequence: KeyBindings.binding("open"); enabled: !root.settingsVisible && (!root.editing() || sequence === "Ctrl+O"); onActivated: fileDialog.present() }
+    Shortcut { sequence: KeyBindings.binding("address"); enabled: !root.settingsVisible && (!root.editing() || sequence === "Ctrl+L"); onActivated: root.openAddress() }
+    Shortcut { sequence: KeyBindings.binding("back"); enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.history(-1) }
+    Shortcut { sequence: KeyBindings.binding("forward"); enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.history(1) }
+    Shortcut { sequence: KeyBindings.binding("parent"); enabled: !root.settingsVisible && !root.editing(); onActivated: root.controller.parentDirectory() }
     Connections {
         target: root.controller
         function onExplorerFileOpened() { root.navigate("assets") }
@@ -472,11 +472,11 @@ Item {
         contentItem: FocusScope {
             focus: true
             Keys.onPressed: event => {
-                if (root.editing() || event.modifiers !== Qt.AltModifier) return
-                if (![Qt.Key_Left, Qt.Key_Right, Qt.Key_Up].includes(event.key)) return
+                const action = KeyBindings.action("workspace", event)
+                if (root.editing() || !["back", "forward", "parent"].includes(action)) return
                 drawerFiles.remember()
-                if (event.key === Qt.Key_Up) root.controller.parentDirectory()
-                else root.controller.history(event.key === Qt.Key_Left ? -1 : 1)
+                if (action === "parent") root.controller.parentDirectory()
+                else root.controller.history(action === "back" ? -1 : 1)
                 event.accepted = true
             }
             ColumnLayout {
@@ -545,9 +545,7 @@ Item {
                   + Theme.t("\nMCP 默认关闭：在设置中应用输入/输出范围后启用，客户端与界面共用同一套预检与任务。",
                             "\nMCP is off by default: apply an input/output scope in settings and enable it. Clients and this window share the same preflight and tasks.",
                             "\nMCP 預設關閉：在設定中套用輸入/輸出範圍後啟用，用戶端與介面共用同一套預檢與工作。")
-                  + Theme.t("\n\nCtrl+O 打开文件 · Ctrl+L 编辑位置 · Esc 返回/关闭弹层\nAlt+← 后退 · Alt+→ 前进 · Alt+↑ 上级\n文件列表内 ↑/↓ 连续浏览 · Ctrl / Shift 多选\n图片：F 适合 · Z 原始像素 · 空格 平铺 · C/R/G/B/A 通道\n模型：F 聚焦 · Home 显示全部 · 空格 播放/暂停（有动画时）",
-                            "\n\nCtrl+O Open · Ctrl+L Location · Esc Back / close popup\nAlt+Left Back · Alt+Right Forward · Alt+Up Parent\nUp/Down Browse in file list · Ctrl / Shift Multi-select\nImage: F Fit · Z Actual pixels · Space Tile · C/R/G/B/A Channels\nModel: F Focus · Home Frame all · Space Play/Pause (when animated)",
-                            "\n\nCtrl+O 開啟檔案 · Ctrl+L 編輯位置 · Esc 返回/關閉彈層\nAlt+← 返回 · Alt+→ 前進 · Alt+↑ 上層\n檔案清單內 ↑/↓ 連續瀏覽 · Ctrl / Shift 多選\n影像：F 符合視窗 · Z 原始像素 · 空白鍵 並排 · C/R/G/B/A 通道\n模型：F 聚焦 · Home 顯示全部 · 空白鍵 播放/暫停（有動畫時）")
+                  + Theme.t("\n\n在“软件设置 → 快捷键”查看或修改当前键位。", "\n\nView or change bindings in Settings → Keyboard shortcuts.", "\n\n在「軟體設定 → 快速鍵」查看或修改目前鍵位。")
         }
     }
     DropArea { anchors.fill: parent; enabled: !root.conversionVisible; onDropped: drop => { if(drop.hasUrls) { if (!preview.subtitleDrop(drop.urls)) root.controller.openUrls(drop.urls); drop.acceptProposedAction() } } }

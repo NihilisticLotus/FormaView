@@ -121,9 +121,9 @@ target_compile_definitions(formaview PRIVATE
     $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:QT_QML_DEBUG>
     $<$<AND:$<BOOL:${FORMAVIEW_QML_PREVIEW}>,$<CONFIG:Debug,RelWithDebInfo>>:FORMAVIEW_QML_SOURCE_DIR="${FORMAVIEW_QML_PREVIEW_SOURCE_DIR}">)
 set_target_properties(formaview PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
-set_source_files_properties(Theme.qml Explain.qml VideoPreferences.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set(desktop_qml FrostEffect.qml FrostRequest.qml PickerBackdrop.qml FrostDialog.qml FrostFileDialog.qml FrostFolderDialog.qml Main.qml GlassPanel.qml VideoPreferences.qml Theme.qml Explain.qml ExplainedText.qml AppIcon.qml FileTypeIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FolderNavigation.qml LibraryFileGroups.qml LibraryWorkspace.qml FilesPane.qml
-    Inspector.qml VideoControlGlass.qml VideoPane.qml PlaybackInfo.qml VideoTimeline.qml VideoPlaylist.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
+set_source_files_properties(Theme.qml Explain.qml VideoPreferences.qml KeyBindings.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set(desktop_qml FrostEffect.qml FrostRequest.qml PickerBackdrop.qml FrostDialog.qml FrostFileDialog.qml FrostFolderDialog.qml Main.qml GlassPanel.qml VideoPreferences.qml KeyBindings.qml Theme.qml Explain.qml ExplainedText.qml AppIcon.qml FileTypeIcon.qml NavButton.qml NavigationRail.qml Tool.qml Field.qml Readout.qml Choice.qml AppPopupMenu.qml AppMenuItem.qml SectionHeader.qml PageTab.qml OptionCheck.qml FormGroup.qml NumberField.qml FolderNavigation.qml LibraryFileGroups.qml LibraryWorkspace.qml FilesPane.qml
+    Inspector.qml VideoControlGlass.qml VideoPane.qml PlaybackInfo.qml VideoTimeline.qml VideoPlaylist.qml PreviewPane.qml TasksPane.qml SettingsDialog.qml GeneralSettings.qml KeyboardSettings.qml SettingsGroup.qml SettingsRow.qml Toggle.qml AppMenu.qml Workspace.qml)
 if(TARGET formaview_models)
     list(APPEND desktop_qml SkeletonComparePane.qml
         AnimationBar.qml AnimationClipChoice.qml AnimationSpeedField.qml CacheTimeline.qml

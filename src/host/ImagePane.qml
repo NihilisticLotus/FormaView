@@ -25,7 +25,7 @@ ColumnLayout {
     Flow {
         Layout.fillWidth: true; Layout.preferredHeight: implicitHeight; Layout.margins: 8; spacing: 4
         Repeater {
-            model: ["RGB · C", "R", "G", "B", "A"]
+            model: ["RGB" + KeyBindings.hint("rgb"), "R", "G", "B", "A"]
             Tool {
                 required property string modelData
                 required property int index
@@ -43,9 +43,9 @@ ColumnLayout {
             enabled: root.session.display.channel === -1 && !!root.mapping[3] && root.session.display.alpha >= 2
             onClicked: root.session.setting("composite", checked)
         }
-        Tool { text: Theme.t("适合 F", "Fit F", "適合 F"); onClicked: view.fit() }
-        Tool { text: "100% Z"; onClicked: view.actual() }
-        Tool { text: Theme.t("平铺 Space", "Tile Space", "平鋪 Space"); checked: root.session.display.tiled; onClicked: root.session.setting("tiled", !checked) }
+        Tool { text: Theme.t("适合", "Fit", "適合") + KeyBindings.hint("imageFit"); onClicked: view.fit() }
+        Tool { text: "100%" + KeyBindings.hint("actual"); onClicked: view.actual() }
+        Tool { text: Theme.t("平铺", "Tile", "平鋪") + KeyBindings.hint("tile"); checked: root.session.display.tiled; onClicked: root.session.setting("tiled", !checked) }
         ExposureSpinBox {
             objectName: "imageExposure"
             visible: root.session.channels.some(c => ["half", "float", "double"].includes(c.type))
@@ -81,17 +81,18 @@ ColumnLayout {
         ImageView {
             id: view; objectName: "imageViewport"; anchors.fill: parent; session: root.session; activeFocusOnTab: true
             Accessible.role: Accessible.Canvas
-            Accessible.name: Theme.t("图片视口；F 适合，Z 原始像素，空格平铺，C/R/G/B/A 通道", "Image viewport; F fit, Z actual pixels, Space tile, C/R/G/B/A channels", "影像視口；F 適合，Z 原始像素，空格平鋪，C/R/G/B/A 通道")
+            Accessible.name: Theme.t("图片视口", "Image viewport", "影像視口")
             Keys.onPressed: event => {
-                if (event.isAutoRepeat || event.modifiers !== Qt.NoModifier || more.visible) return
-                if (event.key === Qt.Key_F) view.fit()
-                else if (event.key === Qt.Key_Z) view.actual()
-                else if (event.key === Qt.Key_Space) root.session.setting("tiled", !root.session.display.tiled)
-                else if (event.key === Qt.Key_C) root.session.setting("channel", -1)
-                else if (event.key === Qt.Key_R) root.session.setting("channel", 0)
-                else if (event.key === Qt.Key_G) root.session.setting("channel", 1)
-                else if (event.key === Qt.Key_B) root.session.setting("channel", 2)
-                else if (event.key === Qt.Key_A) root.session.setting("channel", 3)
+                const action = KeyBindings.action("image", event)
+                if (event.isAutoRepeat || more.visible) return
+                if (action === "imageFit") view.fit()
+                else if (action === "actual") view.actual()
+                else if (action === "tile") root.session.setting("tiled", !root.session.display.tiled)
+                else if (action === "rgb") root.session.setting("channel", -1)
+                else if (action === "R") root.session.setting("channel", 0)
+                else if (action === "G") root.session.setting("channel", 1)
+                else if (action === "B") root.session.setting("channel", 2)
+                else if (action === "A") root.session.setting("channel", 3)
                 else if (event.key === Qt.Key_Escape && root.fixedSample) root.session.setSamplePinned(false)
                 else return
                 event.accepted = true

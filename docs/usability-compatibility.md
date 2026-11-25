@@ -78,6 +78,14 @@ Windows 11、Qt 6.12 Release 实测使用一段 60 秒的 H.264 视频，确认�
 
 验收安装包的安装器提交为 `8f94d0d`，复用已验证的 `8c2f640` 开发运行时，安装包 SHA-256 为 `b46d8402b5a7d287b817c99454426a1630bbba8dc75405c3b9439b2dff9a71f1`。复测脚本见 [verify_shell_upgrade.ps1](../tools/installer-ui/verify_shell_upgrade.ps1)。截图、安装日志与结构化结果存于发布暂存区 `verification/Shell-Upgrade-Icons-20261125/final2/results`。本轮验证范围是按用户安装、图标视图和同一显示器。
 
+## 自定义快捷键与视频片段循环
+
+“软件设置 → 快捷键”按工作区、视频、图片和模型分组。点击键位后按新组合，Backspace 清空该项，Esc 取消录入。保存后立即生效，下次启动会读取已保存的键位。同一组合可分别用于图片和视频，在同一场景中重复绑定时会提示已经占用该组合的操作。
+
+视频逐帧默认使用 D、F。播放或暂停时按 Q 标记起点，移动到更晚的位置按 E 标记终点，播放到终点后会回到起点。W 清除两个标记并继续正常播放。重新按 Q 可以替换起点。播放菜单显示当前键位和两个端点的时间。静音、外挂字幕、全屏、小窗和切换视频也可在设置页绑定。
+
+Windows 桌面回归用例 `videoLoopShortcutSettings` 使用带时间轴的真实视频，覆盖设置循环、实际回跳、清除后越过终点、拒绝冲突、改键保存以及恢复默认。此外，使用本机 60 fps 的长 FLV 验证了远距离跳转后按 F 前进一帧、按 D 返回原帧及恢复播放。深色模式桌面截图已核对，播放设置使用与软件设置一致的圆角面板、主题边线、下拉框和关闭按钮。
+
 ## 参考依据
 
 Windows 文件资源管理器使用 Ctrl+W 关闭当前标签。PowerToys Peek 把文件间导航和预览内容内的操作分开。FormaView 已把方向键用于视频跳转、D/F 用于逐帧，本轮将文件切换安排在 Ctrl 组合键上。[Windows 快捷键](https://support.microsoft.com/en-gb/accessibility/windows/keyboard-shortcuts-in-windows) · [PowerToys Peek](https://learn.microsoft.com/windows/powertoys/peek)

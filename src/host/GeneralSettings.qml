@@ -12,7 +12,7 @@ Item {
     readonly property bool dirty: JSON.stringify(draft) !== savedSnapshot
     function reset(): void {
         controller.refreshExplorerPreferences()
-        draft = {reuseImageWindow: controller.preferences.reuseImageWindow !== false, reuseModelWindow: controller.preferences.reuseModelWindow !== false, reuseVideoWindow: controller.preferences.reuseVideoWindow !== false, language: controller.language, appearance: controller.preferences.appearance || "light", reduceMotion: controller.preferences.reduceMotion === true, density: controller.preferences.density || "standard", videoForward: VideoPreferences.forward, videoBackward: VideoPreferences.backward, defaultAxes: controller.preferences.defaultAxes || "source", defaultUnit: controller.preferences.defaultUnit || "source", defaultImageTarget: controller.preferences.defaultImageTarget || "png", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
+        draft = {shortcuts: KeyBindings.overrides, reuseImageWindow: controller.preferences.reuseImageWindow !== false, reuseModelWindow: controller.preferences.reuseModelWindow !== false, reuseVideoWindow: controller.preferences.reuseVideoWindow !== false, language: controller.language, appearance: controller.preferences.appearance || "light", reduceMotion: controller.preferences.reduceMotion === true, density: controller.preferences.density || "standard", videoForward: VideoPreferences.forward, videoBackward: VideoPreferences.backward, defaultAxes: controller.preferences.defaultAxes || "source", defaultUnit: controller.preferences.defaultUnit || "source", defaultImageTarget: controller.preferences.defaultImageTarget || "png", restoreLayout: controller.preferences.restoreLayout !== false, defaultFilesVisible: controller.preferences.defaultFilesVisible !== false, inspectorMode: controller.preferences.inspectorMode || "auto"}
         savedSnapshot = JSON.stringify(draft)
     }
     function change(key, value): void { const next = Object.assign({}, draft); next[key] = value; draft = next }
@@ -22,6 +22,10 @@ Item {
             if (saved[key] !== draft[key]) controller.preference(key, draft[key])
         if (draft.videoForward !== saved.videoForward) VideoPreferences.forward = draft.videoForward
         if (draft.videoBackward !== saved.videoBackward) VideoPreferences.backward = draft.videoBackward
+        if (JSON.stringify(saved.shortcuts) !== JSON.stringify(draft.shortcuts)) {
+            KeyBindings.overrides = draft.shortcuts
+            KeyBindings.sync()
+        }
         VideoPreferences.sync()
         controller.language = draft.language
         savedSnapshot = JSON.stringify(draft)
@@ -196,15 +200,13 @@ Item {
                         }
                     }
                 }
-                SettingsGroup {
-                    visible: root.section === "keys"; title: Theme.t("工作区与播放","Workspace and playback","工作區與播放")
-                    Repeater {
-                        model: [[Theme.t("打开文件","Open file","開啟檔案"),"Ctrl + O"],[Theme.t("目录地址","Folder address","目錄位址"),"Ctrl + L"],[Theme.t("下一文件标签","Next file tab","下一檔案分頁"),"Ctrl + Tab"],[Theme.t("上一文件标签","Previous file tab","上一檔案分頁"),"Ctrl + Shift + Tab"],[Theme.t("关闭文件标签","Close file tab","關閉檔案分頁"),"Ctrl + W"],[Theme.t("播放 / 暂停","Play / pause","播放 / 暫停"),"Space"],[Theme.t("上一帧 / 下一帧","Previous / next frame","上一幀 / 下一幀"),"D / F   ·   , / ."],[Theme.t("调整音量","Volume","調整音量"),"↑  /  ↓"]]
-                        delegate: SettingsRow {
-                            required property var modelData
-                            label: modelData[0]
-                            Label { text: modelData[1]; color: Theme.text }
-                        }
+                Loader {
+                    active: root.section === "keys"
+                    visible: active
+                    Layout.fillWidth: true
+                    sourceComponent: KeyboardSettings {
+                        custom: root.draft.shortcuts ?? ({})
+                        onEdited: value => root.change("shortcuts", value)
                     }
                 }
                 SettingsGroup {
