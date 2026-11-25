@@ -16,6 +16,7 @@ class VideoSession : public QQuickItem {
   Q_OBJECT
   Q_PROPERTY(QString source READ source WRITE setSource NOTIFY sourceChanged)
   Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
+  Q_PROPERTY(QVariantList tracks READ tracks NOTIFY tracksChanged)
   Q_PROPERTY(QVariantMap playbackInfo READ playbackInfo NOTIFY playbackInfoChanged)
   Q_PROPERTY(QString error READ error NOTIFY errorChanged)
   Q_PROPERTY(bool playbackKeysEnabled MEMBER playbackKeysEnabled_)
@@ -25,6 +26,7 @@ public:
   ~VideoSession() override;
   QString source() const { return source_; }
   QVariantMap status() const { return status_; }
+  QVariantList tracks() const { return status_.value("track-list").toList(); }
   QVariantMap playbackInfo() const { return playbackInfo_; }
   Q_INVOKABLE void samplePlaybackInfo();
   Q_INVOKABLE void clearPlaybackInfo();
@@ -52,6 +54,7 @@ signals:
   void shortcutPressed(const QString &action);
   void sourceChanged();
   void statusChanged();
+  void tracksChanged();
   void playbackInfoChanged();
   void errorChanged();
   void screenshotSaved(const QString &path);

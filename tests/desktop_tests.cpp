@@ -1385,6 +1385,35 @@ private slots:
     QTRY_VERIFY(selected().isEmpty());
     s->toggleSubtitles();
     QTRY_VERIFY(selected().value("title").toString().contains("简"));
+
+    const auto click = [&](QQuickItem *control) {
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene(control->boundingRect().center()).toPoint());
+    };
+    auto *pane = item("videoPlayerPane");
+    pane->setProperty("controlsShown", true);
+    QTRY_VERIFY(item("videoSubtitleTrackButton"));
+    click(item("videoSubtitleTrackButton"));
+    QTRY_VERIFY(item("videoSubtitleRow1"));
+    // On a long list the active Chinese track is near the bottom. Scroll to
+    // the first language through the menu before clicking its actual row.
+    auto *row = item("videoSubtitleRow1");
+    auto *list = row->parentItem()->parentItem();
+    QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+    QTRY_VERIFY(row->mapToScene(row->boundingRect().center()).y() >
+                list->mapToScene(QPointF()).y());
+    click(row);
+    QTRY_VERIFY(selected().value("lang").toString().startsWith("en"));
+    QVERIFY(s->status().value("pause").toBool());
+    QCOMPARE(pane->property("subtitleIndex").toInt(), 1);
+    pane->setProperty("controlsShown", true);
+    click(item("videoSubtitleTrackButton"));
+    QTRY_VERIFY(item("videoSubtitleRow0"));
+    click(item("videoSubtitleRow0"));
+    QTRY_COMPARE(pane->property("subtitleIndex").toInt(), 0);
+    s->toggleSubtitles();
+    QTRY_COMPARE(pane->property("subtitleIndex").toInt(), 1);
+    QVERIFY(selected().value("lang").toString().startsWith("en"));
   }
   void videoPlaylistViews() {
     QTemporaryDir media(root_ + "/video-list-XXXXXX");

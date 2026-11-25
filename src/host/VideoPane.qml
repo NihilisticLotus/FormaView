@@ -32,8 +32,19 @@ FocusScope {
     property bool infoShown: false
     property bool controlsShown: true
     readonly property bool playlistVisible: mode === "normal" && prefs.playlistOpen && width >= 700
-    property var audioTracks: (stateMap["track-list"] || []).filter(t => t.type === "audio")
-    property var subtitles: (stateMap["track-list"] || []).filter(t => t.type === "sub")
+    readonly property var audioTracks: video.tracks.filter(t => t.type === "audio")
+    readonly property var subtitles: video.tracks.filter(t => t.type === "sub")
+    readonly property int subtitleIndex: stateMap["sub-visibility"] === false ? 0 : subtitles.findIndex(t => t.selected) + 1
+    readonly property var subtitleLabels: [qsTr("关闭字幕")].concat(subtitles.map(t => {
+        const name = t.title || t.lang || qsTr("字幕")
+        const language = t.title && t.lang && t.lang !== t.title ? " · " + t.lang : ""
+        return t.id + "  " + name + language + (t.external ? qsTr("（外挂）") : "")
+    }))
+    function chooseSubtitle(index) {
+        if (index > 0 && index <= subtitles.length)
+            video.setOption("sid", subtitles[index - 1].id)
+        video.setOption("sub-visibility", index > 0 ? "yes" : "no")
+    }
     function format(t) {
         const ms = Math.max(0, Math.round(t * 1000));
         return Math.floor(ms / 3600000) + ":" + String(Math.floor(ms / 60000) % 60).padStart(2, "0") + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0") + "." + String(ms % 1000).padStart(3, "0");
@@ -373,7 +384,7 @@ FocusScope {
             }
             playbackKeysEnabled: surface.visible && surface.enabled && !root.textOrPopupFocused()
                                   && !(surface.Window.window?.frostDepth > 0)
-                                  && !more.visible && !rates.visible && !settings.visible && !playlist.menuOpen
+                                  && !more.visible && !rates.visible && !subtitleMenu.visible && !settings.visible && !playlist.menuOpen
                                   && !jump.visible && !folder.visible && !subDialog.visible
             onSourceChanged: {
                 if (root.mode === "hdr") {
@@ -492,7 +503,7 @@ FocusScope {
             anchors.right: parent.right
             anchors.margins: inset
             height: rows.implicitHeight + (compact ? 14 : 22)
-            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || more.visible || rates.visible
+            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || more.visible || rates.visible || subtitleMenu.visible
             readonly property bool keyboardFocus: activeFocus && !!surface.Window.window?.activeFocusItem?.visualFocus
             onInteractingChanged: if (!interacting) root.revealControls()
             visible: root.controlsShown || interacting
@@ -679,8 +690,18 @@ FocusScope {
                             hint: qsTr("显示 / 隐藏字幕") + KeyBindings.hint("captions")
                             checkable: true
                             enabled: root.subtitles.length > 0
-                            checked: root.subtitles.some(t => t.selected) && root.stateMap["sub-visibility"] !== false
+                            checked: root.subtitleIndex > 0
                             onClicked: video.toggleSubtitles()
+                        }
+                        Tool {
+                            id: subtitleButton
+                            objectName: "videoSubtitleTrackButton"
+                            quiet: true
+                            visible: bar.width >= 780
+                            enabled: root.subtitles.length > 0
+                            iconName: "collapse"
+                            hint: qsTr("选择字幕轨道")
+                            onClicked: subtitleMenu.open()
                         }
                         Tool {
                             quiet: true
@@ -722,6 +743,31 @@ FocusScope {
             }
         }
         PlaybackMenu {
+            id: subtitleMenu
+            dock: bar
+            trigger: subtitleButton.visible ? subtitleButton : menuButton
+            menuWidth: 300
+            height: Math.min(implicitHeight, 320, Math.max(80, dock.y - 16))
+            onOpened: {
+                currentIndex = root.subtitleIndex
+                contentItem.positionViewAtIndex(currentIndex, ListView.Contain)
+            }
+            Instantiator {
+                model: root.subtitleLabels.length
+                delegate: PlaybackMenuItem {
+                    required property int index
+                    objectName: "videoSubtitleRow" + index
+                    text: (index === root.subtitleIndex ? "✓   " : "     ") + root.subtitleLabels[index]
+                    Accessible.name: root.subtitleLabels[index]
+                    Accessible.checkable: true
+                    Accessible.checked: index === root.subtitleIndex
+                    onTriggered: root.chooseSubtitle(index)
+                }
+                onObjectAdded: (index, row) => subtitleMenu.insertItem(index, row)
+                onObjectRemoved: (index, row) => subtitleMenu.removeItem(row)
+            }
+        }
+        PlaybackMenu {
             id: more
             PlaybackMenuItem {
                 text: qsTr("播放信息") + KeyBindings.hint("info")
@@ -736,6 +782,11 @@ FocusScope {
             PlaybackMenuItem {
                 text: qsTr("截图") + KeyBindings.hint("shot")
                 onTriggered: root.shot()
+            }
+            PlaybackMenuItem {
+                text: qsTr("选择字幕轨道…")
+                enabled: root.subtitles.length > 0
+                onTriggered: Qt.callLater(() => subtitleMenu.open())
             }
             PlaybackMenuItem {
                 text: qsTr("外挂字幕…") + KeyBindings.hint("loadSub")
@@ -828,12 +879,10 @@ FocusScope {
                     }
                     Choice {
                         Layout.fillWidth: true
-                        model: [qsTr("关闭")].concat(root.subtitles.map(t => (t.title || t.lang || qsTr("字幕")) + " " + t.id))
-                        currentIndex: root.subtitles.findIndex(t => t.selected) + 1
-                        onActivated: i => {
-                            video.setOption("sid", i === 0 ? "no" : root.subtitles[i - 1].id)
-                            if (i > 0) video.setOption("sub-visibility", "yes")
-                        }
+                        enabled: root.subtitles.length > 0
+                        labels: root.subtitleLabels
+                        currentIndex: root.subtitleIndex
+                        onActivated: i => root.chooseSubtitle(i)
                     }
                     RowLayout {
                         Label {

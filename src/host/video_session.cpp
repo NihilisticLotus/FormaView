@@ -434,6 +434,7 @@ void VideoSession::openSession(const QString &path, bool switchingWindow, bool h
   source_ = path;
   engine_.reset();
   status_.clear();
+  emit tracksChanged();
   clearPlaybackInfo();
   pendingPlaybackOptions_.clear();
   screenshots_.clear();
@@ -1108,6 +1109,8 @@ void VideoSession::events() {
       }
       if (status_.value(p->name) != v) {
         status_.insert(p->name, v);
+        if (qstrcmp(p->name, "track-list") == 0)
+          emit tracksChanged();
         changed = true;
       }
     } else if(ev->event_id==MPV_EVENT_PLAYBACK_RESTART && alignAck_ && alignRequest_ && window()){
