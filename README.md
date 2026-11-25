@@ -33,6 +33,8 @@ v0.2.0 Windows x64 开发测试版支持本地 FLV、MP4、M4V、MOV、MKV、Web
 
 右侧播放列表默认使用紧凑行。点击“播放列表”标题旁的视图按钮可切换到缩略图模式，按视频画面找片。软件会记住上次选择的模式。
 
+从资源管理器把一个或多个视频拖到右侧播放列表，可按拖入顺序追加到队尾。重复文件会跳过，当前视频继续播放。可以从不同目录追加，再用“上一个视频”和“下一个视频”按列表顺序切换。要直接打开文件，可拖到视频画面上。
+
 对于至少 64 MiB、缺少关键帧表的本地 H.264 FLV，播放器会读取关键帧时间与文件位置，并在应用缓存中保存索引。远跳时从目标附近的关键帧解码到所选画面，暂停后仍可逐帧前进或后退。首次建索引最多等待约 3 秒。较慢磁盘上若超时，当前会话先用普通定位，后台完成的索引供下次打开使用。文件大小或修改时间变化会重新建索引。
 
 Windows 视频构建使用 Qt 6.12.0 MSVC x64、GuiPrivate 和 D3D11。配置 CMake 时将 `FORMAVIEW_MPV_ROOT` 指向包含 Windows D3D11 render API 的 LGPL `libmpv-2.dll` 所在目录，将 `FORMAVIEW_FFMPEG_ROOT` 指向包含 bin、include、lib 的共享开发包。v0.2 的 libmpv 和五个 FFmpeg DLL 采用锁定源码重建。六个 DLL 的 SHA-256 及构建镜像见 [媒体构建清单](third_party/media-builds.json)，对应源码包为 `FormaView-0.2.0-media-sources.zip`。普通素材走 mpv 精确定位；验证过的 HEVC MP4 编码参数另启用有限邻帧缓存。HDR10 全屏和杜比直通取决于屏幕、系统和音频端点。[mpv 源码](https://github.com/mpv-player/mpv/tree/f92afa75c) · [FFmpeg 共享构建](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases)

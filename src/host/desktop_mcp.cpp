@@ -347,8 +347,19 @@ class Session final : public QObject {
           if (index < 0 && desktop.busy()) return {};
           require(index >= 0, ErrorCode::InvalidArgument, "Current folder playlist is unavailable");
           QJsonArray entries;
-          for (int i = offset; i < list->rowCount() && entries.size() < 100; ++i)
-            entries.append(QJsonObject{{"index", i}, {"path", list->at(i)->path}});
+          const auto currentFolder = QFileInfo(path).absolutePath();
+          for (int i = offset; i < list->rowCount() && entries.size() < 100; ++i) {
+            const auto &entryPath = list->at(i)->path;
+            if (QFileInfo(entryPath).absolutePath() != currentFolder) {
+              try {
+                (void)InputIdentityLease::open(scope, entryPath.toStdWString());
+              } catch (const skeletal::Failure &) {
+                entries.append(QJsonObject{{"index", i}, {"available", false}});
+                continue;
+              }
+            }
+            entries.append(QJsonObject{{"index", i}, {"path", entryPath}});
+          }
           return QJsonObject{{"items", entries}, {"current", index}, {"total", list->rowCount()}};
         };
         return;

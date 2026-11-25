@@ -15,6 +15,7 @@ FocusScope {
     signal openAdjacent(int direction)
     signal closeVideo()
     readonly property alias player: video
+    readonly property alias playlistPanel: playlist
     readonly property var stateMap: video.status
     readonly property real position: Number(stateMap["visible-time"] ?? stateMap["time-pos"] ?? 0)
     readonly property real duration: Number(stateMap.duration || 0)
@@ -197,7 +198,7 @@ FocusScope {
     }
     onSourceChanged: {
         if (source) Qt.callLater(() => {
-            if (root.visible) {
+            if (root?.visible) {
                 root.focusPlayback()
                 root.revealControls()
             }

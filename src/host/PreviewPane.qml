@@ -26,6 +26,7 @@ Rectangle {
         if (controller.model && controller.model.playing) controller.model.togglePlay()
     }
     function subtitleDrop(urls) { return videoLoader.item ? videoLoader.item.subtitleDrop(urls) : false }
+    readonly property Item playlistPanel: videoLoader.item ? videoLoader.item.playlistPanel : null
     function focusLayoutControl() {
         if (videoLoader.item)
             videoLoader.item.focusPlayback()

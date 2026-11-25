@@ -1210,6 +1210,87 @@ private slots:
     save("video-playback-settings");
     QVERIFY(QMetaObject::invokeMethod(settings, "close"));
   }
+  void videoDropAppendsToPlaylist() {
+    QTemporaryDir media(root_ + "/video-drop-XXXXXX");
+    QVERIFY(media.isValid());
+    const auto clip = QFINDTESTDATA("fixtures/seek-clock.mp4");
+    const auto other = media.filePath("other");
+    QVERIFY(QDir().mkpath(other));
+    const auto first = media.filePath("01.mp4");
+    const auto second = media.filePath("02.mp4");
+    const auto third = other + "/02.mp4";
+    const auto fourth = other + "/01.mp4";
+    const auto sibling = other + "/03.mp4";
+    for (const auto &path : {first, second, third, fourth, sibling})
+      QVERIFY(QFile::copy(clip, path));
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->resize(original);
+    });
+    window_->resize(1280, 800);
+    desktop_->openPath(first);
+    auto *list = desktop_->videos();
+    QTRY_COMPARE(list->rowCount(), 2);
+    QTRY_VERIFY(item("videoPlaylist") && item("videoPlaylist")->isVisible());
+    const auto revision = desktop_->sessionRevision();
+    auto *session = qobject_cast<VideoSession *>(item("videoSession"));
+    QVERIFY(session);
+    const bool hasPlayer = QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll");
+    const auto position = [&] { return session->status().value("time-pos", -1).toDouble(); };
+    if (hasPlayer) {
+      QTRY_VERIFY(session->status().value("duration").toDouble() > 10);
+      session->setOption("pause", "yes");
+      QTRY_VERIFY(session->status().value("pause").toBool());
+      session->seek(10, false);
+      QTRY_VERIFY(!session->seekPending() && std::abs(position() - 10.) < .02);
+    }
+    auto dropFiles = [&](QQuickItem *target, const QStringList &paths) {
+      QMimeData mime;
+      QList<QUrl> urls;
+      for (const auto &path : paths) urls.append(QUrl::fromLocalFile(path));
+      mime.setUrls(urls);
+      const auto point = target->mapToScene(target->boundingRect().center());
+      QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+      QCoreApplication::sendEvent(window_, &enter);
+      QDropEvent drop(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+      QCoreApplication::sendEvent(window_, &drop);
+      return drop.isAccepted();
+    };
+    auto *panel = item("videoPlaylist");
+    QVERIFY(dropFiles(panel, {third, second, other, fourth, third, small_ + "/唯一图片.png"}));
+    QTRY_COMPARE(list->rowCount(), 4);
+    QVERIFY(dropFiles(panel, {third}));
+    QCOMPARE(list->rowCount(), 4);
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    QCOMPARE(desktop_->asset().value("path").toString(), first);
+    if (hasPlayer) {
+      QVERIFY(session->status().value("pause").toBool());
+      QVERIFY(std::abs(position() - 10.) < .02);
+      session->setOption("pause", "no");
+      QTRY_VERIFY(position() > 10.);
+    }
+    const auto late = media.filePath("later.mp4");
+    QVERIFY(QFile::copy(clip, late));
+    QVERIFY(dropFiles(panel, {late}));
+    if (hasPlayer) {
+      QVERIFY(!session->status().value("pause").toBool());
+    }
+    QCOMPARE(desktop_->sessionRevision(), revision);
+    QStringList order;
+    for (int i = 0; i < list->rowCount(); ++i)
+      order << list->index(i, 0).data(FileList::Path).toString();
+    QCOMPARE(order, QStringList({first, second, third, fourth, late}));
+    for (const auto &path : {second, third, fourth}) {
+      desktop_->adjacentVideo(1);
+      QTRY_COMPARE(desktop_->asset().value("path").toString(), path);
+      QTRY_VERIFY(!desktop_->busy());
+      QCOMPARE(list->rowCount(), 5);
+    }
+    QVERIFY(dropFiles(item("videoViewport"), {sibling}));
+    QTRY_COMPARE(desktop_->asset().value("path").toString(), sibling);
+    QTRY_COMPARE(list->rowCount(), 3);
+  }
   void videoPlaylistViews() {
     QTemporaryDir media(root_ + "/video-list-XXXXXX");
     QVERIFY(media.isValid());

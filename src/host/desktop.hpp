@@ -34,6 +34,7 @@ public:
   QVariant data(const QModelIndex &, int) const override;
   QHash<int, QByteArray> roleNames() const override;
   void replace(std::vector<FileEntry> entries);
+  void append(std::vector<FileEntry> entries);
   void select(int row, int modifiers);
   void restoreSelection(const QSet<QString> &paths);
   const FileEntry *at(int row) const;
@@ -154,6 +155,7 @@ public:
   Q_INVOKABLE void openPath(const QString &path);
   Q_INVOKABLE void adjacentVideo(int direction);
   Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
+  Q_INVOKABLE bool appendVideoUrls(const QList<QUrl> &urls);
   Q_INVOKABLE void cancel(const QString &id);
   Q_INVOKABLE void retry(const QString &id);
   Q_INVOKABLE void copy(const QString &text);
@@ -210,6 +212,7 @@ private:
   FileList files_;
   FileList videos_;
   QString videoDirectory_;
+  bool manualVideoPlaylist_{};
   std::function<QString()> desktopLocation_;
   std::unique_ptr<QObject> image_;
   std::unique_ptr<QObject> model_;

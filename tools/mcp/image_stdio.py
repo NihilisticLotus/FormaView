@@ -594,7 +594,7 @@ async def capture_video_frame(asset_id: str, output: str, subtitles: bool = True
 @desktop_tool()
 async def video_playlist(asset_id: str, action: Literal['list','select','next','previous'] = 'list',
                          index: int | None = None, offset: int = 0) -> dict[str, Any]:
-    """Page the current folder playlist (100 entries per page), select a zero-based index or navigate. Switching returns a new asset_id."""
+    """Page the video playlist (100 entries per page), select a zero-based index or navigate. Unavailable cross-folder entries omit the path. Switching returns a new asset_id."""
     return await native_request(dict(version=1, operation='desktop.playlist', asset_id=asset_id, action=action, index=index, offset=offset))
 
 

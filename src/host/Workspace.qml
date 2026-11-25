@@ -548,5 +548,25 @@ Item {
                   + Theme.t("\n\n在“软件设置 → 快捷键”查看或修改当前键位。", "\n\nView or change bindings in Settings → Keyboard shortcuts.", "\n\n在「軟體設定 → 快速鍵」查看或修改目前鍵位。")
         }
     }
-    DropArea { anchors.fill: parent; enabled: !root.conversionVisible; onDropped: drop => { if(drop.hasUrls) { if (!preview.subtitleDrop(drop.urls)) root.controller.openUrls(drop.urls); drop.acceptProposedAction() } } }
+    DropArea {
+        id: workspaceDrop
+        anchors.fill: parent
+        enabled: !root.conversionVisible
+        onDropped: drop => {
+            if (!drop.hasUrls) return
+            if (preview.subtitleDrop(drop.urls)) {
+                drop.acceptProposedAction()
+                return
+            }
+            const panel = preview.playlistPanel
+            if (root.videoWorkspace && panel && panel.visible
+                && panel.contains(panel.mapFromItem(workspaceDrop, drop.x, drop.y))) {
+                if (root.controller.appendVideoUrls(drop.urls)) drop.accept(Qt.CopyAction)
+                else drop.accepted = false
+                return
+            }
+            root.controller.openUrls(drop.urls)
+            drop.acceptProposedAction()
+        }
+    }
 }

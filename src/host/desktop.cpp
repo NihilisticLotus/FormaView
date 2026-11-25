@@ -25,6 +25,7 @@
 #include <QUrl>
 #include <algorithm>
 #include <filesystem>
+#include <iterator>
 
 namespace {
 QString localPath(const QString &input) {
@@ -140,6 +141,15 @@ void FileList::replace(std::vector<FileEntry> entries) {
   beginResetModel();
   entries_ = std::move(entries);
   endResetModel();
+}
+void FileList::append(std::vector<FileEntry> entries) {
+  if (entries.empty())
+    return;
+  const auto first = rowCount();
+  beginInsertRows({}, first, first + static_cast<int>(entries.size()) - 1);
+  entries_.insert(entries_.end(), std::make_move_iterator(entries.begin()),
+                  std::make_move_iterator(entries.end()));
+  endInsertRows();
 }
 int FileList::indexOf(const QString &path) const {
   const auto it = std::find_if(entries_.begin(), entries_.end(),
@@ -795,7 +805,10 @@ void Desktop::refreshVideoPlaylist() {
                         ? asset_.value("path").toString()
                         : QString{};
   const auto folder = path.isEmpty() ? QString{} : QFileInfo(path).absolutePath();
-  if (folder != videoDirectory_) {
+  if (manualVideoPlaylist_ && !path.isEmpty() && videos_.indexOf(path) >= 0)
+    return;
+  if (manualVideoPlaylist_ || folder != videoDirectory_) {
+    manualVideoPlaylist_ = false;
     videoDirectory_ = folder;
     videos_.replace({});
   }
@@ -818,6 +831,43 @@ void Desktop::refreshVideoPlaylist() {
 void Desktop::openUrls(const QList<QUrl> &urls) {
   if (!urls.isEmpty() && urls.first().isLocalFile())
     openPath(urls.first().toLocalFile());
+}
+bool Desktop::appendVideoUrls(const QList<QUrl> &urls) {
+  if (asset_.value("kind") != QStringLiteral("video"))
+    return false;
+  QSet<QString> known;
+  for (int i = 0; i < videos_.rowCount(); ++i)
+    known.insert(videos_.at(i)->path.toCaseFolded());
+  const auto current = asset_.value("path").toString();
+  const bool seedCurrent = !known.contains(current.toCaseFolded());
+  known.insert(current.toCaseFolded());
+
+  std::vector<FileEntry> added;
+  const auto add = [&](const QFileInfo &info) {
+    added.push_back({info.absoluteFilePath(), info.fileName(), QStringLiteral("video"),
+                     info.size(), info.lastModified().toMSecsSinceEpoch(), false});
+  };
+  bool accepted = false;
+  for (const auto &url : urls) {
+    if (!url.isLocalFile())
+      continue;
+    const QFileInfo info(QDir::cleanPath(url.toLocalFile()));
+    if (kind(info.fileName()) != QStringLiteral("video") || !info.isFile())
+      continue;
+    accepted = true;
+    const auto key = info.absoluteFilePath().toCaseFolded();
+    if (known.contains(key))
+      continue;
+    if (added.empty() && seedCurrent)
+      add(QFileInfo(current));
+    known.insert(key);
+    add(info);
+  }
+  if (!added.empty()) {
+    manualVideoPlaylist_ = true;
+    videos_.append(std::move(added));
+  }
+  return accepted;
 }
 QStringList Desktop::selectedImages() const {
   QStringList result;
@@ -1093,7 +1143,7 @@ void Desktop::publish(Job &job) {
         Qt::QueuedConnection);
   } else {
     asset_ = job.result->asset;
-    if (asset_.value("kind") != QStringLiteral("video") ||
+    if (manualVideoPlaylist_ || asset_.value("kind") != QStringLiteral("video") ||
         QFileInfo(job.path).absolutePath() != videoDirectory_)
       refreshVideoPlaylist();
 #ifdef FORMAVIEW_MODEL_UI
