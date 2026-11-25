@@ -28,9 +28,51 @@
 #include <iterator>
 #ifdef Q_OS_WIN
 #include <shlobj.h>
+#include <exdisp.h>
+#include <shlguid.h>
+#include <wrl/client.h>
 #endif
 
 namespace {
+#ifdef Q_OS_WIN
+// Explorer can populate a newly opened view after SHOpenFolderAndSelectItems
+// has returned. Select in the ready view without reopening or activating it.
+bool selectInExplorerView(PCIDLIST_ABSOLUTE parent, PCUITEMID_CHILD child) {
+  using Microsoft::WRL::ComPtr;
+  ComPtr<IShellWindows> windows;
+  if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL,
+                              IID_PPV_ARGS(&windows)))) return true;
+  long count = 0;
+  windows->get_Count(&count);
+  for (long i = 0; i < count; ++i) {
+    VARIANT index{};
+    index.vt = VT_I4;
+    index.lVal = i;
+    ComPtr<IDispatch> dispatch;
+    ComPtr<IServiceProvider> provider;
+    ComPtr<IShellBrowser> browser;
+    ComPtr<IShellView> view;
+    ComPtr<IFolderView> folderView;
+    ComPtr<IPersistFolder2> folder;
+    PIDLIST_ABSOLUTE location = nullptr;
+    if (FAILED(windows->Item(index, &dispatch)) || !dispatch || FAILED(dispatch.As(&provider)) ||
+        FAILED(provider->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) ||
+        FAILED(browser->QueryActiveShellView(&view)) || FAILED(view.As(&folderView)) ||
+        FAILED(folderView->GetFolder(IID_PPV_ARGS(&folder))) ||
+        FAILED(folder->GetCurFolder(&location)) || !location) continue;
+    const bool match = ILIsEqual(location, parent);
+    CoTaskMemFree(location);
+    if (!match) continue;
+    int selected = 0, items = 0;
+    if (SUCCEEDED(folderView->ItemCount(SVGIO_SELECTION, &selected)) && selected > 0)
+      return true;
+    if (SUCCEEDED(folderView->ItemCount(SVGIO_ALLVIEW, &items)) && items > 0)
+      view->SelectItem(child, SVSI_SELECT | SVSI_FOCUSED | SVSI_ENSUREVISIBLE);
+    break;
+  }
+  return false;
+}
+#endif
 QString localPath(const QString &input) {
   if (input.trimmed().isEmpty())
     return {};
@@ -941,11 +983,23 @@ void Desktop::copy(const QString &text) {
 void Desktop::reveal(const QString &path) {
   if (path.isEmpty()) return;
 #ifdef Q_OS_WIN
+  revealTimer_.stop();
+  revealTimer_.disconnect(this);
   const auto native = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath()).toStdWString();
-  if (const auto item = ILCreateFromPathW(native.c_str())) {
-    const auto result = SHOpenFolderAndSelectItems(item, 0, nullptr, 0);
-    ILFree(item);
-    if (SUCCEEDED(result)) return;
+  using Pidl = std::shared_ptr<std::remove_pointer_t<LPITEMIDLIST>>;
+  const Pidl item(ILCreateFromPathW(native.c_str()), ILFree);
+  if (item && SUCCEEDED(SHOpenFolderAndSelectItems(item.get(), 0, nullptr, 0))) {
+    const Pidl parent(ILCloneFull(item.get()), ILFree);
+    if (parent && ILRemoveLastID(parent.get())) {
+      connect(&revealTimer_, &QTimer::timeout, this, [this, item, parent, attempts = 0]() mutable {
+        if (selectInExplorerView(parent.get(), ILFindLastID(item.get())) || ++attempts >= 8) {
+          revealTimer_.stop();
+          revealTimer_.disconnect(this);
+        }
+      });
+      revealTimer_.start(400);
+    }
+    return;
   }
 #endif
   QDesktopServices::openUrl(

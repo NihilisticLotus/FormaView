@@ -223,6 +223,7 @@ private:
   std::vector<Job> jobs_;
   std::shared_ptr<const std::vector<FileEntry>> source_;
   QTimer pollTimer_;
+  QTimer revealTimer_;
   QThreadPool recentWriter_;
   QString directory_, query_, error_, errorTarget_, requested_,
       language_{"zh-CN"};
