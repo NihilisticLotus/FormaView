@@ -30,7 +30,8 @@ async def main():
     service=await asyncio.create_subprocess_exec(str(args.build/'Release/formaview_image_service.exe'),'--scope',str(scope),'--journal',str(journal),'--endpoint',endpoint,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         assert json.loads(await asyncio.wait_for(service.stdout.readline(),15))['ready']
-        async with stdio_client(StdioServerParameters(command=sys.executable,args=[str(args.adapter)],env=env)) as (read,write):
+        command = [str(args.adapter)] if args.adapter.suffix.lower() == '.exe' else [sys.executable, str(args.adapter)]
+        async with stdio_client(StdioServerParameters(command=command[0],args=command[1:],env=env)) as (read,write):
             async with ClientSession(read,write) as client:
                 await client.initialize()
                 async def call(tool,**kwargs):
@@ -46,6 +47,51 @@ async def main():
                         if result['state'] not in ('planning','queued','running'):return result
                         await asyncio.sleep(.05)
                     raise AssertionError('Export service did not finish')
+                jpeg = await call('get_image_capabilities', source_extension='.JpG')
+                assert jpeg['kind'] == 'image' and 'jpeg' in jpeg['output_formats']
+                abc = await call('get_image_capabilities', source_extension='abc')
+                assert abc['output_formats'] == ['fbx'] and 'abc_sample' in abc['frame_export']['options']
+                unsupported = await call('get_image_capabilities', source_extension='mp4')
+                assert unsupported['output_formats'] == []
+
+                async def export(tool, input, filename, **options):
+                    output = args.output / filename
+                    queued = await call(tool, input=str(input), output=str(output), **options)
+                    plan = await terminal('plan', queued['plan_id'])
+                    assert plan['state'] == 'ready' and not output.exists(), plan
+                    job = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                     acknowledge_losses=True, idempotency_key=filename)
+                    done = await terminal('job', job['job_id'])
+                    assert done['state'] == 'succeeded', done
+                    result = done['items'][0]['result']
+                    assert hashlib.sha256(output.read_bytes()).hexdigest() == result['output_sha256']
+                    return result
+
+                png = fixtures / 'pixel.png'
+                await export('plan_image_conversion', png, 'preserved.TIF')
+                source_pixel = await call('read_texture_pixel', path=str(png), x=0, y=0)
+                output_pixel = await call('read_texture_pixel', path=str(args.output/'preserved.TIF'), x=0, y=0)
+                assert output_pixel['channels'] == source_pixel['channels']
+                rejected = await call('plan_image_conversion', input=str(png), output=str(args.output/'unapproved.jpg'))
+                rejected = await terminal('plan', rejected['plan_id'])
+                assert rejected['items'][0]['status'] == 'failed' and not (args.output/'unapproved.jpg').exists()
+                await export('plan_image_conversion', png, 'explicit.JPG', alpha_action='drop', allow_lossy=True)
+                assert (args.output/'explicit.JPG').read_bytes().startswith(b'\xff\xd8')
+
+                glb = fixtures / 'source.glb'
+                wrong_sample = await client.call_tool('plan_fbx_export', dict(
+                    input=str(glb), output=str(args.output/'wrong-sample.fbx'), abc_sample=1))
+                assert wrong_sample.isError and not (args.output/'wrong-sample.fbx').exists()
+                clips = (await call('inspect_model', input=str(glb)))['clips']
+                result = await export('plan_fbx_export', glb, 'unreal-cm.fbx', output_axes='unreal',
+                                      output_unit='cm', clip_ids=[clip['id'] for clip in clips])
+                assert result['output_coordinates']['preset'] == 'unreal'
+                report = args.output / 'unreal-readback.json'
+                subprocess.run([str(args.build/'tests/Release/formaview_scene_export_probe.exe'),
+                                str(args.output/'unreal-cm.fbx'), str(report)], check=True, timeout=30)
+                back = json.loads(report.read_text())
+                assert abs(back['unit'] - .01) < 1e-8 and len(back['clips']) == len(clips)
+
                 items=[]
                 for suffix in ('obj','gltf','glb','pmx','vrm','fbx'):
                     source=str(fixtures/('source.'+suffix))

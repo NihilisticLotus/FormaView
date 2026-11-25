@@ -23,7 +23,8 @@ async def main():
         async with ClientSession(reader, writer, client_info=Implementation(name='FormaView GUI integration', version='1')) as session:
             initialized = await session.initialize()
             tools = await session.list_tools()
-            assert len(tools.tools) == 14, sorted(t.name for t in tools.tools)  # Plain image endpoint configuration.
+            names = {t.name for t in tools.tools}
+            assert len(names) == 16 and {'plan_image_conversion', 'plan_fbx_export'} <= names, names
 
             async def call(name, arguments):
                 result = await session.call_tool(name, arguments)

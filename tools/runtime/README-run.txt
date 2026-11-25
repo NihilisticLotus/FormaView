@@ -32,6 +32,9 @@ This is a functional run directory, not an installer.
   - ABC: Ogawa polygon cache preview and current-sample static FBX export.
 
 MCP（可选 / optional）
+  导出：get_image_capabilities(source_extension) 可按输入后缀查询输出格式。plan_image_conversion
+  按输出后缀和实际通道准备图片转换。plan_fbx_export 支持源坐标或目标软件预设、单位和动画片段。
+  两者返回 plan_id；用 get_image_plan 核对损失后提交 submit_image_job，再用 get_image_job 查看实际输出。
   在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；
   也可在开启前更改目录。首次点击“复制连接配置”，把它添加到支持 stdio 的客户端；之后可重复开关。
   The Windows package includes a standalone stdio adapter. Enable MCP in Settings and add the copied

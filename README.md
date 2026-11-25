@@ -222,7 +222,7 @@ flowchart LR
 
 | 工具 | 用途 |
 |---|---|
-| `get_image_capabilities` | 查询当前运行目录可用的图片读取与转换目标 |
+| `get_image_capabilities` | 查询当前运行目录的转换能力。可传 `source_extension` 按输入扩展名筛选目标格式，模型结果还包含可选坐标系和单位 |
 | `inspect_image` | 检查授权范围内的图片、通道和子资源 |
 | `read_texture_pixel` | 后台读取指定子资源的源通道和解释值，坐标从数据窗口左上角的 (0, 0) 起算 |
 | `open_asset`、`get_playback_state` | 用主程序打开视频或贴图，凭本次返回的素材 ID 查询播放器 |
@@ -235,11 +235,19 @@ flowchart LR
 | `video_ab_loop`、`set_video_filter` | 按秒设置或清除 A–B 循环，调整亮度、对比度、饱和度和锐化。后台模式的滤镜会写入截图，窗口模式沿用播放器的显示滤镜 |
 | `preflight_image`、`convert_image` | 单文件模式下预检并执行一次图片转换 |
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
+| `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
 | `submit_image_job`、`get_image_job`、`list_image_jobs` | 提交并跟踪批量任务 |
 | `cancel_image_work`、`retry_image_plan` | 请求取消任务或为未完成项目建立新的预检计划 |
 | `inspect_model` | 检查模型结构与稳定动画片段 ID |
+| `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧，生成导出计划 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
+
+例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。需要自定义通道映射或合成背景色时可使用 `create_image_plan`。
+
+将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。
+
+两种工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
 
 单文件模式没有持久批次任务语义；端点模式提供目录发现和批量任务。批量计划最多包含 64 个项目。目录发现有数量上限，并会跳过、报告重解析点。取消是异步请求，需继续查询任务直到终态；客户端断开不会自动取消已提交任务。发现目录中的文件只代表扩展名候选，不代表一定可以解码。
 

@@ -94,7 +94,10 @@ async def host_lifetime(_server):
             owned_hosts = window_endpoint = window_process = window_asset = active_endpoint = None
 
 
-server = FastMCP('FormaView', lifespan=host_lifetime, instructions='Open a scoped image or video to obtain an asset_id. Pause before stepping. Use read_texture_pixel directly for stored samples. Conversion requires native preflight and approval.')
+server = FastMCP('FormaView', lifespan=host_lifetime, instructions=(
+    'Open a scoped image or video to obtain an asset_id. Pause before stepping. '
+    'Use read_texture_pixel directly for stored samples. Query get_image_capabilities '
+    'with a source extension for export targets. Conversion requires native preflight and approval.'))
 workers = asyncio.Semaphore(2)
 controls = asyncio.Semaphore(4)
 
@@ -223,13 +226,28 @@ async def native_request(request: dict[str, Any], *, endpoint=None) -> dict[str,
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-async def get_image_capabilities() -> dict[str, Any]:
-    """Query the native host's available readers and conversion targets, shared with the GUI.
+async def get_image_capabilities(source_extension: str | None = None) -> dict[str, Any]:
+    """List native readers/targets, or filter by an input extension such as .JPG, glb or abc.
 
     Availability does not guarantee that a particular file, variant or conversion
     is compatible. Inspect actual data and review preflight before submission.
     """
-    return await native_request({'version': 1, 'operation': 'capabilities'})
+    caps = await native_request({'version': 1, 'operation': 'capabilities'})
+    if source_extension is None or 'error' in caps:
+        return caps
+    ext = source_extension.strip().lower().removeprefix('.')
+    result = {'source_extension': ext, 'kind': 'unsupported', 'output_formats': []}
+    if '.' + ext in caps.get('read_extensions', []):
+        result.update(kind='image', output_formats=caps['write_targets'])
+    else:
+        model = caps.get('model_export', {})
+        sample = model.get('abc_frame_export', {})
+        if ext in model.get('input_formats', []) or ext == sample.get('input'):
+            result.update(kind='model', output_formats=model['output_formats'],
+                          output_axes=model['output_axes'], output_units=model['output_units'])
+            if ext == sample.get('input'):
+                result['frame_export'] = sample
+    return result
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
@@ -282,6 +300,78 @@ async def discover_images(directory: str, recursive: bool = False) -> dict[str, 
 async def get_image_discovery(discovery_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
     """Page a fixed directory-membership snapshot and its excluded reparse points."""
     return await native_request({'version': 1, 'operation': 'get_discovery', 'id': discovery_id, 'offset': offset, 'limit': limit})
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_image_conversion(
+    input: str, output: str, subresource: int = 0,
+    alpha_action: Literal['preserve', 'drop'] = 'preserve',
+    source_alpha: Literal['straight', 'premultiplied'] | None = None,
+    allow_lossy: bool = False, quality: int = 90,
+    output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
+    quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Preflight one image using its real channel names and the output filename's format.
+
+    Preserves alpha and precision by default. RGB JPEG from RGBA needs explicit
+    alpha_action='drop' and allow_lossy=true. If the source alpha mode is unknown,
+    specify source_alpha from its provenance. For custom channel mappings, DDS
+    encoding or compositing use create_image_plan. Review via get_image_plan.
+    """
+    suffix = Path(output).suffix.lower().removeprefix('.')
+    target = {'jpg': 'jpeg', 'jpe': 'jpeg', 'jfif': 'jpeg', 'tif': 'tiff',
+              'rgbe': 'hdr'}.get(suffix, suffix)
+    caps = await get_image_capabilities()
+    if 'error' in caps:
+        return caps
+    if target not in caps['write_targets']:
+        raise ValueError('Choose an output extension for one of: ' + ', '.join(caps['write_targets']))
+    info = await inspect_image(input, subresource, limit=1)
+    if 'error' in info:
+        return info
+    if 'selected_channels' not in info:
+        raise ValueError('Expected an image input. Use plan_fbx_export for models.')
+    names = [channel['name'] for channel in info['selected_channels']]
+    options = {'target': target, 'subresource': subresource, 'source_alpha': source_alpha or info['alpha'],
+               'channels': [{'source': name, 'destination': name} for name in names
+                            if name != 'A' or alpha_action == 'preserve'],
+               'alpha_action': alpha_action, 'allow_lossy': allow_lossy,
+               'quality': quality, 'quantization': quantization}
+    if 'A' in names:
+        options['alpha_channel'] = 'A'
+    if output_scalar is not None:
+        options['output_scalar'] = output_scalar
+    return await create_image_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_fbx_export(
+    input: str, output: str,
+    output_axes: Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity'] = 'source',
+    output_unit: Literal['source', 'cm', 'm', 'mm', 'in'] = 'source',
+    include_mesh: bool = True, clip_ids: list[str] | None = None,
+    animation: str | None = None, reference: str | None = None, abc_sample: int | None = None,
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Preflight one FBX in a named coordinate system and unit. Source conventions are the default.
+
+    Use inspect_model for stable clip IDs. Supply one or more IDs to export animation stacks.
+    Pair PSK/PSKX with animation=PSA, or PSA with reference=PSK/PSKX. For Alembic
+    choose a zero-based sample for a static mesh. Review get_image_plan before submit_image_job.
+    """
+    if Path(output).suffix.lower() != '.fbx':
+        raise ValueError('Choose an .fbx output filename.')
+    source_ext = Path(input).suffix.lower()
+    if abc_sample is not None and source_ext != '.abc':
+        raise ValueError('abc_sample selects a frame from an .abc input.')
+    options = {'target': 'fbx', 'output_axes': output_axes, 'output_unit': output_unit, 'include_mesh': include_mesh}
+    if source_ext in ('.psk', '.pskx', '.psa'):
+        options['coordinates'] = 'actorx-z-up-x-forward-rh-cm'
+    for key, value in [('clip_ids', clip_ids), ('animation', animation), ('reference', reference), ('abc_sample', abc_sample)]:
+        if value is not None:
+            options[key] = value
+    return await create_model_export_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
