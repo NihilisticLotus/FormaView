@@ -470,7 +470,8 @@ void VideoSession::openSession(const QString &path, bool switchingWindow, bool h
     if (!e->stream.attach(e->handle, reinterpret_cast<void *>(reg)))
       e->index.reset();
     else {
-      e->worker = std::make_unique<VideoFrames>(e->index);
+      if (!hdr)
+        e->worker = std::make_unique<VideoFrames>(e->index);
       option("cache", "no");
       option("sub-auto", "no");
       option("demuxer-seekable-cache", "no");

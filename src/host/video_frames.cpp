@@ -4,6 +4,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
 }
+#include <QColorSpace>
 #include <QSet>
 #include <algorithm>
 #include <chrono>
@@ -74,14 +75,15 @@ struct Decoder {
       codec->max_pixels = 8192LL * 4320;
     return avcodec_open2(codec, impl, nullptr) < 0 ? -1 : i;
   }
-  QImage image(QSize bounds) {
+  QImage image(QSize bounds, QImage::Format format = QImage::Format_RGBA8888) {
     auto size =
         QSize(raw->width, raw->height).scaled(bounds, Qt::KeepAspectRatio);
     if (size.isEmpty())
       return {};
+    const auto rgbFormat = format == QImage::Format_RGBA64 ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGBA;
     convert = sws_getCachedContext(convert, raw->width, raw->height,
                                    static_cast<AVPixelFormat>(raw->format),
-                                   size.width(), size.height(), AV_PIX_FMT_RGBA,
+                                   size.width(), size.height(), rgbFormat,
                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!convert)
       return {};
@@ -89,7 +91,7 @@ struct Decoder {
     sws_setColorspaceDetails(convert, matrix,
                              raw->color_range == AVCOL_RANGE_JPEG, matrix, 1, 0,
                              1 << 16, 1 << 16);
-    QImage result(size, QImage::Format_RGBA8888);
+    QImage result(size, format);
     if (result.isNull())
       return {};
     uint8_t *planes[4] = {result.bits()};
@@ -97,6 +99,19 @@ struct Decoder {
     if (sws_scale(convert, raw->data, raw->linesize, 0, raw->height, planes,
                   stride) != size.height())
       return {};
+    return result;
+  }
+  QImage reviewImage(QSize bounds) {
+    QImage result = image(bounds, QImage::Format_RGBA64);
+    if (result.isNull())
+      return {};
+    // swscale expands video levels and applies the YUV matrix, but its RGB
+    // values are still BT.1886 display signals. Match mpv's sRGB SDR target.
+    static const auto toPlaybackOutput =
+        QColorSpace(QColorSpace::Primaries::SRgb, 2.4f)
+            .transformationToColorSpace(QColorSpace::SRgb);
+    // Quantize once, after transfer conversion, including on ten-bit sources.
+    result.applyColorTransform(toPlaybackOutput, QImage::Format_RGBA8888);
     return result;
   }
 };
@@ -137,6 +152,10 @@ struct VideoReviewFrame {
   qsizetype bytes() const {return rgb.sizeInBytes()+packed.size();}
   static std::shared_ptr<VideoReviewFrame> from(Decoder &d,QSize size) {
     auto out=std::make_shared<VideoReviewFrame>();const AVFrame *f=d.raw;
+    // Other transfer curves, primaries and ranges stay on the native renderer.
+    if (f->colorspace != AVCOL_SPC_BT709 || f->color_primaries != AVCOL_PRI_BT709 ||
+        f->color_trc != AVCOL_TRC_BT709 || f->color_range != AVCOL_RANGE_MPEG)
+      return out;
     for(int y=0;y<8;++y){
       int row=(y+2)*f->height/12;auto *src=f->data[0]+row*f->linesize[0];
       for(int x=0;x<24;++x){
@@ -146,7 +165,7 @@ struct VideoReviewFrame {
     }
     out->display=size;out->original=QSize(f->width,f->height);
     if(qint64(size.width())*size.height()<3000000 || f->format!=AV_PIX_FMT_YUV420P10LE || (f->width%8) || (f->height%2)){
-      out->rgb=d.image(size);return out;
+      out->rgb=d.reviewImage(size);return out;
     }
     // Four ten-bit samples occupy five bytes. Preserve all source bits and omit
     // decoder line padding to retain over 30 UHD frames within the raw budget.
@@ -180,7 +199,7 @@ struct VideoReviewFrame {
         }
       }
     }
-    return d.image(display);
+    return d.reviewImage(display);
   }
 };
 void VideoFrames::track(double seconds){

@@ -1681,6 +1681,93 @@ private slots:
     QVERIFY(!session->status().value("pause").toBool());
     QVERIFY(session->error().isEmpty());
   }
+  void videoReviewDisplayLevels_data() {
+    QTest::addColumn<bool>("full");
+    QTest::newRow("window") << false;
+    QTest::newRow("fullscreen") << true;
+  }
+  void videoReviewDisplayLevels() {
+    QFETCH(bool, full);
+    const auto clip = qEnvironmentVariable("FORMAVIEW_REVIEW_COLOR_VIDEO");
+    if (clip.isEmpty()) QSKIP("Requires the indexed SDR HEVC review fixture");
+    const auto originalSize = window_->size();
+    const auto restore = qScopeGuard([&] {
+      if (window_->visibility() == QWindow::FullScreen)
+        QTest::keyClick(window_, Qt::Key_Escape);
+      desktop_->clearAsset();
+      window_->resize(originalSize);
+    });
+    window_->resize(1100, 730);
+    desktop_->openPath(clip);
+    QTRY_VERIFY(item("videoSession"));
+    auto *s = qobject_cast<VideoSession *>(item("videoSession"));
+    auto *pane = item("videoPlayerPane");
+    if (full) {
+      QVERIFY(QMetaObject::invokeMethod(pane, "changeMode", Q_ARG(QVariant, "full")));
+      QTRY_COMPARE(window_->visibility(), QWindow::FullScreen);
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(s->status().value("duration").toDouble() > 342, 15000);
+    s->setOption("pause", "yes");
+    QTRY_VERIFY(s->status().value("pause").toBool());
+    s->seek(341.2, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && qAbs(s->status().value("time-pos").toDouble()-341.2)<.02, 10000);
+    QTest::qWait(3000);
+    item("videoViewport")->forceActiveFocus();
+    for (const auto key : {Qt::Key_F, Qt::Key_F, Qt::Key_F, Qt::Key_F, Qt::Key_D, Qt::Key_D})
+      QTest::keyClick(window_, key);
+    QVERIFY2(s->status().contains("visible-time"), "Must exercise cached display rather than native seek");
+    const auto pts = s->status().value("visible-time").toDouble();
+    const auto sample = [&] {
+      const auto image = window_->grabWindow();
+      const auto area = s->mapRectToScene(s->boundingRect());
+      const auto dpr = image.width() / double(window_->width());
+      // Stay inside the picture and clear of subtitles, letterboxing and controls.
+      const QRectF crop(area.x()+.2*area.width(), area.y()+.35*area.height(),
+                        .6*area.width(), .3*area.height());
+      return image.copy(QRectF(crop.topLeft()*dpr, crop.size()*dpr).toRect())
+          .scaled(96, 48, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    };
+    QTest::qWait(300);
+    const auto review = sample();
+    s->seek(pts, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && qAbs(s->status().value("time-pos").toDouble()-pts)<.001, 10000);
+    QTest::qWait(300);
+    const auto native = sample();
+    const auto tag = QString::fromLatin1(QTest::currentDataTag());
+    QVERIFY(review.save(root_ + "/" + tag + "-review.png"));
+    QVERIFY(native.save(root_ + "/" + tag + "-native.png"));
+    QVERIFY(!review.isNull() && !native.isNull());
+    // Render the same PTS during playback too. Slow playback keeps this frame
+    // on screen long enough to read the window while the clock is running.
+    s->setOption("mute", "yes");
+    s->setOption("speed", .05);
+    s->seek(pts - .1, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && qAbs(s->status().value("time-pos").toDouble()-(pts-.1))<.001, 10000);
+    s->togglePause();
+    QTRY_VERIFY_WITH_TIMEOUT(!s->status().value("pause").toBool() &&
+        qAbs(s->status().value("time-pos").toDouble()-pts)<.001, 10000);
+    const auto playing = sample();
+    QVERIFY(!playing.isNull());
+    QVERIFY(playing.save(root_ + "/" + tag + "-playing.png"));
+    double playError = 0;
+    double error = 0, bias = 0;
+    for (int y=0; y<native.height(); ++y) {
+      for (int x=0; x<native.width(); ++x) {
+        const auto a = review.pixelColor(x,y), b = native.pixelColor(x,y);
+        const auto c = playing.pixelColor(x,y);
+        playError += std::abs(c.red()-b.red()) + std::abs(c.green()-b.green()) + std::abs(c.blue()-b.blue());
+        for (auto delta : {a.red()-b.red(), a.green()-b.green(), a.blue()-b.blue()}) {
+          error += std::abs(delta);
+          bias += delta;
+        }
+      }
+    }
+    const double channels = 3*native.width()*native.height();
+    qInfo() << "Same PTS" << pts << "review - native RGB bias" << bias/channels
+            << "mean absolute difference" << error/channels << "playing vs paused" << playError/channels;
+    QVERIFY2(playError/channels < 2.0, "Playing and paused native output must agree at the same PTS");
+    QVERIFY2(error/channels < 2.0, "Cached review must agree with playback output at the same PTS");
+  }
   void videoReviewAcrossChapterAndSubtitles() {
     const auto clip = qEnvironmentVariable("FORMAVIEW_CHAPTER_REVIEW_FIXTURE");
     if (clip.isEmpty())
