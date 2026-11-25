@@ -345,11 +345,24 @@ async def plan_image_conversion(
     return await create_image_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
 
 
+FbxAxes = Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity']
+FbxUnit = Literal['source', 'cm', 'm', 'mm', 'in']
+
+
+def fbx_options(input, axes, unit, include_mesh, animation, reference):
+    options = {'target': 'fbx', 'output_axes': axes, 'output_unit': unit, 'include_mesh': include_mesh}
+    if Path(input).suffix.lower() in ('.psk', '.pskx', '.psa'):
+        options['coordinates'] = 'actorx-z-up-x-forward-rh-cm'
+    if animation is not None:
+        options['animation'] = animation
+    if reference is not None:
+        options['reference'] = reference
+    return options
+
+
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_fbx_export(
-    input: str, output: str,
-    output_axes: Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity'] = 'source',
-    output_unit: Literal['source', 'cm', 'm', 'mm', 'in'] = 'source',
+    input: str, output: str, output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source',
     include_mesh: bool = True, clip_ids: list[str] | None = None,
     animation: str | None = None, reference: str | None = None, abc_sample: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
@@ -365,13 +378,51 @@ async def plan_fbx_export(
     source_ext = Path(input).suffix.lower()
     if abc_sample is not None and source_ext != '.abc':
         raise ValueError('abc_sample selects a frame from an .abc input.')
-    options = {'target': 'fbx', 'output_axes': output_axes, 'output_unit': output_unit, 'include_mesh': include_mesh}
-    if source_ext in ('.psk', '.pskx', '.psa'):
-        options['coordinates'] = 'actorx-z-up-x-forward-rh-cm'
-    for key, value in [('clip_ids', clip_ids), ('animation', animation), ('reference', reference), ('abc_sample', abc_sample)]:
-        if value is not None:
-            options[key] = value
+    options = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference)
+    if clip_ids is not None:
+        options['clip_ids'] = clip_ids
+    if abc_sample is not None:
+        options['abc_sample'] = abc_sample
     return await create_model_export_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_fbx_clips(
+    input: str, output_directory: str, clip_ids: list[str] | None = None,
+    output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source', include_mesh: bool = True,
+    animation: str | None = None, reference: str | None = None,
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Preflight one FBX file per animation clip in an existing authorized output directory.
+
+    Omit clip_ids for all source clips (maximum 64 per plan), or select IDs from
+    inspect_model. Filenames include the original clip index so duplicate names
+    stay distinct. Inspect get_image_plan for destinations and losses before submitting.
+    """
+    directory = Path(output_directory)
+    if not directory.is_absolute():
+        raise ValueError('Choose an absolute output directory.')
+    inventory = await inspect_model(animation or input)
+    if 'error' in inventory:
+        return inventory
+    clips = inventory.get('clips', [])
+    selected = {c['id'] for c in clips} if clip_ids is None else set(clip_ids)
+    if not 1 <= len(selected) <= 64:
+        raise ValueError('Select between 1 and 64 source clips per plan.')
+    if clip_ids is not None and (len(selected) != len(clip_ids) or selected.difference(c['id'] for c in clips)):
+        raise ValueError('Use distinct clip IDs from inspect_model.')
+    def filename_part(value):
+        return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value)[:48].strip(' .') or 'clip'
+
+    source = filename_part(Path(input).stem)
+    base = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference)
+    items = []
+    for index, clip in enumerate(clips, 1):
+        if clip['id'] in selected:
+            name = f"{source}-{index:02d}-{filename_part(clip['name'])}.fbx"
+            items.append({'input': input, 'output': str(directory / name), 'conflict': conflict,
+                          'options': dict(base, clip_id=clip['id'])})
+    return await create_model_export_plan(items)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))

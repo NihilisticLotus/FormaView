@@ -92,6 +92,23 @@ async def main():
                 back = json.loads(report.read_text())
                 assert abs(back['unit'] - .01) < 1e-8 and len(back['clips']) == len(clips)
 
+                split_dir = args.output / 'split'
+                split_dir.mkdir()
+                arguments = dict(input=str(glb), output_directory=str(split_dir), output_unit='cm')
+                for invalid_ids in ([], ['missing'], [clips[0]['id']] * 2):
+                    assert (await client.call_tool('plan_fbx_clips', dict(arguments, clip_ids=invalid_ids))).isError
+                split = await call('plan_fbx_clips', **arguments)
+                plan = await terminal('plan', split['plan_id'])
+                assert plan['state'] == 'ready' and plan['total'] == len(clips) and not list(split_dir.iterdir()), plan
+                queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                    acknowledge_losses=True, idempotency_key='split-clips')
+                job = await terminal('job', queued['job_id'])
+                assert job['state'] == 'succeeded', job
+                for index, clip in enumerate(clips, 1):
+                    output = split_dir / f"source-{index:02d}-{clip['name']}.fbx"
+                    inspected = await call('inspect_model', input=str(output))
+                    assert [c['name'] for c in inspected['clips']] == [clip['name']]
+
                 items=[]
                 for suffix in ('obj','gltf','glb','pmx','vrm','fbx'):
                     source=str(fixtures/('source.'+suffix))

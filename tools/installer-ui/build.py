@@ -111,7 +111,7 @@ NOTICE = """安装说明
 推荐为本机所有用户安装。程序放在 Windows 的 Program Files 目录，需要管理员权限。仅为当前账户安装时，可以选择该账户有写入权限的本机目录。覆盖升级沿用原有安装范围和目录。
 
 二、程序和快捷方式
-安装包包含 FormaView 主程序及所需的运行组件。你可以选择是否添加开始菜单和桌面快捷方式。安装前请保存工作并关闭正在运行的 FormaView。
+安装后可在 Windows 开始菜单中搜索 FormaView。桌面快捷方式以及开始菜单中的卸载与说明入口可按需添加。安装前请保存工作并关闭正在运行的 FormaView。
 
 三、文件关联
 可以选择希望双击后用 FormaView 打开的预览格式。安装后请在 Windows 的默认应用设置中确认；每个账户可以有不同的选择。未选择的格式不新增关联注册。
@@ -152,7 +152,10 @@ UsePreviousAppDir=yes""")
     start, end = source.index("[Messages]"), source.index("[Tasks]")
     source = source[:start] + "[Messages]\n" + read(HERE / "messages.isl").rstrip() + "\n\n" + source[end:]
     source = source.replace(r'"{userdesktop}\FormaView"', r'"{autodesktop}\FormaView"')
-    source = source.replace('Description: "创建开始菜单入口"', 'Description: "在开始菜单中添加 FormaView 和卸载入口"')
+    source = replace(source, 'AllowNoIcons=yes', 'AllowNoIcons=no')
+    source = replace(source, r'Name: "{group}\FormaView"; Filename: "{app}\formaview.exe"; WorkingDir: "{app}"; Tasks: startmenu',
+                     r'Name: "{autoprograms}\FormaView\FormaView"; Filename: "{app}\formaview.exe"; WorkingDir: "{app}"')
+    source = replace(source, 'Description: "创建开始菜单入口"', 'Description: "在开始菜单中添加卸载入口和安装使用说明"')
     source = source.replace('Description: "创建桌面快捷方式"', 'Description: "在桌面添加 FormaView 快捷方式"')
     source = source.replace('Description: "运行 FormaView"', 'Description: "打开 FormaView"')
     source = replace(source, "Flags: createvalueifdoesntexist", "Flags: createvalueifdoesntexist; Check: IsPerUserInstall")
@@ -397,7 +400,7 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
         # Group the media binaries in one solid stream so matches between
         # the playback and frame inspection libraries fit in the dictionary.
         setup = replace(setup, "Compression=lzma2\n",
-                        "Compression=lzma2/ultra64\nLZMADictionarySize=262144\nLZMAUseSeparateProcess=yes\n")
+                        "Compression=lzma2/ultra64\nLZMADictionarySize=262144\nLZMANumFastBytes=273\nLZMAUseSeparateProcess=yes\n")
     filename = f"FormaView-{version}-Windows-x64-Setup"
     notice = NOTICE
     if development:

@@ -37,7 +37,8 @@ function Test-Dispatch([string]$stage) {
 }
 function Install-Package([string]$setup,[string]$formats,[string]$stage) {
     $log = Join-Path $Evidence "$stage.log"
-    $proc = Start-Process -FilePath $setup -ArgumentList "/CURRENTUSER /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /ASSOC=$formats /LOG=""$log""" -Wait -PassThru -WindowStyle Hidden
+    $tasks = if ($stage -eq 'v012') { '/MERGETASKS=!startmenu,!desktopicon' } else { '' }
+    $proc = Start-Process -FilePath $setup -ArgumentList "/CURRENTUSER /VERYSILENT /NORESTART /SUPPRESSMSGBOXES $tasks /ASSOC=$formats /LOG=""$log""" -Wait -PassThru -WindowStyle Hidden
     if ($proc.ExitCode) { throw "$stage installer exited with $($proc.ExitCode)" }
 }
 $baseline = @(Read-Choices)
@@ -68,6 +69,11 @@ foreach ($entry in $values.GetEnumerator()) {
 $classes.Close()
 Test-Dispatch 'before'
 Install-Package $NewSetup '.png,.dds,.flv,.fbx,.pskx' 'v020'
+$launcher = Join-Path ([Environment]::GetFolderPath('Programs')) 'FormaView\FormaView.lnk'
+if (!(Test-Path -LiteralPath $launcher) -or
+    (New-Object -ComObject WScript.Shell).CreateShortcut($launcher).TargetPath -ne (Join-Path $install 'formaview.exe')) {
+    throw 'Upgrading with optional shortcuts deselected failed to register the Start application'
+}
 Test-Dispatch 'after'
 $after = @(Read-Choices)
 if ((ConvertTo-Json $baseline) -cne (ConvertTo-Json $after)) { throw 'Protected defaults changed' }

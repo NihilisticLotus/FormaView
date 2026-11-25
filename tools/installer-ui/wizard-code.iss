@@ -217,13 +217,9 @@ function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoType
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: string): string;
 var I, ItemsOnLine: Integer; Shortcuts: string;
 begin
-  Shortcuts := '';
-  if WizardIsTaskSelected('startmenu') then Shortcuts := '开始菜单';
-  if WizardIsTaskSelected('desktopicon') then begin
-    if Shortcuts <> '' then Shortcuts := Shortcuts + '、';
-    Shortcuts := Shortcuts + '桌面';
-  end;
-  if Shortcuts = '' then Shortcuts := '不创建';
+  Shortcuts := '开始菜单中的 FormaView 应用';
+  if WizardIsTaskSelected('startmenu') then Shortcuts := Shortcuts + '、卸载与说明';
+  if WizardIsTaskSelected('desktopicon') then Shortcuts := Shortcuts + '、桌面';
   Result := '安装范围' + NewLine + Space + InstallScopeLabel + NewLine + NewLine +
     '安装目录' + NewLine + Space + WizardDirValue + NewLine + NewLine +
     '快捷方式' + NewLine + Space + Shortcuts + NewLine + NewLine;
