@@ -34,6 +34,7 @@ QtObject {
         { id: "mute", scope: "video", label: Theme.t("静音 / 取消静音", "Mute / unmute", "靜音 / 取消靜音"), key: "" },
         { id: "captions", scope: "video", label: Theme.t("显示 / 隐藏字幕", "Show / hide subtitles", "顯示 / 隱藏字幕"), key: "" },
         { id: "full", scope: "video", label: Theme.t("全屏播放", "Full screen", "全螢幕播放"), key: "" },
+        { id: "simpleControls", scope: "video", label: Theme.t("切换简易 / 标准界面", "Switch simple / standard controls", "切換簡易 / 標準介面"), key: "I" },
         { id: "mini", scope: "video", label: Theme.t("置顶小窗", "Mini player", "置頂小窗"), key: "" },
         { id: "prevVideo", scope: "video", label: Theme.t("上一个视频", "Previous video", "上一部影片"), key: "" },
         { id: "nextVideo", scope: "video", label: Theme.t("下一个视频", "Next video", "下一部影片"), key: "" },
@@ -53,7 +54,15 @@ QtObject {
     ]
     function binding(id, custom = overrides): string {
         const row = actions.find(action => action.id === id)
-        return custom?.[id] ?? row?.key ?? ""
+        if (custom?.[id] !== undefined) return custom[id]
+        if (!row?.key) return ""
+        // An existing user binding takes precedence over a newly introduced default.
+        const taken = Object.keys(custom || {}).some(other => {
+            if (custom[other] !== row.key) return false
+            const scope = actions.find(action => action.id === other)?.scope
+            return scope && (scope === row.scope || scope === "workspace" || row.scope === "workspace")
+        })
+        return taken ? "" : row.key
     }
     function hint(id): string { return binding(id) ? "  ·  " + binding(id) : "" }
     function mapping(scope): var {

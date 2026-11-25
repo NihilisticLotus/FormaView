@@ -41,7 +41,13 @@ FocusScope {
         if (index >= 0 && index <= audioTracks.length)
             video.setOption("aid", index === 0 ? "no" : audioTracks[index - 1].id)
     }
-    readonly property bool simple: prefs.simpleControls && (mode === "normal" || mode === "full")
+    readonly property bool canSwitchControls: mode === "normal" || mode === "full"
+    readonly property bool simple: prefs.simpleControls && canSwitchControls
+    function toggleControlsLayout() {
+        if (!canSwitchControls) return
+        prefs.simpleControls = !prefs.simpleControls
+        focusPlayback()
+    }
     readonly property var subtitles: video.tracks.filter(t => t.type === "sub")
     readonly property int subtitleIndex: stateMap["sub-visibility"] === false ? 0 : subtitles.findIndex(t => t.selected) + 1
     readonly property var subtitleLabels: [qsTr("关闭字幕")].concat(subtitles.map(t => {
@@ -249,6 +255,77 @@ FocusScope {
         property bool playlistOpen: true
         property bool simpleControls: false
     }
+    component LayoutToggle: Tool {
+        objectName: "videoLayoutToggle"
+        quiet: true
+        text: root.simple ? qsTr("标准") : qsTr("简易")
+        hint: (root.simple ? qsTr("切换到标准界面") : qsTr("切换到简易界面")) + KeyBindings.hint("simpleControls")
+        onClicked: root.toggleControlsLayout()
+    }
+    component ShotButton: Tool {
+        objectName: "videoShotButton"
+        quiet: true
+        iconName: "save"
+        hint: qsTr("截图") + KeyBindings.hint("shot")
+        onClicked: root.shot()
+    }
+    component MuteButton: Tool {
+        objectName: "videoMuteButton"
+        quiet: true
+        iconName: root.stateMap.mute || root.stateMap.volume === 0 ? "volume-muted" : "volume"
+        hint: (root.stateMap.mute ? qsTr("取消静音") : qsTr("静音")) + KeyBindings.hint("mute")
+        onClicked: video.setOption("mute", root.stateMap.mute ? "no" : "yes")
+    }
+    component PlayerVolume: Slider {
+        id: controlVolume
+        objectName: "videoVolume"
+        Accessible.name: qsTr("音量")
+        from: 0
+        to: 100
+        stepSize: 1
+        value: root.stateMap.volume ?? 100
+        onMoved: {
+            video.setOption("volume", Math.round(value))
+            if (!pressed) volumeHintTimer.restart()
+            root.revealControls()
+        }
+        Timer { id: volumeHintTimer; interval: 600 }
+        Label {
+            objectName: "videoVolumeHint"
+            parent: controlVolume.handle
+            visible: controlVolume.pressed || volumeHintTimer.running
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: root.simple ? undefined : parent.top
+            anchors.bottomMargin: 5
+            anchors.verticalCenter: root.simple ? parent.verticalCenter : undefined
+            z: 1
+            text: Math.round(controlVolume.value) + "%"
+            color: "#fafafa"
+            leftPadding: 7
+            rightPadding: 7
+            topPadding: 2
+            bottomPadding: 2
+            background: Rectangle { color: "#ec25272c"; border.color: "#62767a82"; radius: 5 }
+        }
+        background: Rectangle {
+            x: controlVolume.leftPadding
+            y: controlVolume.height / 2 - 2
+            width: controlVolume.availableWidth
+            height: 4
+            radius: 2
+            color: "#77777f"
+            Rectangle { width: parent.width * controlVolume.visualPosition; height: parent.height; radius: 2; color: "#ffa764" }
+        }
+        handle: Rectangle {
+            x: controlVolume.leftPadding + controlVolume.availableWidth * controlVolume.visualPosition - width / 2
+            y: controlVolume.height / 2 - height / 2
+            implicitWidth: 12
+            implicitHeight: 12
+            radius: 6
+            color: "#ffad67"
+            border.color: controlVolume.visualFocus ? "white" : "transparent"
+        }
+    }
     component PlaybackMenu: Menu {
         id: popup
         required property Item trigger
@@ -359,6 +436,7 @@ FocusScope {
             source: root.source
             playbackBindings: {
                 const bindings = KeyBindings.mapping("video")
+                if (!root.canSwitchControls) delete bindings[KeyBindings.binding("simpleControls")]
                 if (playlist.listFocused) {
                     for (const key of ["Up", "Down", "Del", "Return", "Enter"]) delete bindings[key]
                 }
@@ -384,6 +462,7 @@ FocusScope {
                 case "mute": video.setOption("mute", root.stateMap.mute ? "no" : "yes"); return
                 case "captions": video.toggleSubtitles(); return
                 case "full": root.setWindowMode(root.mode === "normal" ? "full" : "normal", !root.paused); return
+                case "simpleControls": root.toggleControlsLayout(); return
                 case "mini": root.setWindowMode("mini", !root.paused); return
                 case "prevVideo": root.openAdjacent(-1); return
                 case "nextVideo": root.openAdjacent(1); return
@@ -406,11 +485,11 @@ FocusScope {
                 }
             }
             anchors.fill: parent
-            anchors.bottomMargin: root.simple ? bar.height : 0
+            anchors.bottomMargin: root.canSwitchControls ? bar.height + bar.inset : 0
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: Math.max(18, parent.height * 0.09, !root.simple && bar.visible ? bar.height + 22 : 0)
+                anchors.bottomMargin: Math.max(18, parent.height * 0.09, !root.canSwitchControls && bar.visible ? bar.height + 22 : 0)
                 width: parent.width * 0.9
                 text: root.stateMap["review-caption"] || ""
                 visible: text.length > 0
@@ -518,7 +597,7 @@ FocusScope {
             anchors.margins: inset
             height: root.simple ? Math.max(timeline.implicitHeight, Theme.controlHeight) + 4
                                 : rows.implicitHeight + (compact ? 14 : 22)
-            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || more.visible || rates.visible || subtitleMenu.visible || audioMenu.visible
+            readonly property bool interacting: dockBackground.pressed || timeline.interacting || volumeSlider.pressed || simpleVolume.pressed || more.visible || rates.visible || subtitleMenu.visible || audioMenu.visible
             readonly property bool keyboardFocus: activeFocus && !!surface.Window.window?.activeFocusItem?.visualFocus
             onInteractingChanged: if (!interacting) root.revealControls()
             visible: root.controlsShown || interacting
@@ -527,7 +606,7 @@ FocusScope {
                 active: bar.visible && !root.simple && root.mode !== "hdr" && !!root.stateMap["video-params"] && !video.error
                 sourceComponent: VideoControlGlass {
                     frame: video
-                    panelOrigin: Qt.point(bar.x, bar.y)
+                    panelOrigin: Qt.point(bar.x, Math.min(bar.y, video.height - bar.height))
                 }
             }
             Rectangle {
@@ -544,7 +623,7 @@ FocusScope {
             }
             GridLayout {
                 id: rows
-                columns: root.simple ? 6 : 1
+                columns: root.simple ? 10 : 1
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
@@ -580,7 +659,7 @@ FocusScope {
                         objectName: "videoTimeReadout"
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Math.max(0, (pauseShot.visible ? pauseShot.x : transport.x) - 6)
+                        width: Math.max(0, leftActions.x - 6)
                         elide: Text.ElideRight
                         font.family: "Consolas"
                         color: Theme.text
@@ -628,12 +707,13 @@ FocusScope {
                             onClicked: root.paused ? video.step(true) : video.seek(VideoPreferences.forward, true)
                         }
                     }
-                    Tool {
-                        id: pauseShot
-                        visible: root.paused && !bar.compact
-                        anchors.right: transport.left; anchors.rightMargin: 16
+                    RowLayout {
+                        id: leftActions
+                        anchors.right: transport.left; anchors.rightMargin: bar.compact ? 2 : 10
                         anchors.verticalCenter: parent.verticalCenter
-                        quiet: true; iconName: "save"; hint: qsTr("截图"); onClicked: root.shot()
+                        spacing: 2
+                        LayoutToggle { visible: root.canSwitchControls }
+                        ShotButton { visible: root.canSwitchControls || (root.paused && !bar.compact) }
                     }
                     RowLayout {
                         id: rightControls
@@ -648,64 +728,11 @@ FocusScope {
                             hint: (root.mode === "mini" ? qsTr("返回主窗") : qsTr("置顶小窗")) + KeyBindings.hint("mini")
                             onClicked: root.changeMode("mini")
                         }
-                        Tool {
-                            objectName: "videoMuteButton"
-                            visible: bar.width >= 360
-                            quiet: true
-                            iconName: root.stateMap.mute || root.stateMap.volume === 0 ? "volume-muted" : "volume"
-                            hint: (root.stateMap.mute ? qsTr("取消静音") : qsTr("静音")) + KeyBindings.hint("mute")
-                            onClicked: video.setOption("mute", root.stateMap.mute ? "no" : "yes")
-                        }
-                        Slider {
+                        MuteButton { visible: bar.width >= 360 }
+                        PlayerVolume {
                             id: volumeSlider
-                            objectName: "videoVolume"
                             visible: bar.width >= 970 || (bar.narrowMini && bar.width >= 440 && bar.width < 780)
                             Layout.preferredWidth: bar.narrowMini ? (bar.compact || bar.width >= 690 ? 52 : 40) : 72
-                            Accessible.name: qsTr("音量")
-                            from: 0
-                            to: 100
-                            stepSize: 1
-                            value: root.stateMap.volume ?? 100
-                            onMoved: {
-                                video.setOption("volume", Math.round(value))
-                                if (!pressed) volumeHintTimer.restart()
-                                root.revealControls()
-                            }
-                            Timer { id: volumeHintTimer; interval: 600 }
-                            Label {
-                                objectName: "videoVolumeHint"
-                                parent: volumeSlider.handle
-                                visible: volumeSlider.pressed || volumeHintTimer.running
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.bottom: parent.top
-                                anchors.bottomMargin: 5
-                                z: 1
-                                text: Math.round(volumeSlider.value) + "%"
-                                color: "#fafafa"
-                                leftPadding: 7
-                                rightPadding: 7
-                                topPadding: 2
-                                bottomPadding: 2
-                                background: Rectangle { color: "#ec25272c"; border.color: "#62767a82"; radius: 5 }
-                            }
-                            background: Rectangle {
-                                x: volumeSlider.leftPadding
-                                y: volumeSlider.height / 2 - 2
-                                width: volumeSlider.availableWidth
-                                height: 4
-                                radius: 2
-                                color: "#77777f"
-                                Rectangle { width: parent.width * volumeSlider.visualPosition; height: parent.height; radius: 2; color: "#ffa764" }
-                            }
-                            handle: Rectangle {
-                                x: volumeSlider.leftPadding + volumeSlider.availableWidth * volumeSlider.visualPosition - width / 2
-                                y: volumeSlider.height / 2 - height / 2
-                                implicitWidth: 12
-                                implicitHeight: 12
-                                radius: 6
-                                color: "#ffad67"
-                                border.color: volumeSlider.visualFocus ? "white" : "transparent"
-                            }
                         }
                         Tool {
                             id: audioButton
@@ -776,14 +803,14 @@ FocusScope {
                     }
                 }
                 Label {
-                    visible: root.simple && bar.width >= 480
+                    visible: root.simple && bar.width >= 680
                     text: root.format(timeline.shownPosition).slice(0, -4) + " / " + root.format(root.duration).slice(0, -4)
                     color: Theme.text
                 }
                 Tool {
                     id: simpleAudio
                     objectName: "videoSimpleAudioButton"
-                    visible: root.simple
+                    visible: root.simple && bar.width >= 420
                     enabled: root.audioTracks.length > 0
                     text: qsTr("音轨")
                     hint: qsTr("选择音轨")
@@ -792,13 +819,21 @@ FocusScope {
                 }
                 Tool {
                     id: simpleSub
-                    visible: root.simple
+                    visible: root.simple && bar.width >= 420
                     enabled: root.subtitles.length > 0
                     text: "CC"
                     hint: qsTr("选择字幕轨道")
                     quiet: true
                     onClicked: subtitleMenu.open()
                 }
+                ShotButton { visible: root.simple }
+                MuteButton { visible: root.simple }
+                PlayerVolume {
+                    id: simpleVolume
+                    visible: root.simple
+                    Layout.preferredWidth: bar.width >= 540 ? 72 : 48
+                }
+                LayoutToggle { visible: root.simple }
                 Tool {
                     id: simpleMore
                     objectName: "videoSimpleMenuButton"
@@ -841,7 +876,7 @@ FocusScope {
         TrackMenu {
             id: subtitleMenu
             dock: bar
-            trigger: root.simple ? simpleSub : subtitleButton.visible ? subtitleButton : menuButton
+            trigger: root.simple ? (simpleSub.visible ? simpleSub : simpleMore) : subtitleButton.visible ? subtitleButton : menuButton
             labels: root.subtitleLabels
             selectedIndex: root.subtitleIndex
             rowPrefix: "videoSubtitleRow"
@@ -850,7 +885,7 @@ FocusScope {
         TrackMenu {
             id: audioMenu
             dock: bar
-            trigger: root.simple ? simpleAudio : audioButton.visible ? audioButton : menuButton
+            trigger: root.simple ? (simpleAudio.visible ? simpleAudio : simpleMore) : audioButton.visible ? audioButton : menuButton
             labels: root.audioLabels
             selectedIndex: root.audioIndex
             rowPrefix: "videoAudioRow"
@@ -860,9 +895,9 @@ FocusScope {
             id: more
             PlaybackMenuItem {
                 objectName: "videoSimpleModeAction"
-                visible: root.mode === "normal" || root.mode === "full"
-                text: root.simple ? qsTr("返回标准界面") : qsTr("简易界面")
-                onTriggered: { prefs.simpleControls = !prefs.simpleControls; root.focusPlayback() }
+                visible: root.canSwitchControls
+                text: (root.simple ? qsTr("返回标准界面") : qsTr("简易界面")) + KeyBindings.hint("simpleControls")
+                onTriggered: root.toggleControlsLayout()
             }
             PlaybackMenuItem {
                 text: qsTr("播放信息") + KeyBindings.hint("info")

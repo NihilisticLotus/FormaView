@@ -1192,6 +1192,8 @@ private slots:
     QVERIFY(!dialog->property("dirty").toBool());
     QTest::keyClick(window_, Qt::Key_K);
     QCOMPARE(binding->property("text").toString(), QString("K"));
+    QVERIFY(QMetaObject::invokeMethod(item("shortcut-simpleControls"), "clicked"));
+    QTest::keyClick(window_, Qt::Key_J, Qt::ControlModifier);
     QVERIFY(QMetaObject::invokeMethod(item("saveGeneralSettings"), "clicked"));
     QTRY_COMPARE(QSettings{}.value("Keyboard/overrides").toMap().value("markA").toString(), QString("K"));
     QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
@@ -1200,6 +1202,12 @@ private slots:
     QCOMPARE(pane->property("a").toDouble(), -1.);
     QTest::keyClick(window_, Qt::Key_K);
     QCOMPARE(pane->property("a").toDouble(), 12.);
+    QTest::keyClick(window_, Qt::Key_I);
+    QVERIFY(!pane->property("simple").toBool());
+    QTest::keyClick(window_, Qt::Key_J, Qt::ControlModifier);
+    QTRY_VERIFY(pane->property("simple").toBool());
+    QTest::keyClick(window_, Qt::Key_J, Qt::ControlModifier);
+    QTRY_VERIFY(!pane->property("simple").toBool());
     QVERIFY(QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, "keys")));
     QVERIFY(QMetaObject::invokeMethod(item("resetShortcutDefaults"), "clicked"));
     QVERIFY(QMetaObject::invokeMethod(item("saveGeneralSettings"), "clicked"));
@@ -1410,10 +1418,98 @@ private slots:
     QTRY_VERIFY(item("videoSimpleModeAction"));
     click("videoSimpleModeAction");
     QTRY_VERIFY(!pane->property("simple").toBool());
-    QVERIFY(videoRect().height() > pausedRect.height());
+    QTRY_VERIFY(videoRect().height() < pausedRect.height());
     pane->setProperty("controlsShown", false);
     QTest::keyClick(window_, Qt::Key_F);
     QVERIFY(!bar->isVisible());
+  }
+  void videoLayoutToggleWithCaptions() {
+    if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
+      QSKIP("Requires the video runtime");
+    QTemporaryDir shots(root_ + "/layout-shots-XXXXXX");
+    QVERIFY(shots.isValid());
+    QSettings{}.setValue("Video/directory", QUrl::fromLocalFile(shots.path()));
+    const auto sample = qEnvironmentVariable("FORMAVIEW_SUBTITLE_TEST_VIDEO");
+    const auto original = window_->size();
+    const auto restore = qScopeGuard([&] {
+      desktop_->clearAsset();
+      window_->resize(original);
+      QSettings{}.remove("Video/directory");
+    });
+    window_->resize(1280, 800);
+    desktop_->openPath(sample.isEmpty() ? QFINDTESTDATA("fixtures/subtitle-choice.mkv") : sample);
+    QTRY_VERIFY(item("videoSession"));
+    auto *s = qobject_cast<VideoSession *>(item("videoSession"));
+    auto *pane = item("videoPlayerPane");
+    s->setOption("pause", "yes");
+    QTRY_VERIFY_WITH_TIMEOUT(s->status().value("pause").toBool() && s->status().value("duration").toDouble() > 10, 15000);
+    s->seek(10, false);
+    QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && !s->status().value("sub-text").toString().isEmpty(), 15000);
+    const auto reveal = [&] { QMetaObject::invokeMethod(pane, "revealControls"); };
+    const auto click = [&](const char *name, double fraction = .5) {
+      reveal();
+      QSignalSpy rendered(window_, &QQuickWindow::frameSwapped);
+      window_->update();
+      QVERIFY(rendered.wait(3000));
+      auto *control = item(name);
+      QVERIFY2(control && control->isEnabled(), name);
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        control->mapToScene(QPointF(control->width()*fraction, control->height()/2)).toPoint());
+    };
+    const auto captionPixels = [&] {
+      const auto pixels = window_->grabWindow();
+      const auto video = s->mapRectToScene(s->boundingRect());
+      const auto scale = pixels.width() / double(window_->width());
+      return pixels.copy(QRectF(video.x()*scale, (video.y()+video.height()*.65)*scale,
+                                video.width()*scale, video.height()*.35*scale).toRect());
+    };
+    for (const bool full : {false, true}) {
+      if (full) click("videoFullscreenButton");
+      QTRY_COMPARE(window_->visibility() == QWindow::FullScreen, full);
+      for (const bool simple : {true, false}) {
+        click("videoLayoutToggle");
+        QTRY_COMPARE(pane->property("simple").toBool(), simple);
+        reveal();
+        QTest::qWait(200);
+        auto *bar = item("videoGlassControls");
+        QVERIFY(bar);
+        QVERIFY(s->mapRectToScene(s->boundingRect()).bottom() <= bar->mapToScene(QPointF()).y() + .01);
+        QVERIFY(!s->status().value("sub-text").toString().isEmpty());
+        const auto withText = captionPixels();
+        QVERIFY(!withText.isNull());
+        s->toggleSubtitles();
+        QTRY_COMPARE(s->status().value("sub-visibility").toBool(), false);
+        QTRY_VERIFY(captionPixels() != withText);
+        s->toggleSubtitles();
+        QTRY_VERIFY(s->status().value("sub-visibility").toBool());
+        QTRY_COMPARE(captionPixels(), withText);
+        reveal();
+        const auto name = QString("controls-%1-%2.png").arg(full ? "full" : "window", simple ? "simple" : "standard");
+        QVERIFY(window_->grabWindow().save(root_ + "/" + name));
+        if (simple) {
+          click("videoVolume", full ? .7 : .3);
+          QTRY_VERIFY(qAbs(s->status().value("volume").toDouble() - (full ? 70 : 30)) < 10);
+          QSignalSpy saved(s, &VideoSession::screenshotSaved);
+          click("videoShotButton");
+          QTRY_COMPARE_WITH_TIMEOUT(saved.count(), 1, 10000);
+          const auto path = saved.first().first().toString();
+          QCOMPARE(QFileInfo(path).absolutePath(), shots.path());
+          // A 16-bit UHD capture needs more than the test suite's 32 MiB limit.
+          const int previousLimit = QImageReader::allocationLimit();
+          const auto restoreLimit = qScopeGuard([&] { QImageReader::setAllocationLimit(previousLimit); });
+          QImageReader::setAllocationLimit(128);
+          QVERIFY(!QImage(path).isNull());
+          pane->setProperty("notice", "");
+        }
+      }
+      QTest::keyClick(window_, Qt::Key_I);
+      QTRY_VERIFY(pane->property("simple").toBool());
+      QTest::keyClick(window_, Qt::Key_I);
+      QTRY_VERIFY(!pane->property("simple").toBool());
+    }
+    QTest::keyClick(window_, Qt::Key_Escape);
+    QTRY_COMPARE(pane->property("mode").toString(), QString("normal"));
+    QCOMPARE(window_->size(), QSize(1280, 800));
   }
   void videoEmbeddedSubtitleSelection() {
     if (!QFileInfo::exists(QCoreApplication::applicationDirPath() + "/libmpv-2.dll"))
