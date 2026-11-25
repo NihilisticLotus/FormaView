@@ -7487,6 +7487,79 @@ private slots:
     evidence_["image_gui_write_targets"] = results;
 #endif
   }
+  void mcpSwitchReconnect() {
+#ifdef FORMAVIEW_IMAGE_UI
+    auto *jobs = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    QVERIFY(jobs && !jobs->mcpEnabled());
+    const auto config = QJsonDocument::fromJson(jobs->desktopMcpConfiguration().toUtf8())
+                            .object()["mcpServers"].toObject()["formaview-images"].toObject();
+    const auto args = config["args"].toArray().toVariantList();
+    QCOMPARE(args.size(), 2);
+    const auto command = config["command"].toString();
+    if (!QFileInfo::exists(command)) QSKIP("Build the packaged MCP adapter for this test");
+    QTemporaryDir folders;
+    QVERIFY(folders.isValid());
+    const QString output = folders.filePath("output");
+    QVERIFY(QDir().mkpath(output));
+    jobs->startDesktopMcp(folders.filePath("missing"), output, false);
+    QVERIFY(!jobs->mcpEnabled() && !jobs->mcpStarting() && !jobs->error().isEmpty());
+    jobs->dismissError();
+    auto *dialog = window_->findChild<QObject *>("mcpSettingsDialog");
+    desktop_->preference("mcpInputRoot", small_);
+    desktop_->preference("mcpOutputRoot", output);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, "permissions")));
+    const auto cleanup = qScopeGuard([&] {
+      if (jobs->mcpEnabled()) jobs->setMcpEnabled(false);
+      QMetaObject::invokeMethod(dialog, "close");
+    });
+    QTRY_VERIFY(item("mcpEnableButton"));
+    auto *toggle = item("mcpEnableButton");
+    auto *modal = window_->findChild<QObject *>("settingsModal");
+    QTRY_VERIFY(modal && modal->property("opened").toBool());
+    QTRY_VERIFY(toggle->isEnabled() && toggle->width() > 0 && toggle->height() > 0);
+    save("mcp-single-switch");
+    const auto click = [&] {
+      QSignalSpy clicked(toggle, SIGNAL(clicked()));
+      QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                        toggle->mapToScene(toggle->boundingRect().center()).toPoint());
+      QCOMPARE(clicked.count(), 1);
+    };
+    click();
+    QTRY_VERIFY2_WITH_TIMEOUT(jobs->mcpEnabled(), qPrintable(jobs->error()), 10000);
+    const auto first = jobs->endpoint();
+    QProcess client;
+    client.start(command, {args[0].toString(), args[1].toString()});
+    QVERIFY(client.waitForStarted());
+    const auto send = [&](const QByteArray &message) { client.write(message + '\n'); };
+    send(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"switch-test","version":"1"}}})");
+    QTRY_VERIFY2_WITH_TIMEOUT(client.canReadLine(), client.readAllStandardError().constData(), 30000);
+    QVERIFY(QJsonDocument::fromJson(client.readLine()).object()["result"].toObject().contains("serverInfo"));
+    send(R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+    const auto call = [&](int id) {
+      send(R"({"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_image_capabilities","arguments":{}},"id":)" + QByteArray::number(id) + "}");
+    };
+    const auto verifyReply = [&](int id, bool error) {
+      QTRY_VERIFY_WITH_TIMEOUT(client.canReadLine(), 10000);
+      const auto reply = QJsonDocument::fromJson(client.readLine()).object();
+      QCOMPARE(reply["id"].toInt(), id);
+      QVERIFY(reply["result"].isObject());
+      QCOMPARE(reply["result"].toObject()["isError"].toBool(), error);
+    };
+    call(2); verifyReply(2, false);
+    QTRY_COMPARE(jobs->lastClient().value("name").toString(), QString("switch-test"));
+    click();
+    QTRY_VERIFY(!jobs->mcpEnabled());
+    QVERIFY(!QFileInfo::exists(args[1].toString()));
+    call(3); verifyReply(3, true);
+    click();
+    QTRY_VERIFY(jobs->mcpEnabled());
+    QVERIFY(jobs->endpoint() != first);
+    call(4); verifyReply(4, false);
+    client.closeWriteChannel();
+    QTRY_COMPARE_WITH_TIMEOUT(client.state(), QProcess::NotRunning, 15000);
+    QCOMPARE(client.exitCode(), 0);
+#endif
+  }
   void mcpSettingsInteraction() {
     try {
 #ifdef FORMAVIEW_IMAGE_UI
@@ -7501,8 +7574,6 @@ private slots:
     const auto adapter = requireFixture("FORMAVIEW_TEST_MCP_ADAPTER");
     desktop_->preference("mcpInputRoot", small_);
     desktop_->preference("mcpOutputRoot", output);
-    desktop_->preference("mcpPython", python);
-    desktop_->preference("mcpAdapter", adapter);
     auto *dialog = window_->findChild<QObject *>("mcpSettingsDialog");
     QVERIFY(dialog);
     QVERIFY(QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, "permissions")));
@@ -7519,13 +7590,12 @@ private slots:
     commit.setCommitString(small_);
     QCoreApplication::sendEvent(input, &commit);
     QCOMPARE(input->property("text").toString(), small_);
-    auto *apply = item("mcpApplyScope");
-    QVERIFY(apply && apply->isEnabled());
-    QTest::mouseClick(
-        window_, Qt::LeftButton, Qt::NoModifier,
-        apply->mapToScene({apply->width() / 2, apply->height() / 2}).toPoint());
-    QTRY_VERIFY(!service->busy());
-    QVERIFY2(service->error().isEmpty(), qPrintable(service->error()));
+    auto *enable = item("mcpEnableButton");
+    QVERIFY(enable && enable->isEnabled());
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+        enable->mapToScene(enable->boundingRect().center()).toPoint());
+    QTRY_VERIFY2(service->mcpEnabled(), qPrintable(service->error()));
+    QVERIFY(!input->isEnabled());
     // Applying MCP permissions switches the backend's authorization scope.
     // Seed an approved GUI job in that scope, not an archived job from the
     // broader local-export scope used by the preceding matrix test.
@@ -7541,14 +7611,6 @@ private slots:
         service->job().value("id").toString() != previousScopedJob &&
         service->job().value("state") == "succeeded", 15000);
     QCOMPARE(service->scope(), configuredScope);
-    auto *enable = item("mcpEnableButton");
-    QVERIFY(enable && enable->isEnabled());
-    QTest::mouseClick(
-        window_, Qt::LeftButton, Qt::NoModifier,
-        enable->mapToScene({enable->width() / 2, enable->height() / 2})
-            .toPoint());
-    QTRY_VERIFY(service->mcpEnabled());
-    QVERIFY(!apply->isEnabled());
     QVERIFY(service->lastClient().isEmpty());
     QProcess process;
 #ifdef Q_OS_WIN
@@ -7582,8 +7644,7 @@ private slots:
     desktop_->setLanguage("zh-CN");
     flickable->setProperty(
         "contentY",
-        std::max(0., flickable->property("contentHeight").toDouble() -
-                         flickable->height()));
+        0.);
     QTest::qWait(60);
     auto *copy = item("mcpCopyConfig");
     QVERIFY(copy && copy->isEnabled());
@@ -7597,9 +7658,8 @@ private slots:
             .object()["mcpServers"]
             .toObject()["formaview-images"]
             .toObject();
-    QCOMPARE(config["command"].toString(), python);
-    QCOMPARE(config["env"].toObject()["FORMAVIEW_IMAGE_ENDPOINT"].toString(),
-             service->endpoint());
+    QVERIFY(QFileInfo(config["command"].toString()).isFile());
+    QCOMPARE(config["args"].toArray().first().toString(), QString("--connect"));
     save("mcp-copy-config");
     flickable->setProperty("contentY", 0);
     QTest::qWait(60);
@@ -7608,7 +7668,7 @@ private slots:
         enable->mapToScene({enable->width() / 2, enable->height() / 2})
             .toPoint());
     QTRY_VERIFY(!service->mcpEnabled());
-    QVERIFY(!copy->isEnabled());
+    QVERIFY(copy->isEnabled());
     QTest::keyClick(window_, Qt::Key_Escape);
     QTRY_VERIFY(!dialog->property("visible").toBool());
 #endif

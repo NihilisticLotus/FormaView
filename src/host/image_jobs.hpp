@@ -4,6 +4,7 @@
 #include "formaview/image_endpoint.hpp"
 #include "formaview/scheduler.hpp"
 #include <QObject>
+#include <QLockFile>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QVariantMap>
@@ -20,6 +21,8 @@ class ImageJobs final : public QObject {
   Q_PROPERTY(QVariantList jobs READ jobs NOTIFY changed)
   Q_PROPERTY(QVariantMap scope READ scope NOTIFY changed)
   Q_PROPERTY(bool mcpEnabled READ mcpEnabled NOTIFY changed)
+  Q_PROPERTY(bool mcpStarting READ mcpStarting NOTIFY changed)
+  Q_PROPERTY(QString mcpDefaultRoot READ mcpDefaultRoot CONSTANT)
   Q_PROPERTY(QString endpoint READ endpoint NOTIFY changed)
   Q_PROPERTY(QVariantMap lastClient READ lastClient NOTIFY changed)
   Q_PROPERTY(QVariantList inputInfo READ inputInfo NOTIFY changed)
@@ -68,6 +71,10 @@ public:
   Q_INVOKABLE void configureScope(const QVariantMap &scope);
   Q_INVOKABLE void discover(const QString &directory, bool recursive);
   Q_INVOKABLE void discoveryPage(int offset);
+  bool mcpStarting() const { return mcpStarting_; }
+  QString mcpDefaultRoot() const;
+  Q_INVOKABLE void startDesktopMcp(const QString &input, const QString &output, bool overwrite);
+  Q_INVOKABLE QString desktopMcpConfiguration() const;
   Q_INVOKABLE void setMcpEnabled(bool);
   Q_INVOKABLE QString mcpConfiguration(const QString &python,
                                        const QString &adapter);
@@ -137,6 +144,10 @@ private:
   std::unique_ptr<formaview::imaging::ImageEndpoint> endpoint_;
   std::vector<std::unique_ptr<formaview::imaging::ImageEndpoint>>
       retiredEndpoints_;
+  void finishDesktopMcpStart();
+  void releaseDesktopMcp();
+  bool mcpStarting_{};
+  std::unique_ptr<QLockFile> desktopLinkLock_;
   QString endpointName_;
   QVariantMap lastClient_;
   QVariantMap discovery_;

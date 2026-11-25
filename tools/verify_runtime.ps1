@@ -71,7 +71,7 @@ $notices = @('libmpv-LICENSE.txt', 'ffmpeg-LICENSE.txt', 'mpv-Copyright.txt', 'm
     'ffmpeg-shared-LICENSE-notes.txt', 'ffmpeg-linked-LICENSE-notes.txt', 'media-runtime-NOTICE.txt', 'media-static-copyrights.txt', 'media-builds.json')
 foreach ($notice in $notices) { $sourceFiles["licenses/$notice"] = "third_party/$notice" }
 $mediaFiles = @('libmpv-2.dll','avcodec-62.dll','avformat-62.dll','avutil-60.dll','swresample-6.dll','swscale-9.dll')
-$required = $mediaFiles + @('formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe') + @($sourceFiles.Keys)
+$required = $mediaFiles + @('mcp/formaview-mcp.exe', 'formaview.exe', 'formaview_image_service.exe', 'formaview_image_cli.exe') + @($sourceFiles.Keys)
 $absent = @($required | Where-Object { $_ -notin $listed -or -not (Test-Path -LiteralPath (Join-Path $RunDir $_) -PathType Leaf) })
 Add-Check 'required-runtime-files' ($absent.Count -eq 0) ("missing=" + ($absent -join '; '))
 if ($absent.Count -eq 0) {

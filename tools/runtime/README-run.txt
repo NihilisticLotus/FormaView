@@ -32,18 +32,13 @@ This is a functional run directory, not an installer.
   - ABC: Ogawa polygon cache preview and current-sample static FBX export.
 
 MCP（可选 / optional）
-  MCP 默认关闭。需要 Python 3.12 与锁定依赖（需 uv）：
-  以下命令在本运行目录中执行；venv 创建在你选择的独立可写目录，不放入安装目录。
-    uv venv <venv目录> --python 3.12
-    uv pip sync --require-hashes mcp\requirements.lock --python <venv目录>\Scripts\python.exe
-  然后在程序“设置 → 权限 / MCP”中：应用输入与输出范围，填入该 venv 的 python.exe 与 mcp\image_stdio.py 的绝对路径，
-  启用端点，点击“复制当前端点配置”，把配置粘贴到 MCP 客户端。停止端点不会自动取消已提交的任务。
-  MCP is off by default. Create a Python 3.12 venv, sync mcp\requirements.lock with hashes, apply an
-  input/output scope in Settings, enable the endpoint and copy the generated client configuration.
-  使用本目录随附的 mcp\image_stdio.py，不要引用源码树或其他旧版本目录中的脚本。
-  Python 虚拟环境不随包提供；仅使用桌面预览/转换不需要 Python，也不需要启用 MCP。
+  在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；
+  也可在开启前更改目录。首次点击“复制连接配置”，把它添加到支持 stdio 的客户端；之后可重复开关。
+  The Windows package includes a standalone stdio adapter. Enable MCP in Settings and add the copied
+  configuration to your client once. The same configuration reconnects after restarting the desktop.
+  停止共享后，已提交的任务可在任务中心管理。
 
-  无窗口工作流：将客户端 command 指向上述 python.exe，args 指向本包 mcp\image_stdio.py。
+  无窗口工作流：将客户端 command 指向本包 mcp\formaview-mcp.exe，不传 --connect。
   在该客户端配置的 env 中设置 FORMAVIEW_DESKTOP_SCOPE 为一个 UTF-8 JSON 文件的绝对路径。例如：
     {"input_roots":["D:/Media/Videos","D:/Media/Textures"],"output_roots":["D:/FormaView输出"],"allow_overwrite":false}
   目录须已存在。适配器随连接启动同一包的 formaview.exe，断开后退出。后台视频默认暂停，使用无声输出。

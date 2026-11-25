@@ -542,9 +542,9 @@ Item {
                                "\nModels: preview FBX / OBJ / glTF / GLB / PSK / PSKX; inspect UV, full source weights, skeleton and bindings, LOD and collision; play FBX / glTF actions and PSA (standalone or paired); compare skeletons and lock root motion. FBX export (including PMX / VRM inputs) is also preflighted with losses confirmed first.",
                                "\n模型：預覽 FBX / OBJ / glTF / GLB / PSK / PSKX，檢查 UV、完整來源權重、骨架與綁定、LOD 與碰撞；播放 FBX / glTF 動作與 PSA（獨立或外部配對），可比較骨架、鎖定根運動。匯出 FBX（含 PMX / VRM 輸入）同樣先預檢再確認損失。")
                      : "")
-                  + Theme.t("\nMCP 默认关闭：在设置中应用输入/输出范围后启用，客户端与界面共用同一套预检与任务。",
-                            "\nMCP is off by default: apply an input/output scope in settings and enable it. Clients and this window share the same preflight and tasks.",
-                            "\nMCP 預設關閉：在設定中套用輸入/輸出範圍後啟用，用戶端與介面共用同一套預檢與工作。")
+                  + Theme.t("\nMCP 默认关闭：在设置中打开 MCP 开关，客户端与界面共用同一套预检与任务。",
+                            "\nMCP is off by default: use the MCP switch in settings. Clients and this window share the same preflight and tasks.",
+                            "\nMCP 預設關閉：在設定中開啟 MCP 開關，用戶端與介面共用同一套預檢與工作。")
                   + Theme.t("\n\n在“软件设置 → 快捷键”查看或修改当前键位。", "\n\nView or change bindings in Settings → Keyboard shortcuts.", "\n\n在「軟體設定 → 快速鍵」查看或修改目前鍵位。")
         }
     }

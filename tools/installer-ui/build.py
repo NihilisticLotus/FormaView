@@ -351,6 +351,8 @@ def build(dest, evidence, compile_setup, runtime_delivery, development=False, in
     assert len(sources) + 1 == d["runtimeFiles"]
     assert all(f"mcp/{name}" in sources for name in ("image_stdio.py", "requirements.txt", "requirements.lock"))
     version = product_version(sources["formaview.exe"])
+    if version == "0.2.0":
+        assert "mcp/formaview-mcp.exe" in sources, "Missing bundled desktop MCP adapter"
     project = re.search(r"(?im)^project\(FormaView\s+VERSION\s+([\d.]+)\b", read(REPO / "CMakeLists.txt"))
     if not project or version != project[1]:
         raise ValueError(f"Runtime {version} does not match the FormaView source version")

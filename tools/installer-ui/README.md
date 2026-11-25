@@ -15,6 +15,8 @@ python tools/installer-ui/build.py `
   --evidence "$stage/verification/<new-candidate>"
 ```
 
+The Windows runtime packaging step invokes `tools/mcp/build_adapter.ps1` to freeze the stdio adapter and its Python runtime. Packaging requires uv and Python 3.12 on the build machine. For an unpackaged desktop development build, run `./tools/mcp/build_adapter.ps1 -OutDir out/msvc/Release/mcp -WorkDir out/msvc/mcp-adapter-build` once and after changing the adapter or dependency lock. The installed client command is `mcp/formaview-mcp.exe`.
+
 For a tester build, add `--development` to the build command. The setup filename, wizard title, installed guide and Windows Apps entry identify the development build and its source revision. The numeric product version and installer identity continue to support in-place updates of earlier development builds.
 
 `build.py` refuses non-empty output/evidence directories. The compiler binary, runtime delivery, candidate installer, and evidence are not checked into Git. Do not overwrite frozen candidate files. Review their recorded source identity and hashes before treating any generated package as a release candidate.

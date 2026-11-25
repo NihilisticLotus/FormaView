@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import re
 import time
 from typing import Any, Literal
@@ -20,9 +21,17 @@ from mcp.types import ToolAnnotations
 from mcp.types import LATEST_PROTOCOL_VERSION
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
-background_scope = os.environ.get('FORMAVIEW_DESKTOP_SCOPE')
-configured_endpoint = os.environ.get('FORMAVIEW_IMAGE_ENDPOINT')
-desktop_enabled = bool(background_scope or (configured_endpoint and os.environ.get('FORMAVIEW_DESKTOP') == '1'))
+# The desktop publishes a fresh session pipe in this per-user file on each enable.
+# Resolve it per call so a registered client can survive a host restart.
+desktop_link = None
+if __name__ == '__main__' and sys.argv[1:2] == ['--connect']:
+    if len(sys.argv) != 3 or not Path(sys.argv[2]).is_absolute():
+        raise SystemExit('Usage: --connect <absolute desktop connection file>')
+    desktop_link = Path(sys.argv[2])
+background_scope = None if desktop_link else os.environ.get('FORMAVIEW_DESKTOP_SCOPE')
+configured_endpoint = None if desktop_link else os.environ.get('FORMAVIEW_IMAGE_ENDPOINT')
+batch_enabled = bool(desktop_link or configured_endpoint or background_scope)
+desktop_enabled = bool(desktop_link or background_scope or (configured_endpoint and os.environ.get('FORMAVIEW_DESKTOP') == '1'))
 active_endpoint = configured_endpoint
 window_endpoint = None
 window_process = None
@@ -34,7 +43,8 @@ window_lock = asyncio.Lock()
 @asynccontextmanager
 async def scoped_host(option):
     scope = Path(background_scope)
-    executable = Path(__file__).resolve().parent.parent / 'formaview.exe'
+    adapter = Path(sys.executable) if getattr(sys, 'frozen', False) else Path(__file__)
+    executable = adapter.resolve().parent.parent / 'formaview.exe'
     if not scope.is_absolute() or not scope.is_file() or not executable.is_file():
         raise ValueError('Use the packaged adapter and an existing absolute desktop scope file')
     process = await asyncio.create_subprocess_exec(str(executable), option, str(scope), str(os.getpid()),
@@ -142,17 +152,24 @@ def pipe_request(endpoint: str, message: bytes) -> dict[str, Any]:
 
 
 def single_file_tool(**kwargs):
-    return (lambda function: function) if configured_endpoint or background_scope else server.tool(**kwargs)
+    return (lambda function: function) if batch_enabled else server.tool(**kwargs)
 
 
 def batch_tool(**kwargs):
-    return server.tool(**kwargs) if configured_endpoint or background_scope else (lambda function: function)
+    return server.tool(**kwargs) if batch_enabled else (lambda function: function)
 
 
 async def native_request(request: dict[str, Any], *, endpoint=None) -> dict[str, Any]:
     global window_asset
     if not endpoint and window_endpoint and request.get('asset_id') and request['asset_id']==window_asset:
         endpoint = window_endpoint
+    if desktop_link:
+        try:
+            endpoint = json.loads(desktop_link.read_text(encoding='utf-8'))['endpoint']
+            if not isinstance(endpoint, str) or not endpoint:
+                raise ValueError('Missing desktop endpoint')
+        except (OSError, KeyError, ValueError, TypeError) as error:
+            raise RuntimeError('Open FormaView and turn on MCP in Settings.') from error
     endpoint = endpoint or active_endpoint
     if endpoint:
         params = server.get_context().session.client_params

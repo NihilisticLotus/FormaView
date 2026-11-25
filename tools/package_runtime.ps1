@@ -106,6 +106,7 @@ foreach ($name in $productExecutables) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'mcp'), (Join-Path $OutDir 'licenses') | Out-Null
+& "$PSScriptRoot/mcp/build_adapter.ps1" -OutDir (Join-Path $OutDir 'mcp') -WorkDir (Join-Path $BuildDir 'mcp-adapter-build')
 Copy-Item -LiteralPath (Join-Path $repo 'tools\mcp\image_stdio.py'), (Join-Path $repo 'tools\mcp\requirements.lock'), (Join-Path $repo 'tools\mcp\requirements.txt') -Destination (Join-Path $OutDir 'mcp')
 Copy-Item -Path (Join-Path $repo 'third_party\*') -Destination (Join-Path $OutDir 'licenses') -Include *.txt
 Copy-Item -LiteralPath (Join-Path $repo 'tools\runtime\README-run.txt') -Destination (Join-Path $OutDir 'README-run.txt')

@@ -341,6 +341,7 @@ ImageJobs::~ImageJobs() {
     catch (const std::exception &e) { qWarning("%s", e.what()); }
   }
   endpoint_.reset();
+  releaseDesktopMcp();
   retiredEndpoints_.clear();
   groups_.reset();
   service_.reset();
@@ -698,6 +699,12 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
               if (direct && selectionRevision == receiver->jobSelectionRevision_) receiver->jobId_ = response["job_id"].toString();
             } else if (!response["plan_id"].toString().isEmpty())
               receiver->cancel("plan", response["plan_id"].toString());
+            if (receiver->mcpStarting_) {
+              if (response.contains("error") || revision != receiver->revision_ || receiver->scope_ != requestedScope)
+                receiver->releaseDesktopMcp();
+              else
+                receiver->finishDesktopMcpStart();
+            }
             receiver->poll();
             if (direct) emit receiver->directExportFinished(response["job_id"].toString());
             emit receiver->changed();
@@ -964,6 +971,7 @@ void ImageJobs::poll() {
     if (state.result && state.result->error) {
       busy_ = false;
       finishPreparation();
+      if (mcpStarting_) releaseDesktopMcp();
       error_ = QString::fromStdString(state.result->error->message);
       emit changed();
     }
@@ -1080,11 +1088,101 @@ void ImageJobs::discoveryPage(int offset) {
   discoveryOffset_ = offset;
   poll();
 }
+namespace {
+QString desktopLinkPath() {
+  return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("mcp/connection.json");
+}
+QString desktopAdapterPath() {
+  return QDir(QCoreApplication::applicationDirPath()).filePath("mcp/formaview-mcp.exe");
+}
+}
+QString ImageJobs::mcpDefaultRoot() const {
+  return QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).filePath("FormaView/MCP");
+}
+QString ImageJobs::desktopMcpConfiguration() const {
+  QJsonObject command{{"command", desktopAdapterPath()}};
+  if (mcpEnabled() && !desktopLinkLock_)
+    command["env"] = QJsonObject{{"FORMAVIEW_IMAGE_ENDPOINT", endpointName_}, {"FORMAVIEW_DESKTOP", "1"}};
+  else
+    command["args"] = QJsonArray{"--connect", desktopLinkPath()};
+  return QString::fromUtf8(QJsonDocument(QJsonObject{{"mcpServers", QJsonObject{{"formaview-images", command}}}}).toJson());
+}
+void ImageJobs::releaseDesktopMcp() {
+  mcpStarting_ = false;
+  if (desktopLinkLock_) {
+    QFile::remove(desktopLinkPath());
+    desktopLinkLock_.reset();
+  }
+}
+void ImageJobs::startDesktopMcp(const QString &input, const QString &output, bool overwrite) {
+  if (mcpEnabled() || mcpStarting_ || busy_) return;
+  if (!QFileInfo(desktopAdapterPath()).isFile()) {
+    error_ = tr("MCP adapter is missing from this installation");
+    emit changed();
+    return;
+  }
+  const QDir defaults(mcpDefaultRoot());
+  for (const auto &pair : {std::pair{input, QString("Input")}, std::pair{output, QString("Output")}}) {
+    if (pair.first == defaults.filePath(pair.second) && !defaults.mkpath(pair.second)) {
+      error_ = tr("Cannot create the default MCP folder: ") + pair.first;
+      emit changed();
+      return;
+    }
+    const QFileInfo dir(pair.first);
+    if (!dir.isAbsolute() || !dir.isDir()) {
+      error_ = tr("Select an existing folder for MCP access: ") + pair.first;
+      emit changed();
+      return;
+    }
+  }
+  const auto path = desktopLinkPath();
+  auto lock = std::make_unique<QLockFile>(path + ".lock");
+  lock->setStaleLockTime(0);
+  if (!QFileInfo(path).dir().mkpath(".")) {
+    error_ = tr("Cannot create the MCP connection directory");
+    emit changed();
+    return;
+  }
+  if (!lock->tryLock()) {
+    error_ = tr("Cannot publish the MCP connection. Check whether another FormaView window has MCP enabled.");
+    emit changed();
+    return;
+  }
+  desktopLinkLock_ = std::move(lock);
+  mcpStarting_ = true;
+  const QVariantMap policy{{"input_roots", QStringList{input}}, {"output_roots", QStringList{output}}, {"allow_overwrite", overwrite}};
+  if (configured() && scope_.value("input_roots").toStringList() == QStringList{input} &&
+      scope_.value("output_roots").toStringList() == QStringList{output} &&
+      scope_.value("allow_overwrite").toBool() == overwrite && scope_.size() == policy.size() + 1) {
+    finishDesktopMcpStart();
+    return;
+  }
+  configureScope(policy);
+  if (!busy_ && mcpStarting_) {
+    releaseDesktopMcp();
+    emit changed();
+  }
+}
+void ImageJobs::finishDesktopMcpStart() {
+  mcpStarting_ = false;
+  setMcpEnabled(true);
+  if (!mcpEnabled()) {
+    releaseDesktopMcp();
+    return;
+  }
+  QSaveFile link(desktopLinkPath());
+  const auto data = QJsonDocument(QJsonObject{{"endpoint", endpointName_}}).toJson(QJsonDocument::Compact);
+  if (!link.open(QIODevice::WriteOnly) || link.write(data) != data.size() || !link.commit()) {
+    error_ = tr("Cannot save the MCP connection file");
+    setMcpEnabled(false);
+  }
+}
 void ImageJobs::setMcpEnabled(bool enabled) {
   if (enabled == mcpEnabled())
     return;
   if (!enabled) {
     endpoint_->stop();
+    releaseDesktopMcp();
     retiredEndpoints_.push_back(std::move(endpoint_));
     endpointName_.clear();
     lastClient_.clear();

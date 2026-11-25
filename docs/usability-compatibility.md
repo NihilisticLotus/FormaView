@@ -86,6 +86,12 @@ Windows 11、Qt 6.12 Release 实测使用一段 60 秒的 H.264 视频，确认�
 
 Windows 桌面回归用例 `videoLoopShortcutSettings` 使用带时间轴的真实视频，覆盖设置循环、实际回跳、清除后越过终点、拒绝冲突、改键保存以及恢复默认。此外，使用本机 60 fps 的长 FLV 验证了远距离跳转后按 F 前进一帧、按 D 返回原帧及恢复播放。深色模式桌面截图已核对，播放设置使用与软件设置一致的圆角面板、主题边线、下拉框和关闭按钮。
 
+## 桌面 MCP 的开关与重连
+
+Windows 开发包自带独立 stdio 程序。软件设置中的 MCP 开关同时应用目录范围并启动共享。每次开启使用新的本机命名管道；固定的客户端配置通过当前用户的连接文件查找活动端点。关闭后停止监听、释放连接文件，其他窗口可以接管。同一客户端进程可以保持打开，下一次工具请求会重新解析活动端点。
+
+桌面回归 `mcpSwitchReconnect` 实际点击开关，使用内置适配器完成 MCP 握手和能力查询，验证关闭后请求返回错误，再次开启后同一客户端通过新端点成功查询。客户端首次注册和从旧版固定管道配置迁移均只需复制一次；独立后台模式仍按自己的客户端配置启动。
+
 ## 参考依据
 
 Windows 文件资源管理器使用 Ctrl+W 关闭当前标签。PowerToys Peek 把文件间导航和预览内容内的操作分开。FormaView 已把方向键用于视频跳转、D/F 用于逐帧，本轮将文件切换安排在 Ctrl 组合键上。[Windows 快捷键](https://support.microsoft.com/en-gb/accessibility/windows/keyboard-shortcuts-in-windows) · [PowerToys Peek](https://learn.microsoft.com/windows/powertoys/peek)
