@@ -488,4 +488,14 @@ async def set_video_filter(asset_id: str, name: Literal['brightness','contrast',
 
 
 if __name__ == '__main__':
-    server.run(transport='stdio')
+    # FastMCP wraps the binary streams in its own TextIOWrapper. Give it
+    # duplicate descriptors so finalizing those wrappers cannot close the
+    # process streams that the frozen launcher still flushes on exit.
+    process_stdin, process_stdout = sys.stdin, sys.stdout
+    with os.fdopen(os.dup(process_stdin.fileno()), 'r', encoding='utf-8') as reader, \
+            os.fdopen(os.dup(process_stdout.fileno()), 'w', encoding='utf-8') as writer:
+        sys.stdin, sys.stdout = reader, writer
+        try:
+            server.run(transport='stdio')
+        finally:
+            sys.stdin, sys.stdout = process_stdin, process_stdout

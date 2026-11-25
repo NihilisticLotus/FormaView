@@ -7558,6 +7558,8 @@ private slots:
     client.closeWriteChannel();
     QTRY_COMPARE_WITH_TIMEOUT(client.state(), QProcess::NotRunning, 15000);
     QCOMPARE(client.exitCode(), 0);
+    const auto diagnostics = client.readAllStandardError();
+    QVERIFY2(!diagnostics.contains("Traceback"), diagnostics.constData());
 #endif
   }
   void mcpSettingsInteraction() {
