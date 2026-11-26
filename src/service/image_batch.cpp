@@ -136,6 +136,21 @@ QJsonObject failed_item(const QJsonObject &request, qsizetype index,
   return result;
 }
 } // namespace
+
+QJsonObject export_job_progress(const QJsonObject &job) {
+  const auto items = job.value("items").toArray();
+  QJsonObject counts, result;
+  for (const auto &entry : items) {
+    const auto status = entry.toObject().value("status").toString();
+    counts[status] = counts.value(status).toInteger() + 1;
+  }
+  for (const auto key : {"version", "id", "kind", "plan_id", "state", "grouped", "batch_count",
+                         "name", "pause_requested", "cancellation_requested", "error"})
+    if (job.contains(key)) result[key] = job.value(key);
+  result["total"] = items.size();
+  result["item_counts"] = counts;
+  return result;
+}
 struct ImageAdmission::Impl {
   ImageGate::Lease lease;
   static ImageGate &gate() {
@@ -820,16 +835,18 @@ struct ImageBatchService::Impl {
       return plan(request["items"].toArray(), stop);
     }
     if (operation == "get_plan" || operation == "get_job" ||
-        operation == "get_discovery") {
-      fields(request, {"version", "operation", "id", "offset", "limit"});
+        operation == "get_job_progress" || operation == "get_discovery") {
+      const bool summary = operation == "get_job_progress";
+      if (summary) fields(request, {"version", "operation", "id"});
+      else fields(request, {"version", "operation", "id", "offset", "limit"});
       const auto record =
           find(text(request, "id"), operation == "get_plan"  ? "plan"
-                                    : operation == "get_job" ? "job"
+                                    : operation == "get_job" || summary ? "job"
                                                              : "discovery");
       auto data = copy(record);
       data.remove("idempotency_key");
       data["cancellation_requested"] = record->stop.stop_requested();
-      return page(data, request);
+      return summary ? export_job_progress(data) : page(data, request);
     }
     if (operation == "list_jobs") {
       fields(request, {"version", "operation", "offset", "limit"});

@@ -73,7 +73,7 @@ struct ImageEndpoint::Impl {
     const auto id = request.value("plan_id").toString(request.value("id").toString());
     const bool grouped = groups && groups->contains(id);
     if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
-    if (grouped && !QStringList{"get_plan", "get_job", "list_jobs", "cancel",
+    if (grouped && !QStringList{"get_plan", "get_job", "get_job_progress", "list_jobs", "cancel",
                                 "submit", "retry_plan", "pause", "resume"}.contains(operation))
       return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument,
                                                 "Operation is not available through the grouped endpoint"));
@@ -206,11 +206,11 @@ struct ImageEndpoint::Impl {
                     });
                     return;
                   }
-                  if (QStringList{"get_plan", "get_job", "list_jobs",
-                                  "get_discovery", "cancel"}
+                  if (QStringList{"get_plan", "get_job", "get_job_progress", "list_jobs",
+                                  "get_discovery", "cancel", "pause", "resume"}
                           .contains(operation)) {
                     const auto result = dispatch(request);
-                    if (operation == "cancel" && owner->workChanged)
+                    if ((operation == "cancel" || operation == "pause" || operation == "resume") && owner->workChanged)
                       owner->workChanged();
                     respond(socket, result);
                     return;

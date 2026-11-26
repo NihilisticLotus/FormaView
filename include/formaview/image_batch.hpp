@@ -4,6 +4,8 @@
 #include <memory>
 
 namespace formaview::imaging {
+// Summarize one complete in-memory job snapshot, before item pagination.
+QJsonObject export_job_progress(const QJsonObject &job);
 // Process-wide admission for allocating image work. Cached GUI publication and
 // lightweight job queries do not acquire it. Never acquire it on the GUI thread
 // or recursively around ImageBatchService::request().

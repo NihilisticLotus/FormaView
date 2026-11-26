@@ -272,10 +272,22 @@ void endpointBoundary(const QString &root) {
     require(socket.canReadLine(), "Boundary endpoint timed out");
     return QJsonDocument::fromJson(socket.readLine()).object();
   };
-  const auto plan = start(*groups, requests(root, 1, "approved-"));
+  const auto plan = start(*groups, requests(root, 129, "approved-"));
   const auto planId = plan["id"].toString();
   const auto jobId = checked(send(submission(plan)))["job_id"].toString();
+  const auto summary = query("get_job_progress", jobId);
+  require(checked(send(query("pause", jobId)))["accepted"].toBool(), "Pause grouped export over endpoint");
+  const auto pauseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  auto progress = checked(send(summary));
+  while (progress["state"] != "paused" && std::chrono::steady_clock::now() < pauseDeadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    progress = checked(send(summary));
+  }
+  require(progress["state"] == "paused" && progress["total"] == 129 &&
+          progress["batch_count"] == 3 && !progress.contains("items"), "Compact summary covers all three batches");
+  require(checked(send(query("resume", jobId)))["accepted"].toBool(), "Resume grouped export over endpoint");
   require(wait(*groups, "get_job", jobId)["state"] == "succeeded", "Approved endpoint submit succeeds");
+  require(checked(send(summary))["item_counts"].toObject()["succeeded"] == 129, "Count committed outputs beyond one page");
   bool rejected = true;
   int attempt = 0;
   for (const auto *operation : {"create_job", "create_plan"}) {

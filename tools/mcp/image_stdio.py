@@ -184,7 +184,7 @@ async def native_request(request: dict[str, Any], *, endpoint=None) -> dict[str,
     message = json.dumps(request, ensure_ascii=False, allow_nan=False).encode('utf-8') + b'\n'
     if len(message) > 1024 * 1024:
         raise ValueError('Request exceeds one MiB')
-    lane = controls if request.get('operation') in ('get_plan', 'get_job', 'list_jobs', 'cancel', 'get_discovery') else workers
+    lane = controls if request.get('operation') in ('get_plan', 'get_job', 'get_job_progress', 'list_jobs', 'cancel', 'pause', 'resume', 'get_discovery') else workers
     async with lane:
         if endpoint:
             communication = asyncio.create_task(asyncio.to_thread(pipe_request, endpoint, message))
@@ -664,8 +664,12 @@ async def submit_image_job(plan_id: str, approval_digest: str, idempotency_key: 
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-async def get_image_job(job_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-    """Read actual per-item output paths, hashes, failures and cancellation outcomes with bounded pagination."""
+async def get_image_job(job_id: str, offset: int = 0, limit: int = 100, summary_only: bool = False) -> dict[str, Any]:
+    """Read committed paths, hashes and item outcomes. Set summary_only to poll state and counts across all items."""
+    if summary_only:
+        if offset != 0 or limit != 100:
+            raise ValueError('Use either summary_only or item pagination.')
+        return await native_request(dict(version=1, operation='get_job_progress', id=job_id))
     return await native_request({'version': 1, 'operation': 'get_job', 'id': job_id, 'offset': offset, 'limit': limit})
 
 
@@ -673,6 +677,16 @@ async def get_image_job(job_id: str, offset: int = 0, limit: int = 100) -> dict[
 async def list_image_jobs(offset: int = 0, limit: int = 100) -> dict[str, Any]:
     """Discover retained jobs after reconnecting; reports journal recovery states."""
     return await native_request({'version': 1, 'operation': 'list_jobs', 'offset': offset, 'limit': limit})
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+async def set_export_job_paused(job_id: str, paused: bool) -> dict[str, Any]:
+    """Pause or resume a submitted image or FBX export, including a desktop conversion group.
+
+    Pausing takes effect between files. Check get_image_job(summary_only=true) for the
+    actual state. Resume the same job with paused=false. Committed files are retained.
+    """
+    return await native_request(dict(version=1, operation='pause' if paused else 'resume', id=job_id))
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))

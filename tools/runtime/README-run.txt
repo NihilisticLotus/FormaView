@@ -42,6 +42,7 @@ MCP（可选 / optional）
   用 discover_export_sources 在授权目录查找图片或模型，get_image_discovery 分页返回路径和类别。
   两个模型或图片输出名相同时，可用 conflict="rename" 在预检中分配独立文件名。
   用 get_image_plan 核对计划中的目标和损失后提交 submit_image_job，再用 get_image_job 查看实际输出。
+  set_export_job_paused 可在文件之间暂停或恢复同一个任务。get_image_job 的 summary_only=true 返回整份任务的状态与计数。
   在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；
   也可在开启前更改目录。首次点击“复制连接配置”，把它添加到支持 stdio 的客户端；之后可重复开关。
   The Windows package includes a standalone stdio adapter. Enable MCP in Settings and add the copied

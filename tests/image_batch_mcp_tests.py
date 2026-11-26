@@ -122,7 +122,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources', 'set_export_job_paused'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})
@@ -389,6 +389,10 @@ for y in range(out.height):
                 partial_done = await terminal(session, 'job', partial_submit['job_id'])
                 assert partial_done['state'] == 'partially_succeeded', partial_done
                 assert partial_done['items'][1]['error']['code'] == 'input_changed'
+                summary = await call(session, 'get_image_job', dict(job_id=partial_submit['job_id'], summary_only=True))
+                assert summary['item_counts'] == {'succeeded': 1, 'failed': 1} and 'items' not in summary
+                refused = await call(session, 'set_export_job_paused', dict(job_id=partial_submit['job_id'], paused=False))
+                assert refused['error']['code'] == 'conflict', refused
                 shutil.copyfile(args.fixture, sources[1])
                 retry = await call(session, 'retry_image_plan', {'job_id': partial_submit['job_id']})
                 retry_ready = await terminal(session, 'plan', retry['plan_id'])
@@ -419,6 +423,18 @@ for y in range(out.height):
                 crash_args = submission(crash_plan, 'crash-key')
                 crash_submit = await call(session, 'submit_image_job', crash_args)
                 crash_id = crash_submit['job_id']
+                control = dict(job_id=crash_id, paused=True)
+                assert (await call(session, 'set_export_job_paused', control))['accepted']
+                for _ in range(200):
+                    progress = await call(session, 'get_image_job', dict(job_id=crash_id, summary_only=True))
+                    if progress['state'] == 'paused': break
+                    await asyncio.sleep(.02)
+                assert progress['state'] == 'paused' and progress['pause_requested'], progress
+                assert progress['total'] == sum(progress['item_counts'].values()) == 24 and 'items' not in progress
+                assert (await call(session, 'set_export_job_paused', control))['accepted']
+                await asyncio.sleep(.15)
+                assert progress == await call(session, 'get_image_job', dict(job_id=crash_id, summary_only=True))
+                assert (await call(session, 'set_export_job_paused', dict(control, paused=False)))['accepted']
                 for attempt in range(100):
                     before_crash = await call(session, 'get_image_job', {'job_id': crash_id})
                     if any(i['status'] == 'succeeded' for i in before_crash['items']): break
