@@ -111,7 +111,10 @@ Windows 开发包自带独立 stdio 程序。软件设置中的 MCP 开关同时
 - 图片批量预检将 RGBA PNG 和 RGB JPEG 分别映射为四通道和三通道 TIFF。提交前目标目录未出现计划文件，提交后使用 Pillow 回读，尺寸和像素均与各自输入一致。空列表、超过 64 项、同名目标及越界输入均已覆盖。底层 11 类输入 × 9 个目标格式的 99 组转换也通过了独立回读。
 - 模型批量预检将静态 OBJ 和带多个动画片段的 GLB 分别导出为 Unreal 坐标、厘米单位的 FBX。保留动画和仅导出模型各执行一次，第二次使用重命名冲突策略。FBX 回读验证了网格、单位和动画栈数量。Alembic 另取第 2 号采样（从 0 计），验证了源采样记录和静态网格输出。
 
-可通过 `tests/image_batch_mcp_tests.py` 和 `tests/scene_export_mcp_tests.py` 复测。后者使用 `--abc-fixture` 指定至少含三个采样的多边形缓存。
+- 多子资源导出覆盖第二个 DDS 立方体的六面、3D DDS 同一级别的两个深度切片、多部件 EXR 的 Y 和 Z 通道。用 OpenEXR Python 独立读回十份输出，逐像素核对浮点值、通道名、数据窗口和显示窗口。另用 104 帧 GIF 检查筛选能找到第二页的帧。
+- 在本机用 63.75 MiB 的合成 R32_FLOAT DDS（两个 1024 × 1024 立方体，各四级 mip）读取同一页目录。原生 CLI 交替启动，各测四次，包含进程启动与输入哈希。只取目录的中位数为 70 ms，常规检查同时解码选中面的中位数为 330 ms。
+
+可通过 `tests/image_batch_mcp_tests.py` 和 `tests/scene_export_mcp_tests.py` 复测。前者可用 `--professional-fixtures` 指向 `formaview_professional_tests image` 生成的 DDS 和 EXR 样本目录，后者用 `--abc-fixture` 指定至少含三个采样的多边形缓存。
 
 ## 参考依据
 

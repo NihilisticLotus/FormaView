@@ -14,7 +14,7 @@ struct ImageSemantics {
 class ImageDocument {
 public:
   static ImageDocument open(const std::filesystem::path &, Limits = {},
-                            std::stop_token = {});
+                            std::stop_token = {}, bool inventory_only = false);
   [[nodiscard]] const ImageData &description() const;
   // Effective source tags for this resource; description() retains the
   // container summary. Shared by viewport, conversion preparation and MCP.

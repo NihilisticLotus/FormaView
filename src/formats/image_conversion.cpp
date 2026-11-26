@@ -39,7 +39,7 @@ ImageDocument::ImageDocument(
     std::variant<ImageFile, RasterFile, ExtendedRasterFile> file)
     : file_(std::move(file)) {}
 ImageDocument ImageDocument::open(const std::filesystem::path &source,
-                                  Limits limits, std::stop_token stop) {
+                                  Limits limits, std::stop_token stop, bool inventory_only) {
   if (stop.stop_requested())
     throw skeletal::Failure(ErrorCode::Cancelled, "Image open cancelled");
   const auto path = nativeImagePath(source);
@@ -65,8 +65,12 @@ ImageDocument ImageDocument::open(const std::filesystem::path &source,
   if (is("\x76\x2f\x31\x01", 4) || is("DDS ", 4) || is("#?RADIANCE", 10) ||
       is("#?RGBE", 6) ||
       (extension.size() == 4 && extension[0] == L'.' && extension[1] == L't' &&
-       extension[2] == L'g' && extension[3] == L'a'))
+       extension[2] == L'g' && extension[3] == L'a')) {
+    // This reader keeps all surfaces and EXR parts in mapped mode. Raster
+    // readers use their normal mode to enumerate every page or animation frame.
+    if (inventory_only) limits.preview = true;
     return ImageDocument(ImageFile::open(path, limits, stop));
+  }
   return ImageDocument(RasterFile::open(path, limits, stop));
 }
 const ImageData &ImageDocument::description() const {

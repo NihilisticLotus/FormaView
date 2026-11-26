@@ -235,7 +235,7 @@ flowchart LR
 | 工具 | 用途 |
 |---|---|
 | `get_image_capabilities` | 查询当前运行目录的转换能力。可传 `source_extension` 按输入扩展名筛选目标格式，模型结果还包含可选坐标系和单位 |
-| `inspect_image` | 检查授权范围内的图片、通道和子资源 |
+| `inspect_image` | 检查授权范围内的图片、通道和子资源。只想查看索引、尺寸和窗口时，可用 `inventory_only=true` 分页读取目录 |
 | `read_texture_pixel` | 后台读取指定子资源的源通道和解释值，坐标从数据窗口左上角的 (0, 0) 起算 |
 | `open_asset`、`get_playback_state` | 用主程序打开视频或贴图，凭本次返回的素材 ID 查询播放器 |
 | `get_window_state`、`control_player_window` | 使用 `open_asset(path, window=True)` 打开独立可见窗口。查询显示器 ID、模式、置顶与几何信息；显式切换普通、全屏或置顶小窗，移动到指定显示器或按 Qt 逻辑像素调整小窗大小。默认后台素材继续独立播放 |
@@ -251,6 +251,7 @@ flowchart LR
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `plan_image_batch` | 把选中的 1–64 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
 | `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 64 帧。输出保留完整画布和透明区域 |
+| `plan_image_subresources` | 将一张图片的多个子资源分别写为独立文件。可按索引选择，也可按 DDS 的 mip、数组层、立方体面、深度切片或 EXR 部件名筛选，最多 64 项 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
 | `submit_image_job`、`get_image_job`、`list_image_jobs` | 提交并跟踪批量任务 |
 | `set_export_job_paused` | 暂停或恢复已提交的图片和 FBX 导出，也适用于桌面任务中心的分组任务 |
@@ -277,7 +278,9 @@ flowchart LR
 
 同一角色有多份 PSA 时，可向 `plan_fbx_batch` 传入这些动画路径和一个共享的 `reference`。每份 PSA 生成一个 FBX，保留各自的动画栈，并独立查找同名配置。混选的其他模型仍使用自身骨架。提交前可在 `get_image_plan` 的各项预检结果中核对配置来源、轨道规则、坐标系和单位。
 
-两种工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
+例如，从 DDS 立方体数组中取第二个立方体的六个最高分辨率面，向 `plan_image_subresources` 传入 `match={"array_layer":1,"mip":0}`。提取多部件 EXR 的深度时可传 `match={"part_name":"depth"}`；输出为 EXR 并选 `output_scalar="float32"` 可保留浮点深度。用 `inspect_image` 查看当前文件的索引、部件名称和窗口。文件名中的 `entry-0000` 等编号对应源索引。
+
+导出工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
 
 用 `set_export_job_paused(job_id, paused=true)` 可在文件之间暂停导出，当前文件可以先完成。通过 `get_image_job(job_id, summary_only=true)` 查看实际状态与整份任务的分项计数，包含跨批次的结果。状态变为 `paused` 后，用同一个任务 ID 传入 `paused=false` 即可继续。需要核对具体文件时，使用默认的分页查询。
 

@@ -367,6 +367,7 @@ QJsonObject image_capabilities() {
       {"read_extensions", extensions},
       {"write_targets", writes},
       {"gif_frame_export", reads.contains("gif") && writes.contains("png")},
+      {"subresource_inventory", true},
 #ifdef FORMAVIEW_MODEL_EXPORT
       {"model_export", model_export::capabilities()},
 #endif
@@ -397,7 +398,7 @@ QJsonObject execute_image_request(
     const std::filesystem::path &approved_output) {
   keys(request, {"version", "operation", "input", "output", "options",
                  "conflict", "approval_digest", "acknowledge_losses",
-                 "subresource", "offset", "limit", "x", "y"});
+                 "subresource", "offset", "limit", "inventory_only", "x", "y"});
   if (integer(request, "version", 0) != 1)
     invalid("Request version must be 1");
   const auto operation = string(request, "operation");
@@ -407,11 +408,15 @@ QJsonObject execute_image_request(
   }
   if (operation != "pixel" && (request.contains("x") || request.contains("y")))
     invalid("Coordinates apply only to pixel sampling");
+  if (operation != "inspect" && request.contains("inventory_only"))
+    invalid("Inventory pages apply only to image inspection");
+  const bool inventory_only = boolean(request, "inventory_only");
   if (operation != "inspect" && operation != "pixel" && operation != "preflight" &&
       operation != "convert")
     invalid("Unsupported image operation");
 #ifdef FORMAVIEW_MODEL_EXPORT
   if (operation != "pixel" && model_export::handles(request)) {
+    if (inventory_only) invalid("Subresource inventory requires an image");
     skeletal::Limits model_limits;
     model_limits.input_bytes = limits.input_bytes;
     model_limits.decoded_bytes = limits.decoded_bytes;
@@ -423,11 +428,11 @@ QJsonObject execute_image_request(
                                 limits.input_bytes, stop);
   const auto &input = lease.snapshot();
   if (operation == "pixel") limits.preview = true;
-  auto document = ImageDocument::open(input.resolved_path, limits, stop);
+  auto document = ImageDocument::open(input.resolved_path, limits, stop, inventory_only);
   const auto &description = document.description();
   // Preview readers map the already leased file without hashing it a second time.
   const auto &decodedHash = description.source.identity.sha256;
-  if ((!limits.preview || !decodedHash.empty()) && decodedHash != input.content_sha256)
+  if ((!(limits.preview || inventory_only) || !decodedHash.empty()) && decodedHash != input.content_sha256)
     throw skeletal::Failure(ErrorCode::InputChanged,
                             "Decoded source differs from held snapshot");
   if (operation == "pixel") {
@@ -459,16 +464,6 @@ QJsonObject execute_image_request(
                limit = integer(request, "limit", 100, 100);
     if (!limit || offset > description.subresources.size())
       invalid("Invalid subresource page");
-    auto image = document.decode(selected, stop);
-    const auto semantics = document.semantics(selected);
-    QJsonArray channels;
-    for (const auto &c : image.channels)
-      channels.append(QJsonObject{
-          {"name", QString::fromStdString(c.name)},
-          {"scalar", scalar(c.samples.scalar)},
-          {"encoding", c.encoding == SampleEncoding::UNorm   ? "unorm"
-                       : c.encoding == SampleEncoding::SNorm ? "snorm"
-                                                             : "numeric"}});
     QJsonArray resources;
     const auto end =
         std::min<std::size_t>(description.subresources.size(),
@@ -489,32 +484,35 @@ QJsonObject execute_image_request(
         resource["playback_delay_ms"] = QString::fromStdString(delay->second).toInt();
       resources.append(resource);
     }
+    QJsonObject result{{"version", 1}, {"input", snapshot(input)}, {"subresources", resources},
+                       {"total", static_cast<qint64>(description.subresources.size())},
+                       {"next_offset", end < description.subresources.size()
+                                           ? QJsonValue(static_cast<qint64>(end)) : QJsonValue(QJsonValue::Null)}};
+    if (inventory_only) return result;
+    auto image = document.decode(selected, stop);
+    const auto semantics = document.semantics(selected);
+    QJsonArray channels;
+    for (const auto &c : image.channels)
+      channels.append(QJsonObject{
+          {"name", QString::fromStdString(c.name)},
+          {"scalar", scalar(c.samples.scalar)},
+          {"encoding", c.encoding == SampleEncoding::UNorm   ? "unorm"
+                       : c.encoding == SampleEncoding::SNorm ? "snorm"
+                                                             : "numeric"}});
     QJsonObject props;
     for (const auto &[key, value] : description.source.properties)
       if (!key.ends_with("icc_base64") && !key.ends_with("icc_hex") && !key.ends_with(".playback_delay_ms"))
         props[QString::fromStdString(key)] = QString::fromStdString(value);
-    return {
-        {"version", 1},
-        {"input", snapshot(input)},
-        {"adapter",
-         QString::fromStdString(description.source.identity.adapter)},
-        {"adapter_version",
-         QString::fromStdString(description.source.identity.adapter_version)},
-        {"alpha", alpha(semantics.alpha)},
-        {"container_alpha", alpha(description.alpha)},
-        {"colour_space",
-         semantics.colour_space
-             ? QJsonValue(QString::fromStdString(*semantics.colour_space))
-             : QJsonValue(QJsonValue::Null)},
-        {"icc_profile_sha256",
-         QString::fromStdString(semantics.icc_profile_sha256)},
-        {"selected_channels", channels},
-        {"metadata", props},
-        {"subresources", resources},
-        {"total", static_cast<qint64>(description.subresources.size())},
-        {"next_offset", end < description.subresources.size()
-                            ? QJsonValue(static_cast<qint64>(end))
-                            : QJsonValue(QJsonValue::Null)}};
+    result["adapter"] = QString::fromStdString(description.source.identity.adapter);
+    result["adapter_version"] = QString::fromStdString(description.source.identity.adapter_version);
+    result["alpha"] = alpha(semantics.alpha);
+    result["container_alpha"] = alpha(description.alpha);
+    result["colour_space"] = semantics.colour_space ? QJsonValue(QString::fromStdString(*semantics.colour_space))
+                                                    : QJsonValue(QJsonValue::Null);
+    result["icc_profile_sha256"] = QString::fromStdString(semantics.icc_profile_sha256);
+    result["selected_channels"] = channels;
+    result["metadata"] = props;
+    return result;
   }
   if (!request["options"].isObject())
     invalid("Explicit conversion options required");

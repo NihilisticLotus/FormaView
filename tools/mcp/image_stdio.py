@@ -240,6 +240,8 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
     result = {'source_extension': ext, 'kind': 'unsupported', 'output_formats': []}
     if '.' + ext in caps.get('read_extensions', []):
         result.update(kind='image', output_formats=caps['write_targets'])
+        if batch_enabled and ext in ('dds', 'exr', 'tif', 'tiff', 'ico', 'gif'):
+            result['subresource_export'] = {'tool': 'plan_image_subresources', 'max_outputs_per_plan': 64}
         if ext == 'gif' and caps.get('gif_frame_export'):
             result['frame_export'] = {'tool': 'plan_gif_frames', 'output': 'png',
                                       'first_index': 0, 'max_frames_per_plan': 64}
@@ -255,10 +257,14 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-async def inspect_image(path: str, subresource: int = 0, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-    """Inspect an authorized image and page subresources; decode only the selected entry's actual channel layout."""
-    return await native_request({'version': 1, 'operation': 'inspect', 'input': path,
-                                 'subresource': subresource, 'offset': offset, 'limit': limit})
+async def inspect_image(path: str, subresource: int = 0, offset: int = 0, limit: int = 100,
+                        inventory_only: bool = False) -> dict[str, Any]:
+    """Inspect an image's selected channels, or request just a page of descriptors with inventory_only."""
+    request = {'version': 1, 'operation': 'inspect', 'input': path,
+               'subresource': subresource, 'offset': offset, 'limit': limit}
+    if inventory_only:
+        request['inventory_only'] = True
+    return await native_request(request)
 
 
 @single_file_tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
@@ -384,9 +390,8 @@ class ImageExportSettings(BaseModel):
         return options
 
 
-async def image_plan_item(input, output, target, subresource, alpha_action, source_alpha,
-                          allow_lossy, quality, output_scalar, quantization, conflict, export_options):
-    info = await inspect_image(input, subresource, limit=1)
+def image_plan_item(info, input, output, target, subresource, alpha_action, source_alpha,
+                    allow_lossy, quality, output_scalar, quantization, conflict, export_options):
     if 'error' in info:
         return info
     if 'selected_channels' not in info:
@@ -436,8 +441,9 @@ async def plan_image_conversion(
         return caps
     target = image_target(Path(output).suffix.lower().removeprefix('.'), caps)
     options = (settings or ImageExportSettings()).native_options(target, alpha_action)
-    item = await image_plan_item(input, output, target, subresource, alpha_action, source_alpha,
-                                 allow_lossy, quality, output_scalar, quantization, conflict, options)
+    info = await inspect_image(input, subresource, limit=1)
+    item = image_plan_item(info, input, output, target, subresource, alpha_action, source_alpha,
+                           allow_lossy, quality, output_scalar, quantization, conflict, options)
     return item if 'error' in item else await create_image_plan([item])
 
 
@@ -470,11 +476,90 @@ async def plan_image_batch(
     options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     items = []
     for path, destination in zip(inputs, destinations):
-        item = await image_plan_item(path, str(destination), target, subresource, alpha_action, source_alpha,
-                                     allow_lossy, quality, output_scalar, quantization, conflict, options)
+        info = await inspect_image(path, subresource, limit=1)
+        item = image_plan_item(info, path, str(destination), target, subresource, alpha_action, source_alpha,
+                               allow_lossy, quality, output_scalar, quantization, conflict, options)
         if 'error' in item:
             return dict(item, input=path)
         items.append(item)
+    return await create_image_plan(items)
+
+
+class SubresourceFilter(BaseModel):
+    """Match all supplied fields against the native subresource inventory (zero-based)."""
+    model_config = ConfigDict(extra='forbid')
+    mip: int | None = Field(default=None, ge=0)
+    array_layer: int | None = Field(default=None, ge=0)
+    cube_face: int | None = Field(default=None, ge=0, le=5)
+    depth_slice: int | None = Field(default=None, ge=0)
+    part_name: str | None = None
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_image_subresources(
+    input: str, output_directory: str, output_extension: str, indices: list[int] | None = None,
+    match: SubresourceFilter | None = None,
+    alpha_action: Literal['preserve', 'drop', 'composite'] = 'preserve',
+    source_alpha: Literal['straight', 'premultiplied'] | None = None,
+    allow_lossy: bool = False, quality: int = 90,
+    output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
+    quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip', settings: ImageExportSettings | None = None,
+) -> dict[str, Any]:
+    """Preflight separate files for selected entries of a DDS, multipart EXR or other indexed image.
+
+    Supply distinct indices from inspect_image, or match native descriptor fields, e.g.
+    match={'array_layer': 1, 'mip': 0} for a DDS cube array, or {'part_name': 'depth'} for EXR.
+    Omit both for all entries (1–64 results). Filenames retain the original index. Channel mapping,
+    precision and alpha handling follow plan_image_conversion and are checked per selected entry.
+    """
+    directory, source = Path(output_directory), Path(input)
+    if not directory.is_absolute() or not source.is_absolute():
+        raise ValueError('Choose absolute input and output directory paths.')
+    if indices is not None:
+        if match is not None or not 1 <= len(indices) <= 64 or min(indices) < 0 or len(set(indices)) != len(indices):
+            raise ValueError('Choose 1–64 distinct non-negative indices, or use a descriptor filter.')
+    caps = await get_image_capabilities()
+    if 'error' in caps:
+        return caps
+    extension = output_extension.strip().lower().removeprefix('.')
+    target = image_target(extension, caps)
+    options = (settings or ImageExportSettings()).native_options(target, alpha_action)
+    first = indices[0] if indices else 0
+    inventory_only = indices is None and caps.get('subresource_inventory', False)
+    info = await inspect_image(input, first, offset=first, limit=100 if indices is None else 1, inventory_only=inventory_only)
+    if 'error' in info:
+        return info
+    if 'subresources' not in info:
+        raise ValueError('Choose an image input.')
+    digest = info['input']['sha256']
+    if indices is None:
+        fields = match.model_dump(exclude_none=True) if match else {}
+        indices = []
+        page = info
+        while True:
+            indices.extend(s['index'] for s in page['subresources'] if all(s[k] == v for k, v in fields.items()))
+            if len(indices) > 64:
+                raise ValueError('More than 64 subresources match. Narrow the filter or select explicit indices.')
+            if page['next_offset'] is None:
+                break
+            page = await inspect_image(input, first, offset=page['next_offset'], limit=100, inventory_only=inventory_only)
+            if 'error' in page:
+                return page
+            if page['input']['sha256'] != digest:
+                raise ValueError('Image changed while reading its subresources. Inspect it again.')
+        if not indices:
+            raise ValueError('No subresources match the supplied fields.')
+    items = []
+    for index in indices:
+        selected = info if index == first and not inventory_only else await inspect_image(input, index, offset=index, limit=1)
+        if 'error' in selected:
+            return selected
+        if selected['input']['sha256'] != digest:
+            raise ValueError('Image changed while reading its subresources. Inspect it again.')
+        output = directory / f'{source.stem}-entry-{index:04d}.{extension}'
+        items.append(image_plan_item(selected, input, str(output), target, index, alpha_action, source_alpha,
+                                     allow_lossy, quality, output_scalar, quantization, conflict, options))
     return await create_image_plan(items)
 
 

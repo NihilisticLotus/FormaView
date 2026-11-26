@@ -38,6 +38,8 @@ MCP（可选 / optional）
   两种图片计划都支持 settings，可指定缩小比例、通道映射、合成背景和目标格式的编码参数。
   直通 Alpha 的 sRGB 素材可用 composite、background_linear 与 srgb_to_srgb 在线性空间合成，再输出为 sRGB。
   plan_gif_frames 按从 0 开始的帧号将 GIF 连续帧合成为 PNG，每份计划最多 64 帧。可分段选择，文件名保留原帧号。
+  plan_image_subresources 将同一图片的多个子资源按源索引分别导出。可用 indices 选取离散项，
+  或用 match 按 DDS 的 mip、array_layer、cube_face、depth_slice 或 EXR 的 part_name 筛选。
   plan_fbx_batch 可将多个模型按相同坐标系和单位分别导出为 FBX，默认保留内嵌动画。
   多份 PSA 可用 reference 共用一个 PSK/PSKX，分别应用各自同名的 .config。
   plan_fbx_export 和 plan_fbx_clips 可用 companion 指定轨道配置。配对默认严格核对骨骼记录，
