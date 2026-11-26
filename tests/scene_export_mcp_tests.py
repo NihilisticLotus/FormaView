@@ -186,6 +186,14 @@ async def main():
                                      name_template='{index}-{clip}.{ext}')
                 plan = await terminal('plan', created['plan_id'])
                 assert plan['state'] == 'ready' and plan['total'] == 65 and not list(group_dir.iterdir()), plan
+                review = await call('get_image_plan', plan_id=plan['id'], summary_only=True)
+                assert review['planned_outputs'] == {'create': {'count': 65, 'first_index': 0}}
+                assert review['approval_digest'] == plan['approval_digest']
+                codes = {}
+                for index, row in enumerate(plan['items']):
+                    for code in {loss['code'] for loss in row['preflight']['losses']}:
+                        codes.setdefault(code, {'first_index': index, 'count': 0})['count'] += 1
+                assert review['losses_by_code'] == codes
                 queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
                                     idempotency_key='65-clips', acknowledge_losses=True)
                 job = await terminal('job', queued['job_id'])

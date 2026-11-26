@@ -88,7 +88,7 @@ struct ImageEndpoint::Impl {
         return image_error_json(skeletal::Failure(ErrorCode::Conflict, "Idempotency key was used for another plan"));
     }
     if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
-    if (grouped && !QStringList{"get_plan", "get_job", "get_job_progress", "list_jobs", "cancel",
+    if (grouped && !QStringList{"get_plan", "get_plan_summary", "get_job", "get_job_progress", "list_jobs", "cancel",
                                 "submit", "retry_plan", "pause", "resume"}.contains(operation))
       return image_error_json(skeletal::Failure(ErrorCode::InvalidArgument,
                                                 "Operation is not available through the grouped endpoint"));
@@ -221,7 +221,7 @@ struct ImageEndpoint::Impl {
                     });
                     return;
                   }
-                  if (QStringList{"get_plan", "get_job", "get_job_progress", "list_jobs",
+                  if (QStringList{"get_plan", "get_plan_summary", "get_job", "get_job_progress", "list_jobs",
                                   "get_discovery", "cancel", "pause", "resume"}
                           .contains(operation)) {
                     const auto result = dispatch(request);

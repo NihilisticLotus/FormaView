@@ -286,6 +286,8 @@ FBX 可使用 `{clip}`。拆分动画时填入实际片段名，片段名中的�
 
 导出工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
 
+确认前可用 `get_image_plan(plan_id, summary_only=true)` 查看整批预检结果。`planned_outputs` 统计预计新建、改名新建、跳过和覆盖的项数；`items_with_losses` 是涉及损失的项数，`losses_by_code` 和 `errors_by_code` 按原因计数。每类结果的 `first_index` 可直接作为 `offset`，配合 `limit=1` 查看对应文件和原因。同一项可以有多种损失。预检期间统计会逐步更新，只有计划就绪后才可确认。
+
 用 `set_export_job_paused(job_id, paused=true)` 可在文件之间暂停导出，当前文件可以先完成。通过 `get_image_job(job_id, summary_only=true)` 查看实际状态与整份任务的分项计数，包含跨批次的结果。状态变为 `paused` 后，用同一个任务 ID 传入 `paused=false` 即可继续。需要核对具体文件时，使用默认的分页查询。
 
 单文件模式没有持久批次任务语义；端点模式提供目录发现和批量任务。当前开发版的 `get_image_capabilities` 返回 `max_export_plan_items=4096`。超过 64 项时，客户端仍使用一个计划 ID 和一次损失确认。用 `get_image_plan` 的 `next_offset` 逐页核对目标，再提交整批。重名分配和源文件保护覆盖整份计划。每条请求的 JSON 上限是 1 MiB，路径和参数较长时需分次建立计划。目录发现有数量上限，并会跳过、报告重解析点。取消是异步请求，需继续查询任务直到终态；客户端断开不会自动取消已提交任务。发现目录中的文件只代表扩展名候选，不代表一定可以解码。

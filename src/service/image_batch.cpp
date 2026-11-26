@@ -205,6 +205,50 @@ QJsonObject export_job_progress(const QJsonObject &job) {
   result["item_counts"] = counts;
   return result;
 }
+
+QJsonObject export_plan_summary(const QJsonObject &plan) {
+  auto result = export_job_progress(plan);
+  if (plan.contains("approval_digest")) result["approval_digest"] = plan["approval_digest"];
+  QJsonObject losses, outputs, errors;
+  qsizetype withLoss = 0;
+  const auto tally = [](QJsonObject &categories, const QString &key, qsizetype index) {
+    auto category = categories.value(key).toObject();
+    if (category.isEmpty()) category["first_index"] = index;
+    category["count"] = category.value("count").toInteger() + 1;
+    categories[key] = category;
+  };
+  const auto items = plan.value("items").toArray();
+  for (qsizetype i = 0; i < items.size(); ++i) {
+    const auto item = items[i].toObject();
+    const auto error = item.value("error").toObject();
+    if (!error.isEmpty()) tally(errors, error.value("code").toString(), i);
+    const auto preflight = item.value("preflight").toObject();
+    if (preflight.isEmpty()) continue;
+
+    // A model can lose multiple chunks for the same reason. Count affected files.
+    std::set<QString> codes;
+    for (const auto &loss : preflight.value("losses").toArray())
+      codes.insert(loss.toObject().value("code").toString());
+    if (!codes.empty()) ++withLoss;
+    for (const auto &code : codes) tally(losses, code, i);
+
+    const auto request = item.value("request").toObject();
+    const auto conflict = request.value("conflict").toString("skip");
+    QString action = "create";
+    if (preflight.value("output_exists").toBool())
+      action = conflict == "overwrite" ? "overwrite" : "skip";
+    else if (conflict == "rename" &&
+             QFileInfo(request.value("output").toString()).fileName() !=
+             QFileInfo(preflight.value("output").toString()).fileName())
+      action = "rename";
+    tally(outputs, action, i);
+  }
+  result["items_with_losses"] = withLoss;
+  result["losses_by_code"] = losses;
+  result["planned_outputs"] = outputs;
+  result["errors_by_code"] = errors;
+  return result;
+}
 struct ImageAdmission::Impl {
   ImageGate::Lease lease;
   static ImageGate &gate() {
@@ -897,19 +941,21 @@ struct ImageBatchService::Impl {
         fail(ErrorCode::InvalidArgument, "Items array required");
       return plan(request["items"].toArray(), stop);
     }
-    if (operation == "get_plan" || operation == "get_job" ||
+    if (operation == "get_plan" || operation == "get_plan_summary" || operation == "get_job" ||
         operation == "get_job_progress" || operation == "get_discovery") {
-      const bool summary = operation == "get_job_progress";
+      const bool plan = operation == "get_plan" || operation == "get_plan_summary";
+      const bool summary = operation == "get_job_progress" || operation == "get_plan_summary";
       if (summary) fields(request, {"version", "operation", "id"});
       else fields(request, {"version", "operation", "id", "offset", "limit"});
       const auto record =
-          find(text(request, "id"), operation == "get_plan"  ? "plan"
+          find(text(request, "id"), plan ? "plan"
                                     : operation == "get_job" || summary ? "job"
                                                              : "discovery");
       auto data = copy(record);
       data.remove("idempotency_key");
       data["cancellation_requested"] = record->stop.stop_requested();
-      return summary ? export_job_progress(data) : page(data, request);
+      if (summary) return plan ? export_plan_summary(data) : export_job_progress(data);
+      return page(data, request);
     }
     if (operation == "list_jobs") {
       fields(request, {"version", "operation", "offset", "limit"});

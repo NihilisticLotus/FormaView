@@ -50,6 +50,7 @@ MCP（可选 / optional）
   index 是本批输出顺序，从 1 起算。逐片段 FBX 可用 {clip} 写入动作名。省略模板使用各工具原有命名。
   每条请求最多 1 MiB。超过 64 项仍只需确认整份计划一次，按 next_offset 翻页即可检查全部目标。
   用 get_image_plan 核对计划中的目标和损失后提交 submit_image_job，再用 get_image_job 查看实际输出。
+  get_image_plan 的 summary_only=true 可一次查看整份计划的损失、错误及预计覆盖、跳过、改名和新建数量。用各类别的 first_index 作为分页 offset 可定位样例。
   set_export_job_paused 可在文件之间暂停或恢复同一个任务。get_image_job 的 summary_only=true 返回整份任务的状态与计数。
   在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；
   也可在开启前更改目录。首次点击“复制连接配置”，把它添加到支持 stdio 的客户端；之后可重复开关。

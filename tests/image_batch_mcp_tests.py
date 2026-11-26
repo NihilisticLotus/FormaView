@@ -297,6 +297,23 @@ for path, channel, value, width, height, x, display_width in json.loads(sys.argv
                 group_plan = await terminal(session, 'plan', group['plan_id'], limit=60)
                 assert group_plan['state'] == 'ready' and group_plan['total'] == 66 and group_plan['batch_count'] == 2
                 assert group_plan['next_offset'] == 60 and len(group_plan['items']) == 60
+                review_args = dict(plan_id=group['plan_id'], summary_only=True)
+                review = await call(session, 'get_image_plan', review_args)
+                assert 'items' not in review and review['approval_digest'] == group_plan['approval_digest']
+                assert review['items_with_losses'] == 66 and review['item_counts'] == {'ready': 66}
+                assert review['losses_by_code'] == {c: {'count': 66, 'first_index': 0}
+                                                    for c in ('selected_subresource', 'animation_timing')}
+                assert review['planned_outputs'] == {'create': {'count': 66, 'first_index': 0}}
+                assert (await session.call_tool('get_image_plan', dict(review_args, offset=1))).isError
+                mixed_items = [item(sources[0], f'mixed-{n}.tif') for n in range(64)]
+                mixed_items.append(group_plan['items'][0]['request'])
+                mixed = await call(session, 'create_image_plan', dict(items=mixed_items))
+                await terminal(session, 'plan', mixed['plan_id'], limit=1)
+                mixed_review = await call(session, 'get_image_plan', dict(plan_id=mixed['plan_id'], summary_only=True))
+                example = mixed_review['losses_by_code']['animation_timing']
+                assert mixed_review['items_with_losses'] == 1 and example == {'count': 1, 'first_index': 64}
+                detail = await call(session, 'get_image_plan', dict(plan_id=mixed['plan_id'], offset=example['first_index'], limit=1))
+                assert detail['items'][0]['request'] == mixed_items[64] and not list(outputs.glob('mixed-*.tif'))
                 last = await call(session, 'get_image_plan', dict(plan_id=group['plan_id'], offset=60))
                 assert [Path(i['preflight']['output']).name for i in last['items']] == [f'group-{n}.png' for n in range(61, 67)]
                 assert not list(outputs.glob('group-*.png'))
@@ -472,6 +489,9 @@ for y in range(out.height):
                 assert ready['state'] == 'ready' and ready['total'] == 65, ready
                 names = [Path(r['preflight']['output']) for r in ready['items']]
                 assert len(set(names)) == 65 and not list(group_dir.iterdir()), names
+                review_names = await call(session, 'get_image_plan', dict(plan_id=ready['id'], summary_only=True))
+                changed = [i for i, row in enumerate(ready['items']) if names[i] != Path(row['request']['output'])]
+                assert review_names['planned_outputs']['rename'] == {'count': len(changed), 'first_index': changed[0]}
                 assert (await call(session, 'submit_image_job', submission(ready, 'rename-same-stem')))['error']['code'] == 'conflict'
                 assert (await call(session, 'submit_image_job', submission(ready, key)))['error']['code'] == 'conflict'
                 queued = await call(session, 'submit_image_job', submission(ready, 'cross-child-rename'))
@@ -487,9 +507,24 @@ for y in range(out.height):
                 blocked = await call(session, 'create_image_plan', dict(items=protected))
                 check = await terminal(session, 'plan', blocked['plan_id'])
                 assert check['state'] != 'ready' and check['items'][0]['status'] == 'failed', check
+                blocked_review = await call(session, 'get_image_plan', dict(plan_id=check['id'], summary_only=True))
+                assert 'approval_digest' not in blocked_review and blocked_review['item_counts']['failed'] > 0
+                assert blocked_review['errors_by_code'][check['items'][0]['error']['code']]['first_index'] == 0
                 assert 'error' in await call(session, 'submit_image_job', dict(plan_id=blocked['plan_id'],
                                       approval_digest='bogus', idempotency_key='blocked-group', acknowledge_losses=True))
                 assert alias.read_bytes() == args.fixture.read_bytes() and not list(outputs.glob('blocked-*.tif'))
+                # Only the last two outputs already exist. Summarizing is read-only.
+                choices = [item(sources[0], 'summary-' + str(n) + '.tiff') for n in range(3)]
+                choices[-1]['conflict'] = 'overwrite'
+                for row in choices[1:]:
+                    Path(row['output']).write_bytes(b'old')
+                ordinary = await call(session, 'create_image_plan', dict(items=choices))
+                simple = await terminal(session, 'plan', ordinary['plan_id'])
+                overview = await call(session, 'get_image_plan', dict(plan_id=simple['id'], summary_only=True))
+                assert overview['approval_digest'] == simple['approval_digest'] and overview['items_with_losses'] == 0
+                assert overview['planned_outputs'] == {k: {'count': 1, 'first_index': n}
+                                                       for n, k in enumerate(('create', 'skip', 'overwrite'))}
+                assert not Path(choices[0]['output']).exists() and all(Path(row['output']).read_bytes() == b'old' for row in choices[1:])
                 outside = str(args.output / 'outside.png')
                 rejected = await call(session, 'plan_image_batch', dict(batch_args, inputs=[str(sources[0]), outside]))
                 assert rejected['error']['code'] == 'out_of_scope' and rejected['input'] == outside, rejected
@@ -600,6 +635,7 @@ for y in range(out.height):
                 assert replay['job_id'] == group_job and replay['reused'], replay
                 recovered = await call(session, 'get_image_job', dict(job_id=group_job, offset=64))
                 assert recovered['state'] == 'succeeded' and len(recovered['items']) == 2
+                assert (await call(session, 'get_image_plan', review_args)) == review
                 # Exercise actual native queue admission under simultaneous MCP
                 # submissions; cancellation/query use a separate adapter lane.
                 saturated = await asyncio.gather(*(call(session, 'create_image_plan', {'items': [

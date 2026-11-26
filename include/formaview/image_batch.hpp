@@ -11,6 +11,7 @@ QString export_filename(const QString &input, qsizetype index, const QString &ex
                         const QString &pattern, const QString &clip = {});
 // Summarize one complete in-memory job snapshot, before item pagination.
 QJsonObject export_job_progress(const QJsonObject &job);
+QJsonObject export_plan_summary(const QJsonObject &plan);
 // Process-wide admission for allocating image work. Cached GUI publication and
 // lightweight job queries do not acquire it. Never acquire it on the GUI thread
 // or recursively around ImageBatchService::request().

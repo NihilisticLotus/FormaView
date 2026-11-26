@@ -783,21 +783,23 @@ struct ImageTaskGroups::Impl {
   }
   QJsonObject dispatch(const QJsonObject &q, std::stop_token stop, const PreparationProgress &progress) {
     const auto op = q["operation"].toString();
-    if (op == "get_plan" || op == "get_job" || op == "get_job_progress") {
-      const bool summary = op == "get_job_progress";
+    if (op == "get_plan" || op == "get_plan_summary" || op == "get_job" || op == "get_job_progress") {
+      const bool plan = op == "get_plan" || op == "get_plan_summary";
+      const bool summary = op == "get_plan_summary" || op == "get_job_progress";
       if (summary && q.size() != 3)
-        fail(ErrorCode::InvalidArgument, "Job progress takes only a job identifier");
+        fail(ErrorCode::InvalidArgument, "Summary takes only an identifier");
       auto g = find(q["id"].toString());
       QJsonObject result;
       {
         const std::lock_guard lock(state);
-        result = op == "get_plan" ? g->plan : g->job;
+        result = plan ? g->plan : g->job;
         result["pause_requested"] = g->pause_requested.load();
         result["cancellation_requested"] = g->stop.stop_requested();
       }
       if (result["id"].toString() != q["id"].toString())
         fail(ErrorCode::InvalidArgument, "Requested kind does not match group identifier");
-      return summary ? export_job_progress(result) : result;
+      if (summary) return plan ? export_plan_summary(result) : export_job_progress(result);
+      return result;
     }
     if (op == "list_jobs") {
       QJsonArray items; const std::lock_guard lock(state);

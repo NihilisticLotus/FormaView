@@ -185,7 +185,7 @@ async def native_request(request: dict[str, Any], *, endpoint=None) -> dict[str,
     message = json.dumps(request, ensure_ascii=False, allow_nan=False).encode('utf-8') + b'\n'
     if len(message) > 1024 * 1024:
         raise ValueError('Request exceeds one MiB')
-    lane = controls if request.get('operation') in ('get_plan', 'get_job', 'get_job_progress', 'list_jobs', 'cancel', 'pause', 'resume', 'get_discovery') else workers
+    lane = controls if request.get('operation') in ('get_plan', 'get_plan_summary', 'get_job', 'get_job_progress', 'list_jobs', 'cancel', 'pause', 'resume', 'get_discovery') else workers
     async with lane:
         if endpoint:
             communication = asyncio.create_task(asyncio.to_thread(pipe_request, endpoint, message))
@@ -811,8 +811,18 @@ async def create_image_plan(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-async def get_image_plan(plan_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-    """Page immutable preflight parameters, source snapshots and losses. Only ready plans can be submitted."""
+async def get_image_plan(plan_id: str, offset: int = 0, limit: int = 100, summary_only: bool = False) -> dict[str, Any]:
+    """Read preflight details or summarize the entire plan before approval.
+
+    summary_only reports item states, losses by code, errors and planned create/rename/skip/overwrite
+    outcomes. Counts reflect completed preflights so far. Each category includes its affected item
+    count and first_index; pass that index as offset with limit=1 to inspect an example.
+    Only ready plans can be submitted. Output outcomes reflect the filesystem at preflight time.
+    """
+    if summary_only:
+        if offset != 0 or limit != 100:
+            raise ValueError('Use either summary_only or item pagination.')
+        return await native_request(dict(version=1, operation='get_plan_summary', id=plan_id))
     return await native_request({'version': 1, 'operation': 'get_plan', 'id': plan_id, 'offset': offset, 'limit': limit})
 
 
