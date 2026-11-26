@@ -239,6 +239,56 @@ async def main():
                         'b=Image.open(sys.argv[3]); assert b.mode=="RGBA" and a.size==b.size '
                         'and a.convert("RGBA").tobytes()==b.tobytes()', str(gif), str(i), str(target)], check=True)
                 pair_directory = inputs / 'pairs'; pair_directory.mkdir()
+                encoded = outputs / 'encoder-options'; encoded.mkdir()
+                conversions = {
+                    'png': dict(alpha_action='composite', output_scalar='uint8', quantization='clamp_round',
+                                settings=dict(scale_divisor=2, transfer='srgb_to_srgb',
+                                              background_linear=[0, 1, .25], png_compression=9)),
+                    'dds': dict(alpha_action='drop', allow_lossy=True, settings=dict(dds_encoding='bc5_unorm',
+                                channels=[dict(source=c, destination=c) for c in 'RG'])),
+                    'exr': dict(output_scalar='float32', quantization='clamp_round', settings=dict(exr_tiled=True)),
+                    'webp': dict(allow_lossy=True, quality=73, settings=dict(webp_lossless=False)),
+                }
+                for ext, choices in conversions.items():
+                    output = encoded / ('explicit.' + ext)
+                    response = await call(session, 'plan_image_conversion',
+                                          dict(input=str(sources[0]), output=str(output), **choices))
+                    planned = await terminal(session, 'plan', response['plan_id'])
+                    assert planned['state'] == 'ready' and not output.exists(), planned
+                    if ext == 'png':
+                        refused = await call(session, 'submit_image_job',
+                            dict(submission(planned, 'unapproved-settings'), acknowledge_losses=False))
+                        assert 'error' in refused and not output.exists(), refused
+                    accepted = await call(session, 'submit_image_job', submission(planned, 'encode-' + ext))
+                    job = await terminal(session, 'job', accepted['job_id'])
+                    assert job['state'] == 'succeeded', job
+                    assert hashlib.sha256(output.read_bytes()).hexdigest() == job['items'][0]['result']['output_sha256']
+                assert struct.unpack_from('<I', (encoded/'explicit.dds').read_bytes(), 128)[0] == 83
+                assert struct.unpack_from('<I', (encoded/'explicit.exr').read_bytes(), 4)[0] & 0x200
+                assert b'VP8 ' in (encoded/'explicit.webp').read_bytes()
+                # Independently decode sRGB to light, blend the translucent patch, then encode sRGB.
+                oracle = """
+from PIL import Image
+import sys
+def linear(v): return v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4
+def srgb(v): return 12.92*v if v <= .0031308 else 1.055*v**(1/2.4)-.055
+im = Image.open(sys.argv[1]).convert('RGBA')
+out = Image.open(sys.argv[2])
+assert out.mode == 'RGB' and out.size == (im.width//2, im.height//2)
+for y in range(out.height):
+    for x in range(out.width):
+        *rgb, alpha = im.getpixel((2*x+1, 2*y+1))
+        a = alpha/255
+        expected = tuple(round(255*srgb(linear(c/255)*a + bg*(1-a))) for c,bg in zip(rgb,(0,1,.25)))
+        assert out.getpixel((x,y)) == expected, (x,y,expected,out.getpixel((x,y)))
+"""
+                subprocess.run([str(args.decoder_python), '-c', oracle, str(sources[0]),
+                                str(encoded/'explicit.png')], check=True)
+                for bad in (dict(scale_divisor=3), dict(png_compression=10), dict(dds_encoding='bc1_srgb'),
+                            dict(background_linear=[0, 0, 0]), dict(unknown_setting=True)):
+                    reply = await session.call_tool('plan_image_conversion',
+                        dict(input=str(sources[0]), output=str(encoded/'invalid.png'), settings=bad))
+                    assert reply.isError and not (encoded/'invalid.png').exists(), reply
                 pair_requests = []; pair_manifest = []
                 for source_path, source_info in pair_sources:
                     channel_names = [c['name'] for c in source_info['selected_channels']]
@@ -260,7 +310,8 @@ async def main():
                             'target': target, 'drop_alpha': drop_alpha})
                 assert len(pair_requests) == 99
                 batch_args = dict(inputs=[str(sources[0]), str(inputs / 'converted.jpeg')],
-                                  output_directory=str(outputs), output_extension='.TIF')
+                                  output_directory=str(outputs), output_extension='.TIF',
+                                  settings=dict(tiff_compression='lzw'))
                 for invalid_inputs in ([], [str(sources[0])] * 65, [str(sources[0]), str(nested / sources[0].name)]):
                     rejected = await session.call_tool('plan_image_batch', dict(batch_args, inputs=invalid_inputs))
                     assert rejected.isError, rejected
@@ -282,7 +333,8 @@ async def main():
                     assert hashlib.sha256(output.read_bytes()).hexdigest() == row['result']['output_sha256']
                     subprocess.run([str(args.decoder_python), '-c',
                         'from PIL import Image; import sys; a,b=[Image.open(p).convert("RGBA") for p in sys.argv[1:]]; '
-                        'assert a.size==b.size and a.tobytes()==b.tobytes()', source, str(output)], check=True)
+                        'assert a.size==b.size and a.tobytes()==b.tobytes() and Image.open(sys.argv[2]).tag_v2[259]==5',
+                        source, str(output)], check=True)
                 for offset in range(0, len(pair_requests), 64):
                     paired = await plan(session, pair_requests[offset:offset + 64])
                     paired_submit = await call(session, 'submit_image_job', submission(paired, f'pairs-{offset}'))

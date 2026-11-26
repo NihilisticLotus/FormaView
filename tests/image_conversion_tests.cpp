@@ -104,6 +104,19 @@ void profile_layouts(const ImageSubresource &rgba, const std::filesystem::path &
   RasterEncodeOptions tagged; tagged.icc_profile = rgbProfile;
   write(path, encode_raster(rgb, tagged));
   const auto doc = ImageDocument::open(path);
+  ImageConversionOptions brightened;
+  brightened.transform.channels = {{"R","R"},{"G","G"},{"B","B"}};
+  brightened.transform.meaning = ImageMeaning::Colour;
+  brightened.transform.source_alpha = AlphaMode::Absent;
+  brightened.transform.output_scalar = ScalarType::UInt8;
+  brightened.transform.quantization = Quantization::ClampRound;
+  brightened.transform.exposure = 0.5;
+  brightened.transform.transfer = Transfer::SrgbToSrgb;
+  write(root / "srgb-brightened.png", prepare_image_conversion(doc, brightened).encoded);
+  require(ImageDocument::open(root / "srgb-brightened.png").semantics(0).icc_profile_sha256 ==
+          doc.semantics(0).icc_profile_sha256, "sRGB round trip lost the RGB profile");
+  brightened.transform.transfer = Transfer::SrgbToLinear;
+  rejects([&] { (void)prepare_image_conversion(doc, brightened); });
   for (const auto target : {ImageTarget::Png, ImageTarget::Jpeg, ImageTarget::Tiff}) {
     ImageConversionOptions options; options.target = target; options.allow_lossy = true;
     options.transform.source_alpha = AlphaMode::Absent;

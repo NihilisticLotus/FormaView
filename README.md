@@ -259,7 +259,11 @@ flowchart LR
 | `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 64 项，文件名带源片段序号，默认跳过已有文件 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
 
-例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。需要自定义通道映射或合成背景色时可使用 `create_image_plan`。
+例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。
+
+单图和批量计划都接受可选的 `settings`。例如，将直通 Alpha 的 sRGB 图片缩小一半并合成白底 JPEG，使用 `alpha_action="composite"`、`allow_lossy=true`、`output_scalar="uint8"`、`quantization="clamp_round"`，并传入 `settings={"scale_divisor":2,"background_linear":[1,1,1],"transfer":"srgb_to_srgb"}`。合成在线性光空间进行，输出像素重新编码为 sRGB。预检会报告与目标编码不兼容的配置文件。
+
+可在 `settings.channels` 中逐项指定 `source` 和 `destination`，例如将 R、G 映射到双通道 DDS 并选择 `dds_encoding="bc5_unorm"`。其他编码选项包括 PNG 压缩级别、TIFF 压缩方式、WebP 无损开关和 EXR 分块存储。可以在工具参数列表中查看每种编码的可选值。
 
 要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。若两个输入映射到同一个输出名，请用 `create_image_plan` 分别命名。预检结束后可在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
 

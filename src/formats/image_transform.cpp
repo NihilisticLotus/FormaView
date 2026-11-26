@@ -66,7 +66,10 @@ TransformedImage transform(const ImageSubresource &source,
       (options.exposure != 0 || options.transfer != Transfer::Preserve ||
        options.alpha_action == AlphaAction::Composite))
     invalid("Colour operations require explicit colour interpretation");
-  const auto transformed = options.exposure != 0 || options.transfer != Transfer::Preserve;
+  const bool decode_srgb = options.transfer == Transfer::SrgbToLinear || options.transfer == Transfer::SrgbToSrgb;
+  const bool encode_srgb = options.transfer == Transfer::LinearToSrgb || options.transfer == Transfer::SrgbToSrgb;
+  const bool transformed = options.exposure != 0 || (decode_srgb != encode_srgb);
+  const bool colour_math = transformed || options.alpha_action == AlphaAction::Composite;
   if (options.output_scalar && *options.output_scalar != ScalarType::UInt8 &&
       *options.output_scalar != ScalarType::UInt16 &&
       *options.output_scalar != ScalarType::Half &&
@@ -165,22 +168,21 @@ TransformedImage transform(const ImageSubresource &source,
       if ((i & 4095) == 0) check_cancel(stop);
       double v = interpreted_value(*c, i);
       if (component >= 0 && !is_alpha) {
-        // Composite background is linear. Transfer names define source/output
-        // encoding: SrgbToLinear decodes before compositing; LinearToSrgb
-        // encodes after compositing. Preserve composes linear numeric RGB.
-        if (options.transfer == Transfer::SrgbToLinear) v = srgb_to_linear(v);
+        // Exposure and compositing operate in linear light between the selected
+        // input and output transfer functions. Preserve uses numeric RGB as-is.
+        if (decode_srgb && colour_math) v = srgb_to_linear(v);
         if (options.alpha_action == AlphaAction::Composite) {
           const double a = interpreted_value(*alpha, i);
           if (!std::isfinite(a) || a < 0 || a > 1)
             invalid("Composite alpha must be finite in [0,1]");
           if (options.source_alpha == AlphaMode::Premultiplied) {
-            if (options.transfer == Transfer::SrgbToLinear)
+            if (decode_srgb)
               invalid("Premultiplied sRGB compositing requires a separate explicit policy");
             v = v * std::exp2(options.exposure) + options.background_linear[static_cast<std::size_t>(component)] * (1 - a);
           } else
             v = v * std::exp2(options.exposure) * a + options.background_linear[static_cast<std::size_t>(component)] * (1 - a);
         } else v *= std::exp2(options.exposure);
-        if (options.transfer == Transfer::LinearToSrgb) v = linear_to_srgb(v);
+        if (encode_srgb && colour_math) v = linear_to_srgb(v);
       }
       if (!std::isfinite(v)) {
         if (options.non_finite == NonFinite::Reject)

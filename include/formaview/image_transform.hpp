@@ -3,7 +3,7 @@
 
 namespace formaview::imaging {
 enum class AlphaAction { Preserve, Drop, Composite };
-enum class Transfer { Preserve, LinearToSrgb, SrgbToLinear };
+enum class Transfer { Preserve, LinearToSrgb, SrgbToLinear, SrgbToSrgb };
 enum class Quantization { RejectLoss, ClampRound };
 enum class NonFinite { Preserve, Reject, ReplaceZero };
 struct ChannelMapping {

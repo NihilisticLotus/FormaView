@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from mcp.types import LATEST_PROTOCOL_VERSION
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 # The desktop publishes a fresh session pipe in this per-user file on each enable.
 # Resolve it per call so a registered client can survive a host restart.
@@ -325,22 +326,73 @@ def batch_destinations(inputs, output_directory, extension):
     return outputs
 
 
+class ChannelMapping(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source: str
+    destination: str
+
+
+class ImageExportSettings(BaseModel):
+    """Optional export settings shared by single and batch plans. Encoder fields apply only to their format."""
+    model_config = ConfigDict(extra='forbid')
+    scale_divisor: Literal[1, 2, 4, 8] = 1
+    channels: list[ChannelMapping] | None = Field(default=None, min_length=1, max_length=256)
+    alpha_channel: str | None = None
+    background_linear: tuple[FiniteFloat, FiniteFloat, FiniteFloat] | None = None
+    transfer: Literal['preserve', 'linear_to_srgb', 'srgb_to_linear', 'srgb_to_srgb'] = 'preserve'
+    exposure: FiniteFloat = Field(default=0, ge=-64, le=64)
+    non_finite: Literal['preserve', 'reject', 'replace_zero'] = 'preserve'
+    metadata: Literal['preserve_supported', 'drop'] = 'preserve_supported'
+    window: Literal['preserve', 'selected_data'] = 'preserve'
+    png_compression: int | None = Field(default=None, ge=0, le=9)
+    tiff_compression: Literal['none', 'lzw', 'deflate', 'packbits'] | None = None
+    webp_lossless: bool | None = None
+    exr_tiled: bool | None = None
+    dds_encoding: Literal['rgba8_unorm', 'rgba8_srgb', 'rgba32_float', 'bc1_unorm', 'bc1_srgb',
+                          'bc3_unorm', 'bc3_srgb', 'bc4_unorm', 'bc4_snorm', 'bc5_unorm', 'bc5_snorm',
+                          'bc6h_uf16', 'bc6h_sf16', 'bc7_unorm', 'bc7_srgb'] | None = None
+
+    def native_options(self, target, alpha_action):
+        options = self.model_dump(mode='json', exclude_unset=True, exclude_none=True)
+        for field, encoder in [('png_compression', 'png'), ('tiff_compression', 'tiff'),
+                               ('webp_lossless', 'webp'), ('exr_tiled', 'exr'), ('dds_encoding', 'dds')]:
+            if field in options and target != encoder:
+                raise ValueError(f'{field} applies to {encoder} output.')
+        if self.dds_encoding:
+            codes = {'rgba8_unorm': 28, 'rgba8_srgb': 29, 'rgba32_float': 2, 'bc1_unorm': 71,
+                     'bc1_srgb': 72, 'bc3_unorm': 77, 'bc3_srgb': 78, 'bc4_unorm': 80,
+                     'bc4_snorm': 81, 'bc5_unorm': 83, 'bc5_snorm': 84, 'bc6h_uf16': 95,
+                     'bc6h_sf16': 96, 'bc7_unorm': 98, 'bc7_srgb': 99}
+            options['dds_format'] = codes[options.pop('dds_encoding')]
+        if (alpha_action == 'composite') != (self.background_linear is not None):
+            raise ValueError("Use alpha_action='composite' together with a linear RGB background.")
+        if alpha_action == 'composite' or self.transfer != 'preserve' or self.exposure:
+            options['meaning'] = 'colour'
+        return options
+
+
 async def image_plan_item(input, output, target, subresource, alpha_action, source_alpha,
-                          allow_lossy, quality, output_scalar, quantization, conflict):
+                          allow_lossy, quality, output_scalar, quantization, conflict, export_options):
     info = await inspect_image(input, subresource, limit=1)
     if 'error' in info:
         return info
     if 'selected_channels' not in info:
         raise ValueError('Expected an image input. Use plan_fbx_export for models.')
     names = [channel['name'] for channel in info['selected_channels']]
+    alpha = export_options.get('alpha_channel', 'A' if 'A' in names else None)
+    if alpha is None and info['alpha'] == 'absent' and alpha_action == 'composite':
+        alpha_action = 'preserve'
+    channels = [{'source': name, 'destination': name} for name in names
+                if name != alpha or alpha_action == 'preserve']
+    if names == ['Y', 'A'] and alpha_action == 'composite':
+        channels = [{'source': 'Y', 'destination': name} for name in 'RGB']
     options = {'target': target, 'subresource': subresource,
-               'source_alpha': (source_alpha or info['alpha']) if 'A' in names else info['alpha'],
-               'channels': [{'source': name, 'destination': name} for name in names
-                            if name != 'A' or alpha_action == 'preserve'],
+               'source_alpha': (source_alpha or info['alpha']) if alpha else info['alpha'],
+               'channels': channels, **export_options,
                'alpha_action': alpha_action, 'allow_lossy': allow_lossy,
                'quality': quality, 'quantization': quantization}
-    if 'A' in names:
-        options['alpha_channel'] = 'A'
+    if alpha is not None:
+        options['alpha_channel'] = alpha
     if output_scalar is not None:
         options['output_scalar'] = output_scalar
     return {'input': input, 'output': output, 'options': options, 'conflict': conflict}
@@ -349,44 +401,51 @@ async def image_plan_item(input, output, target, subresource, alpha_action, sour
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_image_conversion(
     input: str, output: str, subresource: int = 0,
-    alpha_action: Literal['preserve', 'drop'] = 'preserve',
+    alpha_action: Literal['preserve', 'drop', 'composite'] = 'preserve',
     source_alpha: Literal['straight', 'premultiplied'] | None = None,
     allow_lossy: bool = False, quality: int = 90,
     output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
     quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    settings: ImageExportSettings | None = None,
 ) -> dict[str, Any]:
     """Preflight one image using its real channel names and the output filename's format.
 
-    Preserves alpha and precision by default. RGB JPEG from RGBA needs explicit
-    alpha_action='drop' and allow_lossy=true. If the source alpha mode is unknown,
-    specify source_alpha from its provenance. For custom channel mappings, DDS
-    encoding or compositing use create_image_plan. Review via get_image_plan.
+    Preserves alpha and precision by default. For RGB JPEG from RGBA, choose
+    alpha_action='drop' or 'composite' and allow_lossy=true. If the source alpha mode is unknown,
+    specify source_alpha from its provenance. Use settings for resize, channels,
+    background_linear, transfer, exposure and encoder settings. With composite,
+    specify output_scalar and a rounding policy for integer results. Choose
+    srgb_to_srgb for sRGB pixels on a linear RGB background. Review via get_image_plan.
     """
     caps = await get_image_capabilities()
     if 'error' in caps:
         return caps
     target = image_target(Path(output).suffix.lower().removeprefix('.'), caps)
-    item = await image_plan_item(input, output, target, subresource,
-                                 alpha_action, source_alpha, allow_lossy, quality, output_scalar, quantization, conflict)
+    options = (settings or ImageExportSettings()).native_options(target, alpha_action)
+    item = await image_plan_item(input, output, target, subresource, alpha_action, source_alpha,
+                                 allow_lossy, quality, output_scalar, quantization, conflict, options)
     return item if 'error' in item else await create_image_plan([item])
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_image_batch(
     inputs: list[str], output_directory: str, output_extension: str,
-    subresource: int = 0, alpha_action: Literal['preserve', 'drop'] = 'preserve',
+    subresource: int = 0, alpha_action: Literal['preserve', 'drop', 'composite'] = 'preserve',
     source_alpha: Literal['straight', 'premultiplied'] | None = None,
     allow_lossy: bool = False, quality: int = 90,
     output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
     quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    settings: ImageExportSettings | None = None,
 ) -> dict[str, Any]:
     """Preflight 1–64 selected images in one plan, using each image's actual channels.
 
     Pass absolute input paths (e.g. selected from get_image_discovery), an existing
     authorized output directory and a target extension such as .tif. Outputs keep
     their input stems. For duplicate stems use create_image_plan with explicit names.
+    settings applies the same resize, channel, colour and encoder choices to each
+    input. The background applies only to inputs with alpha.
     No outputs are written until the reviewed plan is submitted via submit_image_job.
     """
     caps = await get_image_capabilities()
@@ -395,10 +454,11 @@ async def plan_image_batch(
     extension = output_extension.strip().lower().removeprefix('.')
     target = image_target(extension, caps)
     destinations = batch_destinations(inputs, output_directory, extension)
+    options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     items = []
     for path, destination in zip(inputs, destinations):
         item = await image_plan_item(path, str(destination), target, subresource, alpha_action, source_alpha,
-                                     allow_lossy, quality, output_scalar, quantization, conflict)
+                                     allow_lossy, quality, output_scalar, quantization, conflict, options)
         if 'error' in item:
             return dict(item, input=path)
         items.append(item)

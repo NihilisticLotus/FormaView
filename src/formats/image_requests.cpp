@@ -263,7 +263,8 @@ ImageConversionOptions parse_image_options(const QJsonObject &o) {
   t.transfer = choice<Transfer>(o, "transfer", "preserve",
                                 {{"preserve", Transfer::Preserve},
                                  {"linear_to_srgb", Transfer::LinearToSrgb},
-                                 {"srgb_to_linear", Transfer::SrgbToLinear}});
+                                 {"srgb_to_linear", Transfer::SrgbToLinear},
+                                 {"srgb_to_srgb", Transfer::SrgbToSrgb}});
   t.exposure = number(o, "exposure", 0);
   if (o.contains("background_linear")) {
     const auto b = array(o, "background_linear");

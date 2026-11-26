@@ -2,6 +2,7 @@
 #include "formaview/image_path.hpp"
 #include <cmath>
 #include <QByteArray>
+#include <QColorSpace>
 #include <algorithm>
 #include <cstring>
 #include <cwctype>
@@ -262,9 +263,14 @@ prepare_image_conversion(const ImageDocument &document,
     if (options.metadata == MetadataPolicy::Drop || !supported) {
       loss("icc_profile", "Source ICC profile is not copied");
       icc.clear();
-    } else if (result.transform.colour_transformed)
-      invalid("A transformed colour encoding needs an explicit new profile or "
-              "metadata-drop policy");
+    } else if (result.transform.colour_transformed) {
+      const auto bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(icc.data()),
+                                                 static_cast<qsizetype>(icc.size()));
+      if (transform_options.transfer != Transfer::SrgbToSrgb ||
+          QColorSpace::fromIccProfile(bytes) != QColorSpace(QColorSpace::SRgb))
+        invalid("A transformed colour encoding needs an explicit new profile or "
+                "metadata-drop policy");
+    }
   }
   // Source metadata is described separately from pixels. Report keys which
   // this encoder does not retain rather than calling all metadata preserved.
@@ -325,7 +331,7 @@ prepare_image_conversion(const ImageDocument &document,
     o.allow_lossy = options.allow_lossy;
     o.alpha = alpha;
     o.dds_format = options.dds_format;
-    o.srgb = transform_options.transfer == Transfer::LinearToSrgb ||
+    o.srgb = transform_options.transfer == Transfer::LinearToSrgb || transform_options.transfer == Transfer::SrgbToSrgb ||
              (transform_options.transfer == Transfer::Preserve &&
               document.semantics(options.subresource).colour_space == "sRGB");
     o.exr_tiled = options.exr_tiled;
