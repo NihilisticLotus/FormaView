@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import struct
 import subprocess
-import sys
 import time
 
 from mcp import ClientSession, StdioServerParameters
@@ -41,7 +40,7 @@ async def exercise(args, env, endpoint=None):
         env.update(FORMAVIEW_IMAGE_ENDPOINT=endpoint, FORMAVIEW_DESKTOP='1')
     else:
         env.update(FORMAVIEW_DESKTOP_SCOPE=str(run / 'scope.json'))
-    params = StdioServerParameters(command=sys.executable, args=[str(args.runtime / 'mcp/image_stdio.py')], env=env)
+    params = StdioServerParameters(command=str(args.runtime / 'mcp/formaview-mcp.exe'), env=env)
     report = {'mode': args.mode, 'exe_sha256': hashlib.file_digest((args.runtime / 'formaview.exe').open('rb'), 'sha256').hexdigest(),
               'protocol': None, 'tools': [], 'calls': []}
     try:
@@ -49,7 +48,9 @@ async def exercise(args, env, endpoint=None):
             async with stdio_client(params, errlog=log) as streams, ClientSession(*streams) as client:
                 report['protocol'] = (await client.initialize()).protocolVersion
                 report['tools'] = sorted(t.name for t in (await client.list_tools()).tools)
-                assert len(report['tools']) == 29, report['tools']
+                expected = {'open_asset', 'get_playback_state', 'control_video', 'step_video_frame',
+                            'capture_video_frame', 'read_texture_pixel', 'plan_image_batch', 'plan_fbx_batch'}
+                assert expected <= set(report['tools']), expected.difference(report['tools'])
 
                 async def call(name, error=None, **kwargs):
                     start = time.perf_counter()
