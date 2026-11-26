@@ -256,7 +256,7 @@ flowchart LR
 | `set_export_job_paused` | 暂停或恢复已提交的图片和 FBX 导出，也适用于桌面任务中心的分组任务 |
 | `cancel_image_work`、`retry_image_plan` | 请求取消任务或为未完成项目建立新的预检计划 |
 | `inspect_model` | 检查模型结构与稳定动画片段 ID |
-| `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧，生成导出计划 |
+| `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧。导出 PSA 时默认包含全部片段，也可用 `clip_ids` 指定子集 |
 | `plan_fbx_batch` | 将选中的 1–64 个模型分别导出为 FBX，统一指定坐标系和单位。默认保留网格和内嵌动作，可用 `include_animations=false` 仅导出模型。含 ABC 时需指定静态采样帧 `abc_sample` |
 | `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 64 项，文件名带源片段序号，默认跳过已有文件 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
@@ -272,6 +272,10 @@ flowchart LR
 例如，要从 `walk.gif` 提取第 11 至 13 帧，调用 `plan_gif_frames`，传入授权范围内的输入绝对路径、已有输出目录，以及 `first_frame=10`、`frame_count=3`。核对计划后提交，可得到 `walk-frame-0010.png` 至 `walk-frame-0012.png`。如需重建播放节奏，`inspect_image` 的分页帧信息提供播放延时（毫秒），容器元数据提供循环次数。也可通过 `plan_image_conversion` 的 `subresource` 单独选择一帧并指定输出格式和文件名。
 
 将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。
+
+导出 ActorX 动作时，PSA 输入用 `reference` 指定 PSK/PSKX 骨架，PSK/PSKX 输入用 `animation` 指定 PSA。默认严格核对两者的骨骼记录。如果 PSA 的参考姿态是占位值，且已确认使用同一套骨骼，可显式选择 `pairing_policy="reference-skeleton"`，按骨名匹配并采用参考模型的层级和绑定姿态。`plan_fbx_export` 和 `plan_fbx_clips` 都可用 `companion` 指定轨道配置，覆盖该 PSA 同名的 `.config`。
+
+同一角色有多份 PSA 时，可向 `plan_fbx_batch` 传入这些动画路径和一个共享的 `reference`。每份 PSA 生成一个 FBX，保留各自的动画栈，并独立查找同名配置。混选的其他模型仍使用自身骨架。提交前可在 `get_image_plan` 的各项预检结果中核对配置来源、轨道规则、坐标系和单位。
 
 两种工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
 

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import time
@@ -42,7 +43,8 @@ async def main():
     try:
         ready = await asyncio.wait_for(service.stdout.readline(), 15)
         assert json.loads(ready)['ready'], ready
-        params = StdioServerParameters(command=sys.executable, args=[str(args.adapter)], env=env)
+        command = [str(args.adapter)] if args.adapter.suffix.lower() == '.exe' else [sys.executable, str(args.adapter)]
+        params = StdioServerParameters(command=command[0], args=command[1:], env=env)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
@@ -218,6 +220,71 @@ async def main():
                 plan = await terminal('plan', created['plan_id'])
                 assert plan['state'] == 'ready' and plan['items'][0]['preflight']['psa_companion']['mode'] == 'explicit', plan
 
+                # PSA files with placeholder rest rotations need an explicitly selected reference.
+                placeholder = auto_dir / 'placeholder.psa'
+                raw = bytearray(auto_psa.read_bytes())
+                chunk = raw.index(b'BONENAMES')
+                stride, bones = struct.unpack_from('<II', raw, chunk + 24)
+                assert stride == 120 and bones == animation['bones']
+                for bone in range(bones):
+                    struct.pack_into('<4f', raw, chunk + 32 + bone * stride + 76, 0, 0, 0, 0)
+                placeholder.write_bytes(raw)
+                reference = str(args.fixtures / 'source.pskx')
+                single = dict(input=str(placeholder), output=str(args.output / 'reference.fbx'),
+                              reference=reference, companion=str(override))
+                strict = await call('plan_fbx_export', **single)
+                assert (await terminal('plan', strict['plan_id']))['state'] == 'failed'
+                assert not Path(single['output']).exists()
+
+                async def export(tool, key, **kwargs):
+                    created = await call(tool, **kwargs)
+                    plan = await terminal('plan', created['plan_id'])
+                    assert plan['state'] == 'ready', plan
+                    job = await call('submit_image_job', plan_id=created['plan_id'], approval_digest=plan['approval_digest'],
+                                     idempotency_key=key, acknowledge_losses=True)
+                    result = await terminal('job', job['job_id'])
+                    assert result['state'] == 'succeeded', result
+                    assert all(entry['status'] == 'succeeded' for entry in result['items']), result
+                    return [entry['result'] for entry in result['items']]
+
+                combined, = await export('plan_fbx_export', 'combined-reference', **single, pairing_policy='reference-skeleton')
+                assert combined['psa_companion']['mode'] == 'explicit' and len(combined['clips']) == 2
+                split = await export('plan_fbx_clips', 'split-reference', input=reference, animation=str(placeholder),
+                                     pairing_policy='reference-skeleton', companion=str(override), output_directory=str(args.output))
+                assert len(split) == 2
+                for index, entry in enumerate(split):
+                    report = args.output / f'split-pose-{index}.json'
+                    proc = await asyncio.create_subprocess_exec(str(args.build / 'tests/Release/formaview_skeletal_probe.exe'),
+                        '--verify-actor-clip', str(placeholder), reference, str(override), entry['committed_output'], str(index),
+                        str(report), creationflags=subprocess.CREATE_NO_WINDOW)
+                    assert await proc.wait() == 0
+                    back = json.loads(report.read_text())
+                    assert back['passed'] and back['mesh_count'] == 1, back
+
+                # Mixed selections apply the shared skeleton only to PSAs and capture each PSA's own config.
+                auto_config.write_text(config_text, encoding='utf8')
+                placeholder.with_suffix('.config').write_text('[RemoveTracks]\nclip1.0=rot\n', encoding='utf8')
+                batch_dir = args.output / 'shared-skeleton'
+                batch_dir.mkdir()
+                batch = await export('plan_fbx_batch', 'batch-reference', inputs=[str(auto_psa), str(placeholder), reference],
+                                     output_directory=str(batch_dir), reference=reference, pairing_policy='reference-skeleton',
+                                     output_axes='unreal', output_unit='m')
+                assert len(batch) == 3
+                for index, entry in enumerate(batch):
+                    info = entry['psa_companion']
+                    if index < 2:
+                        config = (auto_psa, placeholder)[index].with_suffix('.config')
+                        assert info['mode'] == 'automatic' and info['input']['sha256'] == hashlib.sha256(config.read_bytes()).hexdigest()
+                    else:
+                        assert info['status'] == 'not_applicable'
+                    report = args.output / f'batch-reference-{index}.json'
+                    proc = await asyncio.create_subprocess_exec(str(args.build / 'tests/Release/formaview_skeletal_probe.exe'),
+                        entry['committed_output'], '-', '-', str(report), creationflags=subprocess.CREATE_NO_WINDOW)
+                    assert await proc.wait() == 0
+                    back = json.loads(report.read_text())
+                    assert back['meshes'] == 1 and len(back['clips']) == (2 if index < 2 else 0)
+                    assert entry['output_coordinates']['preset'] == 'unreal' and entry['output_coordinates']['metres_per_unit'] == 1
+
                 # Cancellation is a terminal result, not merely an accepted request.
                 cancel_items = [item('source.psk', f'cancel-{i}.fbx') for i in range(64)]
                 created = await call('create_model_export_plan', items=cancel_items)
@@ -228,6 +295,7 @@ async def main():
                 assert source_hashes == {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in source_hashes}
                 (args.output / 'passed.json').write_text(json.dumps({'passed': True, 'first_batch_outputs': len(items),
                     'multistack': 'independent clips with Unreal axes and metre units',
+                    'paired_exports': ['strict-rejection', 'placeholder-rest-pose', 'split-pose-readback', 'per-PSA-config', 'mixed-batch'],
                     'auto_config': ['applied', 'source-pose-readback', 'changed', 'removed', 'added', 'invalid', 'explicit-override'],
                     'source_hashes': source_hashes, 'source_kind': 'synthetic C++ fixture'}, indent=2), encoding='utf-8')
     finally:

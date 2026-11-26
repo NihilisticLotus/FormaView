@@ -519,12 +519,25 @@ async def plan_gif_frames(
 
 FbxAxes = Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity']
 FbxUnit = Literal['source', 'cm', 'm', 'mm', 'in']
+FbxPairing = Literal['strict-records', 'reference-skeleton']
 
 
-def fbx_options(input, axes, unit, include_mesh, animation, reference):
+def fbx_options(input, axes, unit, include_mesh, animation, reference, pairing_policy=None, companion=None):
     options = {'target': 'fbx', 'output_axes': axes, 'output_unit': unit, 'include_mesh': include_mesh}
-    if Path(input).suffix.lower() in ('.psk', '.pskx', '.psa'):
+    ext = Path(input).suffix.lower()
+    if ext in ('.psk', '.pskx', '.psa'):
         options['coordinates'] = 'actorx-z-up-x-forward-rh-cm'
+    if animation is not None and (ext not in ('.psk', '.pskx') or Path(animation).suffix.lower() != '.psa'):
+        raise ValueError('Choose a PSA animation for a PSK/PSKX input.')
+    if reference is not None and (ext != '.psa' or Path(reference).suffix.lower() not in ('.psk', '.pskx')):
+        raise ValueError('Choose a PSK/PSKX reference for a PSA input.')
+    if pairing_policy is not None or companion is not None:
+        if not (reference or animation):
+            raise ValueError('A pairing policy or track config requires a paired PSA animation and PSK/PSKX reference.')
+        if pairing_policy is not None:
+            options['pairing_policy'] = pairing_policy
+        if companion is not None:
+            options['companion'] = companion
     if animation is not None:
         options['animation'] = animation
     if reference is not None:
@@ -538,11 +551,14 @@ async def plan_fbx_export(
     include_mesh: bool = True, clip_ids: list[str] | None = None,
     animation: str | None = None, reference: str | None = None, abc_sample: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    pairing_policy: FbxPairing | None = None, companion: str | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX in a named coordinate system and unit. Source conventions are the default.
 
-    Use inspect_model for stable clip IDs. Supply one or more IDs to export animation stacks.
-    Pair PSK/PSKX with animation=PSA, or PSA with reference=PSK/PSKX. For Alembic
+    Use inspect_model for stable clip IDs. PSA animations default to all clips as separate stacks.
+    Pair PSK/PSKX with animation=PSA, or PSA with reference=PSK/PSKX. Pairing is strict by default.
+    Choose reference-skeleton to use the matched PSK hierarchy and bind pose when PSA records differ.
+    An explicit companion track config overrides the PSA's same-name .config. For Alembic
     choose a zero-based sample for a static mesh. Review get_image_plan before submit_image_job.
     """
     if Path(output).suffix.lower() != '.fbx':
@@ -550,7 +566,14 @@ async def plan_fbx_export(
     source_ext = Path(input).suffix.lower()
     if abc_sample is not None and source_ext != '.abc':
         raise ValueError('abc_sample selects a frame from an .abc input.')
-    options = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference)
+    options = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference, pairing_policy, companion)
+    if clip_ids is None and (source_ext == '.psa' or animation is not None):
+        inventory = await inspect_model(animation or input)
+        if 'error' in inventory:
+            return inventory
+        if not inventory.get('clips'):
+            raise ValueError('The selected PSA contains no exportable animation clips.')
+        clip_ids = [clip['id'] for clip in inventory['clips']]
     if clip_ids is not None:
         options['clip_ids'] = clip_ids
     if abc_sample is not None:
@@ -563,23 +586,35 @@ async def plan_fbx_batch(
     inputs: list[str], output_directory: str, output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source',
     include_animations: bool = True, abc_sample: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    reference: str | None = None, pairing_policy: FbxPairing | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX per selected source, using a shared coordinate preset and unit.
 
     Includes meshes and, by default, every embedded animation as a separate stack.
     For ABC inputs specify the zero-based sample to bake as static geometry.
     Select paths from discover_export_sources. For duplicate stems choose conflict='rename'.
-    Use plan_fbx_export for paired animations, selected clip IDs or animation-only output.
+    For PSA animations supply a shared PSK/PSKX reference and optional pairing_policy.
+    Each PSA uses its own same-name .config. Other selected models keep their own skeleton.
+    Use plan_fbx_export for an explicit track config, selected clip IDs or animation-only output.
     The native plan reports format-specific losses and dependencies before approval.
     """
     destinations = batch_destinations(inputs, output_directory, 'fbx', conflict)
     has_abc = any(Path(path).suffix.lower() == '.abc' for path in inputs)
     if has_abc != (abc_sample is not None) or (has_abc and abc_sample < 0):
         raise ValueError('Specify a non-negative abc_sample only when the selection contains an ABC file.')
+    has_psa = any(Path(path).suffix.lower() == '.psa' for path in inputs)
+    if has_psa and not include_animations:
+        raise ValueError('PSA contains animation. Enable include_animations or remove the PSA inputs.')
+    if reference is not None and not has_psa:
+        raise ValueError('A shared reference requires at least one PSA input.')
+    if pairing_policy is not None and not reference:
+        raise ValueError('Choose a PSK/PSKX reference for the pairing policy.')
     items = []
     for path, output in zip(inputs, destinations):
-        options = fbx_options(path, output_axes, output_unit, True, None, None)
-        if Path(path).suffix.lower() == '.abc':
+        ext = Path(path).suffix.lower()
+        options = fbx_options(path, output_axes, output_unit, True, None,
+                              reference if ext == '.psa' else None, pairing_policy if ext == '.psa' else None)
+        if ext == '.abc':
             options['abc_sample'] = abc_sample
         elif include_animations:
             inventory = await inspect_model(path)
@@ -599,12 +634,14 @@ async def plan_fbx_clips(
     output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source', include_mesh: bool = True,
     animation: str | None = None, reference: str | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    pairing_policy: FbxPairing | None = None, companion: str | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX file per animation clip in an existing authorized output directory.
 
     Omit clip_ids for all source clips (maximum 64 per plan), or select IDs from
     inspect_model. Filenames include the original clip index so duplicate names
-    stay distinct. Inspect get_image_plan for destinations and losses before submitting.
+    stay distinct. Paired ActorX inputs accept the same pairing_policy and companion config
+    as plan_fbx_export. Inspect get_image_plan for destinations and losses before submitting.
     """
     directory = Path(output_directory)
     if not directory.is_absolute():
@@ -622,7 +659,7 @@ async def plan_fbx_clips(
         return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value)[:48].strip(' .') or 'clip'
 
     source = filename_part(Path(input).stem)
-    base = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference)
+    base = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference, pairing_policy, companion)
     items = []
     for index, clip in enumerate(clips, 1):
         if clip['id'] in selected:
