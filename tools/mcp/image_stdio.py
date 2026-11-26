@@ -1036,9 +1036,20 @@ async def step_video_frame(asset_id: str, direction: Literal['previous', 'next']
 
 
 @desktop_tool()
-async def capture_video_frame(asset_id: str, output: str, subtitles: bool = True) -> dict[str, Any]:
-    """Save the decoded video frame as a new PNG in the authorized output root. Pause first for a reproducible capture. Includes subtitles when requested."""
-    return await native_request(dict(version=1, operation='desktop.capture', asset_id=asset_id, output=output, subtitles=subtitles))
+async def capture_video_frame(asset_id: str, output: str, subtitles: bool = True,
+                              at_seconds: FiniteFloat | None = None) -> dict[str, Any]:
+    """Save one frame to a new PNG in an authorized output directory; returns size, dimensions and SHA-256.
+
+    Omit at_seconds to capture the current picture. Supply an absolute timeline time to pause,
+    seek with decoder precision and capture in one operation. The player stays paused there.
+    Timed captures also return the requested time and settled player position in seconds.
+    """
+    request = dict(version=1, operation='desktop.capture', asset_id=asset_id, output=output, subtitles=subtitles)
+    if at_seconds is not None:
+        # An older host must reject timed capture rather than save its current frame.
+        request['operation'] = 'desktop.capture_at'
+        request['at_seconds'] = at_seconds
+    return await native_request(request)
 
 
 @desktop_tool()

@@ -33,6 +33,8 @@ public:
   QString error() const { return error_; }
   void enableBackgroundPlayback() { background_ = true; }
   bool seekPending() const { return pendingSeekTarget_.has_value(); }
+  std::optional<double> settledSeekPosition() const { return settledSeekPosition_; }
+  quint64 navigationRevision() const { return navigationRevision_; }
   double indexedStepTarget() const { return requestedStep_; }
   bool optionPending(const QString &name) const { return pendingPlaybackOptions_.contains(name); }
   void setSource(const QString &path);
@@ -81,6 +83,8 @@ private:
   QTimer prefetchTimer_;
   bool prefetchDeferred_ = false;
   quint64 videoEpoch_=0;
+  quint64 navigationRevision_ = 0;
+  std::optional<double> settledSeekPosition_;
   qint64 reviewTick_ = -1, alignTick_ = -1;
   std::shared_ptr<const VideoReviewFrame> reviewFrame_;
   bool resumeAfterAlign_ = false;

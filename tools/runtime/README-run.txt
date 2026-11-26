@@ -64,7 +64,8 @@ MCP（可选 / optional）
     {"input_roots":["D:/Media/Videos","D:/Media/Textures"],"output_roots":["D:/FormaView输出"],"allow_overwrite":false}
   目录须已存在。适配器随连接启动同一包的 formaview.exe，断开后退出。后台视频默认暂停，使用无声输出。
   open_asset 返回 asset_id。用 control_video 播放、暂停、定位、调速和调音量；用 step_video_frame 单帧前进或后退。
-  capture_video_frame 将当前视频帧写入授权目录的新 PNG。read_texture_pixel(path,x,y,subresource) 可直接读取贴图源通道。
+  capture_video_frame 将当前视频帧写入授权目录的新 PNG。传 at_seconds 可在一次调用中暂停、定位并截图；完成后停在该帧。requested_seconds 和 player_position 分别记录请求时间和实际定位时间，两帧之间的时间可能不同。输出同时返回宽高、字节数和 SHA-256。
+  read_texture_pixel(path,x,y,subresource) 可直接读取贴图源通道。
   video_playlist 可分页查看当前目录的视频，按索引选集或切换上一部、下一部；切换后使用返回的新 asset_id。
   list_video_tracks 枚举音轨与字幕，select_video_track 切换对应类型的 ID（0 为关闭）。
   load_video_subtitle 在输入授权范围内加载 SRT、ASS、SSA 或 VTT。video_ab_loop 按绝对秒数设置或清除 A–B。

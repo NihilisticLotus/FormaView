@@ -19,6 +19,7 @@
 #include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QtEndian>
 #include <QUuid>
 #include <QWinEventNotifier>
 #include <windows.h>
@@ -283,6 +284,12 @@ class Session final : public QObject {
     require(r["output"].isString() && QFileInfo(r["output"].toString()).suffix().toLower() == "png"
             && r["subtitles"].isBool(), ErrorCode::InvalidArgument, "Supply a PNG output path and subtitles flag");
     const auto output = std::filesystem::path(r["output"].toString().toStdWString());
+    std::optional<double> target;
+    if (r["operation"] == "desktop.capture_at") {
+      target = numeric(r, "at_seconds");
+      require(*target >= 0 && *target < v->status().value("duration").toDouble(),
+              ErrorCode::InvalidArgument, "Capture time must be within the video duration");
+    }
     const auto snapshot = input->snapshot();
     require(!inspect_output(scope, output, snapshot, ConflictPolicy::Skip).exists,
             ErrorCode::Conflict, "Screenshot output already exists");
@@ -298,11 +305,42 @@ class Session final : public QObject {
     connect(v, &VideoSession::screenshotFailed, guard.get(), [dir, error](const QString &file, const QString &reason) {
       if (QFileInfo(file).absolutePath() == dir->path()) *error = reason;
     });
-    v->screenshot(QUrl::fromLocalFile(dir->path()), r["subtitles"].toBool());
+    if (target) {
+      connect(v, &VideoSession::errorChanged, guard.get(), [v, error] {
+        if (!v->error().isEmpty()) *error = v->error();
+      });
+      if (!v->status().value("pause").toBool()) v->setOption("pause", "yes");
+    }
     auto worker = std::make_shared<std::future<QJsonObject>>();
-    poll = [this, saved, error, dir, guard, output, snapshot, worker]() -> Result {
+    poll = [this, v = QPointer<VideoSession>(v), saved, error, dir, guard, output, snapshot, worker, target,
+            subtitles = r["subtitles"].toBool(), navigation = std::optional<quint64>{},
+            shotRequested = false, settled = -1.]() mutable -> Result {
       current();
+      require(v && video() == v, ErrorCode::InputChanged, "Player changed during capture");
       require(error->isEmpty(), ErrorCode::Io, qPrintable(*error));
+      if (target && !worker->valid()) {
+        const auto status = v->status();
+        if (!navigation) {
+          if (!status.value("pause").toBool()) return {};
+          v->seek(*target, false);
+          require(v->seekPending(), ErrorCode::Io, "Could not start capture seek");
+          navigation = v->navigationRevision();
+          return {};
+        }
+        require(*navigation == v->navigationRevision() && status.value("pause").toBool(),
+                ErrorCode::Conflict, "Playback moved during timed capture");
+        if (v->seekPending()) return {};
+        if (!shotRequested) {
+          require(v->settledSeekPosition().has_value(), ErrorCode::Io, "Player did not confirm the capture seek");
+          settled = *v->settledSeekPosition();
+        }
+        require(settled >= 0 && std::abs(position(status) - settled) < .000001,
+                ErrorCode::Conflict, "Capture position changed");
+      }
+      if (!shotRequested) {
+        shotRequested = true;
+        v->screenshot(QUrl::fromLocalFile(dir->path()), subtitles);
+      }
       if (saved->isEmpty()) return {};
       if (!worker->valid()) {
         *worker = std::async(std::launch::async, [s = scope, file = *saved, dir, output, snapshot] {
@@ -310,17 +348,26 @@ class Session final : public QObject {
           require(png.open(QIODevice::ReadOnly) && png.size() > 0 && png.size() <= 256 * 1024 * 1024,
                   ErrorCode::Io, "Cannot read bounded screenshot");
           const auto bytes = png.readAll();
-          require(bytes.size() == png.size() && bytes.startsWith("\x89PNG\r\n\x1a\n"),
+          require(bytes.size() == png.size() && bytes.size() >= 33 && bytes.startsWith("\x89PNG\r\n\x1a\n") &&
+                  bytes.sliced(12, 4) == "IHDR",
                   ErrorCode::Io, "Incomplete PNG screenshot");
           OutputTransaction transaction(s, output, snapshot, ConflictPolicy::Skip);
           transaction.write(std::as_bytes(std::span(bytes.constData(), size_t(bytes.size()))));
           const auto commit = transaction.commit();
           require(!commit.skipped, ErrorCode::Conflict, "Screenshot destination was taken");
-          return QJsonObject{{"output", QString::fromStdWString(commit.path.wstring())}, {"bytes", bytes.size()}};
+          return QJsonObject{{"output", QString::fromStdWString(commit.path.wstring())}, {"bytes", bytes.size()},
+                             {"width", qint64(qFromBigEndian<quint32>(bytes.constData() + 16))},
+                             {"height", qint64(qFromBigEndian<quint32>(bytes.constData() + 20))},
+                             {"output_sha256", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}};
         });
       }
       if (worker->wait_for(std::chrono::seconds(0)) != std::future_status::ready) return {};
-      return worker->get();
+      auto result = worker->get();
+      if (target) {
+        result["requested_seconds"] = *target;
+        result["player_position"] = settled;
+      }
+      return result;
     };
   }
   void playback(const QString &op, const QJsonObject &r) {
@@ -330,7 +377,7 @@ class Session final : public QObject {
     require(kind == "video", ErrorCode::InvalidArgument, "This operation requires an open video");
     auto *v = video();
     if (op == "desktop.state") { poll = [this] { return state(); }; return; }
-    if (op == "desktop.capture") { capture(v, r); return; }
+    if (op == "desktop.capture" || op == "desktop.capture_at") { capture(v, r); return; }
     const auto before = v->status();
     const auto start = position(before);
     const auto action = r["action"].toString();

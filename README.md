@@ -241,7 +241,7 @@ flowchart LR
 | `get_window_state`、`control_player_window` | 使用 `open_asset(path, window=True)` 打开独立可见窗口。查询显示器 ID、模式、置顶与几何信息；显式切换普通、全屏或置顶小窗，移动到指定显示器或按 Qt 逻辑像素调整小窗大小。默认后台素材继续独立播放 |
 | `control_video`、`step_video_frame` | 播放、暂停、绝对定位或按带符号的秒数快进回退、0.1–8 倍调速、音量、字幕延迟（±60000 毫秒），以及暂停后上一帧和下一帧 |
 | `video_chapters`、`set_video_toggle` | 列出章节或按零基索引跳转，设置静音、字幕显隐和整片循环。字幕显隐保留已选轨道 |
-| `capture_video_frame` | 保存当前视频帧，可选择字幕，输出为授权目录中的新 PNG |
+| `capture_video_frame` | 保存当前画面，或用 `at_seconds` 暂停并定位到指定时间再截图。可选择是否包含字幕，返回新 PNG 的实际路径、尺寸、字节数和 SHA-256 |
 | `video_playlist` | 查看当前目录的视频列表、按索引选集、上一个或下一个。切换时保留播放或暂停状态，返回新素材 ID |
 | `list_video_tracks`、`select_video_track`、`load_video_subtitle` | 列出音轨和字幕、按类型和 ID 选择或关闭轨道、加载授权目录内的本地文本字幕 |
 | `video_ab_loop`、`set_video_filter` | 按秒设置或清除 A–B 循环，调整亮度、对比度、饱和度和锐化。后台模式的滤镜会写入截图，窗口模式沿用播放器的显示滤镜 |

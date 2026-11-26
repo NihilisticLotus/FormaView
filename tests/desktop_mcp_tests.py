@@ -34,6 +34,43 @@ def gray(path, seconds=None):
         '-vf', 'scale=64:36', '-pix_fmt', 'gray', '-f', 'rawvideo', '-'])
 
 
+def make_vfr_clip(path):
+    # Six different gray pictures at 0, 3, 13, 14, 25 and 36 ticks of a 25 Hz timebase.
+    values = (24, 190, 64, 224, 96, 145)
+    subprocess.run(['ffmpeg', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', '96x64',
+                    '-framerate', '25', '-i', 'pipe:0', '-vf',
+                    "setpts='3*gte(N,1)+10*gte(N,2)+gte(N,3)+11*gte(N,4)+11*gte(N,5)'",
+                    '-fps_mode', 'vfr', '-c:v', 'ffv1', str(path)],
+                   input=b''.join(bytes([v]) * (96*64) for v in values), check=True)
+
+
+async def timed_capture(call, clip, frames):
+    info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                      '-show_frames', '-show_entries', 'frame=pts_time', '-of', 'json', str(clip)]))
+    points = [float(f['pts_time']) for f in info['frames']]
+    assert points == [0., .12, .52, .56, 1., 1.44], points
+    reference = [gray(clip, pts) for pts in points]
+    asset = (await call('open_asset', path=str(clip)))['asset_id']
+    await call('control_video', asset_id=asset, action='play')
+    for seq, (seconds, index) in enumerate(((1.,4), (.12,1), (.56,3), (.20,2), (0.,0), (1.44,5))):
+        path = frames / f'vfr-{seq}.png'
+        shot = await call('capture_video_frame', asset_id=asset, output=str(path), subtitles=False, at_seconds=seconds)
+        assert shot['requested_seconds'] == seconds and abs(shot['player_position'] - points[index]) < 1e-5
+        assert (shot['width'], shot['height']) == (96, 64)
+        assert shot['output_sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
+        state = await call('get_playback_state', asset_id=asset)
+        assert state['paused'] and abs(state['position'] - shot['player_position']) < 1e-5
+        actual = gray(path)
+        errors = [sum(abs(a-b) for a,b in zip(actual, sample, strict=True)) / len(actual) for sample in reference]
+        assert errors.index(min(errors)) == index and min(errors) < 8, (shot, errors)
+    for seconds in (-1., state['duration']):
+        dest = frames / 'invalid-timestamp.png'
+        await call('capture_video_frame', error='invalid_argument', asset_id=asset, output=str(dest), at_seconds=seconds)
+        assert not dest.exists()
+    await call('capture_video_frame', error='conflict', asset_id=asset, output=str(path), at_seconds=.12)
+    assert (await call('get_playback_state', asset_id=asset))['position'] == state['position']
+
+
 async def exercise(args, env, endpoint=None):
     run = args.output
     if endpoint:
@@ -63,6 +100,7 @@ async def exercise(args, env, endpoint=None):
 
                 caps = await call('get_image_capabilities')
                 assert 'png' in caps['write_targets']
+                await timed_capture(call, run / 'fixtures' / 'vfr.mkv', run / 'frames')
                 clock = await call('open_asset', path=str(args.clock))
                 asset = clock['asset_id']
                 pid = clock['host_pid']
@@ -133,6 +171,12 @@ async def exercise(args, env, endpoint=None):
                     times = sorted(float(p['pts_time']) for p in pts['packets'])
                     anchor = min(range(len(times)), key=lambda i: abs(times[i]-60))
                     assert anchor >= 24 and abs(times[anchor]-60) < .0001
+                    target = times[anchor + 1]
+                    path = run / 'frames' / 'real-timed.png'
+                    shot = await call('capture_video_frame', asset_id=asset, output=str(path), at_seconds=target, subtitles=False)
+                    assert (shot['width'], shot['height']) == (3840, 1632) and abs(shot['player_position']-target) < .0001
+                    actual, reference = gray(path), gray(args.real, target - .00001)
+                    assert sum(abs(a-b) for a,b in zip(actual, reference, strict=True)) / len(actual) < 5
                     for steps in [10, 24]:
                         assert abs((await control('seek', 60))['position'] - 60) < .0001
                         for n in range(1, steps+1):
@@ -182,7 +226,11 @@ async def main():
     args.output.mkdir(parents=True, exist_ok=False)
     frames = args.output / 'frames'
     frames.mkdir()
+    fixtures = args.output / 'fixtures'
+    fixtures.mkdir()
+    make_vfr_clip(fixtures / 'vfr.mkv')
     roots = [p.parent for p in [args.clock, args.texture, args.real, args.game_texture] if p]
+    roots.append(fixtures)
     policy = dict(input_roots=[str(p) for p in roots], output_roots=[str(frames)], allow_overwrite=False)
     scope = args.output / 'scope.json'
     scope.write_text(json.dumps(policy, ensure_ascii=False), encoding='utf8')

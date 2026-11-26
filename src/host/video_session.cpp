@@ -757,6 +757,7 @@ void VideoSession::seek(double seconds, bool relative) {
   requestedStep_ = -1;
   if (!std::isfinite(seconds) || !engine_)
     return;
+  ++navigationRevision_;
   if (relative)
     seconds += pendingSeekTarget_.value_or(
         status_.value("visible-time", status_.value("time-pos")).toDouble());
@@ -787,6 +788,11 @@ void VideoSession::seek(double seconds, bool relative) {
   requestExactSeek(seconds);
 }
 void VideoSession::requestExactSeek(double seconds) {
+  // A reply to a superseded position query must not complete the new seek.
+  positionQuery_ = 0;
+  pendingSeekTarget_.reset();
+  pendingSeekRequest_ = 0;
+  settledSeekPosition_.reset();
   const auto request = ++serial_;
   if (command({"seek", QByteArray::number(seconds, 'f', 9), "absolute+exact"}, request)) {
     traceSeek("queued", seconds);
@@ -795,6 +801,7 @@ void VideoSession::requestExactSeek(double seconds) {
   }
 }
 void VideoSession::step(bool forward) {
+  ++navigationRevision_;
   const auto seekingTo = std::exchange(pendingSeekTarget_, std::nullopt);
   pendingSeekRequest_ = 0;
   positionQuery_ = 0;
@@ -911,6 +918,7 @@ void VideoSession::setOption(const QString &name, const QVariant &value) {
     const int chapter = value.toInt(&ok);
     if (!ok || chapter < 0 || chapter >= status_.value("chapter-list").toList().size())
       return;
+    ++navigationRevision_;
     requestedStep_ = -1;
     clearReview();
     ++videoEpoch_;
@@ -1152,7 +1160,8 @@ void VideoSession::events() {
         } else {
           pendingSeekTarget_.reset();
           if (valid && p->format == MPV_FORMAT_DOUBLE) {
-            status_.insert("time-pos", *static_cast<const double *>(p->data));
+            settledSeekPosition_ = *static_cast<const double *>(p->data);
+            status_.insert("time-pos", *settledSeekPosition_);
             if (prefetchDeferred_)
               prepareReviewFrames();
             changed = true;
