@@ -29,9 +29,10 @@ FocusScope {
             exportPreset = preset || ""
             selectionSnapshot = snapshot
             service.invalidatePlan()
+            tabs.currentIndex = 0
         }
         initialized = true
-        tabs.currentIndex = page
+        if (page >= 0) tabs.currentIndex = page
         visible = true
         forceActiveFocus()
     }

@@ -1683,11 +1683,15 @@ private slots:
   }
   void videoReviewDisplayLevels_data() {
     QTest::addColumn<bool>("full");
-    QTest::newRow("window") << false;
-    QTest::newRow("fullscreen") << true;
+    QTest::addColumn<bool>("pauseDuringPlayback");
+    QTest::newRow("window") << false << false;
+    QTest::newRow("fullscreen") << true << false;
+    QTest::newRow("window-after-play") << false << true;
+    QTest::newRow("fullscreen-after-play") << true << true;
   }
   void videoReviewDisplayLevels() {
     QFETCH(bool, full);
+    QFETCH(bool, pauseDuringPlayback);
     const auto clip = qEnvironmentVariable("FORMAVIEW_REVIEW_COLOR_VIDEO");
     if (clip.isEmpty()) QSKIP("Requires the indexed SDR HEVC review fixture");
     const auto originalSize = window_->size();
@@ -1713,7 +1717,16 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!s->seekPending() && qAbs(s->status().value("time-pos").toDouble()-341.2)<.02, 10000);
     QTest::qWait(3000);
     item("videoViewport")->forceActiveFocus();
-    for (const auto key : {Qt::Key_F, Qt::Key_F, Qt::Key_F, Qt::Key_F, Qt::Key_D, Qt::Key_D})
+    if (pauseDuringPlayback) {
+      s->setOption("speed", 1.);
+      QTest::keyClick(window_, Qt::Key_Space);
+      QTRY_VERIFY(!s->status().value("pause").toBool() && s->status().value("time-pos").toDouble() >= 341.40);
+      QTest::keyClick(window_, Qt::Key_Space);
+      QTRY_VERIFY(s->status().value("pause").toBool());
+    }
+    const auto first = pauseDuringPlayback ? Qt::Key_D : Qt::Key_F;
+    const auto reverse = pauseDuringPlayback ? Qt::Key_F : Qt::Key_D;
+    for (const auto key : {first, first, first, first, reverse, reverse})
       QTest::keyClick(window_, key);
     QVERIFY2(s->status().contains("visible-time"), "Must exercise cached display rather than native seek");
     const auto pts = s->status().value("visible-time").toDouble();
@@ -7546,7 +7559,7 @@ private slots:
     QCOMPARE(desktop_->selectedImages(), QStringList{source});
     const auto output = root_ + "/gui-conversion-output";
     QVERIFY(QDir().mkpath(output));
-    QPointer<QQuickItem> open = item("convertImagesButton");
+    QPointer<QQuickItem> open = item("workspaceTab-conversion");
     QVERIFY(open);
     QTest::mouseClick(
         window_, Qt::LeftButton, Qt::NoModifier,
@@ -7592,6 +7605,15 @@ private slots:
     const auto planId = service->plan()["id"].toString();
     QVERIFY(!planId.isEmpty());
     save("conversion-preflight-zh-CN");
+    auto *back = find("returnToPreview");
+    QVERIFY(back);
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      back->mapToScene(back->boundingRect().center()).toPoint());
+    QTRY_VERIFY(!item("conversionWorkspace") && open->hasActiveFocus());
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      open->mapToScene(open->boundingRect().center()).toPoint());
+    QTRY_VERIFY(find("submitImagePlan"));
+    QCOMPARE(service->plan()["id"].toString(), planId);
     if (auto *ack = find("acknowledgeImageLosses"))
       QTest::mouseClick(
           window_, Qt::LeftButton, Qt::NoModifier,
@@ -7634,9 +7656,9 @@ private slots:
     service->invalidatePlan();
     QTRY_VERIFY(!acknowledgement->property("checked").toBool());
     QTest::keyClick(window_, Qt::Key_Escape);
-    QTRY_VERIFY(!find("conversionOutputRoot"));
+    QTRY_VERIFY(!find("conversionWorkspace"));
     QVERIFY(open);
-    QCOMPARE(item("convertImagesButton"), open.data());
+    QCOMPARE(item("workspaceTab-conversion"), open.data());
     QTRY_VERIFY(open->hasActiveFocus());
     // A changed setting invalidates approval before any new submission.
     service->invalidatePlan();
@@ -7713,8 +7735,9 @@ private slots:
     QFile result(report);
     QVERIFY(result.open(QIODevice::ReadOnly));
     const auto mcpResult = QJsonDocument::fromJson(result.readAll()).object();
-    QCOMPARE(mcpResult["capabilities"].toObject().toVariantMap(),
-             service->capabilities());
+    auto expectedCapabilities = QJsonObject::fromVariantMap(service->capabilities());
+    expectedCapabilities["max_export_plan_items"] = formaview::imaging::max_endpoint_plan_items;
+    QCOMPARE(mcpResult["capabilities"].toObject(), expectedCapabilities);
     QCOMPARE(service->lastClient()["name"].toString(),
              QString("FormaView GUI integration"));
     QCOMPARE(service->lastClient()["protocol"].toString(),
@@ -7841,6 +7864,19 @@ private slots:
              QColor(Qt::cyan));
     QCOMPARE(QImage(output + "/mapped-2.png").pixelColor(0, 0),
              QColor(32, 64, 128, 191));
+    // Re-entering with a different selection starts a draft for that file.
+    desktop_->navigate(output);
+    QTRY_COMPARE(desktop_->directory(), output);
+    const auto newSource = output + "/mapped-2.png";
+    auto *files = static_cast<FileList *>(desktop_->files());
+    QTRY_VERIFY(idle() && files->indexOf(newSource) >= 0);
+    desktop_->select(files->indexOf(newSource));
+    QTRY_COMPARE(desktop_->selectedImages(), QStringList{newSource});
+    QTest::mouseClick(window_, Qt::LeftButton, Qt::NoModifier,
+                      open->mapToScene(open->boundingRect().center()).toPoint());
+    QTRY_VERIFY(find("conversionOutputRoot"));
+    QCOMPARE(service->sourcePaths(), QStringList{newSource});
+    QVERIFY(service->plan().isEmpty());
     } catch (const MissingFixture &error) {
       QSKIP(error.what());
     } catch (const std::exception &error) {

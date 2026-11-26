@@ -141,8 +141,8 @@ Item {
         if (destination === "settings") { if (!settingsVisible) settingsDialog.open("general"); return }
         if (settingsVisible) { settingsDialog.leave(() => root.navigate(destination)); return }
         if (drawer.visible) drawer.close()
-        if (destination === "conversion" && !conversionLoader.item) { openConversion(0); return }
-        conversionVisible = destination === "conversion"
+        if (destination === "conversion") { openConversion(-1); return }
+        conversionVisible = false
         tasksVisible = destination === "tasks"
         if (destination === "browse" || destination === "assets") browsing = destination === "browse"
     }
@@ -219,6 +219,7 @@ Item {
                     Row {
                         id: tabs; anchors.centerIn: parent; spacing: 3
                         Repeater {
+                            id: workspaceTabs
                             model: ["browse","assets","conversion","tasks"]
                             Tool {
                                 required property string modelData
@@ -520,7 +521,10 @@ Item {
         }
         onAccepted: { suspendedExport = null; root.exitConfirmed = true; root.Window.window.close() }
     }
-    Connections { target: conversionLoader.item; function onClosed() { root.conversionVisible = false; Qt.callLater(() => settingsButton.forceActiveFocus()) } }
+    Connections { target: conversionLoader.item; function onClosed() {
+        root.conversionVisible = false
+        workspaceTabs.itemAt(workspaceTabs.model.indexOf("conversion"))?.forceActiveFocus()
+    } }
     FrostDialog {
         id: about; anchors.centerIn: Overlay.overlay; width: 520; modal: true; focus: true
         font.pixelSize: Theme.formText
