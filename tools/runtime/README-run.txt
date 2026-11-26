@@ -42,6 +42,7 @@ MCP（可选 / optional）
   plan_image_subresources 将同一图片的多个子资源按源索引分别导出。可用 indices 选取离散项，
   或用 match 按 DDS 的 mip、array_layer、cube_face、depth_slice 或 EXR 的 part_name 筛选。
   plan_fbx_batch 可将多个模型按相同坐标系和单位分别导出为 FBX，默认保留内嵌动画。
+  plan_abc_samples 可从一个 ABC 按 first_sample、sample_count 和 stride 选取采样。每个源采样导出为独立静态 FBX，确认一次即可提交整批。
   多份 PSA 可用 reference 共用一个 PSK/PSKX，分别应用各自同名的 .config。
   plan_fbx_export 和 plan_fbx_clips 可用 companion 指定轨道配置。配对默认严格核对骨骼记录，
   若 PSA 缺少有效参考姿态，可显式选择 pairing_policy="reference-skeleton" 使用匹配的模型骨架。

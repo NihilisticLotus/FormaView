@@ -258,6 +258,9 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
                           output_axes=model['output_axes'], output_units=model['output_units'])
             if ext == sample.get('input'):
                 result['frame_export'] = sample
+                if batch_enabled:
+                    result['sample_sequence_export'] = {'tool': 'plan_abc_samples', 'output': 'fbx',
+                                                        'max_outputs_per_plan': plan_limit}
     return result
 
 
@@ -752,6 +755,43 @@ async def plan_fbx_export(
     if abc_sample is not None:
         options['abc_sample'] = abc_sample
     return await create_model_export_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_abc_samples(
+    input: str, output_directory: str, first_sample: int = 0, sample_count: int | None = None,
+    stride: int = 1, output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source',
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip', name_template: str | None = None,
+) -> dict[str, Any]:
+    """Preflight one static polygon FBX per selected Alembic sample in a single plan.
+
+    Starting at zero-based first_sample, take every stride-th sample. sample_count is
+    the number of output files; omit it to continue through the last reachable sample.
+    Default filenames include the original sample index. Templates support {name},
+    {index} (1-based output order), {clip} (frameN, original sample N) and {ext}.
+    Review per-sample times and losses with get_image_plan before submitting.
+    """
+    source, directory = Path(input), Path(output_directory)
+    if not source.is_absolute() or source.suffix.lower() != '.abc' or not directory.is_absolute():
+        raise ValueError('Choose an absolute .abc path and an absolute output directory.')
+    if first_sample < 0 or stride < 1 or (sample_count is not None and not 1 <= sample_count <= MAX_EXPORT_ITEMS):
+        raise ValueError('Choose a non-negative first sample, a positive stride and 1–4096 outputs.')
+    inventory = await inspect_model(input)
+    if 'error' in inventory:
+        return inventory
+    abc = inventory.get('source_metadata', {}).get('abc', {})
+    if not inventory.get('has_mesh') or first_sample >= abc.get('samples', 0):
+        raise ValueError('Choose an available timeline sample from a polygon cache.')
+    available = 1 + (abc['samples'] - 1 - first_sample) // stride
+    count = available if sample_count is None else sample_count
+    if count > min(available, MAX_EXPORT_ITEMS):
+        raise ValueError(f'{available} samples are available at this stride. Select at most 4096 within the timeline.')
+    base = fbx_options(input, output_axes, output_unit, True, None, None)
+    base['abc_source_sha256'] = inventory['input']['sha256']
+    indices = range(first_sample, first_sample + count * stride, stride)
+    items = [{'input': input, 'output': str(directory / f'{source.stem}-sample-{i:04d}.fbx'),
+              'options': dict(base, abc_sample=i), 'conflict': conflict} for i in indices]
+    return await batch_plan(items, name_template, 'fbx', [f'frame{i}' for i in indices])
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))

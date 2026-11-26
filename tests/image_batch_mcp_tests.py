@@ -123,7 +123,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources', 'set_export_job_paused'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'plan_abc_samples', 'discover_export_sources', 'set_export_job_paused'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert capabilities['max_export_plan_items'] == 4096
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9

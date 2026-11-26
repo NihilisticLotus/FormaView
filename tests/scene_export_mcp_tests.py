@@ -52,6 +52,7 @@ async def main():
                 assert jpeg['kind'] == 'image' and 'jpeg' in jpeg['output_formats']
                 abc = await call('get_image_capabilities', source_extension='abc')
                 assert abc['output_formats'] == ['fbx'] and 'abc_sample' in abc['frame_export']['options']
+                assert abc['sample_sequence_export']['tool'] == 'plan_abc_samples'
                 unsupported = await call('get_image_capabilities', source_extension='mp4')
                 assert unsupported['output_formats'] == []
 
@@ -146,6 +147,67 @@ async def main():
                                     result['committed_output'], str(report)], check=True, timeout=30)
                     back = json.loads(report.read_text(encoding='utf-8'))
                     assert back['meshes'] and not back['clips'], back
+                    seq_dir = args.output / 'abc-samples'
+                    seq_dir.mkdir()
+                    sequence = dict(input=str(cache), output_directory=str(seq_dir))
+                    inventory = await call('inspect_model', input=str(cache))
+                    total = inventory['source_metadata']['abc']['samples']
+                    for invalid in (dict(first_sample=total), dict(sample_count=total + 1), dict(stride=0),
+                                    dict(first_sample=total - 1, stride=2, sample_count=2), dict(input=str(glb))):
+                        assert (await client.call_tool('plan_abc_samples', sequence | invalid)).isError
+                    last = await call('plan_abc_samples', **sequence, first_sample=total - 1,
+                                      name_template='{name}-{clip}-{index}.{ext}')
+                    tail = await terminal('plan', last['plan_id'])
+                    assert tail['state'] == 'ready' and tail['total'] == 1
+                    assert Path(tail['items'][0]['request']['output']).name == f'采样-frame{total-1}-1.fbx'
+                    original = cache.read_bytes()
+                    try:
+                        cache.write_bytes(original + b'changed after review')
+                        queued = await call('submit_image_job', plan_id=tail['id'], approval_digest=tail['approval_digest'],
+                                            acknowledge_losses=True, idempotency_key='abc-source-changed')
+                        failed = await terminal('job', queued['job_id'])
+                        assert failed['items'][0]['error']['code'] == 'input_changed' and not list(seq_dir.iterdir())
+                    finally:
+                        cache.write_bytes(original)
+                    created = await call('plan_abc_samples', **sequence, stride=2, sample_count=2)
+                    plan = await terminal('plan', created['plan_id'])
+                    assert plan['state'] == 'ready' and plan['total'] == 2 and not list(seq_dir.iterdir())
+                    review = await call('get_image_plan', plan_id=plan['id'], summary_only=True)
+                    assert review['losses_by_code']['abc_single_sample']['count'] == 2
+                    queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                        acknowledge_losses=True, idempotency_key='abc-samples')
+                    job = await terminal('job', queued['job_id'])
+                    assert job['state'] == 'succeeded'
+                    for sample, row in zip((0, 2), job['items'], strict=True):
+                        output = seq_dir / f'采样-sample-{sample:04d}.fbx'
+                        result = row['result']
+                        assert Path(result['committed_output']) == output
+                        assert result['source_metadata']['abc']['sample'] == sample
+                        assert row['request']['options']['abc_source_sha256'] == inventory['input']['sha256']
+                        assert hashlib.sha256(output.read_bytes()).hexdigest() == result['output_sha256']
+                        report = args.output / f'abc-sample-{sample}.json'
+                        subprocess.run([str(args.build/'tests/Release/formaview_scene_export_probe.exe'),
+                                        str(output), str(report)], check=True, timeout=30)
+                        sampled = json.loads(report.read_text(encoding='utf-8'))
+                        assert sampled['meshes'] and not sampled['clips']
+                        if sample == 2:
+                            assert sampled['meshes'] == back['meshes']
+                    if total >= 65:
+                        many_dir = args.output / 'abc-65'
+                        many_dir.mkdir()
+                        created = await call('plan_abc_samples', input=str(cache), output_directory=str(many_dir),
+                                             sample_count=65, output_axes='unreal', output_unit='cm')
+                        plan = await terminal('plan', created['plan_id'])
+                        assert plan['state'] == 'ready' and plan['total'] == 65 and not list(many_dir.iterdir())
+                        queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                            acknowledge_losses=True, idempotency_key='abc-65')
+                        job = await terminal('job', queued['job_id'])
+                        assert job['state'] == 'succeeded' and len(list(many_dir.glob('*.fbx'))) == 65
+                        for index in (0, 63, 64):
+                            row = job['items'][index]['result']
+                            assert row['source_metadata']['abc']['sample'] == index
+                            assert row['output_coordinates']['preset'] == 'unreal'
+                            assert Path(row['committed_output']) == many_dir / f'采样-sample-{index:04d}.fbx'
                 split_dir.mkdir()
                 arguments = dict(input=str(glb), output_directory=str(split_dir), output_unit='cm')
                 for invalid_ids in ([], ['missing'], [clips[0]['id']] * 2):

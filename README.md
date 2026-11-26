@@ -137,7 +137,7 @@ flowchart LR
 
 **0.1.x 的范围**。常规视频播放已进入 v0.2.0 开发测试。Unity `.unitypackage` 内容预览、Markdown、PDF、字体和 PSD 预览仍在后续规划中。
 
-ABC 支持仅限上表所列的 Ogawa 多边形缓存与相机预览；含几何的文件可将当前采样导出为静态 FBX 快照。导出会烘焙顶点变换；分组层级可保留为空节点，但不保留各部件的旋转中心/轴心。单位按可识别的写出程序约定，否则按米并提示。ABC 容器写出、ABC 动画序列导出和骨骼动画生成均不支持。具体运行目录是否包含这些源码能力，以该目录对应的构建与说明为准。
+ABC 支持上表所列的 Ogawa 多边形缓存与相机预览。含几何的文件可将当前采样导出为静态 FBX，MCP 也可按采样范围批量写出独立的 FBX 文件。导出会把各部件变换烘焙到顶点，分组层级可保留为空节点。单位按可识别的写出程序约定，否则按米并提示。各部件的原始轴心、写回 ABC 容器及从缓存生成骨骼动画均超出当前导出范围。
 
 相机显示采用源文件的变换和参数。FBX 的局部相机轴向仅在解析器能确认时标注；ABC 相机按局部 −Z 前向、+Y 向上展示，视角由 filmback 和焦距推导。ABC 相机裁剪距离按 Alembic 相机 schema 的厘米约定读取，但世界位置的场景单位未知。相机轨迹是有上限的采样折线，不代表连续曲线的全部细节。
 
@@ -261,6 +261,7 @@ flowchart LR
 | `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧。导出 PSA 时默认包含全部片段，也可用 `clip_ids` 指定子集 |
 | `plan_fbx_batch` | 将选中的 1–4096 个模型分别导出为 FBX，统一指定坐标系和单位。默认保留网格和内嵌动作，可用 `include_animations=false` 仅导出模型。含 ABC 时需指定静态采样帧 `abc_sample` |
 | `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 4096 项，文件名带源片段序号，默认跳过已有文件 |
+| `plan_abc_samples` | 从 Alembic 多边形缓存中连续或间隔选取采样，每个采样导出为一份静态 FBX。可指定坐标系、单位和文件名模板 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
 
 例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。
@@ -278,6 +279,8 @@ FBX 可使用 `{clip}`。拆分动画时填入实际片段名，片段名中的�
 例如，要从 `walk.gif` 提取第 11 至 13 帧，调用 `plan_gif_frames`，传入授权范围内的输入绝对路径、已有输出目录，以及 `first_frame=10`、`frame_count=3`。核对计划后提交，可得到 `walk-frame-0010.png` 至 `walk-frame-0012.png`。如需重建播放节奏，`inspect_image` 的分页帧信息提供播放延时（毫秒），容器元数据提供循环次数。也可通过 `plan_image_conversion` 的 `subresource` 单独选择一帧并指定输出格式和文件名。
 
 将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。
+
+要从同一个 ABC 提取第 0、2、4 号采样，调用 `plan_abc_samples`，传入 `input`、`output_directory`、`first_sample=0`、`sample_count=3`、`stride=2`。预检会列出各采样的实际时间，确认一次即可写出三份 FBX。默认名称保留源采样编号，例如 `cloth-sample-0004.fbx`。省略数量会按步长选到末尾，每份计划最多 4096 项，并受单条请求 1 MiB 的限制。
 
 导出 ActorX 动作时，PSA 输入用 `reference` 指定 PSK/PSKX 骨架，PSK/PSKX 输入用 `animation` 指定 PSA。默认严格核对两者的骨骼记录。如果 PSA 的参考姿态是占位值，且已确认使用同一套骨骼，可显式选择 `pairing_policy="reference-skeleton"`，按骨名匹配并采用参考模型的层级和绑定姿态。`plan_fbx_export` 和 `plan_fbx_clips` 都可用 `companion` 指定轨道配置，覆盖该 PSA 同名的 `.config`。
 
