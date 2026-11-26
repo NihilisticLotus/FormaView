@@ -24,7 +24,7 @@ async def main():
             initialized = await session.initialize()
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
-            assert len(names) == 25 and {'set_export_job_paused', 'discover_export_sources', 'plan_image_conversion', 'plan_image_batch', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'plan_abc_samples'} <= names, names
+            assert len(names) == 26 and {'set_export_job_paused', 'discover_export_sources', 'plan_image_conversion', 'plan_image_batch', 'plan_image_variants', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'plan_abc_samples'} <= names, names
 
             async def call(name, arguments):
                 result = await session.call_tool(name, arguments)

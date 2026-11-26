@@ -35,8 +35,9 @@ MCP（可选 / optional）
   导出：get_image_capabilities(source_extension) 可按输入后缀查询输出格式。plan_image_conversion
   按输出后缀和实际通道准备图片转换。plan_fbx_export 支持源坐标或目标软件预设、单位和动画片段。
   plan_image_batch 接收 1–4096 个选中的图片路径、输出目录与扩展名，逐项匹配通道，保留原主名。
+  plan_image_variants 将一张源图或指定子资源导出为多份文件。variants 中每项使用独立的输出绝对路径和设置，可同时生成原尺寸 PNG、缩小的 WebP 与 JPEG；显式选择有损项并确认整份预检后提交。
   plan_image_channels 按实际通道名拆分源图。选择 A 可导出透明度遮罩，选择 EXR 可保留浮点深度和源通道名。name_template 可用 {channel}；每份计划确认后才写文件。
-  两种图片计划都支持 settings，可指定缩小比例、通道映射、合成背景和目标格式的编码参数。
+  单图转换、批量转换和多版本导出均支持 settings，可指定缩小比例、通道映射、合成背景和目标格式的编码参数。
   直通 Alpha 的 sRGB 素材可用 composite、background_linear 与 srgb_to_srgb 在线性空间合成，再输出为 sRGB。
   plan_gif_frames 按从 0 开始的帧号将 GIF 连续帧合成为 PNG，每份计划最多 4096 帧。可分段选择，文件名保留原帧号。
   plan_image_subresources 将同一图片的多个子资源按源索引分别导出。可用 indices 选取离散项，

@@ -123,7 +123,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'plan_abc_samples', 'discover_export_sources', 'set_export_job_paused'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_variants', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'plan_abc_samples', 'discover_export_sources', 'set_export_job_paused'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert capabilities['max_export_plan_items'] == 4096
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
@@ -191,6 +191,42 @@ async def main():
                     'from PIL import Image; import sys; a=Image.open(sys.argv[1]).convert("RGBA"); b=Image.open(sys.argv[2]).convert("RGBA"); assert a.size==b.size and a.tobytes()==b.tobytes(); print("pixel-exact")',
                     str(sources[0]), str(outputs / 'converted.tiff')], capture_output=True, text=True)
                 assert decode.returncode == 0, decode.stderr
+                variants_dir = outputs / 'variants'
+                variants_dir.mkdir()
+                targets = [variants_dir / name for name in ('archive.png', 'preview.webp', 'contact.jpg')]
+                variants = [
+                    dict(output=str(targets[0])),
+                    dict(output=str(targets[1]), settings=dict(scale_divisor=4, webp_lossless=True)),
+                    dict(output=str(targets[2]), alpha_action='drop', allow_lossy=True, quality=95,
+                         settings=dict(scale_divisor=8)),
+                ]
+                variant_args = dict(input=str(large), variants=variants, source_alpha='straight')
+                caps = await call(session, 'get_image_capabilities', {'source_extension': '.png'})
+                assert caps['variant_export']['tool'] == 'plan_image_variants'
+                for invalid in ([], [variants[0]] * 2, [dict(output='relative.png')],
+                                [dict(variants[0], settings={'webp_lossless': True})]):
+                    assert (await session.call_tool('plan_image_variants', dict(variant_args, variants=invalid))).isError
+                created = await call(session, 'plan_image_variants', variant_args)
+                prepared = await terminal(session, 'plan', created['plan_id'])
+                assert prepared['state'] == 'ready' and prepared['total'] == 3, prepared
+                submit = submission(prepared, 'three-deliverables')
+                denied = await call(session, 'submit_image_job', dict(submit, acknowledge_losses=False))
+                assert 'error' in denied and not list(variants_dir.iterdir()), denied
+                accepted = await call(session, 'submit_image_job', submit)
+                finished = await terminal(session, 'job', accepted['job_id'])
+                assert finished['state'] == 'succeeded' and finished['total'] == 3, finished
+                for dest, row in zip(targets, finished['items'], strict=True):
+                    assert hashlib.sha256(dest.read_bytes()).hexdigest() == row['result']['output_sha256']
+                verify_variants = """
+from PIL import Image
+import sys
+for path, fmt, size, mode in zip(sys.argv[1:], ('PNG','WEBP','JPEG'), (1024,256,128), ('RGBA','RGBA','RGB')):
+    with Image.open(path) as im:
+        assert (im.format, im.size, im.mode) == (fmt, (size,size), mode)
+        expected = (32,96,160,224) if mode == 'RGBA' else (32,96,160)
+        assert max(abs(a-b) for a,b in zip(im.getpixel((size//2,size//2)), expected)) <= (2 if fmt=='JPEG' else 0)
+"""
+                subprocess.run([str(args.decoder_python), '-c', verify_variants, *map(str, targets)], check=True)
                 read_formats = []
                 pair_sources = []
                 for request in matrix_items:

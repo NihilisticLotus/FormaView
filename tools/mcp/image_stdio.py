@@ -243,6 +243,7 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
     if '.' + ext in caps.get('read_extensions', []):
         result.update(kind='image', output_formats=caps['write_targets'])
         if batch_enabled:
+            result['variant_export'] = {'tool': 'plan_image_variants', 'output_formats': caps['write_targets']}
             result['channel_export'] = {'tool': 'plan_image_channels',
                                         'output_formats': [t for t in ('png', 'tiff', 'exr') if t in caps['write_targets']]}
         if batch_enabled and ext in ('dds', 'exr', 'tif', 'tiff', 'ico', 'gif'):
@@ -446,6 +447,54 @@ def image_plan_item(info, input, output, target, subresource, alpha_action, sour
     return {'input': input, 'output': output, 'options': options, 'conflict': conflict}
 
 
+class ImageOutputVariant(BaseModel):
+    """One output file and its independent encoding settings."""
+    model_config = ConfigDict(extra='forbid')
+    output: str
+    alpha_action: Literal['preserve', 'drop', 'composite'] = 'preserve'
+    allow_lossy: bool = False
+    quality: int = 90
+    output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None
+    quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss'
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip'
+    settings: ImageExportSettings | None = None
+
+    def plan_item(self, caps, info, input, subresource, source_alpha):
+        target = image_target(Path(self.output).suffix.lower().removeprefix('.'), caps)
+        options = (self.settings or ImageExportSettings()).native_options(target, self.alpha_action)
+        return image_plan_item(info, input, self.output, target, subresource, self.alpha_action, source_alpha,
+                               self.allow_lossy, self.quality, self.output_scalar, self.quantization,
+                               self.conflict, options)
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_image_variants(
+    input: str, variants: list[ImageOutputVariant], subresource: int = 0,
+    source_alpha: Literal['straight', 'premultiplied'] | None = None,
+) -> dict[str, Any]:
+    """Preflight several deliverables from the same source image or subresource in one export plan.
+
+    Provide distinct absolute output paths. Each extension selects its encoder. For example, keep
+    a full-size RGBA PNG and add a WebP with settings.scale_divisor=4. For an RGB JPEG from RGBA,
+    explicitly select drop or composite and allow_lossy. Review get_image_plan before submitting.
+    """
+    if not 1 <= len(variants) <= MAX_EXPORT_ITEMS:
+        raise ValueError('Select between 1 and 4096 outputs per plan.')
+    paths = [Path(v.output) for v in variants]
+    if not Path(input).is_absolute() or not all(path.is_absolute() for path in paths):
+        raise ValueError('Choose absolute paths for the input and every output.')
+    if len(set(paths)) != len(paths):
+        raise ValueError('Choose a distinct output path for each variant.')
+    caps = await get_image_capabilities()
+    if 'error' in caps:
+        return caps
+    info = await inspect_image(input, subresource, offset=subresource, limit=1)
+    if 'error' in info:
+        return info
+    items = [variant.plan_item(caps, info, input, subresource, source_alpha) for variant in variants]
+    return await create_image_plan(items)
+
+
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_image_conversion(
     input: str, output: str, subresource: int = 0,
@@ -469,12 +518,13 @@ async def plan_image_conversion(
     caps = await get_image_capabilities()
     if 'error' in caps:
         return caps
-    target = image_target(Path(output).suffix.lower().removeprefix('.'), caps)
-    options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     info = await inspect_image(input, subresource, limit=1)
-    item = image_plan_item(info, input, output, target, subresource, alpha_action, source_alpha,
-                           allow_lossy, quality, output_scalar, quantization, conflict, options)
-    return item if 'error' in item else await create_image_plan([item])
+    if 'error' in info:
+        return info
+    variant = ImageOutputVariant(output=output, alpha_action=alpha_action, allow_lossy=allow_lossy,
+                                 quality=quality, output_scalar=output_scalar, quantization=quantization,
+                                 conflict=conflict, settings=settings)
+    return await create_image_plan([variant.plan_item(caps, info, input, subresource, source_alpha)])
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))

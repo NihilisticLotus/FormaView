@@ -250,6 +250,7 @@ flowchart LR
 | `discover_export_sources` | 在授权目录按 `image`、`model` 或 `all` 查找可转换文件。可递归查找；用 `get_image_discovery` 分页读取绝对路径和类别 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `plan_image_batch` | 把选中的 1–4096 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
+| `plan_image_variants` | 将同一张图片或指定子资源按多套参数导出。每个目标可单独指定格式、缩小比例、透明度处理和编码参数，所有输出共用一次预检和提交 |
 | `plan_image_channels` | 将选定通道分别导出为单通道文件。PNG、TIFF 使用灰度通道，EXR 保留源通道名。可指定帧、mip 或部件对应的子资源索引 |
 | `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 4096 帧。输出保留完整画布和透明区域 |
 | `plan_image_subresources` | 将一张图片的多个子资源分别写为独立文件。可按索引选择，也可按 DDS 的 mip、数组层、立方体面、深度切片或 EXR 部件名筛选，最多 4096 项 |
@@ -271,6 +272,20 @@ flowchart LR
 可在 `settings.channels` 中逐项指定 `source` 和 `destination`，例如将 R、G 映射到双通道 DDS 并选择 `dds_encoding="bc5_unorm"`。其他编码选项包括 PNG 压缩级别、TIFF 压缩方式、WebP 无损开关和 EXR 分块存储。可以在工具参数列表中查看每种编码的可选值。
 
 要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。图片和 FBX 批量导出都支持 `conflict="rename"`。例如，同目录的 `source.obj` 和 `source.glb` 可一起导出为两个 FBX，预检会为每项分配独立文件名。在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
+
+要同时交付透明原图和轻量预览，可向 `plan_image_variants` 提交下面的参数。请将示例路径换成访问范围内的绝对路径。源图使用直通 Alpha；`source_alpha` 应与实际素材一致。预检通过后，可以用 `get_image_plan(summary_only=true)` 查看所有输出的损失和冲突，再用 `submit_image_job` 提交一次。
+
+```json
+{
+  "input": "D:/assets/character.png",
+  "source_alpha": "straight",
+  "variants": [
+    {"output": "D:/exports/character.png"},
+    {"output": "D:/exports/character-preview.webp", "settings": {"scale_divisor": 4, "webp_lossless": true}},
+    {"output": "D:/exports/character-small.jpg", "alpha_action": "drop", "allow_lossy": true, "quality": 95, "settings": {"scale_divisor": 8}}
+  ]
+}
+```
 
 批量图片、FBX、逐片段 FBX、GIF 拆帧和图片子资源导出均可传入 `name_template`。例如，两份来自不同目录的 `shot.png` 用 `{index}-{name}.{ext}` 导出为 `1-shot.tif`、`2-shot.tif`。`{index}` 从 1 起按本次输出顺序编号。需要保留 GIF 帧号或子资源的源索引时，使用默认命名。模板只填文件名，后缀须与所选扩展名一致。
 
