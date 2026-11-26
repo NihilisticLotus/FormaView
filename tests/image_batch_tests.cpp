@@ -563,6 +563,10 @@ int main(int argc, char **argv) {
             app.arguments()[1] == "--unlogged-temp");
       return 0;
     }
+    require(export_filename("source{index}.glb", 2, "fbx", "{index}-{name}-{clip}.{ext}", "rig|take. ") ==
+            "3-source{index}-rig_take.fbx", "Expand tokens once and sanitize clip metadata");
+    require(export_filename("source.glb", 0, "fbx", "{clip}.{ext}", "CON") == "_CON.fbx",
+            "A reserved clip name must remain exportable");
     require(app.arguments().size() == 2, "External test root required");
     run(std::filesystem::path(app.arguments()[1].toStdWString()));
     std::cout << "batch ownership, strict requests, commit-gap recovery and "

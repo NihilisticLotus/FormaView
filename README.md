@@ -270,6 +270,10 @@ flowchart LR
 
 要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。图片和 FBX 批量导出都支持 `conflict="rename"`。例如，同目录的 `source.obj` 和 `source.glb` 可一起导出为两个 FBX，预检会为每项分配独立文件名。在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
 
+批量图片、FBX、逐片段 FBX、GIF 拆帧和图片子资源导出均可传入 `name_template`。例如，两份来自不同目录的 `shot.png` 用 `{index}-{name}.{ext}` 导出为 `1-shot.tif`、`2-shot.tif`。`{index}` 从 1 起按本次输出顺序编号。需要保留 GIF 帧号或子资源的源索引时，使用默认命名。模板只填文件名，后缀须与所选扩展名一致。
+
+FBX 可使用 `{clip}`。拆分动画时填入实际片段名，片段名中的路径分隔符等字符会转换成下划线。静态模型使用 `model`，ABC 采样使用 `frameN`，一个 FBX 合并多个动画栈时可用 `{name}-animations.{ext}`。最终文件名会出现在授权提交前的预检结果中。
+
 例如，要从 `walk.gif` 提取第 11 至 13 帧，调用 `plan_gif_frames`，传入授权范围内的输入绝对路径、已有输出目录，以及 `first_frame=10`、`frame_count=3`。核对计划后提交，可得到 `walk-frame-0010.png` 至 `walk-frame-0012.png`。如需重建播放节奏，`inspect_image` 的分页帧信息提供播放延时（毫秒），容器元数据提供循环次数。也可通过 `plan_image_conversion` 的 `subresource` 单独选择一帧并指定输出格式和文件名。
 
 将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。

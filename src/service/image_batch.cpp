@@ -137,6 +137,44 @@ QJsonObject failed_item(const QJsonObject &request, qsizetype index,
 }
 } // namespace
 
+QString export_filename(const QString &input, qsizetype index, const QString &extension,
+                        const QString &pattern, const QString &clip) {
+  static const QRegularExpression tokens(QStringLiteral(R"(\{[^{}]*\}|[{}])"));
+  static const QRegularExpression invalid(QStringLiteral(R"re([/\\:*?"<>|\x00-\x1f])re"));
+  static const QRegularExpression device(QStringLiteral(R"(^(CON|PRN|AUX|NUL|(?:COM|LPT)[0-9¹²³]) *(?:\.|$))"),
+                                         QRegularExpression::CaseInsensitiveOption);
+  QString result;
+  qsizetype cursor = 0;
+  auto matches = tokens.globalMatch(pattern);
+  while (matches.hasNext()) {
+    const auto match = matches.next();
+    result += QStringView(pattern).sliced(cursor, match.capturedStart() - cursor);
+    const auto token = match.capturedView();
+    if (token == u"{name}") result += QFileInfo(input).completeBaseName();
+    else if (token == u"{index}") result += QString::number(index + 1);
+    else if (token == u"{ext}") result += extension;
+    else if (token == u"{clip}") {
+      if (clip.isEmpty())
+        fail(ErrorCode::InvalidArgument, "{clip} needs one selected animation per output; use {name} or {index} for multiple stacks");
+      QString label = clip;
+      label.replace(invalid, "_").replace('{', '_').replace('}', '_');
+      while (label.endsWith('.') || label.endsWith(' ')) label.chop(1);
+      if (label.isEmpty()) label = "clip";
+      if (device.match(label).hasMatch()) label.prepend('_');
+      result += label;
+    } else {
+      fail(ErrorCode::InvalidArgument, "Output template must be a filename using {name}, {index}, {ext} or {clip}");
+    }
+    if (result.size() > 255) fail(ErrorCode::InvalidArgument, "Output template must be a filename of at most 255 characters");
+    cursor = match.capturedEnd();
+  }
+  result += QStringView(pattern).sliced(cursor);
+  if (result.isEmpty() || result.size() > 255 || result.endsWith(' ') || result.endsWith('.') ||
+      invalid.match(result).hasMatch() || device.match(result).hasMatch())
+    fail(ErrorCode::InvalidArgument, "Output template must be a filename valid on Windows");
+  return result;
+}
+
 QJsonObject export_job_progress(const QJsonObject &job) {
   const auto items = job.value("items").toArray();
   QJsonObject counts, result;
@@ -751,6 +789,25 @@ struct ImageBatchService::Impl {
     if (operation == "capabilities") {
       fields(request, {"version", "operation"});
       return image_capabilities();
+    }
+    if (operation == "format_export_names") {
+      fields(request, {"version", "operation", "pattern", "extension", "items"});
+      const auto pattern = text(request, "pattern");
+      const auto extension = text(request, "extension");
+      const auto items = request["items"].toArray();
+      if (items.isEmpty() || items.size() > 64)
+        fail(ErrorCode::InvalidArgument, "Provide 1 to 64 filename inputs");
+      QJsonArray names;
+      for (const auto &value : items) {
+        const auto item = value.toObject();
+        fields(item, {"input", "clip"});
+        const auto name = export_filename(text(item, "input"), names.size(), extension, pattern,
+                                          item.contains("clip") ? text(item, "clip") : QString{});
+        if (QFileInfo(name).suffix().compare(extension, Qt::CaseInsensitive) != 0)
+          fail(ErrorCode::InvalidArgument, "Output filename must use the requested extension");
+        names.append(name);
+      }
+      return QJsonObject{{"names", names}};
     }
     if (operation == "inspect" || operation == "pixel") {
       const auto allocation = ImageAdmission(true, stop);

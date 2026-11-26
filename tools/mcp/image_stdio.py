@@ -333,16 +333,37 @@ def image_target(suffix, capabilities):
     return target
 
 
-def batch_destinations(inputs, output_directory, extension, conflict):
+def batch_destinations(inputs, output_directory, extension, conflict, name_template):
     directory = Path(output_directory)
     if not 1 <= len(inputs) <= 64:
         raise ValueError('Select between 1 and 64 input files per plan.')
     if not directory.is_absolute() or not all(Path(path).is_absolute() for path in inputs):
         raise ValueError('Choose absolute input paths and an absolute output directory.')
     outputs = [directory / (Path(path).stem + '.' + extension) for path in inputs]
-    if len(set(outputs)) != len(inputs) and conflict != 'rename':
+    if name_template is None and len(set(outputs)) != len(inputs) and conflict != 'rename':
         raise ValueError("Inputs map to the same output name. Choose conflict='rename' or specify distinct output paths.")
     return outputs
+
+
+async def batch_plan(items, name_template, extension, clip_names=None):
+    if name_template is not None:
+        labels = [{'input': item['input']} for item in items]
+        if clip_names is not None:
+            for label, clip in zip(labels, clip_names, strict=True):
+                if clip is not None:
+                    label['clip'] = clip
+        result = await native_request(dict(version=1, operation='format_export_names',
+                                           pattern=name_template, extension=extension, items=labels))
+        if 'error' in result:
+            return result
+        used = set()
+        for item, name in zip(items, result['names'], strict=True):
+            path = Path(item['output']).with_name(name)
+            if path in used and item['conflict'] != 'rename':
+                raise ValueError("Duplicate output filename. Include {index} or choose conflict='rename'.")
+            used.add(path)
+            item['output'] = str(path)
+    return await create_image_plan(items)
 
 
 class ChannelMapping(BaseModel):
@@ -457,12 +478,14 @@ async def plan_image_batch(
     quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
     settings: ImageExportSettings | None = None,
+    name_template: str | None = None,
 ) -> dict[str, Any]:
     """Preflight 1–64 selected images in one plan, using each image's actual channels.
 
     Pass absolute input paths (e.g. selected from get_image_discovery), an existing
     authorized output directory and a target extension such as .tif. Outputs keep
-    their input stems. For duplicate stems choose conflict='rename' to allocate distinct outputs.
+    their input stems by default. name_template accepts {name}, {index} (1-based) and {ext}.
+    Use {index} or conflict='rename' for duplicate names.
     settings applies the same resize, channel, colour and encoder choices to each
     input. The background applies only to inputs with alpha.
     No outputs are written until the reviewed plan is submitted via submit_image_job.
@@ -472,7 +495,7 @@ async def plan_image_batch(
         return caps
     extension = output_extension.strip().lower().removeprefix('.')
     target = image_target(extension, caps)
-    destinations = batch_destinations(inputs, output_directory, extension, conflict)
+    destinations = batch_destinations(inputs, output_directory, extension, conflict, name_template)
     options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     items = []
     for path, destination in zip(inputs, destinations):
@@ -482,7 +505,7 @@ async def plan_image_batch(
         if 'error' in item:
             return dict(item, input=path)
         items.append(item)
-    return await create_image_plan(items)
+    return await batch_plan(items, name_template, extension)
 
 
 class SubresourceFilter(BaseModel):
@@ -505,12 +528,14 @@ async def plan_image_subresources(
     output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
     quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip', settings: ImageExportSettings | None = None,
+    name_template: str | None = None,
 ) -> dict[str, Any]:
     """Preflight separate files for selected entries of a DDS, multipart EXR or other indexed image.
 
     Supply distinct indices from inspect_image, or match native descriptor fields, e.g.
     match={'array_layer': 1, 'mip': 0} for a DDS cube array, or {'part_name': 'depth'} for EXR.
-    Omit both for all entries (1–64 results). Filenames retain the original index. Channel mapping,
+    Omit both for all entries (1–64 results). Default filenames retain the original index.
+    name_template accepts {name}, {index} (1-based output order), and {ext}. Channel mapping,
     precision and alpha handling follow plan_image_conversion and are checked per selected entry.
     """
     directory, source = Path(output_directory), Path(input)
@@ -560,18 +585,20 @@ async def plan_image_subresources(
         output = directory / f'{source.stem}-entry-{index:04d}.{extension}'
         items.append(image_plan_item(selected, input, str(output), target, index, alpha_action, source_alpha,
                                      allow_lossy, quality, output_scalar, quantization, conflict, options))
-    return await create_image_plan(items)
+    return await batch_plan(items, name_template, extension)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_gif_frames(
     input: str, output_directory: str, first_frame: int = 0, frame_count: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    name_template: str | None = None,
 ) -> dict[str, Any]:
     """Plan composited PNGs from consecutive GIF frames. Frame indices start at zero.
 
     Omit frame_count to select all remaining frames if at most 64. For longer
-    sequences choose explicit ranges. Filenames retain source indices across plans.
+    sequences choose explicit ranges. Default filenames retain source indices across plans.
+    name_template accepts {name}, {index} (1-based output order), and {ext}.
     Inspect the plan and acknowledge the reported single-frame losses before submitting.
     """
     source, directory = Path(input), Path(output_directory)
@@ -595,11 +622,12 @@ async def plan_gif_frames(
                'source_alpha': info['alpha']}
     if 'A' in names:
         options['alpha_channel'] = 'A'
-    return await create_image_plan([
+    items = [
         {'input': input, 'output': str(directory / f'{source.stem}-frame-{i:04d}.png'),
          'options': dict(options, subresource=i), 'conflict': conflict}
         for i in range(first_frame, first_frame + count)
-    ])
+    ]
+    return await batch_plan(items, name_template, 'png')
 
 
 FbxAxes = Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity']
@@ -672,18 +700,20 @@ async def plan_fbx_batch(
     include_animations: bool = True, abc_sample: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
     reference: str | None = None, pairing_policy: FbxPairing | None = None,
+    name_template: str | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX per selected source, using a shared coordinate preset and unit.
 
     Includes meshes and, by default, every embedded animation as a separate stack.
     For ABC inputs specify the zero-based sample to bake as static geometry.
-    Select paths from discover_export_sources. For duplicate stems choose conflict='rename'.
+    Select paths from discover_export_sources. name_template accepts {name}, {index} (1-based), {ext},
+    and {clip} for a single clip, model-only output (model), or ABC sample (frameN).
     For PSA animations supply a shared PSK/PSKX reference and optional pairing_policy.
     Each PSA uses its own same-name .config. Other selected models keep their own skeleton.
     Use plan_fbx_export for an explicit track config, selected clip IDs or animation-only output.
     The native plan reports format-specific losses and dependencies before approval.
     """
-    destinations = batch_destinations(inputs, output_directory, 'fbx', conflict)
+    destinations = batch_destinations(inputs, output_directory, 'fbx', conflict, name_template)
     has_abc = any(Path(path).suffix.lower() == '.abc' for path in inputs)
     if has_abc != (abc_sample is not None) or (has_abc and abc_sample < 0):
         raise ValueError('Specify a non-negative abc_sample only when the selection contains an ABC file.')
@@ -695,11 +725,14 @@ async def plan_fbx_batch(
     if pairing_policy is not None and not reference:
         raise ValueError('Choose a PSK/PSKX reference for the pairing policy.')
     items = []
+    clip_names = []
     for path, output in zip(inputs, destinations):
         ext = Path(path).suffix.lower()
         options = fbx_options(path, output_axes, output_unit, True, None,
                               reference if ext == '.psa' else None, pairing_policy if ext == '.psa' else None)
+        label = 'model'
         if ext == '.abc':
+            label = f'frame{abc_sample}'
             options['abc_sample'] = abc_sample
         elif include_animations:
             inventory = await inspect_model(path)
@@ -708,9 +741,12 @@ async def plan_fbx_batch(
             if 'clips' not in inventory:
                 raise ValueError('Expected a model or animation input: ' + path)
             if inventory['clips']:
-                options['clip_ids'] = [clip['id'] for clip in inventory['clips']]
+                clips = inventory['clips']
+                label = (clips[0]['name'] or 'clip') if len(clips) == 1 else None
+                options['clip_ids'] = [clip['id'] for clip in clips]
+        clip_names.append(label)
         items.append({'input': path, 'output': str(output), 'options': options, 'conflict': conflict})
-    return await create_model_export_plan(items)
+    return await batch_plan(items, name_template, 'fbx', clip_names)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
@@ -720,12 +756,14 @@ async def plan_fbx_clips(
     animation: str | None = None, reference: str | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
     pairing_policy: FbxPairing | None = None, companion: str | None = None,
+    name_template: str | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX file per animation clip in an existing authorized output directory.
 
     Omit clip_ids for all source clips (maximum 64 per plan), or select IDs from
-    inspect_model. Filenames include the original clip index so duplicate names
-    stay distinct. Paired ActorX inputs accept the same pairing_policy and companion config
+    inspect_model. Default filenames include the original clip index so duplicate names
+    stay distinct. Override with name_template using {name}, {index} (1-based selected
+    output order), {clip}, and {ext}. Paired ActorX inputs accept the same pairing_policy and companion config
     as plan_fbx_export. Inspect get_image_plan for destinations and losses before submitting.
     """
     directory = Path(output_directory)
@@ -746,12 +784,14 @@ async def plan_fbx_clips(
     source = filename_part(Path(input).stem)
     base = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference, pairing_policy, companion)
     items = []
+    clip_names = []
     for index, clip in enumerate(clips, 1):
         if clip['id'] in selected:
+            clip_names.append(clip['name'] or 'clip')
             name = f"{source}-{index:02d}-{filename_part(clip['name'])}.fbx"
             items.append({'input': input, 'output': str(directory / name), 'conflict': conflict,
                           'options': dict(base, clip_id=clip['id'])})
-    return await create_model_export_plan(items)
+    return await batch_plan(items, name_template, 'fbx', clip_names)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))

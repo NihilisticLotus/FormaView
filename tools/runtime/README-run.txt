@@ -46,6 +46,8 @@ MCP（可选 / optional）
   若 PSA 缺少有效参考姿态，可显式选择 pairing_policy="reference-skeleton" 使用匹配的模型骨架。
   用 discover_export_sources 在授权目录查找图片或模型，get_image_discovery 分页返回路径和类别。
   两个模型或图片输出名相同时，可用 conflict="rename" 在预检中分配独立文件名。
+  批量图片和 FBX、GIF 拆帧、子资源及逐片段导出可用 name_template="{index}-{name}.{ext}" 自定义文件名。
+  index 是本批输出顺序，从 1 起算。逐片段 FBX 可用 {clip} 写入动作名。省略模板使用各工具原有命名。
   用 get_image_plan 核对计划中的目标和损失后提交 submit_image_job，再用 get_image_job 查看实际输出。
   set_export_job_paused 可在文件之间暂停或恢复同一个任务。get_image_job 的 summary_only=true 返回整份任务的状态与计数。
   在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；

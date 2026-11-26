@@ -100,9 +100,12 @@ async def main():
                 shutil.copyfile(fixtures / 'source.obj', mesh)
                 batch_args = dict(inputs=[str(mesh), str(glb)], output_directory=str(batch_dir),
                                   output_axes='unreal', output_unit='cm')
+                ambiguous = await call('plan_fbx_batch', **batch_args, name_template='{name}-{clip}.{ext}')
+                assert ambiguous['error']['code'] == 'invalid_argument' and 'plan_id' not in ambiguous
                 for animations in (True, False):
                     batch = await call('plan_fbx_batch', **batch_args, include_animations=animations,
-                                       conflict='skip' if animations else 'rename')
+                                       conflict='skip' if animations else 'rename',
+                                       name_template=None if animations else '{index}-{name}-{clip}.{ext}')
                     plan = await terminal('plan', batch['plan_id'])
                     assert plan['state'] == 'ready' and plan['total'] == 2, plan
                     if animations:
@@ -111,9 +114,11 @@ async def main():
                                         acknowledge_losses=True, idempotency_key='batch-fbx-' + str(animations))
                     written = await terminal('job', queued['job_id'])
                     assert written['state'] == 'succeeded', written
-                    for row, count in zip(written['items'], (0, len(clips) if animations else 0), strict=True):
+                    for ordinal, (row, count) in enumerate(zip(written['items'], (0, len(clips) if animations else 0), strict=True), 1):
                         result = row['result']
                         output = Path(result['committed_output'])
+                        if not animations:
+                            assert output.name == f'{ordinal}-{Path(row["request"]["input"]).stem}-model.fbx'
                         assert output.parent == batch_dir and result['output_coordinates']['preset'] == 'unreal'
                         assert hashlib.sha256(output.read_bytes()).hexdigest() == result['output_sha256']
                         report = args.output / 'batch-readback.json'
@@ -156,6 +161,19 @@ async def main():
                     output = split_dir / f"source-{index:02d}-{clip['name']}.fbx"
                     inspected = await call('inspect_model', input=str(output))
                     assert [c['name'] for c in inspected['clips']] == [clip['name']]
+
+                last_clip = clips[-1]
+                selected = await call('plan_fbx_clips', **arguments, clip_ids=[last_clip['id']],
+                                      name_template='{index}-{name}-{clip}.{ext}')
+                plan = await terminal('plan', selected['plan_id'])
+                output = split_dir / f"1-source-{last_clip['name']}.fbx"
+                assert plan['state'] == 'ready' and Path(plan['items'][0]['preflight']['output']) == output
+                assert not output.exists()
+                queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                    acknowledge_losses=True, idempotency_key='named-clip')
+                assert (await terminal('job', queued['job_id']))['state'] == 'succeeded'
+                back = await call('inspect_model', input=str(output))
+                assert [c['name'] for c in back['clips']] == [last_clip['name']]
 
                 items=[]
                 for suffix in ('obj','gltf','glb','pmx','vrm','fbx'):

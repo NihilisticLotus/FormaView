@@ -297,6 +297,15 @@ for path, channel, value, width, height, x, display_width in json.loads(sys.argv
                 assert sorted(p.name for p in outputs.glob('long-frame-*.png')) == [
                     'long-frame-0064.png', 'long-frame-0065.png']
                 gif_args = dict(input=str(gif), output_directory=str(outputs), first_frame=1)
+                named = await call(session, 'plan_gif_frames', dict(gif_args, name_template='shot-{index}.{ext}'))
+                named_plan = await terminal(session, 'plan', named['plan_id'])
+                assert [Path(r['preflight']['output']).name for r in named_plan['items']] == [
+                    'shot-1.png', 'shot-2.png', 'shot-3.png']
+                named = await call(session, 'plan_image_subresources', dict(extract, indices=[65, 0],
+                                   name_template='selected-{index}.{ext}'))
+                named_plan = await terminal(session, 'plan', named['plan_id'])
+                assert [(r['request']['options']['subresource'], Path(r['preflight']['output']).name)
+                        for r in named_plan['items']] == [(65, 'selected-1.png'), (0, 'selected-2.png')]
                 for invalid_range in (dict(first_frame=-1), dict(frame_count=0), dict(frame_count=65),
                                       dict(frame_count=4), dict(input=str(sources[0]), first_frame=0)):
                     rejected = await session.call_tool('plan_gif_frames', dict(gif_args, **invalid_range))
@@ -411,6 +420,25 @@ for y in range(out.height):
                 assert done['state'] == 'succeeded', done
                 for name, entry in zip(names, done['items'], strict=True):
                     assert Path(entry['result']['committed_output']) == name and name.is_file()
+                literal = nested / '镜头{index}.png'
+                shutil.copyfile(sources[0], literal)
+                named_args = dict(batch_args, inputs=[str(literal)] * 2, output_directory=str(renamed_dir))
+                for pattern in ('../{name}.{ext}', 'C:escape.{ext}', '{name}.png', '{clip}.{ext}',
+                                '{unknown}.{ext}', 'unmatched}.{ext}', 'CON.{ext}'):
+                    invalid = await call(session, 'plan_image_batch', dict(named_args, name_template=pattern))
+                    assert invalid['error']['code'] == 'invalid_argument' and 'plan_id' not in invalid, invalid
+                assert (await session.call_tool('plan_image_batch', dict(named_args, name_template='same.{ext}',
+                                                                        conflict='overwrite'))).isError
+                named = await call(session, 'plan_image_batch', dict(named_args, name_template='{index}-{name}.{ext}'))
+                ready = await terminal(session, 'plan', named['plan_id'])
+                expected = [renamed_dir / f'{n}-镜头{{index}}.tif' for n in (1, 2)]
+                assert [Path(row['preflight']['output']) for row in ready['items']] == expected
+                assert not any(path.exists() for path in expected)
+                queued = await call(session, 'submit_image_job', submission(ready, 'templated-images'))
+                done = await terminal(session, 'job', queued['job_id'])
+                assert done['state'] == 'succeeded', done
+                assert [Path(row['result']['committed_output']) for row in done['items']] == expected
+                assert all(p.read_bytes()[:4] in (b'II*\0', b'MM\0*') for p in expected)
                 outside = str(args.output / 'outside.png')
                 rejected = await call(session, 'plan_image_batch', dict(batch_args, inputs=[str(sources[0]), outside]))
                 assert rejected['error']['code'] == 'out_of_scope' and rejected['input'] == outside, rejected

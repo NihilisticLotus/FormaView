@@ -4,6 +4,9 @@
 #include <memory>
 
 namespace formaview::imaging {
+// Expand one filename in output order. Clip labels are asset metadata.
+QString export_filename(const QString &input, qsizetype index, const QString &extension,
+                        const QString &pattern, const QString &clip = {});
 // Summarize one complete in-memory job snapshot, before item pagination.
 QJsonObject export_job_progress(const QJsonObject &job);
 // Process-wide admission for allocating image work. Cached GUI publication and

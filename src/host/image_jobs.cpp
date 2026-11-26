@@ -91,35 +91,6 @@ ErrorCode error_code(const QString &name) {
 bool active(const QString &s) {
   return s == "queued" || s == "running" || s == "planning" || s == "paused" || s == "pausing";
 }
-QString outputName(const QString &input, qsizetype index,
-                   const QString &target, QString name, const QString &clip = {}) {
-  if (name.contains("{clip}")) {
-    if (clip.isEmpty()) throw skeletal::Failure(ErrorCode::InvalidArgument,
-        "{clip} needs one selected animation per output; use {name}-animations.{ext} for multiple stacks");
-    // Clip labels are asset metadata, not filesystem names (FBX commonly
-    // uses 'model|take'). Keep the source label unchanged; sanitize only the
-    // generated filename token. Existing collision policy still applies.
-    auto filename = clip;
-    for (auto &c : filename)
-      if (c.unicode() < 32 || QStringLiteral("/\\:*?\"<>|{}").contains(c)) c = QChar('_');
-    while (!filename.isEmpty() && (filename.endsWith('.') || filename.endsWith(' '))) filename.chop(1);
-    if (filename.isEmpty()) filename = "clip";
-    const auto stem = filename.section('.',0,0).toUpper();
-    if (QStringList{"CON","PRN","AUX","NUL"}.contains(stem) ||
-        (stem.size() == 4 && (stem.startsWith("COM") || stem.startsWith("LPT")) && stem[3] >= '0' && stem[3] <= '9'))
-      filename.prepend('_');
-    name.replace("{clip}", filename);
-  }
-  name.replace("{name}", QFileInfo(input).completeBaseName());
-  name.replace("{index}", QString::number(index + 1));
-  name.replace("{ext}", target);
-  if (name.isEmpty() || name.contains('/') || name.contains('\\') ||
-      name.contains('{') || name.contains('}'))
-    throw skeletal::Failure(ErrorCode::InvalidArgument,
-                            "Output template must be a filename using "
-                            "{name}, {clip}, {index}, {ext}");
-  return name;
-}
 } // namespace
 QStringList ImageJobs::localInputRoots() const {
   QStringList roots;
@@ -250,7 +221,7 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
     for (qsizetype i = 0; i < std::min(inputs.size(), qsizetype(3)); ++i) {
       const auto overrides = itemOverrides.isEmpty() ? QVariantMap{}
                                                      : itemOverrides[i].toMap();
-      names.append(outputName(inputs[i], i,
+      names.append(formaview::imaging::export_filename(inputs[i], i,
           overrides.value("target", target).toString(), nameTemplate,
           target == "fbx" ? tr("clip") : QString{}));
     }
@@ -580,7 +551,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
           const auto append_model = [&](QJsonObject parameters, const QString &clip_name) {
             items.append(QJsonObject{{"input", input},
-                {"output", QDir(outputDirectory).filePath(outputName(input, outputIndex + items.size() - initialSize, "fbx", itemTemplate, clip_name))},
+                {"output", QDir(outputDirectory).filePath(formaview::imaging::export_filename(input, outputIndex + items.size() - initialSize, "fbx", itemTemplate, clip_name))},
                 {"options", parameters}, {"conflict", itemConflict}});
           };
           // An ABC frame export names its single model after the sample.
@@ -631,7 +602,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
         }
         if (!itemOptions.contains("source_alpha") && source.contains("alpha"))
           itemOptions["source_alpha"] = source["alpha"];
-        const auto name = outputName(input, outputIndex,
+        const auto name = formaview::imaging::export_filename(input, outputIndex,
                                     itemOptions["target"].toString(), itemTemplate);
         items.append(QJsonObject{
             {"input", input},
