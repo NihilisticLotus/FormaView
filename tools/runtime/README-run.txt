@@ -34,10 +34,10 @@ This is a functional run directory, not an installer.
 MCP（可选 / optional）
   导出：get_image_capabilities(source_extension) 可按输入后缀查询输出格式。plan_image_conversion
   按输出后缀和实际通道准备图片转换。plan_fbx_export 支持源坐标或目标软件预设、单位和动画片段。
-  plan_image_batch 接收 1–64 个选中的图片路径、输出目录与扩展名，逐项匹配通道，保留原主名。
+  plan_image_batch 接收 1–4096 个选中的图片路径、输出目录与扩展名，逐项匹配通道，保留原主名。
   两种图片计划都支持 settings，可指定缩小比例、通道映射、合成背景和目标格式的编码参数。
   直通 Alpha 的 sRGB 素材可用 composite、background_linear 与 srgb_to_srgb 在线性空间合成，再输出为 sRGB。
-  plan_gif_frames 按从 0 开始的帧号将 GIF 连续帧合成为 PNG，每份计划最多 64 帧。可分段选择，文件名保留原帧号。
+  plan_gif_frames 按从 0 开始的帧号将 GIF 连续帧合成为 PNG，每份计划最多 4096 帧。可分段选择，文件名保留原帧号。
   plan_image_subresources 将同一图片的多个子资源按源索引分别导出。可用 indices 选取离散项，
   或用 match 按 DDS 的 mip、array_layer、cube_face、depth_slice 或 EXR 的 part_name 筛选。
   plan_fbx_batch 可将多个模型按相同坐标系和单位分别导出为 FBX，默认保留内嵌动画。
@@ -48,6 +48,7 @@ MCP（可选 / optional）
   两个模型或图片输出名相同时，可用 conflict="rename" 在预检中分配独立文件名。
   批量图片和 FBX、GIF 拆帧、子资源及逐片段导出可用 name_template="{index}-{name}.{ext}" 自定义文件名。
   index 是本批输出顺序，从 1 起算。逐片段 FBX 可用 {clip} 写入动作名。省略模板使用各工具原有命名。
+  每条请求最多 1 MiB。超过 64 项仍只需确认整份计划一次，按 next_offset 翻页即可检查全部目标。
   用 get_image_plan 核对计划中的目标和损失后提交 submit_image_job，再用 get_image_job 查看实际输出。
   set_export_job_paused 可在文件之间暂停或恢复同一个任务。get_image_job 的 summary_only=true 返回整份任务的状态与计数。
   在“软件设置 → MCP 与权限”打开开关。输入/输出默认使用文档目录下的 FormaView/MCP/Input 与 Output；

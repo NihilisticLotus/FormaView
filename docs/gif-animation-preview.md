@@ -53,8 +53,10 @@ Both `read_texture_pixel` and `plan_image_conversion` accept a frame index as
 
 `plan_gif_frames(input, output_directory, first_frame, frame_count)` plans
 one PNG per selected frame in an existing authorized directory. The default
-range covers the remaining frames when at most 64 remain. For longer ranges
-request successive batches of up to 64. Output names such as
+range covers the remaining frames up to the endpoint limit. Current grouped
+endpoints accept up to 4096 outputs within a one-MiB request. Query
+`get_image_capabilities` for the frame limit and page through the complete
+plan before approving it once. Split longer ranges into successive plans. Output names such as
 `walk-frame-0064.png` keep the original frame index across batches.
 `get_image_plan` reports destinations and the loss of animation timing in
 still images. Approve and submit through `submit_image_job`. A single frame

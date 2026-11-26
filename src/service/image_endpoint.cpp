@@ -44,7 +44,7 @@ struct ImageEndpoint::Impl {
   std::shared_ptr<ImageTaskGroups> groups;
   QJsonObject dispatch(const QJsonObject &request, std::stop_token stop = {}) {
     auto result = dispatchFull(request, stop);
-    if (result.contains("error") || !result.value("items").isArray() ||
+    if (!result.value("items").isArray() ||
         !result.contains("next_offset")) return result;
     const auto items = result["items"].toArray();
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() <= responseBudget) return result;
@@ -72,6 +72,21 @@ struct ImageEndpoint::Impl {
     const auto operation = request["operation"].toString();
     const auto id = request.value("plan_id").toString(request.value("id").toString());
     const bool grouped = groups && groups->contains(id);
+    if (operation == "capabilities") {
+      auto result = service->request(request, stop);
+      if (!result.contains("error")) result["max_export_plan_items"] = groups ? max_endpoint_plan_items : 64;
+      return result;
+    }
+    if (groups && operation == "create_plan" && request["items"].toArray().size() > 64) {
+      auto plan = request;
+      plan["operation"] = "create_export_plan";
+      return groups->request(plan, stop);
+    }
+    if (groups && operation == "submit") {
+      const auto key = request["idempotency_key"].toString();
+      if (!key.isEmpty() && (groups->has_submission_key(key, id) || (grouped && service->has_submission_key(key))))
+        return image_error_json(skeletal::Failure(ErrorCode::Conflict, "Idempotency key was used for another plan"));
+    }
     if (!groups || (operation != "list_jobs" && !grouped)) return service->request(request, stop);
     if (grouped && !QStringList{"get_plan", "get_job", "get_job_progress", "list_jobs", "cancel",
                                 "submit", "retry_plan", "pause", "resume"}.contains(operation))
@@ -79,7 +94,7 @@ struct ImageEndpoint::Impl {
                                                 "Operation is not available through the grouped endpoint"));
     auto result = grouped ? groups->request(request, stop) : QJsonObject{};
     if (operation != "list_jobs" && operation != "get_job" && operation != "get_plan") return result;
-    if (result.contains("error")) return result;
+    if (result.contains("error") && !result.contains("kind")) return result;
     const auto offset = request.value("offset").toDouble(0), limit = request.value("limit").toDouble(100);
     if ((request.contains("offset") && !request["offset"].isDouble()) ||
         (request.contains("limit") && !request["limit"].isDouble()) ||
@@ -242,7 +257,8 @@ struct ImageEndpoint::Impl {
                         Qt::QueuedConnection);
                     return TaskResult{};
                   };
-                  const bool heavyRequest = operation == "inspect" || operation == "pixel" || operation == "discover" ||
+                  const bool heavyRequest = (groups && operation == "create_plan" && request["items"].toArray().size() > 64) ||
+                      operation == "inspect" || operation == "pixel" || operation == "discover" ||
                       (operation == "retry_plan" && groups && groups->contains(request.value("id").toString()));
                   auto &lane = heavyRequest ? heavy : control;
                   const auto accepted = lane.submit(std::move(task));

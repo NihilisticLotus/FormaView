@@ -31,6 +31,7 @@ if __name__ == '__main__' and sys.argv[1:2] == ['--connect']:
     desktop_link = Path(sys.argv[2])
 background_scope = None if desktop_link else os.environ.get('FORMAVIEW_DESKTOP_SCOPE')
 configured_endpoint = None if desktop_link else os.environ.get('FORMAVIEW_IMAGE_ENDPOINT')
+MAX_EXPORT_ITEMS = 4096
 batch_enabled = bool(desktop_link or configured_endpoint or background_scope)
 desktop_enabled = bool(desktop_link or background_scope or (configured_endpoint and os.environ.get('FORMAVIEW_DESKTOP') == '1'))
 active_endpoint = configured_endpoint
@@ -237,14 +238,15 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
     if source_extension is None or 'error' in caps:
         return caps
     ext = source_extension.strip().lower().removeprefix('.')
+    plan_limit = caps.get('max_export_plan_items', 64)
     result = {'source_extension': ext, 'kind': 'unsupported', 'output_formats': []}
     if '.' + ext in caps.get('read_extensions', []):
         result.update(kind='image', output_formats=caps['write_targets'])
         if batch_enabled and ext in ('dds', 'exr', 'tif', 'tiff', 'ico', 'gif'):
-            result['subresource_export'] = {'tool': 'plan_image_subresources', 'max_outputs_per_plan': 64}
-        if ext == 'gif' and caps.get('gif_frame_export'):
+            result['subresource_export'] = {'tool': 'plan_image_subresources', 'max_outputs_per_plan': plan_limit}
+        if batch_enabled and ext == 'gif' and caps.get('gif_frame_export'):
             result['frame_export'] = {'tool': 'plan_gif_frames', 'output': 'png',
-                                      'first_index': 0, 'max_frames_per_plan': 64}
+                                      'first_index': 0, 'max_frames_per_plan': plan_limit}
     else:
         model = caps.get('model_export', {})
         sample = model.get('abc_frame_export', {})
@@ -300,7 +302,7 @@ async def discover_images(directory: str, recursive: bool = False) -> dict[str, 
     Skips and reports reparse entries, never follows them. Extensions are candidates,
     not proof of decodability; each selected file is validated by plan preflight.
     Limits: 4096 images, 512 directories and 100000 visited entries. The snapshot
-    does not grow when the directory later changes. Submit up to 64 selected items
+    does not grow when the directory later changes. Submit up to 4096 selected items within the one-MiB request budget
     per plan with explicit output paths and conversion options.
     """
     return await native_request({'version': 1, 'operation': 'discover', 'directory': directory, 'recursive': recursive})
@@ -335,8 +337,8 @@ def image_target(suffix, capabilities):
 
 def batch_destinations(inputs, output_directory, extension, conflict, name_template):
     directory = Path(output_directory)
-    if not 1 <= len(inputs) <= 64:
-        raise ValueError('Select between 1 and 64 input files per plan.')
+    if not 1 <= len(inputs) <= MAX_EXPORT_ITEMS:
+        raise ValueError('Select between 1 and 4096 input files per plan.')
     if not directory.is_absolute() or not all(Path(path).is_absolute() for path in inputs):
         raise ValueError('Choose absolute input paths and an absolute output directory.')
     outputs = [directory / (Path(path).stem + '.' + extension) for path in inputs]
@@ -480,7 +482,7 @@ async def plan_image_batch(
     settings: ImageExportSettings | None = None,
     name_template: str | None = None,
 ) -> dict[str, Any]:
-    """Preflight 1–64 selected images in one plan, using each image's actual channels.
+    """Preflight 1–4096 selected images in one plan, using each image's actual channels.
 
     Pass absolute input paths (e.g. selected from get_image_discovery), an existing
     authorized output directory and a target extension such as .tif. Outputs keep
@@ -534,7 +536,7 @@ async def plan_image_subresources(
 
     Supply distinct indices from inspect_image, or match native descriptor fields, e.g.
     match={'array_layer': 1, 'mip': 0} for a DDS cube array, or {'part_name': 'depth'} for EXR.
-    Omit both for all entries (1–64 results). Default filenames retain the original index.
+    Omit both for all entries (1–4096 results). Default filenames retain the original index.
     name_template accepts {name}, {index} (1-based output order), and {ext}. Channel mapping,
     precision and alpha handling follow plan_image_conversion and are checked per selected entry.
     """
@@ -542,8 +544,8 @@ async def plan_image_subresources(
     if not directory.is_absolute() or not source.is_absolute():
         raise ValueError('Choose absolute input and output directory paths.')
     if indices is not None:
-        if match is not None or not 1 <= len(indices) <= 64 or min(indices) < 0 or len(set(indices)) != len(indices):
-            raise ValueError('Choose 1–64 distinct non-negative indices, or use a descriptor filter.')
+        if match is not None or not 1 <= len(indices) <= MAX_EXPORT_ITEMS or min(indices) < 0 or len(set(indices)) != len(indices):
+            raise ValueError('Choose 1–4096 distinct non-negative indices, or use a descriptor filter.')
     caps = await get_image_capabilities()
     if 'error' in caps:
         return caps
@@ -564,8 +566,8 @@ async def plan_image_subresources(
         page = info
         while True:
             indices.extend(s['index'] for s in page['subresources'] if all(s[k] == v for k, v in fields.items()))
-            if len(indices) > 64:
-                raise ValueError('More than 64 subresources match. Narrow the filter or select explicit indices.')
+            if len(indices) > MAX_EXPORT_ITEMS:
+                raise ValueError('More than 4096 subresources match. Narrow the filter or select explicit indices.')
             if page['next_offset'] is None:
                 break
             page = await inspect_image(input, first, offset=page['next_offset'], limit=100, inventory_only=inventory_only)
@@ -596,7 +598,7 @@ async def plan_gif_frames(
 ) -> dict[str, Any]:
     """Plan composited PNGs from consecutive GIF frames. Frame indices start at zero.
 
-    Omit frame_count to select all remaining frames if at most 64. For longer
+    Omit frame_count to select all remaining frames if at most 4096. For longer
     sequences choose explicit ranges. Default filenames retain source indices across plans.
     name_template accepts {name}, {index} (1-based output order), and {ext}.
     Inspect the plan and acknowledge the reported single-frame losses before submitting.
@@ -604,8 +606,8 @@ async def plan_gif_frames(
     source, directory = Path(input), Path(output_directory)
     if not source.is_absolute() or not directory.is_absolute():
         raise ValueError('Choose an absolute GIF path and an absolute output directory.')
-    if first_frame < 0 or (frame_count is not None and not 1 <= frame_count <= 64):
-        raise ValueError('Choose a non-negative first_frame and 1–64 frames per plan.')
+    if first_frame < 0 or (frame_count is not None and not 1 <= frame_count <= MAX_EXPORT_ITEMS):
+        raise ValueError('Choose a non-negative first_frame and 1–4096 frames per plan.')
     info = await inspect_image(input, subresource=first_frame, offset=first_frame, limit=1)
     if 'error' in info:
         return info
@@ -615,8 +617,8 @@ async def plan_gif_frames(
         raise ValueError(info['metadata'].get('scope', 'This host does not expose a GIF frame index.'))
     remaining = info['total'] - first_frame
     count = remaining if frame_count is None else frame_count
-    if not 1 <= count <= min(remaining, 64):
-        raise ValueError(f'{remaining} frames remain. Select a range of at most 64 available frames.')
+    if not 1 <= count <= min(remaining, MAX_EXPORT_ITEMS):
+        raise ValueError(f'{remaining} frames remain. Select a range of at most 4096 available frames.')
     names = [channel['name'] for channel in info['selected_channels']]
     options = {'target': 'png', 'channels': [{'source': n, 'destination': n} for n in names],
                'source_alpha': info['alpha']}
@@ -760,7 +762,7 @@ async def plan_fbx_clips(
 ) -> dict[str, Any]:
     """Preflight one FBX file per animation clip in an existing authorized output directory.
 
-    Omit clip_ids for all source clips (maximum 64 per plan), or select IDs from
+    Omit clip_ids for all source clips (maximum 4096 per plan), or select IDs from
     inspect_model. Default filenames include the original clip index so duplicate names
     stay distinct. Override with name_template using {name}, {index} (1-based selected
     output order), {clip}, and {ext}. Paired ActorX inputs accept the same pairing_policy and companion config
@@ -774,8 +776,8 @@ async def plan_fbx_clips(
         return inventory
     clips = inventory.get('clips', [])
     selected = {c['id'] for c in clips} if clip_ids is None else set(clip_ids)
-    if not 1 <= len(selected) <= 64:
-        raise ValueError('Select between 1 and 64 source clips per plan.')
+    if not 1 <= len(selected) <= MAX_EXPORT_ITEMS:
+        raise ValueError('Select between 1 and 4096 source clips per plan.')
     if clip_ids is not None and (len(selected) != len(clip_ids) or selected.difference(c['id'] for c in clips)):
         raise ValueError('Use distinct clip IDs from inspect_model.')
     def filename_part(value):
@@ -803,7 +805,7 @@ async def create_image_plan(items: list[dict[str, Any]]) -> dict[str, Any]:
     defaults apply. Mixed image/model plans are supported: model items use target='fbx'
     and the options documented by create_model_export_plan, without image channels.
     Query get_image_plan until ready, review every page and its losses,
-    then submit the returned approval_digest. Up to 64 items per plan.
+    then submit the returned approval_digest. Up to 4096 items in one bounded (one MiB) request.
     """
     return await native_request({'version': 1, 'operation': 'create_plan', 'items': items})
 
@@ -874,7 +876,7 @@ async def inspect_model(input: str) -> dict[str, Any]:
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def create_model_export_plan(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """Preflight FBX export through the shared durable job service, up to 64 explicit outputs.
+    """Preflight FBX export through the shared durable job service, up to 4096 explicit outputs within one MiB.
 
     Each item: input, output, conflict=skip/rename/overwrite, options.
     options: target='fbx'. PSK/PSKX/PSA additionally require

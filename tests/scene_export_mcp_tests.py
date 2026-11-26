@@ -175,6 +175,26 @@ async def main():
                 back = await call('inspect_model', input=str(output))
                 assert [c['name'] for c in back['clips']] == [last_clip['name']]
 
+                # Retain all clip IDs and filenames across the small-plan boundary.
+                many = fixtures / '动作.gltf'
+                document = json.loads((fixtures / 'source.gltf').read_text(encoding='utf8'))
+                document['animations'] = [dict(document['animations'][0], name=f'Take{n:02d}') for n in range(65)]
+                many.write_text(json.dumps(document), encoding='utf8')
+                group_dir = args.output / 'many-clips'
+                group_dir.mkdir()
+                created = await call('plan_fbx_clips', input=str(many), output_directory=str(group_dir),
+                                     name_template='{index}-{clip}.{ext}')
+                plan = await terminal('plan', created['plan_id'])
+                assert plan['state'] == 'ready' and plan['total'] == 65 and not list(group_dir.iterdir()), plan
+                queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                    idempotency_key='65-clips', acknowledge_losses=True)
+                job = await terminal('job', queued['job_id'])
+                assert job['state'] == 'succeeded' and len(list(group_dir.glob('*.fbx'))) == 65, job
+                for index in (0, 63, 64):
+                    path = group_dir / f'{index+1}-Take{index:02d}.fbx'
+                    assert Path(job['items'][index]['result']['committed_output']) == path
+                    check = await call('inspect_model', input=str(path))
+                    assert [clip['name'] for clip in check['clips']] == [f'Take{index:02d}']
                 items=[]
                 for suffix in ('obj','gltf','glb','pmx','vrm','fbx'):
                     source=str(fixtures/('source.'+suffix))

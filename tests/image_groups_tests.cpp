@@ -272,6 +272,19 @@ void endpointBoundary(const QString &root) {
     require(socket.canReadLine(), "Boundary endpoint timed out");
     return QJsonDocument::fromJson(socket.readLine()).object();
   };
+  auto external = query("create_plan");
+  auto members = requests(root, 65, "external-");
+  external["items"] = members;
+  for (const auto *field : {"protected_inputs", "direct", "id", "plan_id"}) {
+    auto invalid = external; invalid[field] = true;
+    require(send(invalid)["error"].toObject()["code"] == "invalid_argument", "Unexpected grouped creation field accepted");
+  }
+  for (const auto *field : {"preparation_error", "gui_source", "direct"}) {
+    auto altered = members;
+    auto row = altered[64].toObject(); row[field] = QJsonObject{}; altered[64] = row;
+    auto invalid = external; invalid["items"] = altered;
+    require(send(invalid)["error"].toObject()["code"] == "invalid_argument", "Desktop-only item metadata accepted");
+  }
   const auto plan = start(*groups, requests(root, 129, "approved-"));
   const auto planId = plan["id"].toString();
   const auto jobId = checked(send(submission(plan)))["job_id"].toString();

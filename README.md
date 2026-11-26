@@ -249,17 +249,17 @@ flowchart LR
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
 | `discover_export_sources` | 在授权目录按 `image`、`model` 或 `all` 查找可转换文件。可递归查找；用 `get_image_discovery` 分页读取绝对路径和类别 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
-| `plan_image_batch` | 把选中的 1–64 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
-| `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 64 帧。输出保留完整画布和透明区域 |
-| `plan_image_subresources` | 将一张图片的多个子资源分别写为独立文件。可按索引选择，也可按 DDS 的 mip、数组层、立方体面、深度切片或 EXR 部件名筛选，最多 64 项 |
+| `plan_image_batch` | 把选中的 1–4096 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
+| `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 4096 帧。输出保留完整画布和透明区域 |
+| `plan_image_subresources` | 将一张图片的多个子资源分别写为独立文件。可按索引选择，也可按 DDS 的 mip、数组层、立方体面、深度切片或 EXR 部件名筛选，最多 4096 项 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
 | `submit_image_job`、`get_image_job`、`list_image_jobs` | 提交并跟踪批量任务 |
 | `set_export_job_paused` | 暂停或恢复已提交的图片和 FBX 导出，也适用于桌面任务中心的分组任务 |
 | `cancel_image_work`、`retry_image_plan` | 请求取消任务或为未完成项目建立新的预检计划 |
 | `inspect_model` | 检查模型结构与稳定动画片段 ID |
 | `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧。导出 PSA 时默认包含全部片段，也可用 `clip_ids` 指定子集 |
-| `plan_fbx_batch` | 将选中的 1–64 个模型分别导出为 FBX，统一指定坐标系和单位。默认保留网格和内嵌动作，可用 `include_animations=false` 仅导出模型。含 ABC 时需指定静态采样帧 `abc_sample` |
-| `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 64 项，文件名带源片段序号，默认跳过已有文件 |
+| `plan_fbx_batch` | 将选中的 1–4096 个模型分别导出为 FBX，统一指定坐标系和单位。默认保留网格和内嵌动作，可用 `include_animations=false` 仅导出模型。含 ABC 时需指定静态采样帧 `abc_sample` |
+| `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 4096 项，文件名带源片段序号，默认跳过已有文件 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
 
 例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。
@@ -288,7 +288,7 @@ FBX 可使用 `{clip}`。拆分动画时填入实际片段名，片段名中的�
 
 用 `set_export_job_paused(job_id, paused=true)` 可在文件之间暂停导出，当前文件可以先完成。通过 `get_image_job(job_id, summary_only=true)` 查看实际状态与整份任务的分项计数，包含跨批次的结果。状态变为 `paused` 后，用同一个任务 ID 传入 `paused=false` 即可继续。需要核对具体文件时，使用默认的分页查询。
 
-单文件模式没有持久批次任务语义；端点模式提供目录发现和批量任务。批量计划最多包含 64 个项目。目录发现有数量上限，并会跳过、报告重解析点。取消是异步请求，需继续查询任务直到终态；客户端断开不会自动取消已提交任务。发现目录中的文件只代表扩展名候选，不代表一定可以解码。
+单文件模式没有持久批次任务语义；端点模式提供目录发现和批量任务。当前开发版的 `get_image_capabilities` 返回 `max_export_plan_items=4096`。超过 64 项时，客户端仍使用一个计划 ID 和一次损失确认。用 `get_image_plan` 的 `next_offset` 逐页核对目标，再提交整批。重名分配和源文件保护覆盖整份计划。每条请求的 JSON 上限是 1 MiB，路径和参数较长时需分次建立计划。目录发现有数量上限，并会跳过、报告重解析点。取消是异步请求，需继续查询任务直到终态；客户端断开不会自动取消已提交任务。发现目录中的文件只代表扩展名候选，不代表一定可以解码。
 
 ### 使用 MCP 时的安全边界
 

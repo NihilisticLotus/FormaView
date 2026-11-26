@@ -1,5 +1,7 @@
 #include "formaview/image_endpoint.hpp"
+#include "formaview/image_groups.hpp"
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <iostream>
@@ -24,7 +26,16 @@ int main(int argc, char **argv) {
     const auto scope = imaging::parse_image_scope(config.object());
     auto service = std::make_shared<imaging::ImageBatchService>(
         scope, std::filesystem::path(arguments[4].toStdWString()));
-    imaging::ImageEndpoint endpoint(service, arguments[6]);
+    const auto groupDir = QDir::cleanPath(arguments[4]) + "-groups";
+    const auto groupPath = validated_local_path(std::filesystem::path(groupDir.toStdWString()));
+    std::shared_ptr<imaging::ImageTaskGroups> groups;
+    if (QDir(groupDir).exists() || QDir().mkpath(groupDir)) {
+      groups = std::make_shared<imaging::ImageTaskGroups>(scope, groupPath);
+    } else {
+      // A provisioned journal may be writable while its parent is read-only.
+      std::cerr << "Grouped export storage unavailable; single batches remain available\n";
+    }
+    imaging::ImageEndpoint endpoint(service, arguments[6], nullptr, groups);
     std::cout << QJsonDocument(QJsonObject{{"version", 1},
                                            {"endpoint", arguments[6]},
                                            {"ready", true}})

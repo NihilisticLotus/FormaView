@@ -4,6 +4,8 @@
 #include <memory>
 
 namespace formaview::imaging {
+inline constexpr qsizetype max_endpoint_plan_items = 4096;
+void validate_export_item(const QJsonObject &item);
 // Expand one filename in output order. Clip labels are asset metadata.
 QString export_filename(const QString &input, qsizetype index, const QString &extension,
                         const QString &pattern, const QString &clip = {});
@@ -52,6 +54,7 @@ public:
   [[nodiscard]] QJsonObject request(const QJsonObject &, std::stop_token = {});
   // Internal in-process snapshot; transport clients use paged list_jobs.
   [[nodiscard]] QJsonArray job_summaries() const;
+  [[nodiscard]] bool has_submission_key(const QString &key) const;
   [[nodiscard]] bool has_active_work() const;
 
 private:

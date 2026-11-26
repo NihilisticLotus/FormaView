@@ -125,6 +125,7 @@ async def main():
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
                     'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources', 'set_export_job_paused'}
                 capabilities = await call(session, 'get_image_capabilities', {})
+                assert capabilities['max_export_plan_items'] == 4096
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})
                 assert discovery['total'] == 3, discovery
@@ -234,9 +235,13 @@ async def main():
                 long_gif.write_bytes(raw[:-1] + raw[last_control:-1] * 62 + raw[-1:])
                 long_args = dict(input=str(long_gif), output_directory=str(outputs))
                 extract = dict(long_args, output_extension='png')
-                for invalid in ({}, {'indices': []}, {'indices': [-1]}, {'indices': [0, 0]},
+                for invalid in ({'indices': list(range(4097))}, {'indices': []}, {'indices': [-1]}, {'indices': [0, 0]},
                                 {'indices': [0], 'match': {'mip': 0}}, {'match': {'part_name': 'missing'}}):
                     assert (await session.call_tool('plan_image_subresources', dict(extract, **invalid))).isError
+                all_entries = await call(session, 'plan_image_subresources', dict(extract, indices=list(range(65))))
+                all_plan = await terminal(session, 'plan', all_entries['plan_id'])
+                assert all_plan['state'] == 'ready' and all_plan['total'] == 65
+                assert all_plan['items'][64]['request']['options']['subresource'] == 64
                 readback_dir = inputs / 'subresource-exports'
                 readback_dir.mkdir()
 
@@ -288,10 +293,29 @@ for path, channel, value, width, height, x, display_width in json.loads(sys.argv
     low, high = image.header()['displayWindow']
     assert tuple(low) == (0, 0) and tuple(high) == (display_width - 1, height - 1), path"""
                     subprocess.run([str(args.decoder_python), '-c', oracle, json.dumps(expected_planes)], check=True)
-                assert (await session.call_tool('plan_gif_frames', long_args)).isError
+                group = await call(session, 'plan_gif_frames', dict(long_args, name_template='group-{index}.{ext}'))
+                group_plan = await terminal(session, 'plan', group['plan_id'], limit=60)
+                assert group_plan['state'] == 'ready' and group_plan['total'] == 66 and group_plan['batch_count'] == 2
+                assert group_plan['next_offset'] == 60 and len(group_plan['items']) == 60
+                last = await call(session, 'get_image_plan', dict(plan_id=group['plan_id'], offset=60))
+                assert [Path(i['preflight']['output']).name for i in last['items']] == [f'group-{n}.png' for n in range(61, 67)]
+                assert not list(outputs.glob('group-*.png'))
+                key = 'gif-group-' + 'k' * 110
+                approved = submission(group_plan, key)
+                for invalid in (dict(approved, approval_digest='stale'), dict(approved, acknowledge_losses=False)):
+                    assert 'error' in await call(session, 'submit_image_job', invalid)
+                assert not list(outputs.glob('group-*.png'))
+                queued = await call(session, 'submit_image_job', approved)
+                done = await terminal(session, 'job', queued['job_id'], limit=1)
+                assert done['state'] == 'succeeded' and done['total'] == 66, done
+                summary = await call(session, 'get_image_job', dict(job_id=queued['job_id'], summary_only=True))
+                assert summary['item_counts']['succeeded'] == 66 and len(list(outputs.glob('group-*.png'))) == 66
+                assert (await call(session, 'submit_image_job', approved))['job_id'] == queued['job_id']
+                group_job = queued['job_id']
                 tail = await call(session, 'plan_gif_frames', dict(long_args, first_frame=64))
                 tail_plan = await terminal(session, 'plan', tail['plan_id'])
                 assert tail_plan['state'] == 'ready' and tail_plan['total'] == 2, tail_plan
+                assert (await call(session, 'submit_image_job', submission(tail_plan, key)))['error']['code'] == 'conflict'
                 tail_job = await call(session, 'submit_image_job', submission(tail_plan, 'gif-tail'))
                 assert (await terminal(session, 'job', tail_job['job_id']))['state'] == 'succeeded'
                 assert sorted(p.name for p in outputs.glob('long-frame-*.png')) == [
@@ -401,7 +425,7 @@ for y in range(out.height):
                 batch_args = dict(inputs=[str(sources[0]), str(inputs / 'converted.jpeg')],
                                   output_directory=str(outputs), output_extension='.TIF',
                                   settings=dict(tiff_compression='lzw'))
-                for invalid_inputs in ([], [str(sources[0])] * 65, [str(sources[0]), str(nested / sources[0].name)]):
+                for invalid_inputs in ([], [str(sources[0])] * 4097, [str(sources[0]), str(nested / sources[0].name)]):
                     rejected = await session.call_tool('plan_image_batch', dict(batch_args, inputs=invalid_inputs))
                     assert rejected.isError, rejected
                 same_name = nested / sources[0].name
@@ -439,6 +463,33 @@ for y in range(out.height):
                 assert done['state'] == 'succeeded', done
                 assert [Path(row['result']['committed_output']) for row in done['items']] == expected
                 assert all(p.read_bytes()[:4] in (b'II*\0', b'MM\0*') for p in expected)
+                group_dir = outputs / 'whole-batch'
+                group_dir.mkdir()
+                large_args = dict(batch_args, inputs=[str(sources[0])] * 65,
+                                  conflict='rename', output_directory=str(group_dir))
+                renamed = await call(session, 'plan_image_batch', large_args)
+                ready = await terminal(session, 'plan', renamed['plan_id'])
+                assert ready['state'] == 'ready' and ready['total'] == 65, ready
+                names = [Path(r['preflight']['output']) for r in ready['items']]
+                assert len(set(names)) == 65 and not list(group_dir.iterdir()), names
+                assert (await call(session, 'submit_image_job', submission(ready, 'rename-same-stem')))['error']['code'] == 'conflict'
+                assert (await call(session, 'submit_image_job', submission(ready, key)))['error']['code'] == 'conflict'
+                queued = await call(session, 'submit_image_job', submission(ready, 'cross-child-rename'))
+                done = await terminal(session, 'job', queued['job_id'])
+                assert done['state'] == 'succeeded' and all(n.is_file() for n in names), done
+
+                # Item 65 reads a file which item 1 would overwrite through an output hard link.
+                alias = group_dir / 'later-source.tif'
+                os.link(sources[1], alias)
+                protected = [item(sources[0], 'blocked-' + str(n) + '.tif') for n in range(65)]
+                protected[0].update(output=str(alias), conflict='overwrite')
+                protected[-1]['input'] = str(sources[1])
+                blocked = await call(session, 'create_image_plan', dict(items=protected))
+                check = await terminal(session, 'plan', blocked['plan_id'])
+                assert check['state'] != 'ready' and check['items'][0]['status'] == 'failed', check
+                assert 'error' in await call(session, 'submit_image_job', dict(plan_id=blocked['plan_id'],
+                                      approval_digest='bogus', idempotency_key='blocked-group', acknowledge_losses=True))
+                assert alias.read_bytes() == args.fixture.read_bytes() and not list(outputs.glob('blocked-*.tif'))
                 outside = str(args.output / 'outside.png')
                 rejected = await call(session, 'plan_image_batch', dict(batch_args, inputs=[str(sources[0]), outside]))
                 assert rejected['error']['code'] == 'out_of_scope' and rejected['input'] == outside, rejected
@@ -545,6 +596,10 @@ for y in range(out.height):
                 assert original_after_restart['job_id'] == job_id
                 output_count = len(list(outputs.iterdir())); await asyncio.sleep(0.2)
                 assert len(list(outputs.iterdir())) == output_count, 'Recovery unexpectedly reran outputs'
+                replay = await call(session, 'submit_image_job', approved)
+                assert replay['job_id'] == group_job and replay['reused'], replay
+                recovered = await call(session, 'get_image_job', dict(job_id=group_job, offset=64))
+                assert recovered['state'] == 'succeeded' and len(recovered['items']) == 2
                 # Exercise actual native queue admission under simultaneous MCP
                 # submissions; cancellation/query use a separate adapter lane.
                 saturated = await asyncio.gather(*(call(session, 'create_image_plan', {'items': [

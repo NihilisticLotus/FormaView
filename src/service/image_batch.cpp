@@ -137,6 +137,22 @@ QJsonObject failed_item(const QJsonObject &request, qsizetype index,
 }
 } // namespace
 
+void validate_export_item(const QJsonObject &request) {
+  fields(request, {"input", "output", "options", "conflict"});
+  (void)text(request, "input");
+  (void)text(request, "output");
+  if (request.contains("conflict") && !QStringList{"skip", "rename", "overwrite"}.contains(request["conflict"].toString()))
+    fail(ErrorCode::InvalidArgument, "Unknown output conflict policy");
+  if (!request["options"].isObject())
+    fail(ErrorCode::InvalidArgument, "Image options required");
+#ifdef FORMAVIEW_MODEL_EXPORT
+  if (model_export::handles(request))
+    model_export::validate_options(request["options"].toObject());
+  else
+#endif
+    (void)parse_image_options(request["options"].toObject());
+}
+
 QString export_filename(const QString &input, qsizetype index, const QString &extension,
                         const QString &pattern, const QString &clip) {
   static const QRegularExpression tokens(QStringLiteral(R"(\{[^{}]*\}|[{}])"));
@@ -747,23 +763,13 @@ struct ImageBatchService::Impl {
       if (!requests[i].isObject())
         fail(ErrorCode::InvalidArgument, "Expected image request object");
       const auto request = requests[i].toObject();
-      fields(request, {"input", "output", "options", "conflict"});
-      (void)text(request, "input");
-      (void)text(request, "output");
+      validate_export_item(request);
       auto output_key = text(request, "output");
       output_key.replace('\\', '/');
       if (request["conflict"] != "rename" &&
           !outputs.insert(output_key.toCaseFolded()).second)
         fail(ErrorCode::Conflict,
              "Non-renaming batch destinations must be distinct");
-      if (!request["options"].isObject())
-        fail(ErrorCode::InvalidArgument, "Image options required");
-#ifdef FORMAVIEW_MODEL_EXPORT
-      if (model_export::handles(request))
-        model_export::validate_options(request["options"].toObject());
-      else
-#endif
-        (void)parse_image_options(request["options"].toObject());
       items.append(QJsonObject{{"index", static_cast<qint64>(i)},
                                {"request", request},
                                {"status", "pending"}});
@@ -795,8 +801,8 @@ struct ImageBatchService::Impl {
       const auto pattern = text(request, "pattern");
       const auto extension = text(request, "extension");
       const auto items = request["items"].toArray();
-      if (items.isEmpty() || items.size() > 64)
-        fail(ErrorCode::InvalidArgument, "Provide 1 to 64 filename inputs");
+      if (items.isEmpty() || items.size() > max_endpoint_plan_items)
+        fail(ErrorCode::InvalidArgument, "Provide 1 to 4096 filename inputs");
       QJsonArray names;
       for (const auto &value : items) {
         const auto item = value.toObject();
@@ -1021,6 +1027,13 @@ ImageBatchService::~ImageBatchService() = default;
 bool ImageBatchService::has_active_work() const {
   const auto stats = impl_->scheduler.stats();
   return stats.running != 0 || stats.queued != 0;
+}
+bool ImageBatchService::has_submission_key(const QString &key) const {
+  const std::lock_guard lock(impl_->state);
+  return std::any_of(impl_->records.begin(), impl_->records.end(), [&](const auto &entry) {
+    const auto &data = entry.second->data;
+    return data["kind"] == "job" && data["idempotency_key"] == key;
+  });
 }
 QJsonArray ImageBatchService::job_summaries() const {
   return impl_->jobSummaries();

@@ -206,6 +206,7 @@ struct ImageTaskGroups::Impl {
     for (const auto key : {"name", "category", "created_at"}) o[key] = g->manifest[key];
     if (job) {
       o["plan_id"] = g->manifest["id"];
+      o["idempotency_key"] = g->manifest["idempotency_key"];
       o["submission_digest"] = g->manifest["submission_digest"];
     }
     else if (g->manifest.contains("approval_digest")) o["approval_digest"] = g->manifest["approval_digest"];
@@ -475,7 +476,8 @@ struct ImageTaskGroups::Impl {
         if (job) {
           auto q = query("submit"); q["plan_id"] = b["plan_id"];
           q["approval_digest"] = b["approval_digest"];
-          q["idempotency_key"] = g->manifest["idempotency_key"].toString() + '-' + QString::number(i);
+          const auto parentKey = g->manifest["idempotency_key"].toString();
+          q["idempotency_key"] = (parentKey.size() > 96 ? hash({{"key", parentKey}}) : parentKey) + '-' + QString::number(i);
           q["acknowledge_losses"] = g->manifest["acknowledge_losses"];
           b["job_id"] = checked(child.request(q, g->stop.get_token()))["job_id"];
         } else {
@@ -832,6 +834,15 @@ struct ImageTaskGroups::Impl {
       wake.notify_all(); return {{"accepted", true}};
     }
     const std::lock_guard write(mutation);
+    if (op == "create_export_plan") {
+      // Transport clients supply only public item fields. Desktop preparation
+      // metadata and direct jobs are reserved for the in-process GUI caller.
+      const auto items = q["items"].toArray();
+      if (q.size() != 3 || items.size() <= 64 || items.size() > max_endpoint_plan_items)
+        fail(ErrorCode::InvalidArgument, "Expected 65 to 4096 items for a grouped export plan");
+      for (const auto &item : items) validate_export_item(item.toObject());
+      return create(items, {}, {}, false, stop, progress);
+    }
     if (op == "create_plan") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, false, stop, progress);
     if (op == "create_job") return create(q["items"].toArray(), q["protected_inputs"].toArray(), q, true, stop, progress);
     if (op == "retry_plan") {
@@ -853,6 +864,12 @@ struct ImageTaskGroups::Impl {
       return create(items, protectedPaths(g), g->manifest, false, stop);
     }
     if (op == "submit") {
+      for (auto it = q.begin(); it != q.end(); ++it)
+        if (it.key() != "version" && it.key() != "operation" && it.key() != "plan_id" &&
+            it.key() != "approval_digest" && it.key() != "idempotency_key" && it.key() != "acknowledge_losses")
+          fail(ErrorCode::InvalidArgument, "Unknown group submission field");
+      if (q.contains("acknowledge_losses") && !q["acknowledge_losses"].isBool())
+        fail(ErrorCode::InvalidArgument, "Acknowledgement must be boolean");
       auto g = find(q["plan_id"].toString());
       { const std::lock_guard lock(state);
         if (g->plan["id"].toString() != q["plan_id"].toString())
@@ -863,7 +880,7 @@ struct ImageTaskGroups::Impl {
         }
         if (g->plan["state"] != "ready" || g->plan["approval_digest"] != q["approval_digest"])
           fail(ErrorCode::Conflict, "Group requires a complete approved preflight");
-        if (q["idempotency_key"].toString().isEmpty() || q["idempotency_key"].toString().size() > 96)
+        if (q["idempotency_key"].toString().isEmpty() || q["idempotency_key"].toString().size() > 128)
           fail(ErrorCode::InvalidArgument, "Invalid group submission key");
         for (auto v : g->plan["items"].toArray())
           if (!v.toObject()["preflight"].toObject()["losses"].toArray().isEmpty() && !q["acknowledge_losses"].toBool())
@@ -892,7 +909,14 @@ QJsonObject ImageTaskGroups::request(const QJsonObject &q, std::stop_token stop,
   } catch (const skeletal::Failure &e) { return image_error_json(e); }
   catch (const std::exception &e) { return image_error_json(skeletal::Failure(ErrorCode::Internal, e.what())); }
 }
+bool ImageTaskGroups::has_submission_key(const QString &key, const QString &exceptPlan) const {
+  const std::lock_guard lock(impl_->state);
+  return std::any_of(impl_->groups.begin(), impl_->groups.end(), [&](const auto &entry) {
+    return entry.first != exceptPlan && entry.second->job["idempotency_key"] == key;
+  });
+}
 bool ImageTaskGroups::contains(const QString &id) const {
+  if (id.isEmpty()) return false;
   const std::lock_guard lock(impl_->state);
   for (const auto &[key, g] : impl_->groups) if (key == id || g->job.value("id") == id) return true;
   return false;
