@@ -4,7 +4,7 @@
 #include "formaview/image_batch.hpp"
 #include "formaview/image_path.hpp"
 #include "formaview/image_preview.hpp"
-#include "gif_decoder.hpp"
+#include "formaview/gif_decoder.hpp"
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -111,7 +111,7 @@ constexpr int maxGifFrames = 10000;
 constexpr quint64 maxGifCanvasPixels = 16ULL * 1024 * 1024;
 constexpr quint64 maxGifDecodedPixels = 4ULL * 1024 * 1024 * 1024;
 
-std::shared_ptr<ImagePixels> gifPixels(formaview::host::GifDecoder &reader, int &next,
+std::shared_ptr<ImagePixels> gifPixels(formaview::imaging::GifDecoder &reader, int &next,
                                       const QString &path, int wanted,
                                       quint64 revision,
                                       std::stop_token stop) {
@@ -201,7 +201,7 @@ struct ImageSession::Cache {
   QString documentKey;
   std::shared_ptr<formaview::imaging::ImageDocument> document;
   QString gifKey;
-  std::unique_ptr<formaview::host::GifDecoder> gifReader;
+  std::unique_ptr<formaview::imaging::GifDecoder> gifReader;
   int gifNext{};
   struct Entry {
     QString key;
@@ -456,7 +456,7 @@ void ImageSession::load(const QString &path, int index, QStringList mapping,
                              .arg(target.height());
         if (!cache_->gifReader || cache_->gifKey != key ||
             index < cache_->gifNext) {
-          cache_->gifReader = std::make_unique<formaview::host::GifDecoder>(
+          cache_->gifReader = std::make_unique<formaview::imaging::GifDecoder>(
               path, stop, region, target);
           cache_->gifKey = key;
           cache_->gifNext = 0;
@@ -943,7 +943,7 @@ void ImageSession::sample(double x, double y, int tileX, int tileY) {
         const auto admission = ImageAdmission(true, stop);
         std::shared_ptr<ImagePixels> p;
         if (QFileInfo(path).suffix().compare("gif", Qt::CaseInsensitive) == 0) {
-          formaview::host::GifDecoder reader(
+          formaview::imaging::GifDecoder reader(
               path, stop,
               QRect(int(std::floor(localX)), int(std::floor(localY)), 1, 1),
               QSize(1, 1));
@@ -1121,7 +1121,7 @@ void ImageSession::exportFrames(const QString &directory,
       const auto policy = conflict == "overwrite" ? ConflictPolicy::Overwrite
                           : conflict == "rename" ? ConflictPolicy::Rename
                                                    : ConflictPolicy::Skip;
-      formaview::host::GifDecoder reader(source, stop, {}, {}, false);
+      formaview::imaging::GifDecoder reader(source, stop, {}, {}, false);
       const auto size = reader.size();
       if (!size.isValid() || reader.imageCount() != count || count > maxGifFrames ||
           size.width() > 16384 || size.height() > 16384 ||

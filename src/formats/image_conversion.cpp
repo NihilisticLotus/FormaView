@@ -172,6 +172,8 @@ prepare_image_conversion(const ImageDocument &document,
   if (description.subresources.size() > 1)
     loss("selected_subresource", "Only the explicitly selected "
                                  "entry/part/mip/face/layer/slice is written");
+  if (description.subresources.size() > 1 && description.source.properties.contains("loop_count"))
+    loss("animation_timing", "The still output omits GIF frame delays and looping");
   for (const auto &name : result.transform.omitted_channels)
     loss("omitted_channel", "Source channel omitted: " + name);
   if (result.transform.alpha_removed)

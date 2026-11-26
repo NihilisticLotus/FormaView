@@ -249,6 +249,7 @@ flowchart LR
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `plan_image_batch` | 把选中的 1–64 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
+| `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 64 帧。输出保留完整画布和透明区域 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
 | `submit_image_job`、`get_image_job`、`list_image_jobs` | 提交并跟踪批量任务 |
 | `cancel_image_work`、`retry_image_plan` | 请求取消任务或为未完成项目建立新的预检计划 |
@@ -261,6 +262,8 @@ flowchart LR
 例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。需要自定义通道映射或合成背景色时可使用 `create_image_plan`。
 
 要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。若两个输入映射到同一个输出名，请用 `create_image_plan` 分别命名。预检结束后可在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
+
+例如，要从 `walk.gif` 提取第 11 至 13 帧，调用 `plan_gif_frames`，传入授权范围内的输入绝对路径、已有输出目录，以及 `first_frame=10`、`frame_count=3`。核对计划后提交，可得到 `walk-frame-0010.png` 至 `walk-frame-0012.png`。如需重建播放节奏，`inspect_image` 的分页帧信息提供播放延时（毫秒），容器元数据提供循环次数。也可通过 `plan_image_conversion` 的 `subresource` 单独选择一帧并指定输出格式和文件名。
 
 将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。
 

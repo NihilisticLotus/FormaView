@@ -1,4 +1,5 @@
 #include "formaview/raster_image.hpp"
+#include "formaview/gif_decoder.hpp"
 #include "raster_preview.hpp"
 #include "raster_jpeg_preview.hpp"
 #include "raster_profile.hpp"
@@ -430,9 +431,7 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
   p->desc.source.properties["container"] = p->format.toStdString();
   p->desc.source.properties["orientation"] =
       "stored pixel order; no automatic EXIF transform";
-  if (p->format == "gif")
-    p->desc.source.properties["scope"] =
-        "first static frame only; no animation playback";
+  std::unique_ptr<GifDecoder> gif;
   if (p->format == "ico") {
     const auto count = u16(p->bytes, 4);
     budget(count > 0 && count <= std::min(limits.subresources, 256U));
@@ -487,9 +486,22 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
       size = p->format == "gif" ? QSize(u16(p->bytes, 6), u16(p->bytes, 8))
                                 : reader.size();
     size_budget(size, limits);
-    p->entries.push_back({0, data.size(), size});
+    if (p->format == "gif" && GifDecoder::canExportCanvas(size)) {
+      // Index the snapshot with a one-pixel canvas. Inspecting a late frame
+      // must not allocate every preceding frame while describing the file.
+      gif = std::make_unique<GifDecoder>(p->bytes, stop);
+      budget(static_cast<unsigned>(gif->imageCount()) <= limits.subresources);
+      p->desc.source.properties["frame_count"] = std::to_string(gif->imageCount());
+      p->desc.source.properties["loop_count"] = std::to_string(gif->loopCount());
+      p->entries.resize(gif->imageCount(), {0, data.size(), size});
+    } else {
+      p->entries.push_back({0, data.size(), size});
+      if (p->format == "gif")
+        p->desc.source.properties["scope"] = "First frame only: canvas exceeds animation export limits";
+    }
   }
   for (std::size_t i = 0; i < p->entries.size(); ++i) {
+    cancel(stop);
     const auto size = p->entries[i].dimensions;
     size_budget(size, limits);
     ImageSubresource s;
@@ -500,7 +512,13 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
                             static_cast<std::uint64_t>(size.height())};
     QImage image;
     bool gray{}, wide{}, alpha{};
-    if (limits.preview && p->format != "ico" && p->format != "gif") {
+    const bool animationFrame = gif && gif->imageCount() > 1;
+    if (animationFrame) {
+      alpha = gif->transparentCanvas();
+      s.part_name = "frame." + std::to_string(i);
+      p->desc.source.properties[s.part_name + ".playback_delay_ms"] =
+          std::to_string(gif->frameDelay(static_cast<int>(i)));
+    } else if (limits.preview && p->format != "ico" && p->format != "gif") {
       // Descriptor-only open. Pixel reads happen exclusively in decode_preview.
       if (p->format == "png") {
         const auto colour =
@@ -545,7 +563,7 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
           image.depth() == 64 || image.format() == QImage::Format_Grayscale16;
       alpha = image.hasAlphaChannel();
     }
-    if (!limits.preview && image.size() != size)
+    if (!limits.preview && !animationFrame && image.size() != size)
       invalid("Raster directory dimensions mismatch");
     auto names = gray ? std::vector<std::string>{"Y"}
                       : std::vector<std::string>{"R", "G", "B"};
@@ -559,6 +577,12 @@ RasterFile RasterFile::open(const std::filesystem::path &path, Limits limits,
       c.samples.scalar = wide ? ScalarType::UInt16 : ScalarType::UInt8;
       c.samples.element_count = s.data_window.width * s.data_window.height;
       s.channels.push_back(std::move(c));
+    }
+    if (animationFrame) {
+      // Every composited frame uses the same palette-derived canvas layout.
+      p->desc.alpha = alpha ? AlphaMode::Straight : AlphaMode::Absent;
+      p->desc.subresources.push_back(std::move(s));
+      continue;
     }
     const auto prefix = "entry." + std::to_string(i) + ".";
     p->desc.source.properties[prefix + "alpha"] = alpha ? "straight" : "absent";
@@ -602,8 +626,15 @@ ImageSubresource RasterFile::decode(std::size_t entry,
     unsupported("Preview documents require decode_preview");
   if (entry >= impl_->entries.size())
     invalid("Raster entry out of range");
-  auto image = decode_image(impl_->bytes, impl_->format, impl_->entries[entry],
-                            impl_->limits, stop);
+  QImage image;
+  if (impl_->format == "gif" && impl_->entries.size() > 1) {
+    GifDecoder reader(impl_->bytes, stop, static_cast<int>(entry));
+    image = reader.readThrough(static_cast<int>(entry), stop);
+    if (!reader.transparentCanvas())
+      image = image.convertToFormat(QImage::Format_RGB32);
+  } else {
+    image = decode_image(impl_->bytes, impl_->format, impl_->entries[entry], impl_->limits, stop);
+  }
   auto s = impl_->desc.subresources[entry];
   if (image.width() != static_cast<int>(s.data_window.width) ||
       image.height() != static_cast<int>(s.data_window.height))
@@ -668,11 +699,16 @@ ImageSubresource RasterFile::decode_preview(std::size_t entry,
     image = preview_bmp(impl_->bytes, impl_->format == "dib", r, stop);
   else if (impl_->format == "jpeg")
     image = preview_jpeg(impl_->bytes, r, stop);
+  else if (impl_->format == "gif" && impl_->entries.size() > 1) {
+    const QRect region(int(r.x), int(r.y), int(r.width), int(r.height));
+    const QSize target(int(r.output_width), int(r.output_height));
+    GifDecoder reader(impl_->bytes, stop, static_cast<int>(entry), region, target);
+    image = reader.readThrough(static_cast<int>(entry), stop);
+  }
   else {
     // ICO entries are format-limited to 256 x 256. Keep Qt's PNG/DIB AND-mask
     // semantics, validate the payload dimensions before any pixel allocation.
-    if (impl_->format != "ico")
-      unsupported("GIF preview uses the animation compositor");
+    // Single-frame GIF uses the same Qt decode as its full-resolution export.
     image = decode_image(impl_->bytes, impl_->format, impl_->entries[entry],
                          impl_->limits, stop);
     image = image.convertToFormat(QImage::Format_RGBA8888);

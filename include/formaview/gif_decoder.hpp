@@ -1,5 +1,6 @@
 #pragma once
 #include "formaview/skeletal.hpp"
+#include <QBuffer>
 #include <QFile>
 #include <QImage>
 #include <QRect>
@@ -9,17 +10,35 @@
 #include <stop_token>
 #include <vector>
 
-namespace formaview::host {
+namespace formaview::imaging {
 // Stream LZW rows into a bounded canvas sampled in logical coordinates.
 // Disposal and transparent palette entries apply before publishing each frame.
 class GifDecoder {
 public:
   static constexpr quint64 maxCanvasPixels = 16ULL * 1024 * 1024;
+  static bool canExportCanvas(QSize size) {
+    return size.width() <= 16384 && size.height() <= 16384 &&
+           quint64(size.width()) * size.height() <= maxCanvasPixels;
+  }
   explicit GifDecoder(const QString &path, std::stop_token stop,
                       QRect region = {}, QSize target = QSize(2048, 2048),
                       bool bounded = true)
-      : file_(path) {
+      : disk_(path), file_(disk_) {
     if (!file_.open(QIODevice::ReadOnly)) fail("Cannot open GIF input");
+    initialize(stop, region, target, bounded);
+  }
+  // The conversion worker already holds an immutable, hashed input snapshot.
+  // Read that same storage, even if the original pathname has since changed.
+  GifDecoder(const QByteArray &bytes, std::stop_token stop, int lastFrame = -1,
+             QRect region = {}, QSize sampledSize = {})
+      : file_(memory_) {
+    memory_.setData(bytes);
+    if (!memory_.open(QIODevice::ReadOnly)) fail("Cannot open GIF snapshot");
+    initialize(stop, region, QSize(1, 1), lastFrame < 0 || !sampledSize.isEmpty(), lastFrame, sampledSize);
+  }
+private:
+  void initialize(std::stop_token stop, QRect region, QSize target, bool bounded,
+                  int lastFrame = -1, QSize sampledSize = {}) {
     if (!bounded && file_.size() > 512LL * 1024 * 1024)
       limit();
     header_ = take(13);
@@ -28,8 +47,7 @@ public:
     size_ = QSize(word(header_, 6), word(header_, 8));
     if (size_.isEmpty())
       limit();
-    if (!bounded && (size_.width() > 16384 || size_.height() > 16384 ||
-                     quint64(size_.width()) * size_.height() > maxCanvasPixels))
+    if (!bounded && !canExportCanvas(size_))
       limit();
     region_ = region.isEmpty() ? QRect(QPoint(), size_)
                                : region.intersected(QRect(QPoint(), size_));
@@ -41,6 +59,7 @@ public:
                               .boundedTo(region_.size())
                               .expandedTo(QSize(1, 1))
                         : size_;
+    if (!sampledSize.isEmpty()) physical_ = sampledSize;
     const auto packed = byte(header_, 10);
     if (packed & 128) {
       global_ = take(3 * (2 << (packed & 7)));
@@ -122,19 +141,27 @@ public:
         limit();
     }
     if (!trailer || frames_.empty()) fail("GIF is truncated or has no frames");
-    if (!bounded && quint64(size_.width()) * size_.height() * frames_.size() >
-                        4ULL * 1024 * 1024 * 1024)
+    const auto requiredFrames = lastFrame < 0 ? frames_.size() : std::size_t(lastFrame) + 1;
+    if ((!bounded || lastFrame >= 0) && quint64(size_.width()) * size_.height() * requiredFrames >
+                                          4ULL * 1024 * 1024 * 1024)
       limit();
     canvas_ = QImage(physical_, QImage::Format_ARGB32);
     if (canvas_.isNull()) limit();
     canvas_.fill(background_);
   }
+public:
   int imageCount() const { return static_cast<int>(frames_.size()); }
+  bool transparentCanvas() const { return qAlpha(background_) == 0; }
+  int frameDelay(int frame) const { return frames_.at(frame).delay; }
   QSize size() const { return size_; }
   QRect region() const { return region_; }
   int loopCount() const { return loops_; }
   int nextImageDelay() const { return frames_.at(next_ - 1).delay; }
   int nextFrame() const { return next_; }
+  QImage readThrough(int frame, std::stop_token stop) {
+    while (next_ < frame) read(stop);
+    return read(stop);
+  }
   QImage read(std::stop_token stop) {
     cancelled(stop);
     if (next_ >= imageCount()) fail("GIF frame index exceeds the animation");
@@ -186,7 +213,9 @@ private:
   }
   static int byte(const QByteArray &data, int offset) { return static_cast<unsigned char>(data.at(offset)); }
   static int word(const QByteArray &data, int offset) { return byte(data, offset) | (byte(data, offset + 1) << 8); }
-  QFile file_;
+  QFile disk_;
+  QBuffer memory_;
+  QIODevice &file_;
   QByteArray header_, global_;
   QSize size_;
   QSize physical_;
@@ -262,6 +291,16 @@ inline void GifDecoder::decodeRows(const Frame &frame, std::stop_token stop) {
     const int sy =
         frame.rect.y() +
         rows[static_cast<std::size_t>(emitted / frame.rect.width() - 1)];
+    // Full-resolution export maps each decoded row directly to one canvas row.
+    if (physical_ == size_ && region_.size() == size_) {
+      auto *dst = reinterpret_cast<QRgb *>(canvas_.scanLine(sy)) + frame.rect.x();
+      for (int x = 0; x < frame.rect.width(); ++x) {
+        const int colour = row[x];
+        if (colour != transparent)
+          dst[x] = qRgb(byte(palette, colour * 3), byte(palette, colour * 3 + 1), byte(palette, colour * 3 + 2));
+      }
+      return;
+    }
     for (int y = 0; y < physical_.height(); ++y) {
       if (sourcePoint(0, y).y() != sy)
         continue;
@@ -323,4 +362,4 @@ inline void GifDecoder::decodeRows(const Frame &frame, std::stop_token stop) {
   if (emitted != total)
     fail("GIF LZW stream ended before all pixels");
 }
-} // namespace formaview::host
+} // namespace formaview::imaging

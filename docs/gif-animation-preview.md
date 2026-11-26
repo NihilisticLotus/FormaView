@@ -7,8 +7,8 @@ current frame count and delay. Seeking is decoded on the image worker; a newer
 seek cancels and supersedes older work, so an obsolete result cannot replace
 the requested frame.
 
-Preview and export share `GifDecoder`. It scans frame metadata once, asks Qt's
-GIF handler to decode each isolated frame's palette/LZW pixels, maps the four
+Preview and export share `GifDecoder`. Each decoder scans the frame directory,
+decodes LZW rows against the active palette, maps the four
 interlace passes when present, and composes on an explicit ARGB32 canvas.
 Disposal 0/1 keeps the canvas;
 disposal 2 clears only the preceding frame rectangle to the logical screen's
@@ -40,6 +40,32 @@ conflict rules as ordinary exports, including atomic non-overwriting
 publication for skip/rename. The source GIF has a read-only input lease during
 export and is never rewritten. Opening or clearing the image cancels an active
 frame export; PNGs already committed remain available.
+
+### MCP frame selection and export
+
+`get_image_capabilities(source_extension=".gif")` identifies the frame export
+tool on a host with GIF input and PNG output. Use `inspect_image` to page the
+frame directory. Frame indices start at zero. Each animated frame reports its
+playback delay in milliseconds (delays below 20 ms use the viewer's 100 ms
+default). The container reports its loop count, with −1 for infinite repeats.
+Both `read_texture_pixel` and `plan_image_conversion` accept a frame index as
+`subresource`. Compositing replays preceding patches and disposal operations.
+
+`plan_gif_frames(input, output_directory, first_frame, frame_count)` plans
+one PNG per selected frame in an existing authorized directory. The default
+range covers the remaining frames when at most 64 remain. For longer ranges
+request successive batches of up to 64. Output names such as
+`walk-frame-0064.png` keep the original frame index across batches.
+`get_image_plan` reports destinations and the loss of animation timing in
+still images. Approve and submit through `submit_image_job`. A single frame
+export is subject to the decode-work limit through that frame. For full
+sequences the desktop exporter reuses its decoder across frames.
+
+The Windows named-pipe regression submits frames 1–3 of a four-frame GIF
+with a transparent canvas, local palettes, and both clear and restore disposal.
+It compares every exported RGBA pixel with Pillow, and checks the same source
+coordinates through `read_texture_pixel`. A 66-frame fixture checks explicit
+batching and filenames for indices 64 and 65.
 
 Automated regression coverage uses repository-embedded single-, two-, and
 three-frame GIFs. The three-frame fixture has 30/70/110 ms delays, a finite

@@ -239,6 +239,9 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
     result = {'source_extension': ext, 'kind': 'unsupported', 'output_formats': []}
     if '.' + ext in caps.get('read_extensions', []):
         result.update(kind='image', output_formats=caps['write_targets'])
+        if ext == 'gif' and caps.get('gif_frame_export'):
+            result['frame_export'] = {'tool': 'plan_gif_frames', 'output': 'png',
+                                      'first_index': 0, 'max_frames_per_plan': 64}
     else:
         model = caps.get('model_export', {})
         sample = model.get('abc_frame_export', {})
@@ -400,6 +403,45 @@ async def plan_image_batch(
             return dict(item, input=path)
         items.append(item)
     return await create_image_plan(items)
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_gif_frames(
+    input: str, output_directory: str, first_frame: int = 0, frame_count: int | None = None,
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Plan composited PNGs from consecutive GIF frames. Frame indices start at zero.
+
+    Omit frame_count to select all remaining frames if at most 64. For longer
+    sequences choose explicit ranges. Filenames retain source indices across plans.
+    Inspect the plan and acknowledge the reported single-frame losses before submitting.
+    """
+    source, directory = Path(input), Path(output_directory)
+    if not source.is_absolute() or not directory.is_absolute():
+        raise ValueError('Choose an absolute GIF path and an absolute output directory.')
+    if first_frame < 0 or (frame_count is not None and not 1 <= frame_count <= 64):
+        raise ValueError('Choose a non-negative first_frame and 1–64 frames per plan.')
+    info = await inspect_image(input, subresource=first_frame, offset=first_frame, limit=1)
+    if 'error' in info:
+        return info
+    if info.get('metadata', {}).get('container') != 'gif':
+        raise ValueError('Choose a GIF input for frame export.')
+    if 'frame_count' not in info['metadata']:
+        raise ValueError(info['metadata'].get('scope', 'This host does not expose a GIF frame index.'))
+    remaining = info['total'] - first_frame
+    count = remaining if frame_count is None else frame_count
+    if not 1 <= count <= min(remaining, 64):
+        raise ValueError(f'{remaining} frames remain. Select a range of at most 64 available frames.')
+    names = [channel['name'] for channel in info['selected_channels']]
+    options = {'target': 'png', 'channels': [{'source': n, 'destination': n} for n in names],
+               'source_alpha': info['alpha']}
+    if 'A' in names:
+        options['alpha_channel'] = 'A'
+    return await create_image_plan([
+        {'input': input, 'output': str(directory / f'{source.stem}-frame-{i:04d}.png'),
+         'options': dict(options, subresource=i), 'conflict': conflict}
+        for i in range(first_frame, first_frame + count)
+    ])
 
 
 FbxAxes = Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity']

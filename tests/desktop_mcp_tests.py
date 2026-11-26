@@ -49,7 +49,7 @@ async def exercise(args, env, endpoint=None):
                 report['protocol'] = (await client.initialize()).protocolVersion
                 report['tools'] = sorted(t.name for t in (await client.list_tools()).tools)
                 expected = {'open_asset', 'get_playback_state', 'control_video', 'step_video_frame',
-                            'capture_video_frame', 'read_texture_pixel', 'plan_image_batch', 'plan_fbx_batch'}
+                            'capture_video_frame', 'read_texture_pixel', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_batch'}
                 assert expected <= set(report['tools']), expected.difference(report['tools'])
 
                 async def call(name, error=None, **kwargs):

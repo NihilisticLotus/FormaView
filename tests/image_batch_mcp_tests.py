@@ -1,6 +1,7 @@
 """Actual MCP client, native named-pipe service, disk journals and image outputs."""
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -46,7 +47,9 @@ async def main():
         'allow_overwrite': True, 'policy_revision': 'batch-mcp-test-1'}), encoding='utf-8')
     endpoint = 'formaview-test-' + uuid.uuid4().hex
     env = os.environ.copy(); env.update(FORMAVIEW_IMAGE_CLI=str(args.native.resolve()), FORMAVIEW_IMAGE_ENDPOINT=endpoint)
-    parameters = StdioServerParameters(command=sys.executable, args=[str(args.server.resolve())], env=env)
+    adapter = str(args.server.resolve())
+    parameters = (StdioServerParameters(command=adapter, env=env) if args.server.suffix.lower() == '.exe'
+                  else StdioServerParameters(command=sys.executable, args=[adapter], env=env))
     records = []; latencies = []; processes = []; service_logs = []; memory = {}
 
     def sample_memory():
@@ -119,7 +122,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})
@@ -187,6 +190,54 @@ async def main():
                     assert 'error' not in inspected and inspected['total'] >= 1, inspected
                     read_formats.append(container)
                     pair_sources.append((inputs / ('extra.' + container), inspected))
+                # Four patches on a transparent canvas. The second clears its rectangle,
+                # the third restores the previous canvas, and the last paints a single pixel.
+                gif = inputs / '动画.gif'
+                gif.write_bytes(base64.b64decode(
+                    'R0lGODlhBgAFAIEAAAAAAPAKFA/SMhQe/yH/C05FVFNDQVBFMi4wAwECAAAh+QQFAwAAACwAAAAABgAFAAAI'
+                    'DQABCBxIcGCAgggLBgQAIfkECQcAAAAsAgACAAEAAQCBAAAA8AoUD9IyFB7/CAQABQQEACH5BA0LAAAALAEA'
+                    'AgADAAEAgQAAAPAKFA/SMhQe/wgGAAMIGBAQACH5BAUJAAAALAQAAgABAAEAgQAAAPAKFA/SMhQe/wgEAAMEBAA7'))
+                inventory = await call(session, 'inspect_image', dict(path=str(gif), subresource=2, offset=1, limit=2))
+                assert inventory['total'] == 4 and inventory['next_offset'] == 3, inventory
+                assert [f['playback_delay_ms'] for f in inventory['subresources']] == [70, 110]
+                assert inventory['metadata']['loop_count'] == '2'
+                gif_caps = await call(session, 'get_image_capabilities', {'source_extension': '.GIF'})
+                assert gif_caps['frame_export']['tool'] == 'plan_gif_frames'
+                long_gif = inputs / 'long.gif'
+                raw = gif.read_bytes()
+                last_control = raw.rindex(b'\x21\xf9\x04')
+                long_gif.write_bytes(raw[:-1] + raw[last_control:-1] * 62 + raw[-1:])
+                long_args = dict(input=str(long_gif), output_directory=str(outputs))
+                assert (await session.call_tool('plan_gif_frames', long_args)).isError
+                tail = await call(session, 'plan_gif_frames', dict(long_args, first_frame=64))
+                tail_plan = await terminal(session, 'plan', tail['plan_id'])
+                assert tail_plan['state'] == 'ready' and tail_plan['total'] == 2, tail_plan
+                tail_job = await call(session, 'submit_image_job', submission(tail_plan, 'gif-tail'))
+                assert (await terminal(session, 'job', tail_job['job_id']))['state'] == 'succeeded'
+                assert sorted(p.name for p in outputs.glob('long-frame-*.png')) == [
+                    'long-frame-0064.png', 'long-frame-0065.png']
+                gif_args = dict(input=str(gif), output_directory=str(outputs), first_frame=1)
+                for invalid_range in (dict(first_frame=-1), dict(frame_count=0), dict(frame_count=65),
+                                      dict(frame_count=4), dict(input=str(sources[0]), first_frame=0)):
+                    rejected = await session.call_tool('plan_gif_frames', dict(gif_args, **invalid_range))
+                    assert rejected.isError, rejected
+                outside = await call(session, 'plan_gif_frames', dict(gif_args, first_frame=4))
+                assert 'error' in outside, outside
+                queued = await call(session, 'plan_gif_frames', gif_args)
+                prepared = await terminal(session, 'plan', queued['plan_id'])
+                assert prepared['state'] == 'ready' and prepared['total'] == 3, prepared
+                assert not list(outputs.glob('动画-frame-*.png'))
+                submit = await call(session, 'submit_image_job', submission(prepared, 'gif-composition'))
+                done = await terminal(session, 'job', submit['job_id'])
+                assert done['state'] == 'succeeded', done
+                for i, expected_pixel in enumerate(([15, 210, 50, 255], [15, 210, 50, 255], [0, 0, 0, 0]), 1):
+                    target = outputs / f'动画-frame-{i:04d}.png'
+                    sample = await call(session, 'read_texture_pixel', dict(path=str(gif), x=2, y=2, subresource=i))
+                    assert [c['raw'] for c in sample['channels']] == expected_pixel, sample
+                    subprocess.run([str(args.decoder_python), '-c',
+                        'from PIL import Image; import sys; a=Image.open(sys.argv[1]); a.seek(int(sys.argv[2])); '
+                        'b=Image.open(sys.argv[3]); assert b.mode=="RGBA" and a.size==b.size '
+                        'and a.convert("RGBA").tobytes()==b.tobytes()', str(gif), str(i), str(target)], check=True)
                 pair_directory = inputs / 'pairs'; pair_directory.mkdir()
                 pair_requests = []; pair_manifest = []
                 for source_path, source_info in pair_sources:

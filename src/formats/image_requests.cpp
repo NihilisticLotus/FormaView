@@ -365,6 +365,7 @@ QJsonObject image_capabilities() {
       {"read_formats", reads},
       {"read_extensions", extensions},
       {"write_targets", writes},
+      {"gif_frame_export", reads.contains("gif") && writes.contains("png")},
 #ifdef FORMAVIEW_MODEL_EXPORT
       {"model_export", model_export::capabilities()},
 #endif
@@ -378,7 +379,7 @@ QJsonObject image_capabilities() {
       {"limitations",
        QJsonArray{
            "Per-file decoding and conversion compatibility require preflight",
-           "GIF: first static frame only; ICO: explicitly selected entry",
+           "Animated GIF: selected composited canvas frame; ICO: selected entry",
            "BMP includes validated bare DIB variants",
            "EXR: no deep or subsampled channels; tiled level zero only",
            "One selected subresource per output; no generated mip chains, "
@@ -473,8 +474,7 @@ QJsonObject execute_image_request(
                               static_cast<std::size_t>(offset) + limit);
     for (std::size_t i = offset; i < end; ++i) {
       const auto &s = description.subresources[i];
-      resources.append(
-          QJsonObject{{"index", static_cast<qint64>(i)},
+      QJsonObject resource{{"index", static_cast<qint64>(i)},
                       {"part", static_cast<qint64>(s.part)},
                       {"part_name", QString::fromStdString(s.part_name)},
                       {"mip", static_cast<qint64>(s.mip)},
@@ -482,11 +482,15 @@ QJsonObject execute_image_request(
                       {"cube_face", static_cast<qint64>(s.cube_face)},
                       {"depth_slice", static_cast<qint64>(s.depth_slice)},
                       {"data_window", window(s.data_window)},
-                      {"display_window", window(s.display_window)}});
+                      {"display_window", window(s.display_window)}};
+      const auto &properties = description.source.properties;
+      if (auto delay = properties.find(s.part_name + ".playback_delay_ms"); delay != properties.end())
+        resource["playback_delay_ms"] = QString::fromStdString(delay->second).toInt();
+      resources.append(resource);
     }
     QJsonObject props;
     for (const auto &[key, value] : description.source.properties)
-      if (!key.ends_with("icc_base64") && !key.ends_with("icc_hex"))
+      if (!key.ends_with("icc_base64") && !key.ends_with("icc_hex") && !key.ends_with(".playback_delay_ms"))
         props[QString::fromStdString(key)] = QString::fromStdString(value);
     return {
         {"version", 1},
