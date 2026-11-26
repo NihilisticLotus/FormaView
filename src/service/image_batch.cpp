@@ -154,7 +154,7 @@ void validate_export_item(const QJsonObject &request) {
 }
 
 QString export_filename(const QString &input, qsizetype index, const QString &extension,
-                        const QString &pattern, const QString &clip) {
+                        const QString &pattern, const QString &clip, const QString &channel) {
   static const QRegularExpression tokens(QStringLiteral(R"(\{[^{}]*\}|[{}])"));
   static const QRegularExpression invalid(QStringLiteral(R"re([/\\:*?"<>|\x00-\x1f])re"));
   static const QRegularExpression device(QStringLiteral(R"(^(CON|PRN|AUX|NUL|(?:COM|LPT)[0-9¹²³]) *(?:\.|$))"),
@@ -169,17 +169,19 @@ QString export_filename(const QString &input, qsizetype index, const QString &ex
     if (token == u"{name}") result += QFileInfo(input).completeBaseName();
     else if (token == u"{index}") result += QString::number(index + 1);
     else if (token == u"{ext}") result += extension;
-    else if (token == u"{clip}") {
-      if (clip.isEmpty())
+    else if (token == u"{clip}" || token == u"{channel}") {
+      if (token == u"{clip}" && clip.isEmpty())
         fail(ErrorCode::InvalidArgument, "{clip} needs one selected animation per output; use {name} or {index} for multiple stacks");
-      QString label = clip;
+      if (token == u"{channel}" && channel.isEmpty())
+        fail(ErrorCode::InvalidArgument, "{channel} needs one selected channel per output");
+      QString label = token == u"{clip}" ? clip : channel;
       label.replace(invalid, "_").replace('{', '_').replace('}', '_');
       while (label.endsWith('.') || label.endsWith(' ')) label.chop(1);
-      if (label.isEmpty()) label = "clip";
+      if (label.isEmpty()) label = token == u"{clip}" ? "clip" : "channel";
       if (device.match(label).hasMatch()) label.prepend('_');
       result += label;
     } else {
-      fail(ErrorCode::InvalidArgument, "Output template must be a filename using {name}, {index}, {ext} or {clip}");
+      fail(ErrorCode::InvalidArgument, "Output template must be a filename using {name}, {index}, {ext}, {clip} or {channel}");
     }
     if (result.size() > 255) fail(ErrorCode::InvalidArgument, "Output template must be a filename of at most 255 characters");
     cursor = match.capturedEnd();
@@ -850,9 +852,10 @@ struct ImageBatchService::Impl {
       QJsonArray names;
       for (const auto &value : items) {
         const auto item = value.toObject();
-        fields(item, {"input", "clip"});
+        fields(item, {"input", "clip", "channel"});
         const auto name = export_filename(text(item, "input"), names.size(), extension, pattern,
-                                          item.contains("clip") ? text(item, "clip") : QString{});
+                                          item.contains("clip") ? text(item, "clip") : QString{},
+                                          item.contains("channel") ? text(item, "channel") : QString{});
         if (QFileInfo(name).suffix().compare(extension, Qt::CaseInsensitive) != 0)
           fail(ErrorCode::InvalidArgument, "Output filename must use the requested extension");
         names.append(name);

@@ -242,6 +242,9 @@ async def get_image_capabilities(source_extension: str | None = None) -> dict[st
     result = {'source_extension': ext, 'kind': 'unsupported', 'output_formats': []}
     if '.' + ext in caps.get('read_extensions', []):
         result.update(kind='image', output_formats=caps['write_targets'])
+        if batch_enabled:
+            result['channel_export'] = {'tool': 'plan_image_channels',
+                                        'output_formats': [t for t in ('png', 'tiff', 'exr') if t in caps['write_targets']]}
         if batch_enabled and ext in ('dds', 'exr', 'tif', 'tiff', 'ico', 'gif'):
             result['subresource_export'] = {'tool': 'plan_image_subresources', 'max_outputs_per_plan': plan_limit}
         if batch_enabled and ext == 'gif' and caps.get('gif_frame_export'):
@@ -347,13 +350,14 @@ def batch_destinations(inputs, output_directory, extension, conflict, name_templ
     return outputs
 
 
-async def batch_plan(items, name_template, extension, clip_names=None):
+async def batch_plan(items, name_template, extension, clip_names=None, channel_names=None):
     if name_template is not None:
         labels = [{'input': item['input']} for item in items]
-        if clip_names is not None:
-            for label, clip in zip(labels, clip_names, strict=True):
-                if clip is not None:
-                    label['clip'] = clip
+        for field, values in (('clip', clip_names), ('channel', channel_names)):
+            if values is not None:
+                for label, value in zip(labels, values, strict=True):
+                    if value is not None:
+                        label[field] = value
         result = await native_request(dict(version=1, operation='format_export_names',
                                            pattern=name_template, extension=extension, items=labels))
         if 'error' in result:
@@ -518,6 +522,60 @@ class SubresourceFilter(BaseModel):
     cube_face: int | None = Field(default=None, ge=0, le=5)
     depth_slice: int | None = Field(default=None, ge=0)
     part_name: str | None = None
+
+
+def filename_part(value, fallback):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value)[:48].strip(' .') or fallback
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_image_channels(
+    input: str, output_directory: str, output_extension: str = 'png',
+    channel_names: list[str] | None = None, subresource: int = 0,
+    output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
+    quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
+    window: Literal['preserve', 'selected_data'] = 'preserve',
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+    name_template: str | None = None,
+) -> dict[str, Any]:
+    """Export each selected image channel to its own file in one reviewed plan.
+
+    Use the exact case-sensitive names from inspect_image, or omit channel_names for all
+    channels of the selected subresource. PNG/TIFF store one grayscale plane. EXR retains
+    its original channel name. Samples are treated as data (including alpha); colour profiles
+    are dropped. Native preflight checks the scalar, quantization and window policy.
+    Default filenames include the source channel index and a safe channel label.
+    name_template accepts {name}, {index} (1-based output order), {channel} and {ext}.
+    """
+    source, directory = Path(input), Path(output_directory)
+    if not source.is_absolute() or not directory.is_absolute() or subresource < 0:
+        raise ValueError('Choose absolute paths and a non-negative subresource index.')
+    extension = output_extension.strip().lower().removeprefix('.')
+    if extension not in ('png', 'tif', 'tiff', 'exr'):
+        raise ValueError('Choose PNG, TIFF or EXR for single-channel output.')
+    info = await inspect_image(input, subresource, offset=subresource, limit=1)
+    if 'error' in info:
+        return info
+    if 'selected_channels' not in info:
+        raise ValueError('Channel export requires an image input.')
+    indices = {channel['name']: index for index, channel in enumerate(info['selected_channels'])}
+    selected = list(indices) if channel_names is None else channel_names
+    if not selected or len(set(selected)) != len(selected) or any(name not in indices for name in selected):
+        raise ValueError('Choose distinct channel names from the selected subresource.')
+    target = 'tiff' if extension == 'tif' else extension
+    stem = filename_part(source.stem, 'image')
+    if info['total'] > 1:
+        stem += f'-entry-{subresource:04d}'
+    items = []
+    for name in selected:
+        label = filename_part(name, 'channel')
+        output = directory / f'{stem}-ch{indices[name]:03d}-{label}.{extension}'
+        options = {'channels': [{'source': name, 'destination': name if target == 'exr' else 'Y'}],
+                   'meaning': 'data', 'metadata': 'drop', 'window': window}
+        action = 'drop' if 'A' in indices and name != 'A' else 'preserve'
+        items.append(image_plan_item(info, input, str(output), target, subresource, action, None,
+                                     False, 90, output_scalar, quantization, conflict, options))
+    return await batch_plan(items, name_template, extension, channel_names=selected)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
@@ -780,17 +838,14 @@ async def plan_fbx_clips(
         raise ValueError('Select between 1 and 4096 source clips per plan.')
     if clip_ids is not None and (len(selected) != len(clip_ids) or selected.difference(c['id'] for c in clips)):
         raise ValueError('Use distinct clip IDs from inspect_model.')
-    def filename_part(value):
-        return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value)[:48].strip(' .') or 'clip'
-
-    source = filename_part(Path(input).stem)
+    source = filename_part(Path(input).stem, 'clip')
     base = fbx_options(input, output_axes, output_unit, include_mesh, animation, reference, pairing_policy, companion)
     items = []
     clip_names = []
     for index, clip in enumerate(clips, 1):
         if clip['id'] in selected:
             clip_names.append(clip['name'] or 'clip')
-            name = f"{source}-{index:02d}-{filename_part(clip['name'])}.fbx"
+            name = f"{source}-{index:02d}-{filename_part(clip['name'], 'clip')}.fbx"
             items.append({'input': input, 'output': str(directory / name), 'conflict': conflict,
                           'options': dict(base, clip_id=clip['id'])})
     return await batch_plan(items, name_template, 'fbx', clip_names)

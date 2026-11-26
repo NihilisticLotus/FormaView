@@ -6,9 +6,9 @@
 namespace formaview::imaging {
 inline constexpr qsizetype max_endpoint_plan_items = 4096;
 void validate_export_item(const QJsonObject &item);
-// Expand one filename in output order. Clip labels are asset metadata.
+// Expand one filename in output order. Clip and channel labels are asset metadata.
 QString export_filename(const QString &input, qsizetype index, const QString &extension,
-                        const QString &pattern, const QString &clip = {});
+                        const QString &pattern, const QString &clip = {}, const QString &channel = {});
 // Summarize one complete in-memory job snapshot, before item pagination.
 QJsonObject export_job_progress(const QJsonObject &job);
 QJsonObject export_plan_summary(const QJsonObject &plan);

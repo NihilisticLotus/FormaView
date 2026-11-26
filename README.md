@@ -250,6 +250,7 @@ flowchart LR
 | `discover_export_sources` | 在授权目录按 `image`、`model` 或 `all` 查找可转换文件。可递归查找；用 `get_image_discovery` 分页读取绝对路径和类别 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `plan_image_batch` | 把选中的 1–4096 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
+| `plan_image_channels` | 将选定通道分别导出为单通道文件。PNG、TIFF 使用灰度通道，EXR 保留源通道名。可指定帧、mip 或部件对应的子资源索引 |
 | `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 4096 帧。输出保留完整画布和透明区域 |
 | `plan_image_subresources` | 将一张图片的多个子资源分别写为独立文件。可按索引选择，也可按 DDS 的 mip、数组层、立方体面、深度切片或 EXR 部件名筛选，最多 4096 项 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
@@ -285,6 +286,8 @@ FBX 可使用 `{clip}`。拆分动画时填入实际片段名，片段名中的�
 例如，从 DDS 立方体数组中取第二个立方体的六个最高分辨率面，向 `plan_image_subresources` 传入 `match={"array_layer":1,"mip":0}`。提取多部件 EXR 的深度时可传 `match={"part_name":"depth"}`；输出为 EXR 并选 `output_scalar="float32"` 可保留浮点深度。用 `inspect_image` 查看当前文件的索引、部件名称和窗口。文件名中的 `entry-0000` 等编号对应源索引。
 
 导出工具均先返回 `plan_id`。用 `get_image_plan` 等待预检结束并核对每项输出与损失，确认后用 `submit_image_job` 提交该计划的审批摘要和幂等键。最后从 `get_image_job` 读取实际写入路径、SHA-256 及模型的输出坐标信息。
+
+要把透明度单独存成遮罩，向 `plan_image_channels` 传入源文件、输出目录、`channel_names=["A"]` 和 `name_template="{name}-{channel}.{ext}"` 即可。省略通道列表会拆出所选子资源的全部通道。浮点深度可选 `output_extension="exr"` 保留负值和大于 1 的数值。拆分按数据样本读取，输出舍弃源色彩配置文件；预检会列出每个文件省略的通道和配置文件。
 
 确认前可用 `get_image_plan(plan_id, summary_only=true)` 查看整批预检结果。`planned_outputs` 统计预计新建、改名新建、跳过和覆盖的项数；`items_with_losses` 是涉及损失的项数，`losses_by_code` 和 `errors_by_code` 按原因计数。每类结果的 `first_index` 可直接作为 `offset`，配合 `limit=1` 查看对应文件和原因。同一项可以有多种损失。预检期间统计会逐步更新，只有计划就绪后才可确认。
 

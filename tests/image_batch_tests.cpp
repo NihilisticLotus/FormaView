@@ -567,6 +567,8 @@ int main(int argc, char **argv) {
             "3-source{index}-rig_take.fbx", "Expand tokens once and sanitize clip metadata");
     require(export_filename("source.glb", 0, "fbx", "{clip}.{ext}", "CON") == "_CON.fbx",
             "A reserved clip name must remain exportable");
+    require(export_filename("depth.exr", 1, "exr", "{index}-{channel}.{ext}", {}, "CON.{index}/Z") ==
+            "2-_CON._index__Z.exr", "Channel metadata cannot introduce devices, separators or template expansion");
     require(app.arguments().size() == 2, "External test root required");
     run(std::filesystem::path(app.arguments()[1].toStdWString()));
     std::cout << "batch ownership, strict requests, commit-gap recovery and "

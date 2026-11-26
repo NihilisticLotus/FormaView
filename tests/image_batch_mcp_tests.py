@@ -123,7 +123,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources', 'set_export_job_paused'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_image_channels', 'plan_image_subresources', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources', 'set_export_job_paused'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert capabilities['max_export_plan_items'] == 4096
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
@@ -369,6 +369,66 @@ for path, channel, value, width, height, x, display_width in json.loads(sys.argv
                         'b=Image.open(sys.argv[3]); assert b.mode=="RGBA" and a.size==b.size '
                         'and a.convert("RGBA").tobytes()==b.tobytes()', str(gif), str(i), str(target)], check=True)
                 pair_directory = inputs / 'pairs'; pair_directory.mkdir()
+                planes = outputs / 'channel-planes'; planes.mkdir()
+                plane_args = dict(input=str(sources[0]), output_directory=str(planes))
+                assert gif_caps['channel_export']['output_formats'] == ['png', 'tiff', 'exr']
+                for invalid in (dict(channel_names=[]), dict(channel_names=['R', 'R']),
+                                dict(channel_names=['r']), dict(output_extension='jpg')):
+                    assert (await session.call_tool('plan_image_channels', dict(plane_args, **invalid))).isError
+
+                async def split_planes(arguments, key):
+                    created = await call(session, 'plan_image_channels', arguments)
+                    ready = await terminal(session, 'plan', created['plan_id'])
+                    assert ready['state'] == 'ready', ready
+                    paths = [Path(row['preflight']['output']) for row in ready['items']]
+                    assert len(set(paths)) == len(paths) and not any(path.exists() for path in paths)
+                    denied = await call(session, 'submit_image_job', dict(submission(ready, key), acknowledge_losses=False))
+                    assert 'error' in denied and not any(path.exists() for path in paths)
+                    accepted = await call(session, 'submit_image_job', submission(ready, key))
+                    assert (await terminal(session, 'job', accepted['job_id']))['state'] == 'succeeded'
+                    return paths
+
+                rgba_paths = await split_planes(plane_args, 'split-rgba')
+                assert len(rgba_paths) == 4
+                selected_tiff = await split_planes(dict(plane_args, channel_names=['A', 'G'],
+                                                    output_extension='tif', name_template='mask-{channel}.{ext}'), 'split-ag')
+                assert [p.name for p in selected_tiff] == ['mask-A.tif', 'mask-G.tif']
+                raster_oracle = """from PIL import Image
+import sys
+source = Image.open(sys.argv[1]).convert('RGBA')
+for channel, path in zip(sys.argv[2], sys.argv[3:], strict=True):
+    plane = Image.open(path)
+    assert plane.mode == 'L' and plane.size == source.size and plane.tobytes() == source.getchannel(channel).tobytes()
+"""
+                subprocess.run([str(args.decoder_python), '-c', raster_oracle, str(sources[0]), 'RGBAAG',
+                                *map(str, rgba_paths + selected_tiff)], check=True)
+                gif_alpha, = await split_planes(dict(plane_args, input=str(gif), channel_names=['A'], subresource=1),
+                                                'split-gif-alpha')
+                assert '-entry-0001-' in gif_alpha.name
+                subprocess.run([str(args.decoder_python), '-c', """from PIL import Image
+import sys
+frame = Image.open(sys.argv[1]); frame.seek(1)
+assert Image.open(sys.argv[2]).tobytes() == frame.convert('RGBA').getchannel('A').tobytes()
+""", str(gif), str(gif_alpha)], check=True)
+                custom = inputs / 'depth.exr'
+                subprocess.run([str(args.decoder_python), '-c', """import OpenEXR, numpy as np, sys
+a = np.array([[-2.5, 0], [1.25, 10000]], dtype='float32')
+OpenEXR.File({}, {'depth/Z': a, 'depth:Z': a + 7}).write(sys.argv[1])""", str(custom)], check=True)
+                names = ['depth:Z', 'depth/Z']
+                collision_args = dict(plane_args, input=str(custom), output_extension='exr', channel_names=names)
+                assert (await session.call_tool('plan_image_channels', dict(collision_args, name_template='{channel}.{ext}'))).isError
+                depth_paths = await split_planes(dict(plane_args, input=str(custom), output_extension='exr',
+                                                       channel_names=names), 'split-depth')
+                assert all(path.parent == planes and path.name.endswith('depth_Z.exr') for path in depth_paths)
+                rejected = await call(session, 'plan_image_channels', dict(plane_args, input=str(custom), channel_names=names))
+                assert (await terminal(session, 'plan', rejected['plan_id']))['state'] != 'ready'
+                subprocess.run([str(args.decoder_python), '-c', """import OpenEXR, numpy as np, sys
+source = OpenEXR.File(sys.argv[1], separate_channels=True).channels()
+for name, path in zip(sys.argv[2:4], sys.argv[4:], strict=True):
+    output = OpenEXR.File(path, separate_channels=True).channels()
+    assert list(output) == [name]
+    np.testing.assert_array_equal(output[name].pixels, source[name].pixels)
+""", str(custom), *names, *map(str, depth_paths)], check=True)
                 encoded = outputs / 'encoder-options'; encoded.mkdir()
                 conversions = {
                     'png': dict(alpha_action='composite', output_scalar='uint8', quantization='clamp_round',
