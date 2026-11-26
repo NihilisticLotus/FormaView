@@ -302,6 +302,47 @@ async def get_image_discovery(discovery_id: str, offset: int = 0, limit: int = 1
     return await native_request({'version': 1, 'operation': 'get_discovery', 'id': discovery_id, 'offset': offset, 'limit': limit})
 
 
+def image_target(suffix, capabilities):
+    target = {'jpg': 'jpeg', 'jpe': 'jpeg', 'jfif': 'jpeg', 'tif': 'tiff',
+              'rgbe': 'hdr'}.get(suffix, suffix)
+    if target not in capabilities['write_targets']:
+        raise ValueError('Choose an output extension for one of: ' + ', '.join(capabilities['write_targets']))
+    return target
+
+
+def batch_destinations(inputs, output_directory, extension):
+    directory = Path(output_directory)
+    if not 1 <= len(inputs) <= 64:
+        raise ValueError('Select between 1 and 64 input files per plan.')
+    if not directory.is_absolute() or not all(Path(path).is_absolute() for path in inputs):
+        raise ValueError('Choose absolute input paths and an absolute output directory.')
+    outputs = [directory / (Path(path).stem + '.' + extension) for path in inputs]
+    if len(set(outputs)) != len(inputs):
+        raise ValueError('Inputs map to the same output name. Use create_image_plan with distinct output paths.')
+    return outputs
+
+
+async def image_plan_item(input, output, target, subresource, alpha_action, source_alpha,
+                          allow_lossy, quality, output_scalar, quantization, conflict):
+    info = await inspect_image(input, subresource, limit=1)
+    if 'error' in info:
+        return info
+    if 'selected_channels' not in info:
+        raise ValueError('Expected an image input. Use plan_fbx_export for models.')
+    names = [channel['name'] for channel in info['selected_channels']]
+    options = {'target': target, 'subresource': subresource,
+               'source_alpha': (source_alpha or info['alpha']) if 'A' in names else info['alpha'],
+               'channels': [{'source': name, 'destination': name} for name in names
+                            if name != 'A' or alpha_action == 'preserve'],
+               'alpha_action': alpha_action, 'allow_lossy': allow_lossy,
+               'quality': quality, 'quantization': quantization}
+    if 'A' in names:
+        options['alpha_channel'] = 'A'
+    if output_scalar is not None:
+        options['output_scalar'] = output_scalar
+    return {'input': input, 'output': output, 'options': options, 'conflict': conflict}
+
+
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
 async def plan_image_conversion(
     input: str, output: str, subresource: int = 0,
@@ -319,30 +360,46 @@ async def plan_image_conversion(
     specify source_alpha from its provenance. For custom channel mappings, DDS
     encoding or compositing use create_image_plan. Review via get_image_plan.
     """
-    suffix = Path(output).suffix.lower().removeprefix('.')
-    target = {'jpg': 'jpeg', 'jpe': 'jpeg', 'jfif': 'jpeg', 'tif': 'tiff',
-              'rgbe': 'hdr'}.get(suffix, suffix)
     caps = await get_image_capabilities()
     if 'error' in caps:
         return caps
-    if target not in caps['write_targets']:
-        raise ValueError('Choose an output extension for one of: ' + ', '.join(caps['write_targets']))
-    info = await inspect_image(input, subresource, limit=1)
-    if 'error' in info:
-        return info
-    if 'selected_channels' not in info:
-        raise ValueError('Expected an image input. Use plan_fbx_export for models.')
-    names = [channel['name'] for channel in info['selected_channels']]
-    options = {'target': target, 'subresource': subresource, 'source_alpha': source_alpha or info['alpha'],
-               'channels': [{'source': name, 'destination': name} for name in names
-                            if name != 'A' or alpha_action == 'preserve'],
-               'alpha_action': alpha_action, 'allow_lossy': allow_lossy,
-               'quality': quality, 'quantization': quantization}
-    if 'A' in names:
-        options['alpha_channel'] = 'A'
-    if output_scalar is not None:
-        options['output_scalar'] = output_scalar
-    return await create_image_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
+    target = image_target(Path(output).suffix.lower().removeprefix('.'), caps)
+    item = await image_plan_item(input, output, target, subresource,
+                                 alpha_action, source_alpha, allow_lossy, quality, output_scalar, quantization, conflict)
+    return item if 'error' in item else await create_image_plan([item])
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_image_batch(
+    inputs: list[str], output_directory: str, output_extension: str,
+    subresource: int = 0, alpha_action: Literal['preserve', 'drop'] = 'preserve',
+    source_alpha: Literal['straight', 'premultiplied'] | None = None,
+    allow_lossy: bool = False, quality: int = 90,
+    output_scalar: Literal['uint8', 'uint16', 'half', 'float32'] | None = None,
+    quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Preflight 1–64 selected images in one plan, using each image's actual channels.
+
+    Pass absolute input paths (e.g. selected from get_image_discovery), an existing
+    authorized output directory and a target extension such as .tif. Outputs keep
+    their input stems. For duplicate stems use create_image_plan with explicit names.
+    No outputs are written until the reviewed plan is submitted via submit_image_job.
+    """
+    caps = await get_image_capabilities()
+    if 'error' in caps:
+        return caps
+    extension = output_extension.strip().lower().removeprefix('.')
+    target = image_target(extension, caps)
+    destinations = batch_destinations(inputs, output_directory, extension)
+    items = []
+    for path, destination in zip(inputs, destinations):
+        item = await image_plan_item(path, str(destination), target, subresource, alpha_action, source_alpha,
+                                     allow_lossy, quality, output_scalar, quantization, conflict)
+        if 'error' in item:
+            return dict(item, input=path)
+        items.append(item)
+    return await create_image_plan(items)
 
 
 FbxAxes = Literal['source', 'maya', 'houdini', 'unreal', '3ds-max', 'cinema4d', 'blender', 'unity']
@@ -384,6 +441,40 @@ async def plan_fbx_export(
     if abc_sample is not None:
         options['abc_sample'] = abc_sample
     return await create_model_export_plan([{'input': input, 'output': output, 'options': options, 'conflict': conflict}])
+
+
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def plan_fbx_batch(
+    inputs: list[str], output_directory: str, output_axes: FbxAxes = 'source', output_unit: FbxUnit = 'source',
+    include_animations: bool = True, abc_sample: int | None = None,
+    conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
+) -> dict[str, Any]:
+    """Preflight one FBX per selected source, using a shared coordinate preset and unit.
+
+    Includes meshes and, by default, every embedded animation as a separate stack.
+    For ABC inputs specify the zero-based sample to bake as static geometry.
+    Use plan_fbx_export for paired animations, selected clip IDs or animation-only output.
+    The native plan reports format-specific losses and dependencies before approval.
+    """
+    destinations = batch_destinations(inputs, output_directory, 'fbx')
+    has_abc = any(Path(path).suffix.lower() == '.abc' for path in inputs)
+    if has_abc != (abc_sample is not None) or (has_abc and abc_sample < 0):
+        raise ValueError('Specify a non-negative abc_sample only when the selection contains an ABC file.')
+    items = []
+    for path, output in zip(inputs, destinations):
+        options = fbx_options(path, output_axes, output_unit, True, None, None)
+        if Path(path).suffix.lower() == '.abc':
+            options['abc_sample'] = abc_sample
+        elif include_animations:
+            inventory = await inspect_model(path)
+            if 'error' in inventory:
+                return dict(inventory, input=path)
+            if 'clips' not in inventory:
+                raise ValueError('Expected a model or animation input: ' + path)
+            if inventory['clips']:
+                options['clip_ids'] = [clip['id'] for clip in inventory['clips']]
+        items.append({'input': path, 'output': str(output), 'options': options, 'conflict': conflict})
+    return await create_model_export_plan(items)
 
 
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))

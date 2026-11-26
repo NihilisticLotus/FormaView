@@ -248,15 +248,19 @@ flowchart LR
 | `preflight_image`、`convert_image` | 单文件模式下预检并执行一次图片转换 |
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
+| `plan_image_batch` | 把选中的 1–64 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
 | `create_image_plan`、`get_image_plan` | 创建批量预检计划并查看输入快照、输出路径和损失 |
 | `submit_image_job`、`get_image_job`、`list_image_jobs` | 提交并跟踪批量任务 |
 | `cancel_image_work`、`retry_image_plan` | 请求取消任务或为未完成项目建立新的预检计划 |
 | `inspect_model` | 检查模型结构与稳定动画片段 ID |
 | `plan_fbx_export` | 为一个 FBX 设置输出坐标系、单位、网格、动画片段或 Alembic 采样帧，生成导出计划 |
+| `plan_fbx_batch` | 将选中的 1–64 个模型分别导出为 FBX，统一指定坐标系和单位。默认保留网格和内嵌动作，可用 `include_animations=false` 仅导出模型。含 ABC 时需指定静态采样帧 `abc_sample` |
 | `plan_fbx_clips` | 按动画片段拆分 FBX。指定模型和授权输出目录即可为全部片段准备一批文件，也可用 `clip_ids` 选择其中一部分。每批最多 64 项，文件名带源片段序号，默认跳过已有文件 |
 | `create_model_export_plan` | 创建模型/动画 FBX 导出的批量预检计划 |
 
 例如，将透明 PNG 转成 TIFF 时，调用 `plan_image_conversion` 并提供授权范围内的输入路径和以 `.tif` 结尾的输出路径即可。转成 JPEG 并舍弃透明度时，使用 `.jpg` 后缀，显式传入 `alpha_action="drop"` 和 `allow_lossy=true`。选定的子资源默认为第 0 项。需要自定义通道映射或合成背景色时可使用 `create_image_plan`。
+
+要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。若两个输入映射到同一个输出名，请用 `create_image_plan` 分别命名。预检结束后可在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
 
 将带动画的 GLB 导出给 Unreal 时，先用 `inspect_model` 取得所需片段的 ID，再向 `plan_fbx_export` 传入 `clip_ids`、`output_axes="unreal"`、`output_unit="cm"` 和目标 FBX 路径。多个片段会写成同一文件中的独立动画栈。省略坐标系和单位时沿用源约定。ABC 可用 `abc_sample` 选择一个从 0 起算的采样帧，导出该帧的静态网格。
 

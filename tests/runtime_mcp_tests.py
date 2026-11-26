@@ -109,7 +109,8 @@ async def main():
                 await client.initialize()
                 tools = {t.name for t in (await client.list_tools()).tools}
                 for name in ('get_image_capabilities', 'inspect_image', 'inspect_model', 'create_image_plan', 'create_model_export_plan',
-                             'submit_image_job', 'get_image_job', 'cancel_image_work', 'retry_image_plan', 'discover_images'):
+                             'submit_image_job', 'get_image_job', 'cancel_image_work', 'retry_image_plan', 'discover_images',
+                             'plan_image_batch', 'plan_fbx_batch'):
                     assert name in tools, name
 
                 async def call(tool, **kwargs):

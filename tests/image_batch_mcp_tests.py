@@ -119,7 +119,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_fbx_export', 'plan_fbx_clips'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})
@@ -208,6 +208,30 @@ async def main():
                         pair_manifest.append({'input': str(source_path.resolve()), 'output': str(destination.resolve()),
                             'target': target, 'drop_alpha': drop_alpha})
                 assert len(pair_requests) == 99
+                batch_args = dict(inputs=[str(sources[0]), str(inputs / 'converted.jpeg')],
+                                  output_directory=str(outputs), output_extension='.TIF')
+                for invalid_inputs in ([], [str(sources[0])] * 65, [str(sources[0]), str(nested / sources[0].name)]):
+                    rejected = await session.call_tool('plan_image_batch', dict(batch_args, inputs=invalid_inputs))
+                    assert rejected.isError, rejected
+                outside = str(args.output / 'outside.png')
+                rejected = await call(session, 'plan_image_batch', dict(batch_args, inputs=[str(sources[0]), outside]))
+                assert rejected['error']['code'] == 'out_of_scope' and rejected['input'] == outside, rejected
+                queued = await call(session, 'plan_image_batch', batch_args)
+                prepared = await terminal(session, 'plan', queued['plan_id'])
+                assert prepared['state'] == 'ready' and prepared['total'] == 2, prepared
+                results = [outputs / (Path(path).stem + '.tif') for path in batch_args['inputs']]
+                for item_row, output, names in zip(prepared['items'], results, ('RGBA', 'RGB'), strict=True):
+                    request = item_row['request']
+                    assert Path(request['output']) == output and not output.exists()
+                    assert [m['source'] for m in request['options']['channels']] == list(names)
+                submitted = await call(session, 'submit_image_job', submission(prepared, 'mixed-layout-tiffs'))
+                completed = await terminal(session, 'job', submitted['job_id'])
+                assert completed['state'] == 'succeeded', completed
+                for source, output, row in zip(batch_args['inputs'], results, completed['items'], strict=True):
+                    assert hashlib.sha256(output.read_bytes()).hexdigest() == row['result']['output_sha256']
+                    subprocess.run([str(args.decoder_python), '-c',
+                        'from PIL import Image; import sys; a,b=[Image.open(p).convert("RGBA") for p in sys.argv[1:]]; '
+                        'assert a.size==b.size and a.tobytes()==b.tobytes()', source, str(output)], check=True)
                 for offset in range(0, len(pair_requests), 64):
                     paired = await plan(session, pair_requests[offset:offset + 64])
                     paired_submit = await call(session, 'submit_image_job', submission(paired, f'pairs-{offset}'))

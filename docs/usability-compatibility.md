@@ -104,6 +104,15 @@ Windows 开发包自带独立 stdio 程序。软件设置中的 MCP 开关同时
 
 桌面回归 `mcpSwitchReconnect` 实际点击开关，使用内置适配器完成 MCP 握手和能力查询，验证关闭后请求返回错误，再次开启后同一客户端通过新端点成功查询。客户端首次注册和从旧版固定管道配置迁移均只需复制一次；独立后台模式仍按自己的客户端配置启动。
 
+## MCP 批量转换验收（Windows x64，2026-11-26）
+
+通过 stdio 客户端和本地任务服务实测了以下导出流程。
+
+- 图片批量预检将 RGBA PNG 和 RGB JPEG 分别映射为四通道和三通道 TIFF。提交前目标目录未出现计划文件，提交后使用 Pillow 回读，尺寸和像素均与各自输入一致。空列表、超过 64 项、同名目标及越界输入均已覆盖。底层 11 类输入 × 9 个目标格式的 99 组转换也通过了独立回读。
+- 模型批量预检将静态 OBJ 和带多个动画片段的 GLB 分别导出为 Unreal 坐标、厘米单位的 FBX。保留动画和仅导出模型各执行一次，第二次使用重命名冲突策略。FBX 回读验证了网格、单位和动画栈数量。Alembic 另取第 2 号采样（从 0 计），验证了源采样记录和静态网格输出。
+
+可通过 `tests/image_batch_mcp_tests.py` 和 `tests/scene_export_mcp_tests.py` 复测。后者使用 `--abc-fixture` 指定至少含三个采样的多边形缓存。
+
 ## 参考依据
 
 Windows 文件资源管理器使用 Ctrl+W 关闭当前标签。PowerToys Peek 把文件间导航和预览内容内的操作分开。FormaView 已把方向键用于视频跳转、D/F 用于逐帧，本轮将文件切换安排在 Ctrl 组合键上。[Windows 快捷键](https://support.microsoft.com/en-gb/accessibility/windows/keyboard-shortcuts-in-windows) · [PowerToys Peek](https://learn.microsoft.com/windows/powertoys/peek)

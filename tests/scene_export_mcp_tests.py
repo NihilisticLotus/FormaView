@@ -18,6 +18,7 @@ from scene_export_media_tests import external_fbx
 async def main():
     parser=argparse.ArgumentParser()
     for key in ('build','fixtures','adapter','output'):parser.add_argument('--'+key,type=Path,required=True)
+    parser.add_argument('--abc-fixture', type=Path, help='Optional polygon cache with at least three samples')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     fixtures=args.output/'fixtures';shutil.copytree(args.fixtures/'fixtures',fixtures)
     shutil.copyfile(args.fixtures/'glb.fbx',fixtures/'source.fbx')
@@ -93,6 +94,53 @@ async def main():
                 assert abs(back['unit'] - .01) < 1e-8 and len(back['clips']) == len(clips)
 
                 split_dir = args.output / 'split'
+                batch_dir = args.output / 'batch'
+                batch_dir.mkdir()
+                mesh = fixtures / '静态.obj'
+                shutil.copyfile(fixtures / 'source.obj', mesh)
+                batch_args = dict(inputs=[str(mesh), str(glb)], output_directory=str(batch_dir),
+                                  output_axes='unreal', output_unit='cm')
+                for animations in (True, False):
+                    batch = await call('plan_fbx_batch', **batch_args, include_animations=animations,
+                                       conflict='skip' if animations else 'rename')
+                    plan = await terminal('plan', batch['plan_id'])
+                    assert plan['state'] == 'ready' and plan['total'] == 2, plan
+                    if animations:
+                        assert not list(batch_dir.iterdir())
+                    queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                        acknowledge_losses=True, idempotency_key='batch-fbx-' + str(animations))
+                    written = await terminal('job', queued['job_id'])
+                    assert written['state'] == 'succeeded', written
+                    for row, count in zip(written['items'], (0, len(clips) if animations else 0), strict=True):
+                        result = row['result']
+                        output = Path(result['committed_output'])
+                        assert output.parent == batch_dir and result['output_coordinates']['preset'] == 'unreal'
+                        assert hashlib.sha256(output.read_bytes()).hexdigest() == result['output_sha256']
+                        report = args.output / 'batch-readback.json'
+                        subprocess.run([str(args.build/'tests/Release/formaview_scene_export_probe.exe'),
+                                        str(output), str(report)], check=True, timeout=30)
+                        back = json.loads(report.read_text(encoding='utf-8'))
+                        assert back['meshes'] and len(back['clips']) == count and abs(back['unit'] - .01) < 1e-8
+                assert len(list(batch_dir.glob('*.fbx'))) == 4
+                if args.abc_fixture:
+                    cache = fixtures / '采样.abc'
+                    shutil.copyfile(args.abc_fixture, cache)
+                    args_abc = dict(inputs=[str(cache)], output_directory=str(batch_dir))
+                    assert (await client.call_tool('plan_fbx_batch', args_abc)).isError
+                    batch = await call('plan_fbx_batch', **args_abc, abc_sample=2)
+                    plan = await terminal('plan', batch['plan_id'])
+                    assert plan['state'] == 'ready' and not (batch_dir / '采样.fbx').exists(), plan
+                    queued = await call('submit_image_job', plan_id=plan['id'], approval_digest=plan['approval_digest'],
+                                        acknowledge_losses=True, idempotency_key='batch-abc')
+                    written = await terminal('job', queued['job_id'])
+                    assert written['state'] == 'succeeded', written
+                    result = written['items'][0]['result']
+                    assert result['source_metadata']['abc']['sample'] == 2, result
+                    report = args.output / 'abc-batch-readback.json'
+                    subprocess.run([str(args.build/'tests/Release/formaview_scene_export_probe.exe'),
+                                    result['committed_output'], str(report)], check=True, timeout=30)
+                    back = json.loads(report.read_text(encoding='utf-8'))
+                    assert back['meshes'] and not back['clips'], back
                 split_dir.mkdir()
                 arguments = dict(input=str(glb), output_directory=str(split_dir), output_unit='cm')
                 for invalid_ids in ([], ['missing'], [clips[0]['id']] * 2):
