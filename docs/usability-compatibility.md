@@ -130,6 +130,14 @@ Windows 开发包自带独立 stdio 程序。软件设置中的 MCP 开关同时
 
 可通过 `tests/image_batch_mcp_tests.py` 和 `tests/scene_export_mcp_tests.py` 复测。前者可用 `--professional-fixtures` 指向 `formaview_professional_tests image` 生成的 DDS 和 EXR 样本目录，后者用 `--abc-fixture` 指定至少含三个采样的多边形缓存。
 
+### 批量导出保留源目录
+
+图片转换和模型导出 FBX 共用桌面选项「保留源目录结构」。MCP 的 `plan_image_batch` 和 `plan_fbx_batch` 接受 `source_root`。目标路径由输出目录、输入文件相对于源根的目录及命名模板生成的文件名组成。预检只读取已有目录，实际导出才在指定输出根下创建缺少的目录。
+
+Windows x64 回归使用 `角色/材质` 和 `道具/材质` 两个子目录。各放一张 `asset.png` 和一个 `asset.obj`，使用相同命名模板。回读两份 TIFF 得到各自源图的 RGBA 值，独立读取两份 FBX 得到边长分别为 1 和 2 的三角形。四份产物的 SHA-256 分别与任务回执相符。重复预检对已存在的两份同类文件报告跳过。平铺模式使用相同模板时会提示重名，选择未包含全部输入的源根时会拒绝创建计划。
+
+用 `tests/export_tree_mcp_tests.py <运行目录> <formaview_scene_export_probe.exe> <新建验证目录>` 复测打包适配器、转换服务和回读。桌面用例 `conversionPreservesSourceDirectories` 覆盖转换页、FBX 直接导出及 OBJ 坐标单位损失确认后的重试。
+
 ## MCP 按时间导出视频帧
 
 `capture_video_frame` 的可选参数 `at_seconds` 以秒计。传入该参数后，播放器暂停、精确定位，再把该位置的画面写入指定 PNG；导出结束时保持暂停。返回值包括请求时间、播放器实际位置、图片宽高和文件 SHA-256。可变帧率视频的两个相邻帧之间可能没有对应画面，调用方应使用返回的实际位置记录导出结果。

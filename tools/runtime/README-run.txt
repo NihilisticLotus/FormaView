@@ -50,6 +50,9 @@ MCP（可选 / optional）
   用 discover_export_sources 在授权目录查找图片或模型，get_image_discovery 分页返回路径和类别。
   两个模型或图片输出名相同时，可用 conflict="rename" 在预检中分配独立文件名。
   批量图片和 FBX、GIF 拆帧、子资源及逐片段导出可用 name_template="{index}-{name}.{ext}" 自定义文件名。
+  图片批量转换和模型导出 FBX 可勾选「保留源目录结构」，再选择所有输入共同的源根目录。
+  MCP 的 plan_image_batch 与 plan_fbx_batch 使用 source_root 指定该目录的绝对路径。
+  例如 A/asset.obj 和 B/asset.obj 可分别输出到 A/asset.fbx 和 B/asset.fbx。预检只核对目标，导出时创建子目录。
   index 是本批输出顺序，从 1 起算。逐片段 FBX 可用 {clip} 写入动作名。省略模板使用各工具原有命名。
   每条请求最多 1 MiB。超过 64 项仍只需确认整份计划一次，按 next_offset 翻页即可检查全部目标。
   用 get_image_plan 核对计划中的目标和损失后提交 submit_image_job，再用 get_image_job 查看实际输出。

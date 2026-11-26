@@ -342,13 +342,24 @@ def image_target(suffix, capabilities):
     return target
 
 
-def batch_destinations(inputs, output_directory, extension, conflict, name_template):
+def batch_destinations(inputs, output_directory, extension, conflict, name_template, source_root):
     directory = Path(output_directory)
     if not 1 <= len(inputs) <= MAX_EXPORT_ITEMS:
         raise ValueError('Select between 1 and 4096 input files per plan.')
     if not directory.is_absolute() or not all(Path(path).is_absolute() for path in inputs):
         raise ValueError('Choose absolute input paths and an absolute output directory.')
-    outputs = [directory / (Path(path).stem + '.' + extension) for path in inputs]
+    root = Path(source_root) if source_root is not None else None
+    if root is not None and (not root.is_absolute() or '..' in root.parts):
+        raise ValueError('Choose an absolute source_root without parent traversal.')
+    outputs = []
+    for value in inputs:
+        path = Path(value)
+        parent = directory
+        if root is not None:
+            if '..' in path.parts or not path.parent.is_relative_to(root):
+                raise ValueError(f'Input is outside the selected source_root: {value}')
+            parent = directory / path.parent.relative_to(root)
+        outputs.append(parent / (path.stem + '.' + extension))
     if name_template is None and len(set(outputs)) != len(inputs) and conflict != 'rename':
         raise ValueError("Inputs map to the same output name. Choose conflict='rename' or specify distinct output paths.")
     return outputs
@@ -537,14 +548,15 @@ async def plan_image_batch(
     quantization: Literal['reject_loss', 'clamp_round'] = 'reject_loss',
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
     settings: ImageExportSettings | None = None,
-    name_template: str | None = None,
+    name_template: str | None = None, source_root: str | None = None,
 ) -> dict[str, Any]:
     """Preflight 1–4096 selected images in one plan, using each image's actual channels.
 
     Pass absolute input paths (e.g. selected from get_image_discovery), an existing
     authorized output directory and a target extension such as .tif. Outputs keep
     their input stems by default. name_template accepts {name}, {index} (1-based) and {ext}.
-    Use {index} or conflict='rename' for duplicate names.
+    Set source_root to preserve relative subdirectories below that input root, including
+    identically named files in different folders. Without it outputs share one directory.
     settings applies the same resize, channel, colour and encoder choices to each
     input. The background applies only to inputs with alpha.
     No outputs are written until the reviewed plan is submitted via submit_image_job.
@@ -554,7 +566,7 @@ async def plan_image_batch(
         return caps
     extension = output_extension.strip().lower().removeprefix('.')
     target = image_target(extension, caps)
-    destinations = batch_destinations(inputs, output_directory, extension, conflict, name_template)
+    destinations = batch_destinations(inputs, output_directory, extension, conflict, name_template, source_root)
     options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     items = []
     for path, destination in zip(inputs, destinations):
@@ -563,6 +575,8 @@ async def plan_image_batch(
                                allow_lossy, quality, output_scalar, quantization, conflict, options)
         if 'error' in item:
             return dict(item, input=path)
+        if source_root is not None:
+            item['output_tree_root'] = output_directory
         items.append(item)
     return await batch_plan(items, name_template, extension)
 
@@ -850,7 +864,7 @@ async def plan_fbx_batch(
     include_animations: bool = True, abc_sample: int | None = None,
     conflict: Literal['skip', 'rename', 'overwrite'] = 'skip',
     reference: str | None = None, pairing_policy: FbxPairing | None = None,
-    name_template: str | None = None,
+    name_template: str | None = None, source_root: str | None = None,
 ) -> dict[str, Any]:
     """Preflight one FBX per selected source, using a shared coordinate preset and unit.
 
@@ -862,8 +876,9 @@ async def plan_fbx_batch(
     Each PSA uses its own same-name .config. Other selected models keep their own skeleton.
     Use plan_fbx_export for an explicit track config, selected clip IDs or animation-only output.
     The native plan reports format-specific losses and dependencies before approval.
+    Set source_root to keep its relative directory structure under the existing output directory.
     """
-    destinations = batch_destinations(inputs, output_directory, 'fbx', conflict, name_template)
+    destinations = batch_destinations(inputs, output_directory, 'fbx', conflict, name_template, source_root)
     has_abc = any(Path(path).suffix.lower() == '.abc' for path in inputs)
     if has_abc != (abc_sample is not None) or (has_abc and abc_sample < 0):
         raise ValueError('Specify a non-negative abc_sample only when the selection contains an ABC file.')
@@ -895,7 +910,10 @@ async def plan_fbx_batch(
                 label = (clips[0]['name'] or 'clip') if len(clips) == 1 else None
                 options['clip_ids'] = [clip['id'] for clip in clips]
         clip_names.append(label)
-        items.append({'input': path, 'output': str(output), 'options': options, 'conflict': conflict})
+        item = {'input': path, 'output': str(output), 'options': options, 'conflict': conflict}
+        if source_root is not None:
+            item['output_tree_root'] = output_directory
+        items.append(item)
     return await batch_plan(items, name_template, 'fbx', clip_names)
 
 

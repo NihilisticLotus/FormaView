@@ -408,17 +408,18 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   const auto conflict = conflict_text == "overwrite" ? ConflictPolicy::Overwrite
                         : conflict_text == "rename"  ? ConflictPolicy::Rename
                                                      : ConflictPolicy::Skip;
+  const std::filesystem::path tree(request.value("output_tree_root").toString().toStdWString());
   const auto output =
       approved_output.empty()
           ? allocate_output(scope, path(request["output"]), input, conflict,
-                            reserved_outputs, stop)
-          : inspect_output(scope, approved_output, input, conflict);
+                            reserved_outputs, stop, tree)
+          : inspect_output(scope, approved_output, input, conflict, tree);
   if (QFileInfo(qpath(output.path)).suffix().toLower() != "fbx")
     fail(ErrorCode::InvalidArgument, "FBX output requires .fbx suffix");
   if (conflict == ConflictPolicy::Rename && output.exists)
     fail(ErrorCode::Conflict, "Approved name is occupied; preflight again");
   for (const auto &s : inputs)
-    (void)inspect_output(scope, output.path, s, conflict);
+    (void)inspect_output(scope, output.path, s, conflict, tree);
   QJsonArray losses, notices;
   actor_losses(source, losses, notices, write.include_mesh);
   if (secondary)
@@ -519,7 +520,7 @@ execute(const QJsonObject &request, const AccessScope &scope, sk::Limits limits,
   }
   result["validation_stage"] = "encoded-and-audited";
   const auto output_hash = QString::fromStdString(sk::sha256(encoded, stop));
-  OutputTransaction transaction(scope, output.path, input, conflict, inputs);
+  OutputTransaction transaction(scope, output.path, input, conflict, inputs, tree);
   auto observe = [&](const OutputIntent &intent) {
     if (commit_observer)
       commit_observer(

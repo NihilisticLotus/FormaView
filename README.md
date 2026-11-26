@@ -273,6 +273,10 @@ flowchart LR
 
 要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。图片和 FBX 批量导出都支持 `conflict="rename"`。例如，同目录的 `source.obj` 和 `source.glb` 可一起导出为两个 FBX，预检会为每项分配独立文件名。在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
 
+桌面转换页的「保留源目录结构」适用于图片转换和模型导出 FBX。选择包含全部输入的源根目录和已有的输出目录。例如，将源目录下的 `角色/材质/asset.png` 和 `道具/材质/asset.png` 转为 TIFF，使用 `{name}.{ext}` 命名后，输出目录中会分别得到 `角色/材质/asset.tif` 和 `道具/材质/asset.tif`。源根目录直属的文件直接输出到目标根目录。命名模板与跳过、重命名、覆盖策略仍在每个目标子目录内生效。
+
+MCP 在 `plan_image_batch` 和 `plan_fbx_batch` 中传入共同源目录的绝对路径 `source_root` 即可启用相同布局。预检返回每项的目标路径，执行导出时才创建缺少的子目录。省略 `source_root` 时仍平铺输出。
+
 要同时交付透明原图和轻量预览，可向 `plan_image_variants` 提交下面的参数。请将示例路径换成访问范围内的绝对路径。源图使用直通 Alpha；`source_alpha` 应与实际素材一致。预检通过后，可以用 `get_image_plan(summary_only=true)` 查看所有输出的损失和冲突，再用 `submit_image_job` 提交一次。
 
 ```json

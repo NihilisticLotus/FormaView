@@ -97,7 +97,8 @@ public:
   Q_INVOKABLE QVariantMap nameExamples(const QStringList &inputs,
                                       const QString &nameTemplate,
                                       const QString &target,
-                                      const QVariantList &itemOverrides) const;
+                                      const QVariantList &itemOverrides,
+                                      const QString &sourceRoot = {}) const;
   Q_INVOKABLE void cancelPreparation();
   Q_INVOKABLE bool activeJobs() const;
 signals:

@@ -35,6 +35,16 @@ void ImageJobs::finishPreparation() {
 namespace {
 using namespace formaview;
 using namespace formaview::imaging;
+QString relativeExportName(const QString &input, const QString &sourceRoot, const QString &name) {
+  if (sourceRoot.isEmpty()) return name;
+  const auto root = validated_local_path(sourceRoot.toStdWString());
+  const auto file = validated_local_path(input.toStdWString());
+  const QDir base(QString::fromStdWString(root.wstring()));
+  const auto relative = base.relativeFilePath(QString::fromStdWString(file.parent_path().wstring()));
+  if (QDir::isAbsolutePath(relative) || relative == ".." || relative.startsWith("../"))
+    throw skeletal::Failure(ErrorCode::InvalidArgument, "Input is outside the selected source root");
+  return relative.isEmpty() || relative == "." ? name : relative + "/" + name;
+}
 QString currentTaskHistoryRoot() {
   QString layout;
 #ifdef Q_OS_WIN
@@ -213,7 +223,7 @@ void ImageJobs::importSources(QStringList paths, QString folder, bool recursive)
 QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
                                     const QString &nameTemplate,
                                     const QString &target,
-                                    const QVariantList &itemOverrides) const {
+                                    const QVariantList &itemOverrides, const QString &sourceRoot) const {
   if (!itemOverrides.isEmpty() && itemOverrides.size() != inputs.size())
     return {{"error", tr("Input and per-item options do not match")}};
   QStringList names;
@@ -221,9 +231,9 @@ QVariantMap ImageJobs::nameExamples(const QStringList &inputs,
     for (qsizetype i = 0; i < std::min(inputs.size(), qsizetype(3)); ++i) {
       const auto overrides = itemOverrides.isEmpty() ? QVariantMap{}
                                                      : itemOverrides[i].toMap();
-      names.append(formaview::imaging::export_filename(inputs[i], i,
+      names.append(relativeExportName(inputs[i], sourceRoot, formaview::imaging::export_filename(inputs[i], i,
           overrides.value("target", target).toString(), nameTemplate,
-          target == "fbx" ? tr("clip") : QString{}));
+          target == "fbx" ? tr("clip") : QString{})));
     }
   } catch (const skeletal::Failure &e) {
     return {{"error", QString::fromUtf8(e.what())}};
@@ -439,7 +449,8 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
           for (auto it = overrides.begin(); it != overrides.end(); ++it) parameters[it.key()] = it.value();
         }
         pending.append(QJsonObject{{"gui_source", QJsonObject{{"input", inputs[i]}, {"options", parameters},
-          {"name_template", nameTemplate}, {"conflict", conflict}, {"output_directory", outputRoots[0]}}}});
+          {"name_template", nameTemplate}, {"conflict", conflict}, {"output_directory", outputRoots[0]},
+          {"source_root", metadata.value("source_root").toString()}}}});
       }
       QJsonArray items;
       QJsonArray protectedSources = QJsonArray::fromVariantList(metadata.value("protected_inputs").toList());
@@ -481,6 +492,13 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
         const auto itemTemplate = guiSource["name_template"].toString();
         const auto itemConflict = guiSource["conflict"].toString();
         const auto outputDirectory = guiSource["output_directory"].toString();
+        const auto sourceRoot = guiSource.value("source_root").toString();
+        const auto appendItem = [&](const QString &name, const QJsonObject &parameters) {
+          QJsonObject item{{"input", input}, {"options", parameters}, {"conflict", itemConflict},
+              {"output", QDir(outputDirectory).filePath(relativeExportName(input, sourceRoot, name))}};
+          if (!sourceRoot.isEmpty()) item.insert("output_tree_root", outputDirectory);
+          items.append(item);
+        };
         protectedSources.append(input);
         const auto originalPair = guiSource["options"].toObject()["paired_file"].toString();
         if (!originalPair.isEmpty()) protectedSources.append(originalPair);
@@ -550,9 +568,8 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
           if (content == "model" && !source["has_mesh"].toBool() && !source.contains("error"))
             throw skeletal::Failure(ErrorCode::InvalidArgument, "Model-only export needs a model input");
           const auto append_model = [&](QJsonObject parameters, const QString &clip_name) {
-            items.append(QJsonObject{{"input", input},
-                {"output", QDir(outputDirectory).filePath(formaview::imaging::export_filename(input, outputIndex + items.size() - initialSize, "fbx", itemTemplate, clip_name))},
-                {"options", parameters}, {"conflict", itemConflict}});
+            appendItem(formaview::imaging::export_filename(input, outputIndex + items.size() - initialSize,
+                                                          "fbx", itemTemplate, clip_name), parameters);
           };
           // An ABC frame export names its single model after the sample.
           if (content == "model" || clips.isEmpty())
@@ -604,11 +621,7 @@ void ImageJobs::prepare(const QStringList &inputs, const QVariantMap &scope,
           itemOptions["source_alpha"] = source["alpha"];
         const auto name = formaview::imaging::export_filename(input, outputIndex,
                                     itemOptions["target"].toString(), itemTemplate);
-        items.append(QJsonObject{
-            {"input", input},
-            {"output", QDir(outputDirectory).filePath(name)},
-            {"options", itemOptions},
-            {"conflict", itemConflict}});
+        appendItem(name, itemOptions);
         } catch (const skeletal::Failure &e) {
           if (!direct || e.error.code == ErrorCode::Cancelled) throw;
           items.append(QJsonObject{{"input", input},
@@ -870,7 +883,7 @@ void ImageJobs::retry(const QString &id) {
       auto retryRequest = original;
       retryRequest.remove("preparation_error");
       requests.append(retryRequest);
-      outputs.append(QFileInfo(original.value("output").toString()).absolutePath());
+      outputs.append(original.value("output_tree_root", QFileInfo(original.value("output").toString()).absolutePath()).toString());
     }
     if (requests.isEmpty()) return;
     outputs.removeDuplicates();

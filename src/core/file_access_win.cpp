@@ -147,27 +147,53 @@ void require_final_path(const Handle &handle, const std::filesystem::path &expec
   if (!equal(actual, expanded))
     fail(ErrorCode::OutOfScope, "Held file path differs from authorized path");
 }
-std::vector<Handle> parents(const std::filesystem::path &parent) {
+enum class MissingDirectory { Require, InspectTree, CreateTree };
+std::vector<Handle> parents(const std::filesystem::path &parent,
+                            MissingDirectory mode = MissingDirectory::Require,
+                            const std::filesystem::path &tree = {}) {
   std::vector<Handle> handles;
   auto current = parent.root_path();
   const auto hold = [&] {
-    Handle h(CreateFileW(
-        extended(current).c_str(), FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!h)
-      fail(ErrorCode::Io, "Cannot hold parent directory", GetLastError());
+    const auto path = extended(current);
+    const auto open = [&] {
+      return Handle(CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    };
+    auto h = open();
+    if (!h) {
+      const auto error = GetLastError();
+      if (mode == MissingDirectory::Require || (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) ||
+          !beneath(current, tree) || equal(current.native(), tree.native()))
+        fail(ErrorCode::Io, "Cannot hold parent directory", error);
+      if (mode == MissingDirectory::InspectTree) return false;
+      if (!CreateDirectoryW(path.c_str(), nullptr)) {
+        const auto create_error = GetLastError();
+        if (create_error != ERROR_ALREADY_EXISTS)
+          fail(ErrorCode::Io, "Cannot create export directory", create_error);
+      }
+      h = open();
+      if (!h) fail(ErrorCode::Io, "Cannot hold export directory", GetLastError());
+    }
     (void)info(h, true);
     require_final_path(h, current);
     handles.push_back(std::move(h));
+    return true;
   };
   hold();
   for (const auto &part : parent.relative_path()) {
     current /= part;
-    hold();
+    if (!hold()) return {};
   }
   return handles;
+}
+std::vector<Handle> output_parents(const AccessScope &scope, const std::filesystem::path &parent,
+                                   const std::filesystem::path &tree, MissingDirectory mode) {
+  if (tree.empty()) return parents(parent);
+  const auto root = normal(tree);
+  authorize(root, scope.output_roots);
+  if (!beneath(parent, root)) fail(ErrorCode::OutOfScope, "Destination is outside the export tree");
+  return parents(parent, mode, root);
 }
 std::string hash_file(const Handle &handle, std::uint64_t size,
                       std::uint64_t maximum, std::stop_token stop) {
@@ -513,7 +539,7 @@ FileDiscovery discover_files(const AccessScope &scope,
 OutputInspection inspect_output(const AccessScope &scope,
                                 const std::filesystem::path &path,
                                 const InputSnapshot &input,
-                                ConflictPolicy conflict) {
+                                ConflictPolicy conflict, const std::filesystem::path &tree) {
   const auto full = normal(path);
   authorize(full, scope.output_roots);
   if (conflict == ConflictPolicy::Overwrite && !scope.allow_overwrite)
@@ -521,7 +547,12 @@ OutputInspection inspect_output(const AccessScope &scope,
   if (conflict != ConflictPolicy::Skip && conflict != ConflictPolicy::Rename &&
       conflict != ConflictPolicy::Overwrite)
     fail(ErrorCode::InvalidArgument, "Unknown conflict policy");
-  const auto held = parents(full.parent_path());
+  const auto held = output_parents(scope, full.parent_path(), tree, MissingDirectory::InspectTree);
+  if (held.empty()) {
+    OutputInspection absent{full, false, {}};
+    require_output_not_input(absent, std::span(&input, 1));
+    return absent;
+  }
   check_target(full, input);
   Handle h(CreateFileW(
       extended(full).c_str(), FILE_READ_ATTRIBUTES,
@@ -539,7 +570,7 @@ OutputInspection inspect_output(const AccessScope &scope,
 OutputInspection allocate_output(
     const AccessScope &scope, const std::filesystem::path &requested,
     const InputSnapshot &input, ConflictPolicy conflict,
-    std::span<const std::filesystem::path> reserved, std::stop_token stop) {
+    std::span<const std::filesystem::path> reserved, std::stop_token stop, const std::filesystem::path &tree) {
   const auto full = normal(requested);
   for (std::uint32_t attempt = 0; attempt < 10000; ++attempt) {
     cancel(stop);
@@ -557,7 +588,7 @@ OutputInspection allocate_output(
         continue;
       fail(ErrorCode::Conflict, "Output is reserved by another batch item");
     }
-    const auto candidate = inspect_output(scope, target, input, conflict);
+    const auto candidate = inspect_output(scope, target, input, conflict, tree);
     if (conflict != ConflictPolicy::Rename || !candidate.exists)
       return candidate;
   }
@@ -592,7 +623,7 @@ struct OutputTransaction::Impl {
 OutputTransaction::OutputTransaction(
     const AccessScope &scope, const std::filesystem::path &path,
     const InputSnapshot &input, ConflictPolicy conflict,
-    std::span<const InputSnapshot> protected_inputs)
+    std::span<const InputSnapshot> protected_inputs, const std::filesystem::path &tree)
     : impl_(std::make_unique<Impl>()) {
   auto &p = *impl_;
   p.requested = normal(path);
@@ -602,7 +633,7 @@ OutputTransaction::OutputTransaction(
   if (conflict != ConflictPolicy::Skip && conflict != ConflictPolicy::Rename &&
       conflict != ConflictPolicy::Overwrite)
     fail(ErrorCode::InvalidArgument, "Unknown conflict policy");
-  p.parents = parents(p.requested.parent_path());
+  p.parents = output_parents(scope, p.requested.parent_path(), tree, MissingDirectory::CreateTree);
   check_target(p.requested, input, protected_inputs);
   p.protected_inputs.assign(protected_inputs.begin(), protected_inputs.end());
   p.input = input;

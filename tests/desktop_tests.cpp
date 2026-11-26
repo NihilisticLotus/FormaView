@@ -6877,6 +6877,81 @@ private slots:
       QFAIL(error.what());
     }
   }
+  void conversionPreservesSourceDirectories() {
+    auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());
+    auto *workspace = item("workspace");
+    QVERIFY(service && workspace);
+    const QString inputs = root_ + "/tree-input", output = root_ + "/tree-output";
+    const QStringList folders{"人物/贴图", "道具/贴图"};
+    QStringList paths;
+    for (const auto &folder : folders) {
+      QVERIFY(QDir().mkpath(inputs + "/" + folder));
+      paths.append(inputs + "/" + folder + "/material.png");
+      QImage im(8, 8, QImage::Format_RGBA8888);
+      im.fill(paths.size() == 1 ? Qt::red : Qt::cyan);
+      QVERIFY(im.save(paths.back()));
+    }
+    QVERIFY(QDir().mkpath(output));
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "")));
+    QTRY_VERIFY(item("conversionOutputRoot"));
+    auto *ui = item("conversionWorkspace");
+    QVERIFY(ui);
+    auto *keepTree = item("preserveSourceDirectories");
+    QVERIFY(keepTree);
+    const auto close = qScopeGuard([ui, keepTree] {
+      keepTree->setProperty("checked", false);
+      ui->setProperty("initialized", false);
+      QMetaObject::invokeMethod(ui, "close");
+    });
+    ui->setProperty("modelMode", false);
+    service->setSourceInputs(paths);
+    QTRY_COMPARE(service->sourcePaths(), paths);
+    item("conversionOutputRoot")->setProperty("text", output);
+    keepTree->setProperty("checked", true);
+    QTRY_VERIFY(item("exportSourceRoot"));
+    item("exportSourceRoot")->setProperty("text", inputs);
+    auto *create = item("createImagePlan");
+    QTRY_VERIFY(create && create->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(create, "clicked"));
+    QTRY_VERIFY_WITH_TIMEOUT(service->plan().value("state") == "ready", 15000);
+    QVERIFY(QDir(output).isEmpty());
+    service->submit(true);
+    QTRY_VERIFY_WITH_TIMEOUT(service->job().value("state") == "succeeded", 15000);
+    for (const auto &folder : folders) {
+      QImage read(output + "/" + folder + "/material-converted.png");
+      QVERIFY(!read.isNull());
+      QCOMPARE(read.pixelColor(0, 0), QColor(folder == folders.front() ? Qt::red : Qt::cyan));
+    }
+    QStringList models;
+    for (const auto &folder : folders) {
+      QFile obj(inputs + "/" + folder + "/triangle.obj");
+      QVERIFY(obj.open(QIODevice::WriteOnly));
+      const auto data = "v 0 0 0\nv " + QByteArray::number(models.size() + 1) + " 0 0\nv 0 1 0\nf 1 2 3\n";
+      QCOMPARE(obj.write(data), data.size());
+      models.append(obj.fileName());
+    }
+    QVERIFY(QMetaObject::invokeMethod(workspace, "openConversion", Q_ARG(QVariant, 0), Q_ARG(QVariant, "model")));
+    ui->setProperty("modelInputs", models);
+    item("conversionNamingTemplate")->setProperty("text", "{name}.{ext}");
+    QTRY_VERIFY(create->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(create, "clicked"));
+    // OBJ has no axis or unit declaration. Review the coordinate assumption
+    // through the same retry/approval flow offered for direct FBX exports.
+    QTRY_COMPARE_WITH_TIMEOUT(service->job().value("state").toString(), QString("failed"), 15000);
+    const auto items = service->job().value("items").toList();
+    QCOMPARE(items.size(), 2);
+    for (const auto &entry : items) {
+      const auto losses = entry.toMap().value("preflight").toMap().value("losses").toList();
+      QVERIFY(!losses.isEmpty());
+      QCOMPARE(losses.first().toMap().value("code").toString(), QString("obj_coordinate_assumption"));
+    }
+    service->retry(service->job().value("id").toString());
+    QTRY_COMPARE_WITH_TIMEOUT(service->plan().value("state").toString(), QString("ready"), 15000);
+    service->submit(true);
+    for (const auto &folder : folders)
+      QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(output + "/" + folder + "/triangle.fbx").size() > 0, 15000);
+    QTRY_COMPARE(service->job().value("state").toString(), QString("succeeded"));
+  }
   void conversionEditorPlanBinding() {
     QTest::failOnWarning(QRegularExpression(".*DelegateModel::cancel.*"));
     auto *service = qobject_cast<ImageJobs *>(desktop_->imageJobs());

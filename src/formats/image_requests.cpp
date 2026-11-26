@@ -397,11 +397,15 @@ QJsonObject execute_image_request(
     std::span<const std::filesystem::path> reserved_outputs,
     const std::filesystem::path &approved_output) {
   keys(request, {"version", "operation", "input", "output", "options",
-                 "conflict", "approval_digest", "acknowledge_losses",
+                 "conflict", "approval_digest", "acknowledge_losses", "output_tree_root",
                  "subresource", "offset", "limit", "inventory_only", "x", "y"});
   if (integer(request, "version", 0) != 1)
     invalid("Request version must be 1");
   const auto operation = string(request, "operation");
+  if (request.contains("output_tree_root")) {
+    if (operation != "preflight" && operation != "convert") invalid("Output tree applies only to exports");
+    (void)validated_local_path(path(string(request, "output_tree_root")));
+  }
   if (operation == "capabilities") {
     keys(request, {"version", "operation"});
     return image_capabilities();
@@ -522,11 +526,12 @@ QJsonObject execute_image_request(
                              {{"skip", ConflictPolicy::Skip},
                               {"rename", ConflictPolicy::Rename},
                               {"overwrite", ConflictPolicy::Overwrite}});
+  const std::filesystem::path tree(request.value("output_tree_root").toString().toStdWString());
   const auto output =
       approved_output.empty()
           ? allocate_output(scope, path(string(request, "output")), input,
-                            conflict, reserved_outputs, stop)
-          : inspect_output(scope, approved_output, input, conflict);
+                            conflict, reserved_outputs, stop, tree)
+          : inspect_output(scope, approved_output, input, conflict, tree);
   if (conflict == ConflictPolicy::Rename && output.exists)
     throw skeletal::Failure(
         ErrorCode::Conflict,
@@ -581,7 +586,7 @@ QJsonObject execute_image_request(
   const auto output_sha256 =
       QString::fromStdString(skeletal::sha256(product.encoded, stop));
   OutputTransaction transaction(scope, output.path, input, conflict,
-                                protected_inputs);
+                                protected_inputs, tree);
   const auto observe = [&](const OutputIntent &intent) {
     if (!commit_observer)
       return;

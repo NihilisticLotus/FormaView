@@ -715,7 +715,8 @@ struct ImageTaskGroups::Impl {
           inspectedPaths.insert(sourceKey);
           ++protectionInspections;
           if (progress) progress({{"stage", "protect"}, {"input", request["input"]}});
-          auto inspect = request; inspect["version"] = 1; inspect["operation"] = "inspect";
+          const QJsonObject inspect{{"version", 1}, {"operation", "inspect"},
+                                    {"input", request["input"]}, {"options", request["options"]}};
           QJsonObject source;
           try {
             const ImageAdmission allocation(false, stop);

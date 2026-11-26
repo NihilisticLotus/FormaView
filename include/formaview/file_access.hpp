@@ -91,19 +91,21 @@ void remove_owned_temporary(const AccessScope &, const OutputIntent &);
 [[nodiscard]] OutputInspection inspect_output(const AccessScope &,
                                               const std::filesystem::path &,
                                               const InputSnapshot &,
-                                              ConflictPolicy);
+                                              ConflictPolicy,
+                                              const std::filesystem::path &output_tree_root = {});
 // Read-only name allocation. Reserved paths include every other batch request
 // and names already allocated by this plan. Rename commit never reallocates.
 [[nodiscard]] OutputInspection
 allocate_output(const AccessScope &, const std::filesystem::path &,
                 const InputSnapshot &, ConflictPolicy,
                 std::span<const std::filesystem::path> reserved = {},
-                std::stop_token = {});
+                std::stop_token = {}, const std::filesystem::path &output_tree_root = {});
 class OutputTransaction {
 public:
   OutputTransaction(const AccessScope &, const std::filesystem::path &,
                     const InputSnapshot &, ConflictPolicy,
-                    std::span<const InputSnapshot> protected_inputs = {});
+                    std::span<const InputSnapshot> protected_inputs = {},
+                    const std::filesystem::path &output_tree_root = {});
   OutputTransaction(OutputTransaction &&) noexcept;
   OutputTransaction &operator=(OutputTransaction &&) noexcept;
   ~OutputTransaction();

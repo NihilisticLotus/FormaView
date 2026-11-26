@@ -31,7 +31,7 @@ ColumnLayout {
     signal chooseInputs(var paths)
     signal preflight(var scope, var options, string nameTemplate, string conflict, var metadata)
     readonly property var targets: controller.imageJobs.capabilities.write_targets
-    readonly property var namingPreview: controller.imageJobs.nameExamples(root.inputs, root.modelMode && modelFields.contentValue === "model" ? naming.nameTemplate.replace(/\{clip\}/g, root.abcSample >= 0 ? "frame" + root.abcSample : "model") : naming.nameTemplate, root.modelMode ? "fbx" : root.targets[target.currentIndex] || "", root.itemOverrides())
+    readonly property var namingPreview: controller.imageJobs.nameExamples(root.inputs, root.modelMode && modelFields.contentValue === "model" ? naming.nameTemplate.replace(/\{clip\}/g, root.abcSample >= 0 ? "frame" + root.abcSample : "model") : naming.nameTemplate, root.modelMode ? "fbx" : root.targets[target.currentIndex] || "", root.itemOverrides(), keepTree.checked ? sourceRoot.text.trim() : "")
     function options(): var {
         if (modelMode) return modelFields.options()
         const o = {scale_divisor: resolution.divisor, target: targets[target.currentIndex], subresource: resource.value,
@@ -77,6 +77,13 @@ RowLayout { visible: root.detailed; Layout.fillWidth: true
 RowLayout { visible: root.detailed; Layout.fillWidth: true
     Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("任务分类", "Category", "工作分類") }
     Field { id: taskCategory; objectName: "conversionTaskCategory"; form: true; Layout.fillWidth: true; maximumLength: 80; placeholderText: root.modelMode ? Theme.t("模型与动画（可自定义）", "Models and animation (customizable)", "模型與動畫（可自訂）") : Theme.t("图片（可自定义）", "Images (customizable)", "影像（可自訂）"); onTextEdited: root.edited() }
+}
+OptionCheck { id: keepTree; objectName: "preserveSourceDirectories"; Layout.fillWidth: true; text: Theme.t("保留源目录结构", "Preserve source folders", "保留來源目錄結構"); onToggled: root.edited() }
+RowLayout {
+    visible: keepTree.checked; Layout.fillWidth: true
+    Label { Layout.preferredWidth: 148; color: Theme.muted; text: Theme.t("源根目录", "Source root", "來源根目錄") }
+    Field { id: sourceRoot; objectName: "exportSourceRoot"; form: true; Layout.fillWidth: true; placeholderText: Theme.t("选择包含全部输入文件的目录", "Choose the folder containing all inputs", "選擇包含全部輸入檔案的目錄"); onTextEdited: root.edited() }
+    Tool { form: true; iconName: "folder"; text: Theme.t("选择…", "Choose…", "選擇…"); onClicked: sourceFolder.open() }
 }
 ConversionNaming { id: naming; visible: root.detailed; controller: root.controller; Layout.fillWidth: true; modelMode: root.modelMode; multipleStacks: modelFields.multipleStacks; onEdited: root.edited() }
 RowLayout { Layout.fillWidth: true; Layout.minimumHeight: 36; Label { Layout.preferredWidth: 148; font.pixelSize: Theme.formText; color: Theme.muted; text: Theme.t("冲突策略", "Conflict policy", "衝突策略") } Choice { form: true; id: conflict; notes: [Theme.t("已有目标保持不变，此项跳过。", "Keep the existing destination and skip this item.", "現有目標保持不變，此項略過。"), Theme.t("保留已有目标，为新输出分配不同名称。", "Keep existing files and resolve a new output name.", "保留現有目標，為新輸出分配不同名稱。"), Theme.t("需勾选允许覆盖；源文件仍受保护。", "Requires overwrite permission; source files remain protected.", "需勾選允許覆寫；來源檔案仍受保護。")]; Layout.preferredWidth: 220; Layout.maximumWidth: 260; Layout.fillWidth: true; labels: [Theme.t("跳过", "Skip", "略過"), Theme.t("重命名", "Rename", "重新命名"), Theme.t("覆盖", "Overwrite", "覆寫")]; onActivated: root.edited(); Accessible.name: Theme.t("冲突策略", "Conflict policy", "衝突策略") } }
@@ -175,8 +182,9 @@ FormGroup {
         objectName: "conversionFooter"; Layout.fillWidth: true; Layout.minimumHeight: 40
         Label { Layout.fillWidth: true; font.pixelSize: Theme.formText; color: Theme.muted; wrapMode: Text.WordWrap; text: root.modelMode ? Theme.t("逐项检查并导出，失败会列出原因；不套用预览效果。", "Check and export each item; failures include reasons. Preview effects are excluded.", "逐項檢查並匯出，失敗會列出原因；不套用預覽效果。") : Theme.t("预检不写出文件；不套用视口曝光、背景或平铺。", "Preflight writes no files. Viewport exposure, background and tiling are excluded.", "預檢不寫出檔案；不套用視口曝光、背景或平鋪。") }
         Tool { form: true; text: Theme.t("取消", "Cancel", "取消"); onClicked: root.back() }
-Tool { form: true; iconName: "preflight"; primary: true; objectName: "createImagePlan"; text: root.controller.imageJobs.busy ? Theme.t("正在准备…", "Preparing…", "正在準備…") : (root.quickMode || root.modelMode) ? Theme.t("导出", "Export", "匯出") : Theme.t("开始预检", "Start preflight", "開始預檢"); enabled: !root.controller.imageJobs.busy && root.inputs.length > 0 && !root.inputScopeMissing && !root.outputScopeMissing && !root.controller.imageJobs.importing && !root.namingPreview.error && (conflict.currentIndex !== 2 || overwrite.checked); onClicked: root.preflight({input_roots: root.inputRoots, output_roots: [output.text], allow_overwrite: overwrite.checked}, root.options(), naming.nameTemplate, ["skip", "rename", "overwrite"][conflict.currentIndex], {name: taskName.text, category: taskCategory.text}) }
+Tool { form: true; iconName: "preflight"; primary: true; objectName: "createImagePlan"; text: root.controller.imageJobs.busy ? Theme.t("正在准备…", "Preparing…", "正在準備…") : (root.quickMode || root.modelMode) ? Theme.t("导出", "Export", "匯出") : Theme.t("开始预检", "Start preflight", "開始預檢"); enabled: !root.controller.imageJobs.busy && root.inputs.length > 0 && !root.inputScopeMissing && !root.outputScopeMissing && (!keepTree.checked || sourceRoot.text.trim().length > 0) && !root.controller.imageJobs.importing && !root.namingPreview.error && (conflict.currentIndex !== 2 || overwrite.checked); onClicked: root.preflight({input_roots: root.inputRoots, output_roots: [output.text], allow_overwrite: overwrite.checked}, root.options(), naming.nameTemplate, ["skip", "rename", "overwrite"][conflict.currentIndex], {name: taskName.text, category: taskCategory.text, source_root: keepTree.checked ? sourceRoot.text.trim() : ""}) }
     }
 FrostFileDialog { parentWindow: root.Window.window; id: modelFiles; fileMode: FileDialog.OpenFiles; nameFilters: ["Models (" + (root.controller.imageJobs.capabilities.model_export?.input_formats || []).map(x => "*." + x).join(" ") + ")"]; onAccepted: { root.chooseInputs(selectedFiles.map(f => root.controller.localFile(f))); root.edited() } }
+FrostFolderDialog { parentWindow: root.Window.window; id: sourceFolder; onAccepted: { sourceRoot.text = root.controller.localFile(selectedFolder); root.edited() } }
 FrostFolderDialog { parentWindow: root.Window.window; id: outputFolder; objectName: "conversionOutputDialog"; onAccepted: { output.text = root.controller.localFile(selectedFolder); root.edited() } }
 }

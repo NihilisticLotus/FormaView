@@ -767,10 +767,11 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
                                               : ConflictPolicy::Skip;
   const auto destination =
       std::filesystem::path(request["output"].toString().toStdWString());
+  const std::filesystem::path tree(request.value("output_tree_root").toString().toStdWString());
   const auto output =
       approved.empty()
-          ? allocate_output(scope, destination, input, conflict, reserved, stop)
-          : inspect_output(scope, approved, input, conflict);
+          ? allocate_output(scope, destination, input, conflict, reserved, stop, tree)
+          : inspect_output(scope, approved, input, conflict, tree);
   if (QFileInfo(QString::fromStdWString(output.path.wstring()))
           .suffix()
           .compare("fbx", Qt::CaseInsensitive))
@@ -779,7 +780,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
     throw sk::Failure(ErrorCode::Conflict,
                       "Approved name is occupied; preflight again");
   for (const auto &source : inputs)
-    (void)inspect_output(scope, output.path, source, conflict);
+    (void)inspect_output(scope, output.path, source, conflict, tree);
   QJsonObject result;
   QByteArray encoded;
   if (reuse) {
@@ -845,7 +846,7 @@ QJsonObject execute(const QJsonObject &request, const AccessScope &scope,
   const auto hash = QString::fromLatin1(
       QCryptographicHash::hash(encoded, QCryptographicHash::Sha256).toHex());
   ProfileStage commitProfile("transaction_write_commit");
-  OutputTransaction transaction(scope, output.path, input, conflict, inputs);
+  OutputTransaction transaction(scope, output.path, input, conflict, inputs, tree);
   const auto notify = [&](const OutputIntent &intent) {
     if (observer)
       observer(

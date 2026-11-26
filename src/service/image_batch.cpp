@@ -138,7 +138,9 @@ QJsonObject failed_item(const QJsonObject &request, qsizetype index,
 } // namespace
 
 void validate_export_item(const QJsonObject &request) {
-  fields(request, {"input", "output", "options", "conflict"});
+  fields(request, {"input", "output", "options", "conflict", "output_tree_root"});
+  if (request.contains("output_tree_root"))
+    (void)validated_local_path(text(request, "output_tree_root").toStdWString());
   (void)text(request, "input");
   (void)text(request, "output");
   if (request.contains("conflict") && !QStringList{"skip", "rename", "overwrite"}.contains(request["conflict"].toString()))
@@ -603,9 +605,8 @@ struct ImageBatchService::Impl {
           if (snapshot_matches) {
             source = cached->second.result;
           } else {
-            auto inspect = request;
-            inspect["version"] = 1;
-            inspect["operation"] = "inspect";
+            const QJsonObject inspect{{"version", 1}, {"operation", "inspect"},
+                                      {"input", request["input"]}, {"options", options}};
             try {
               const auto allocation = ImageAdmission(false, stop);
               source =
