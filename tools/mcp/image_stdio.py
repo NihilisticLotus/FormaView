@@ -300,9 +300,22 @@ async def discover_images(directory: str, recursive: bool = False) -> dict[str, 
     return await native_request({'version': 1, 'operation': 'discover', 'directory': directory, 'recursive': recursive})
 
 
+@batch_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+async def discover_export_sources(directory: str, source_kind: Literal['image', 'model', 'all'] = 'all',
+                                  recursive: bool = False) -> dict[str, Any]:
+    """Find candidate inputs for image conversion and FBX export in an authorized directory.
+
+    Page the snapshot via get_image_discovery. Each entry identifies its source_kind
+    and absolute input path. Select images for plan_image_batch or models for plan_fbx_batch.
+    Membership is based on this build's supported extensions. Preflight validates content.
+    """
+    return await native_request(dict(version=1, operation='discover', directory=directory,
+                                     source_kind=source_kind, recursive=recursive))
+
+
 @batch_tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
 async def get_image_discovery(discovery_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-    """Page a fixed directory-membership snapshot and its excluded reparse points."""
+    """Page the snapshot from discover_images or discover_export_sources and its exclusions."""
     return await native_request({'version': 1, 'operation': 'get_discovery', 'id': discovery_id, 'offset': offset, 'limit': limit})
 
 
@@ -314,15 +327,15 @@ def image_target(suffix, capabilities):
     return target
 
 
-def batch_destinations(inputs, output_directory, extension):
+def batch_destinations(inputs, output_directory, extension, conflict):
     directory = Path(output_directory)
     if not 1 <= len(inputs) <= 64:
         raise ValueError('Select between 1 and 64 input files per plan.')
     if not directory.is_absolute() or not all(Path(path).is_absolute() for path in inputs):
         raise ValueError('Choose absolute input paths and an absolute output directory.')
     outputs = [directory / (Path(path).stem + '.' + extension) for path in inputs]
-    if len(set(outputs)) != len(inputs):
-        raise ValueError('Inputs map to the same output name. Use create_image_plan with distinct output paths.')
+    if len(set(outputs)) != len(inputs) and conflict != 'rename':
+        raise ValueError("Inputs map to the same output name. Choose conflict='rename' or specify distinct output paths.")
     return outputs
 
 
@@ -443,7 +456,7 @@ async def plan_image_batch(
 
     Pass absolute input paths (e.g. selected from get_image_discovery), an existing
     authorized output directory and a target extension such as .tif. Outputs keep
-    their input stems. For duplicate stems use create_image_plan with explicit names.
+    their input stems. For duplicate stems choose conflict='rename' to allocate distinct outputs.
     settings applies the same resize, channel, colour and encoder choices to each
     input. The background applies only to inputs with alpha.
     No outputs are written until the reviewed plan is submitted via submit_image_job.
@@ -453,7 +466,7 @@ async def plan_image_batch(
         return caps
     extension = output_extension.strip().lower().removeprefix('.')
     target = image_target(extension, caps)
-    destinations = batch_destinations(inputs, output_directory, extension)
+    destinations = batch_destinations(inputs, output_directory, extension, conflict)
     options = (settings or ImageExportSettings()).native_options(target, alpha_action)
     items = []
     for path, destination in zip(inputs, destinations):
@@ -555,10 +568,11 @@ async def plan_fbx_batch(
 
     Includes meshes and, by default, every embedded animation as a separate stack.
     For ABC inputs specify the zero-based sample to bake as static geometry.
+    Select paths from discover_export_sources. For duplicate stems choose conflict='rename'.
     Use plan_fbx_export for paired animations, selected clip IDs or animation-only output.
     The native plan reports format-specific losses and dependencies before approval.
     """
-    destinations = batch_destinations(inputs, output_directory, 'fbx')
+    destinations = batch_destinations(inputs, output_directory, 'fbx', conflict)
     has_abc = any(Path(path).suffix.lower() == '.abc' for path in inputs)
     if has_abc != (abc_sample is not None) or (has_abc and abc_sample < 0):
         raise ValueError('Specify a non-negative abc_sample only when the selection contains an ABC file.')

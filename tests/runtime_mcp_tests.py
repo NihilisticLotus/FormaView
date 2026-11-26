@@ -1,8 +1,9 @@
 """Drive the packaged run directory through its real MCP path.
 
 The headless service starts from the run directory with a minimal PATH (system
-folders only), so any missing DLL or plugin fails here. The stdio adapter runs
-in a separate venv built from tools/mcp/requirements.lock. Inputs are the
+folders only), so any missing DLL or plugin fails here. Export uses the packaged
+stdio executable. The EOF check also exercises the packaged Python adapter in
+a venv built from tools/mcp/requirements.lock. Inputs are the
 synthetic fixtures made by scene_export_tests.py; outputs are read back by
 checking commit hashes and by opening each FBX with the independent probe.
 
@@ -84,7 +85,7 @@ async def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     packaged = {name: args.run_dir / 'mcp' / name for name in
-                ('image_stdio.py', 'requirements.lock', 'requirements.txt')}
+                ('formaview-mcp.exe', 'image_stdio.py', 'requirements.lock', 'requirements.txt')}
     for path in packaged.values():
         assert path.is_file(), f'Missing packaged MCP component: {path}'
     source_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in packaged.items()}
@@ -102,7 +103,7 @@ async def main():
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=clean_env())
     try:
         assert json.loads(await asyncio.wait_for(service.stdout.readline(), 20))['ready']
-        params = StdioServerParameters(command=str(args.venv_python), args=['-I', '-B', str(packaged['image_stdio.py'])],
+        params = StdioServerParameters(command=str(packaged['formaview-mcp.exe']),
                                        env=clean_env(FORMAVIEW_IMAGE_ENDPOINT=endpoint))
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
@@ -110,7 +111,7 @@ async def main():
                 tools = {t.name for t in (await client.list_tools()).tools}
                 for name in ('get_image_capabilities', 'inspect_image', 'inspect_model', 'create_image_plan', 'create_model_export_plan',
                              'submit_image_job', 'get_image_job', 'cancel_image_work', 'retry_image_plan', 'discover_images',
-                             'plan_image_batch', 'plan_gif_frames', 'plan_fbx_batch'):
+                             'plan_image_batch', 'plan_gif_frames', 'plan_fbx_batch', 'discover_export_sources'):
                     assert name in tools, name
 
                 async def call(tool, **kwargs):
@@ -134,6 +135,33 @@ async def main():
                 assert 'fbx' in caps['model_export']['output_formats'] and 'pmx' in caps['model_export']['input_formats']
                 found = await call('discover_images', directory=str(fixtures))
                 assert found, found
+
+                # Export discovered same-stem models. Check the exact preflight names,
+                # reopen each committed FBX and preserve a pre-existing destination.
+                catalog = await call('discover_export_sources', directory=str(fixtures), source_kind='model')
+                page = await call('get_image_discovery', discovery_id=catalog['discovery_id'])
+                assert all(entry['source_kind'] == 'model' for entry in page['items'])
+                selected = [entry['input'] for entry in page['items']
+                            if Path(entry['input']).name in ('source.obj', 'source.glb')]
+                assert len(selected) == 2
+                exports = args.output / 'catalog-exports'
+                exports.mkdir()
+                existing = exports / 'source.fbx'
+                existing.write_bytes(b'keep existing')
+                batch = await call('plan_fbx_batch', inputs=selected, output_directory=str(exports), conflict='rename')
+                prepared = await terminal('plan', batch['plan_id'])
+                assert prepared['state'] == 'ready', prepared
+                names = [Path(item['preflight']['output']) for item in prepared['items']]
+                assert len(set(names)) == 2 and all(p.parent == exports and not p.exists() for p in names)
+                queued = await call('submit_image_job', plan_id=batch['plan_id'], approval_digest=prepared['approval_digest'],
+                                    idempotency_key='catalog-models', acknowledge_losses=True)
+                done = await terminal('job', queued['job_id'])
+                assert done['state'] == 'succeeded' and existing.read_bytes() == b'keep existing', done
+                for index, (entry, path) in enumerate(zip(done['items'], names, strict=True)):
+                    assert Path(entry['result']['committed_output']) == path
+                    report = exports / f'readback-{index}.json'
+                    subprocess.run([str(args.probe), str(path), str(report)], check=True, timeout=60)
+                    assert json.loads(report.read_text(encoding='utf-8'))['meshes']
 
                 # Mixed batch: one image conversion plus four model families.
                 image_out = args.output / 'pixel.webp'

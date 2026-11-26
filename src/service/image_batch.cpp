@@ -742,10 +742,26 @@ struct ImageBatchService::Impl {
       return execute_image_request(request, scope, limits.image, stop);
     }
     if (operation == "discover") {
-      fields(request, {"version", "operation", "directory", "recursive"});
+      fields(request, {"version", "operation", "directory", "recursive", "source_kind"});
       if (request.contains("recursive") && !request["recursive"].isBool())
         fail(ErrorCode::InvalidArgument, "Recursive discovery must be boolean");
-      const auto names = image_input_extensions();
+      const auto kind = request.contains("source_kind") ? text(request, "source_kind") : QStringLiteral("image");
+      if (kind != "image" && kind != "model" && kind != "all")
+        fail(ErrorCode::InvalidArgument, "Unknown export source kind");
+      auto names = kind == "model" ? std::vector<std::wstring>{} : image_input_extensions();
+      QJsonArray model_formats;
+#ifdef FORMAVIEW_MODEL_EXPORT
+      if (kind != "image") {
+        const auto model = model_export::capabilities();
+        model_formats = model["input_formats"].toArray();
+        model_formats.append(model["abc_frame_export"].toObject()["input"].toString());
+        for (const auto &format : model_formats)
+          names.push_back(L"." + format.toString().toStdWString());
+      }
+#else
+      if (kind == "model")
+        fail(ErrorCode::Unsupported, "Model export is unavailable in this build");
+#endif
       std::vector<std::wstring_view> extensions;
       for (const auto &name : names) extensions.push_back(name);
       const auto found = discover_files(
@@ -753,9 +769,13 @@ struct ImageBatchService::Impl {
           std::filesystem::path(text(request, "directory").toStdWString()),
           request["recursive"].toBool(), extensions, stop);
       QJsonArray items, rejected, rejectedPaths;
-      for (const auto &path : found.files)
-        items.append(
-            QJsonObject{{"input", QString::fromStdWString(path.wstring())}});
+      for (const auto &path : found.files) {
+        const auto input = QString::fromStdWString(path.wstring());
+        QJsonObject entry{{"input", input}};
+        if (request.contains("source_kind"))
+          entry["source_kind"] = model_formats.contains(QFileInfo(input).suffix().toLower()) ? "model" : "image";
+        items.append(entry);
+      }
       for (const auto &path : found.rejected_reparse_points)
         rejected.append(QString::fromStdWString(path.wstring()));
       for (const auto &entry : found.rejected_paths) {

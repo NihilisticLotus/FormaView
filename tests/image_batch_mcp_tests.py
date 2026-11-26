@@ -122,7 +122,7 @@ async def main():
                 tools = await session.list_tools()
                 assert {t.name for t in tools.tools} == {'get_image_capabilities', 'inspect_image', 'discover_images', 'get_image_discovery', 'create_image_plan', 'get_image_plan',
                     'submit_image_job', 'get_image_job', 'list_image_jobs', 'cancel_image_work', 'retry_image_plan',
-                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips'}
+                    'inspect_model', 'create_model_export_plan', 'read_texture_pixel', 'plan_image_conversion', 'plan_image_batch', 'plan_gif_frames', 'plan_fbx_export', 'plan_fbx_batch', 'plan_fbx_clips', 'discover_export_sources'}
                 capabilities = await call(session, 'get_image_capabilities', {})
                 assert len(capabilities['read_formats']) == 11 and len(capabilities['write_targets']) == 9
                 discovery = await call(session, 'discover_images', {'directory': str(inputs.resolve())})
@@ -137,6 +137,24 @@ async def main():
                 assert stable['total'] == 3, 'Discovery membership changed after creation'
                 outside = await call(session, 'discover_images', {'directory': str(args.output.resolve())})
                 assert outside['error']['code'] == 'out_of_scope'
+                # Discovery is filename-only, including animation and sampled geometry sources.
+                model_formats = capabilities.get('model_export', {})
+                expected_models = set(model_formats.get('input_formats', []))
+                if model_formats.get('abc_frame_export'):
+                    expected_models.add(model_formats['abc_frame_export']['input'])
+                for extension in expected_models:
+                    (nested / ('样本.' + extension.upper())).touch()
+                catalog_args = dict(directory=str(inputs.resolve()), recursive=True)
+                catalog = await call(session, 'discover_export_sources', catalog_args)
+                page = await call(session, 'get_image_discovery', dict(discovery_id=catalog['discovery_id']))
+                assert {Path(i['input']).suffix[1:].lower() for i in page['items']
+                        if i['source_kind'] == 'model'} == expected_models
+                assert sum(i['source_kind'] == 'image' for i in page['items']) == 4
+                assert page['total'] == len(expected_models) + 4
+                images = await call(session, 'discover_export_sources', dict(catalog_args, source_kind='image'))
+                assert images['total'] == 4
+                excluded = await call(session, 'discover_export_sources', dict(directory=str(args.output.resolve())))
+                assert excluded['error']['code'] == 'out_of_scope'
                 preview_source = inputs / 'preview-4096.png'; png(preview_source, 4096)
                 info = await call(session, 'inspect_image', {'path': str(sources[0].resolve())})
                 assert len(info['selected_channels']) == 4
@@ -315,6 +333,22 @@ for y in range(out.height):
                 for invalid_inputs in ([], [str(sources[0])] * 65, [str(sources[0]), str(nested / sources[0].name)]):
                     rejected = await session.call_tool('plan_image_batch', dict(batch_args, inputs=invalid_inputs))
                     assert rejected.isError, rejected
+                same_name = nested / sources[0].name
+                shutil.copyfile(large, same_name)
+                renamed_dir = outputs / 'renamed-images'
+                renamed_dir.mkdir()
+                renamed = await call(session, 'plan_image_batch', dict(batch_args, conflict='rename',
+                                      output_directory=str(renamed_dir),
+                                      inputs=[str(sources[0]), str(same_name)]))
+                distinct = await terminal(session, 'plan', renamed['plan_id'])
+                assert distinct['state'] == 'ready', distinct
+                names = [Path(row['preflight']['output']) for row in distinct['items']]
+                assert len(set(names)) == 2 and all(not path.exists() for path in names), names
+                run = await call(session, 'submit_image_job', submission(distinct, 'rename-same-stem'))
+                done = await terminal(session, 'job', run['job_id'])
+                assert done['state'] == 'succeeded', done
+                for name, entry in zip(names, done['items'], strict=True):
+                    assert Path(entry['result']['committed_output']) == name and name.is_file()
                 outside = str(args.output / 'outside.png')
                 rejected = await call(session, 'plan_image_batch', dict(batch_args, inputs=[str(sources[0]), outside]))
                 assert rejected['error']['code'] == 'out_of_scope' and rejected['input'] == outside, rejected

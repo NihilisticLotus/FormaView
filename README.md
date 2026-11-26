@@ -247,6 +247,7 @@ flowchart LR
 | `video_ab_loop`、`set_video_filter` | 按秒设置或清除 A–B 循环，调整亮度、对比度、饱和度和锐化。后台模式的滤镜会写入截图，窗口模式沿用播放器的显示滤镜 |
 | `preflight_image`、`convert_image` | 单文件模式下预检并执行一次图片转换 |
 | `discover_images`、`get_image_discovery` | 创建授权目录的图片候选快照并分页查看 |
+| `discover_export_sources` | 在授权目录按 `image`、`model` 或 `all` 查找可转换文件。可递归查找；用 `get_image_discovery` 分页读取绝对路径和类别 |
 | `plan_image_conversion` | 按输出后缀选择编码器，从指定图片子资源读取实际通道和 Alpha 模式，生成单项转换计划 |
 | `plan_image_batch` | 把选中的 1–64 张图片转换成同一目标格式。按每张图片的实际通道生成一份批量预检计划，输出沿用输入文件的主名 |
 | `plan_gif_frames` | 将 GIF 的连续帧导出为带原始帧号的 PNG，每份计划最多 64 帧。输出保留完整画布和透明区域 |
@@ -265,7 +266,7 @@ flowchart LR
 
 可在 `settings.channels` 中逐项指定 `source` 和 `destination`，例如将 R、G 映射到双通道 DDS 并选择 `dds_encoding="bc5_unorm"`。其他编码选项包括 PNG 压缩级别、TIFF 压缩方式、WebP 无损开关和 EXR 分块存储。可以在工具参数列表中查看每种编码的可选值。
 
-要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。若两个输入映射到同一个输出名，请用 `create_image_plan` 分别命名。预检结束后可在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
+要把一组图片统一导出到已有目录，从 `get_image_discovery` 选取输入绝对路径，传给 `plan_image_batch` 的 `inputs`，再指定 `output_directory` 和 `output_extension`（如 `.tif`）。同批可以同时包含 RGB 和 RGBA 图片。默认跳过已有目标文件。图片和 FBX 批量导出都支持 `conflict="rename"`。例如，同目录的 `source.obj` 和 `source.glb` 可一起导出为两个 FBX，预检会为每项分配独立文件名。在 `get_image_plan` 核对每一项目标、损失与状态，确认后提交整批。
 
 例如，要从 `walk.gif` 提取第 11 至 13 帧，调用 `plan_gif_frames`，传入授权范围内的输入绝对路径、已有输出目录，以及 `first_frame=10`、`frame_count=3`。核对计划后提交，可得到 `walk-frame-0010.png` 至 `walk-frame-0012.png`。如需重建播放节奏，`inspect_image` 的分页帧信息提供播放延时（毫秒），容器元数据提供循环次数。也可通过 `plan_image_conversion` 的 `subresource` 单独选择一帧并指定输出格式和文件名。
 
